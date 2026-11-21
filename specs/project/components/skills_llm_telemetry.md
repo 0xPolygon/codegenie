@@ -732,6 +732,8 @@ Provider retry policy (429 and transient 5xx, plus network-level connection fail
 - On per-call timeout the request rejects `llm_call_failed` (`recoverable: true`, `context.reason: "timeout"`); on run-abort it rejects with `context.reason: "aborted"`. The fatal `timeout` error code belongs exclusively to the pipeline's 2x-runtime hard kill and is never produced here.
 - Timers are cleared on settle; the runner must not keep the process alive after the last call resolves.
 
+Stage 9 and Stage 10 provider attempts have their own abort signal for tool argument limits. A run of more than 4,096 consecutive JSON whitespace characters in one tool's streamed arguments stops the attempt, including when Pi splits the run across chunks. The total argument limits per response are 64,000 characters for Stage 9 and 128,000 for Stage 10. The runner discards the interrupted response and retries once from the same conversation when the existing deadline and attempt budget allow it. `model_tool_argument_stream_limit` records the trigger, observed size, retry decision and available Pi usage. Observed token counts contribute to budget accounting. The final cost stays unknown for an interrupted call.
+
 ### Per-Call Records And Cost Accounting
 
 Every provider call attempt and every cache hit produces one `LlmCallRecord` appended to `model-calls.jsonl` via `recordModelCall`. Record requirements:

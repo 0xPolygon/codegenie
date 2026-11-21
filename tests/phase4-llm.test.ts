@@ -17,7 +17,9 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
+  CreateRunnerOptions,
   LlmCallUsage,
   LlmStructuredRequest,
   LlmRunner,
@@ -7203,6 +7205,172 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 });
+
+describe("Pi tool argument stream limits", () => {
+  it("aborts padded verifier output and retries the same continuation before the deadline", async () => {
+    const tool = (id: string): PiToolCall => ({ type: "toolCall", id, name: "read_range", arguments: { path: "src/a.ts" } });
+    const verdict = validSubmitVerdictCall("replacement");
+    const partial = assistant([tool("discarded"), validSubmitVerdictCall("incomplete")]);
+    partial.usage = { input: 23, output: 7, totalTokens: 30, cost: { total: 0.005 } };
+    const signals: AbortSignal[] = [];
+    const contexts: string[] = [];
+    const streamSimple: PiStreamSimpleForTest = (_model, context, options) => {
+      signals.push(options!.signal!);
+      contexts.push(JSON.stringify(context.messages));
+      if (signals.length === 1) return streamForMessage(assistant([tool("completed")]));
+      if (signals.length === 3) return streamForMessage(assistant([verdict]));
+      const stream = createAssistantMessageEventStream();
+      stream.push({ type: "start", partial: partial as never });
+      stream.push({ type: "toolcall_start", contentIndex: 0, partial: partial as never });
+      stream.push({ type: "toolcall_delta", contentIndex: 0, delta: '{"path":"src/a.ts"}', partial: partial as never });
+      stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: tool("discarded") as never, partial: partial as never });
+      stream.push({ type: "toolcall_start", contentIndex: 1, partial: partial as never });
+      for (const delta of ['{"verdict":' + " ".repeat(2_048), "\n".repeat(2_048), " "]) {
+        stream.push({ type: "toolcall_delta", contentIndex: 1, delta, partial: partial as never });
+      }
+      options!.signal!.addEventListener("abort", () => stream.end(), { once: true });
+      return stream;
+    };
+    const cache = {
+      get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async () => ({ status: "write" as const }))
+    };
+    const execute = vi.fn(async () => ({ text: "completed source" }));
+    const { runner, telemetry, onUsage } = scriptedPiStreamRunner(streamSimple, { cache });
+    await expect(runner.runStructured({
+      stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify candidate", templateVersion: "test",
+      timeoutMs: 2_000, telemetryContext: { candidateId: "candidate-1", workerId: "verifier-1" },
+      tools: [{ name: "read_range", description: "Read source", parameters: Type.Object({ path: Type.String() }), execute }],
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 100 }
+    })).resolves.toEqual(verdict.arguments);
+
+    expect(signals.map(signal => signal.aborted)).toEqual([false, true, false]);
+    expect(contexts[2]).toBe(contexts[1]);
+    expect(contexts[2]).toContain("completed source");
+    expect(contexts[2]).not.toContain("discarded");
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(cache.put).toHaveBeenCalledTimes(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 9, message: "model_tool_argument_stream_limit",
+      data: expect.objectContaining({
+        callId: "mc-000002", kind: "tool-continuation", workerId: "verifier-1", candidateId: "candidate-1",
+        trigger: "whitespace_run", limitChars: 4_096, observedChars: 4_097, retryScheduled: true,
+        usageStatus: "partial", observedUsage: expect.objectContaining({ totalTokens: 30, costUSD: 0.005 })
+      })
+    }));
+    expect(telemetry.events.some(event => event.message === "investigation_deadline_handoff")).toBe(false);
+    expect(telemetry.modelCalls[1]).toMatchObject({
+      status: "aborted", kind: "tool-continuation", retryReason: "tool_argument_stream_limit", totalTokens: 30
+    });
+    expect(telemetry.modelCalls[1]).not.toHaveProperty("costUSD");
+    expect(onUsage.mock.calls[1]?.[0]).toMatchObject({ stage: 9, providerCalls: 1, totalTokens: 30 });
+    expect(onUsage.mock.calls[1]?.[0]).not.toHaveProperty("costUSD");
+  });
+
+  it.each([{ stage: 9, limit: 64_000 }, { stage: 10, limit: 128_000 }] as const)(
+    "accepts exactly $limit argument characters in Stage $stage and cuts the next character",
+    async ({ stage, limit }) => {
+      const submit = (chars: number): PiToolCall => ({
+        type: "toolCall", id: "submit", name: submitToolNameForStage(stage),
+        arguments: { text: "x".repeat(chars - '{"text":""}'.length) }
+      });
+      const accepted = submit(limit);
+      const oversized = submit(limit + 1);
+      const signals: AbortSignal[] = [];
+      const streamSimple: PiStreamSimpleForTest = (_model, _context, options) => {
+        signals.push(options!.signal!);
+        return streamForMessage(assistant([signals.length === 2 ? oversized : accepted]));
+      };
+      const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+      const request = { stage, schema: Type.Object({ text: Type.String() }), prompt: "submit text", templateVersion: "test", timeoutMs: 2_000 };
+      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
+      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
+
+      expect(signals.map(signal => signal.aborted)).toEqual([false, true, false]);
+      expect(telemetry.events.filter(event => event.message === "model_tool_argument_stream_limit")).toEqual([
+        expect.objectContaining({
+          stage, data: expect.objectContaining({
+            trigger: "total_chars", limitChars: limit, observedChars: limit + 1,
+            toolArgumentChars: limit + 1, retryScheduled: true
+          })
+        })
+      ]);
+    }
+  );
+
+  it.each([9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
+    const call = { type: "toolCall", id: "submit", name: submitToolNameForStage(stage), arguments: { text: "ok" } } satisfies PiToolCall;
+    const response = assistant([call]);
+    response.usage = { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } };
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(response, " ".repeat(4_097) + JSON.stringify(call.arguments)));
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+
+    await expect(runner.runStructured({
+      stage, schema: Type.Object({ text: Type.String() }), prompt: "submit text", templateVersion: "test", timeoutMs: 2_000
+    })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "tool_argument_stream_limit", trigger: "whitespace_run" } });
+
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "model_tool_argument_stream_limit").map(event => event.data)).toEqual([
+      expect.objectContaining({ retryScheduled: true, usageStatus: "unknown" }),
+      expect.objectContaining({ retryScheduled: false, usageStatus: "unknown" })
+    ]);
+    expect(telemetry.modelCalls.map(call => call.status)).toEqual(["aborted", "aborted"]);
+    for (const call of telemetry.modelCalls) {
+      expect(call).not.toHaveProperty("totalTokens");
+      expect(call).not.toHaveProperty("costUSD");
+    }
+  });
+
+  it("honors cancellation between the oversized attempt and its retry", async () => {
+    const stop = new AbortController();
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => {
+      const verdict = validSubmitVerdictCall("padded");
+      return streamForMessage(assistant([verdict]), " ".repeat(4_097) + JSON.stringify(verdict.arguments));
+    });
+    const { runner } = scriptedPiStreamRunner(streamSimple, {
+      runSignal: stop.signal, hooks: { checkpoint: () => "ok", onUsage: () => stop.abort() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify candidate", templateVersion: "test", timeoutMs: 2_000
+    })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "aborted" } });
+    expect(streamSimple).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps whitespace runs separate for interleaved argument blocks and resets after text", () => {
+    const guard = createToolArgumentStreamGuard(9)!;
+    expect(guard(0, " ".repeat(3_000), 3_000)).toBeUndefined();
+    expect(guard(1, "\n".repeat(2_000), 5_000)).toBeUndefined();
+    expect(guard(1, '\ttext' + "\r".repeat(3_000), 8_005)).toBeUndefined();
+    expect(guard(0, " ".repeat(1_096), 9_101)).toBeUndefined();
+    expect(guard(0, "\t", 9_102)).toMatchObject({
+      trigger: "whitespace_run", limitChars: 4_096, observedChars: 4_097, contentIndex: 0
+    });
+    expect(createToolArgumentStreamGuard(7)).toBeUndefined();
+  });
+});
+
+function scriptedPiStreamRunner(
+  streamSimple: PiStreamSimpleForTest,
+  options: Partial<Pick<CreateRunnerOptions, "cache" | "runSignal" | "hooks">> = {}
+) {
+  const telemetry = fakeTelemetry();
+  const onUsage = vi.fn<(usage: LlmCallUsage) => void>();
+  const real = createRealPiAiAdapter({ streamSimple });
+  const runner = createPiRunner({
+    llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+    telemetry: telemetry.recorder,
+    logger: fakeLogger(),
+    runSignal: new AbortController().signal,
+    hooks: { checkpoint: () => "ok", onUsage },
+    ...options,
+    adapter: {
+      ...real,
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "faux" } })
+    }
+  });
+  return { runner, telemetry, onUsage };
+}
 
 function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contexts: string[]; options: Record<string, unknown>[]; toolNames: string[][] } {
   const contexts: string[] = [];
