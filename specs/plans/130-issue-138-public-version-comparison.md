@@ -14,6 +14,8 @@
 
 **Estimated spend is $36.96 within the approved $30–50.** On the frozen public diffs, `git diff --unified=0 BASE HEAD` gives 16 cases with up to 10 hunks, 14 with 11–49 and eight with 50 or more. Six reviews per case at planning rates of $0.07, $0.16 and $0.35 per review yield $6.72, $13.44 and $16.80 respectively. The ends are rounded Luna-high observations from plan 128; the middle rate is an interpolation. Hunk counts precede config exclusions. Reforecast after one A/B pair in each size band and after each repetition, listing unpriced calls separately. Pause before another slot if projected spend exceeds $50. [Depth campaign and pricing basis](128-issue-124-stage9-and-depth-campaign.md)
 
+The $50 ceiling covers all campaign API spend. Scoring uses the local deterministic scorer. Two team agents on their existing subscriptions perform the independent source analyses, with $0 incremental campaign API cost for both. The campaign schedules zero paid judge or analysis calls. If either is later proposed, price it with the remaining reviews and apply the cumulative $50 forecast stop before dispatch.
+
 ## Dispatch
 
 1. Build each SHA with `pnpm install --frozen-lockfile` and `pnpm build`. Use the case files at `d720416` for both arms. Run the two setup scripts under `evals/public/{codegenie,pi}/`; provision goinfer targets with the depth-two fetch in the public README. Verify each detached head and parent, clean status, and isolation from oracles and later fixes. Both built loaders accepted all 38 original manifests offline, both catalogs resolved OpenRouter Luna, and all 38 local heads and parents matched. Repeat the check on the final slot copies before dispatch.
