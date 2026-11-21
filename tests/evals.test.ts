@@ -539,6 +539,44 @@ describe("eval scoring", () => {
     });
   });
 
+  it("keeps lexical-only expectations out of confirmed assignment so anchored expectations keep their findings (#127)", () => {
+    const first = finalFinding("final-a", "src/app.ts", 10, { title: "Stale value returned from cache" });
+    const second = finalFinding("final-b", "src/app.ts", 20, { title: "Stale value returned after refresh" });
+    const score = scoreEvalRun({
+      name: "overlap",
+      should_find: [
+        { id: "broad-lexical", path: "src/*.ts", titlePattern: "stale value" },
+        { id: "anchored-a", path: "src/app.ts", lineRange: [10, 10] },
+        { id: "anchored-b", path: "src/app.ts", lineRange: [20, 20] }
+      ]
+    }, scoringArtifacts({ finalFindings: [first, second] }), "live");
+    expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
+      ["broad-lexical", "fail"], ["anchored-a", "pass"], ["anchored-b", "pass"]
+    ]);
+    expect(score.expectationResults[0]?.needsAdjudication).toEqual({ reason: "lexical-only-match", findingIds: ["final-a", "final-b"] });
+  });
+
+  it("carries lexical-only sentinel leads through repeat aggregation without a violation (#127)", () => {
+    const evalCase: EvalCase = { name: "repeat-sentinel", should_not_find: [{ id: "sentinel", titlePattern: "stale value" }] };
+    const executions = [1, 2].map((index) => {
+      const artifacts = scoringArtifacts({ finalFindings: [finalFinding(`final-${index}`, "src/app.ts", 4, { title: "stale value returned" })] });
+      return { runDir: `repeats/${index}`, score: scoreEvalRun(evalCase, artifacts, "live"), artifacts };
+    });
+    const { score } = aggregateRepeatScores(evalCase, executions);
+    expect(score.violations).toEqual([]);
+    expect(score.status).toBe("pass");
+    expect(score.expectationResults.find((result) => result.expectationId === "sentinel")).toMatchObject({
+      status: "skipped", skipReason: "needs-adjudication",
+      needsAdjudication: { reason: "lexical-only-match", findingIds: ["final-1", "final-2"] }, note: "adjudicate 2/2"
+    });
+    const rendered = renderCaseResult({
+      caseName: "repeat-sentinel", runDir: "unused", status: "pass",
+      info: { runNumber: 1, caseName: "repeat-sentinel", caseHash: "hash", caseSnapshot: { name: "repeat-sentinel", artifacts: { path: "unused" } },
+        mode: "live", cache: { enabled: false, source: "config" }, startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z", score }
+    });
+    expect(rendered).toContain("ADJUDICATE sentinel: lexical-only-match final-1, final-2");
+  });
+
   it("keeps lexical-only results out of repeat recall and counts them for adjudication (#127)", () => {
     const evalCase: EvalCase = { name: "agg-lexical", should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }] };
     const artifacts = scoringArtifacts({
