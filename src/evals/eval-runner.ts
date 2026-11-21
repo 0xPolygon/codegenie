@@ -3,10 +3,10 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer } from "../config/config-loader.js";
+import { applyRepoConfigLayer, ignoredReviewDepthWarning } from "../config/config-loader.js";
 import {
+  deprecatedReviewDepthSchema,
   reasoningLevelSchema,
-  reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
   severitySchema
 } from "../config/schema.js";
@@ -14,6 +14,7 @@ import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
 import type {
   CodegenieConfig,
+  ConfigWarning,
   EvalArtifacts,
   EvalCase,
   EvalCaseResult,
@@ -132,7 +133,7 @@ const caseSchema = z
       .optional(),
     review: z
       .object({
-        depth: reviewDepthSchema.optional(),
+        depth: deprecatedReviewDepthSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -486,7 +487,7 @@ async function runLiveCase(
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
-      configWarnings: repoLayer.warnings,
+      configWarnings: [...repoLayer.warnings, ...caseConfig.warnings],
       onRunStart: (run) => {
         reviewRunId = run.runId;
       },
@@ -576,7 +577,7 @@ async function runRepeatedLiveCase(
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
-          configWarnings: repoLayer.warnings,
+          configWarnings: [...repoLayer.warnings, ...caseConfig.warnings],
           writeOutput: (chunk) => {
             reviewOutput += chunk;
           }
@@ -847,13 +848,11 @@ function applyCaseReviewConfig(
   loaded: CodegenieConfig,
   evalCase: EvalCase,
   cacheOverride: boolean | undefined
-): { config: CodegenieConfig; cache: EvalRunInfo["cache"] } {
+): { config: CodegenieConfig; cache: EvalRunInfo["cache"]; warnings: ConfigWarning[] } {
   const config = structuredClone(loaded) as CodegenieConfig;
   const review = evalCase.review;
   const llm = evalCase.llm;
-  if (review?.depth !== undefined) {
-    config.review.depth = review.depth;
-  }
+  const warnings = review?.depth !== undefined ? [ignoredReviewDepthWarning("eval-case", review.depth)] : [];
   if (review?.maxFindings !== undefined) {
     config.review.maxFindings = review.maxFindings;
   }
@@ -910,7 +909,8 @@ function applyCaseReviewConfig(
   config.cache.enabled = cacheEnabled;
   return {
     config,
-    cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir }
+    cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir },
+    warnings
   };
 }
 

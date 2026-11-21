@@ -19,7 +19,6 @@ import type {
   ReviewPacket,
   ReviewPlan,
   ReviewPriority,
-  ReviewDepth,
   ReviewStage,
   UnifiedDiff
 } from "../types.js";
@@ -484,7 +483,7 @@ async function runPacket(
     },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
-      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, config.review.depth, input)
+      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input)
     }
   });
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
@@ -818,19 +817,19 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
   "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
 
-function buildPostToolCloseNudge(packet: ReviewPacket, depth: ReviewDepth, input: LlmPostToolNudgeInput): string | undefined {
-  const threshold = closeNudgeThreshold(packet, depth);
+function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput): string | undefined {
+  const threshold = closeNudgeThreshold(packet);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
   return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
 }
 
-function closeNudgeThreshold(packet: ReviewPacket, depth: ReviewDepth): number {
-  if (depth === "light" || packet.coverage === "light" || packet.reviewProfile === "simple") {
+export function closeNudgeThreshold(packet: Pick<ReviewPacket, "coverage" | "reviewProfile">): number {
+  if (packet.coverage === "light" || packet.reviewProfile === "simple") {
     return 1;
   }
-  if (depth === "deep" || packet.coverage === "deep" || packet.reviewProfile === "investigate") {
+  if (packet.coverage === "deep" || packet.reviewProfile === "investigate") {
     return 3;
   }
   return 2;

@@ -14,7 +14,7 @@ import { createPiRunner } from "../src/llm/pi-runner.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
-import { runLensPackets } from "../src/pipeline/lens-runner.js";
+import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
@@ -4588,12 +4588,15 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
-    expect(toolBudget("light", "normal", "investigate")).toEqual({
+  it("derives packet tool budgets from coverage and profile, scaled only by budget boost (#129)", async () => {
+    expect(toolBudget("light", "investigate")).toEqual({
       maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 4_000,
       maxDiscoveryResultChars: 2_000, reservedSourceResultChars: 2_000,
     });
-    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetBoost = 1) => {
+    // The single review mode keeps the budgets the plan 128 campaign measured
+    // as "normal" depth; no depth scale or rounding remains.
+    expect(toolBudget("light", "standard")).toMatchObject({ maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4_000 });
+    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, budgetBoost = 1) => {
       const plan = {
         ...fakePlan(),
         coverage: [{ ...fakePlan().coverage[0]!, coverage }]
@@ -4604,46 +4607,33 @@ describe("phase 5 pipeline regressions", () => {
         [fakeFacts("app.ts", "per-hunk")],
         fakeRepositoryIndex(),
         nullTelemetry(),
-        { config: { ...config(), review: { ...config().review, depth, budgetBoost } }, enabledLenses: ["core/code-review"] }
+        { config: { ...config(), review: { ...config().review, budgetBoost } }, enabledLenses: ["core/code-review"] }
       );
       return packets[0]?.toolBudget;
     };
 
-    await expect(budgetFor("deep", "light")).resolves.toEqual({
-      maxToolCalls: 10,
-      maxInvestigationRounds: 3,
-      maxResultChars: 24_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
-    });
-    await expect(budgetFor("deep", "normal")).resolves.toEqual({
+    await expect(budgetFor("deep")).resolves.toEqual({
       maxToolCalls: 20, maxInvestigationRounds: 6, maxResultChars: 48_000,
       maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
     });
-    await expect(budgetFor("deep", "deep")).resolves.toEqual({
-      maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
-    });
-    await expect(budgetFor("deep", "normal", 1.5)).resolves.toEqual({
+    await expect(budgetFor("deep", 1.5)).resolves.toEqual({
       maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
       maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000,
     });
-    await expect(budgetFor("light", "light")).resolves.toEqual({
-      maxToolCalls: 0,
-      maxInvestigationRounds: 0,
-      maxResultChars: 0
-    });
-    await expect(budgetFor("normal", "deep")).resolves.toEqual({
-      maxToolCalls: 6,
-      maxInvestigationRounds: 3,
-      maxResultChars: 15_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000
-    });
-    await expect(budgetFor("normal", "normal", 1.5)).resolves.toEqual({
+    await expect(budgetFor("normal", 1.5)).resolves.toEqual({
       maxToolCalls: 6,
       maxInvestigationRounds: 3,
       maxResultChars: 15_000,
       maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000
     });
+  });
+
+  it("sets the Stage 7 close nudge from coverage and profile alone (#129)", () => {
+    expect(closeNudgeThreshold({ coverage: "light", reviewProfile: "investigate" })).toBe(1);
+    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "simple" })).toBe(1);
+    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "standard" })).toBe(3);
+    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "investigate" })).toBe(3);
+    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "standard" })).toBe(2);
   });
 
   it("keeps synthetic large import-only PRs on the simple no-tool budget profile", async () => {
@@ -7533,7 +7523,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const packet = packets[0] as ReviewPacket;
     expect(packet).toMatchObject({ coverage: "deep", reviewProfile: "investigate", coverageEscalation: { rule: "test_coverage_delta" } });
-    expect(packet.toolBudget).toEqual(toolBudget("deep", config().review.depth, "investigate"));
+    expect(packet.toolBudget).toEqual(toolBudget("deep", "investigate"));
     expect(events).toContainEqual(expect.objectContaining({
       message: "coverage_escalated",
       packetId: packet.id,

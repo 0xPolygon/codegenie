@@ -250,7 +250,7 @@ describe("review command", () => {
   it("loads repo config from the git worktree root when invoked inside a subdirectory", () => {
     const ctx = testContext();
     execFileSync("git", ["init"], { cwd: ctx.repoRoot, stdio: "ignore" });
-    writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\ndepth = \"deep\"\n");
+    writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\nmaxFindings = 3\n");
     mkdirSync(path.join(ctx.repoRoot, "src", "nested"), { recursive: true });
 
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
@@ -259,7 +259,17 @@ describe("review command", () => {
     });
 
     expect(parsed.repoRoot).toBe(ctx.repoRoot);
-    expect(parsed.config.review.depth).toBe("deep");
+    expect(parsed.config.review.maxFindings).toBe(3);
+  });
+
+  it("accepts an old --depth value with a warning and ignores it (#129)", () => {
+    const ctx = testContext();
+    const parsed = parseReviewCommand(["review", "--branch", "feature", "--depth", "normal"], ctx);
+    expect(parsed.config.review).not.toHaveProperty("depth");
+    expect(parsed.config.review).toEqual(parseReviewCommand(["review", "--branch", "feature"], ctx).config.review);
+    expect(parsed.warnings).toEqual([expect.objectContaining({ source: "cli", key: "review.depth",
+      message: expect.stringContaining('--depth is "normal"') })]);
+    expect(() => parseReviewCommand(["review", "--branch", "feature", "--depth", "fast"], ctx)).toThrow(/--depth was removed/);
   });
 
   it("lets --no-cache override a configured cache default", () => {

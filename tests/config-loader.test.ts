@@ -1,10 +1,12 @@
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MAX_REVIEW_TIME_MINUTES,
+  codegenieConfigSchema,
+  defaultConfig,
   rawConfigSchema
 } from "../src/config/schema.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
@@ -167,8 +169,11 @@ reason = "critical lib"
       }
     });
 
-    expect(loaded.config.review.depth).toBe("light");
-    expect(loaded.sources["review.depth"]).toBe("cli");
+    // #129: every layer's depth is ignored with one warning per layer.
+    expect(loaded.config.review).not.toHaveProperty("depth");
+    expect(loaded.sources).not.toHaveProperty(["review.depth"]);
+    expect(loaded.warnings.filter((warning) => warning.key === "review.depth").map((warning) => warning.source))
+      .toEqual(["user-config", "provider-settings", "repo-config", "cli"]);
     expect(loaded.config.review.verify).toBe(false);
     expect(loaded.sources["review.verify"]).toBe("user-config");
     expect(loaded.config.review.maxFindings).toBe(10);
@@ -273,8 +278,6 @@ depth = "deep"
     expect(loaded.sources["llm.provider"]).toBe("provider-settings");
     expect(loaded.config.llm.model).toBe("settings-model");
     expect(loaded.sources["llm.model"]).toBe("provider-settings");
-    expect(loaded.config.review.depth).toBe("deep");
-    expect(loaded.sources["review.depth"]).toBe("repo-config");
     expect(loaded.config.llm.reasoning).toBe("medium");
     expect(loaded.sources["llm.reasoning"]).toBe("provider-settings");
   });
@@ -332,14 +335,56 @@ describe("codegenie paths and provider settings", () => {
       paths
     );
 
+    // #129: a stored depth default is never written back.
     expect(loadProviderSettings(paths)).toEqual({
       defaultProvider: "openai",
       defaultModel: "gpt-5",
-      defaultDepth: "deep",
       defaultReasoning: "high"
     });
     expect(statSync(paths.home).mode & 0o077).toBe(0);
     expect(statSync(paths.settingsPath).mode & 0o077).toBe(0);
+  });
+});
+
+describe("removed review depth setting (#129)", () => {
+  it("accepts and ignores each old depth value on every config layer, with one warning naming the layer", () => {
+    for (const value of ["light", "normal", "deep"] as const) {
+      const repoRoot = tempDir();
+      const home = tempDir();
+      writeFileSync(path.join(home, "config.toml"), `[review]\ndepth = "${value}"\n`);
+      writeFileSync(path.join(home, "settings.json"), JSON.stringify({ defaultDepth: value }));
+      writeFileSync(path.join(repoRoot, "codegenie.toml"), `[review]\ndepth = "${value}"\n`);
+      const loaded = loadConfig({ repoRoot, homeOverride: home, cli: { depth: value } });
+      const warnings = loaded.warnings.filter((warning) => warning.key === "review.depth");
+      expect(warnings.map((warning) => warning.source)).toEqual(["user-config", "provider-settings", "repo-config", "cli"]);
+      for (const warning of warnings) {
+        expect(warning.message).toContain(`"${value}"`);
+        expect(warning.message).toContain("codegenie has one review mode");
+      }
+      expect(warnings[1]!.message).toContain("drops it the next time it saves provider settings");
+      expect(loaded.config.review).not.toHaveProperty("depth");
+      expect(loaded.config.review).toEqual(loadConfig({ repoRoot: tempDir(), homeOverride: tempDir() }).config.review);
+    }
+  });
+
+  it("still rejects values that were never depths, and the resolved schema has no depth", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(path.join(home, "config.toml"), `[review]\ndepth = "fast"\n`);
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
+    expect(rawConfigSchema.safeParse({ review: { depth: "normal" } }).success).toBe(true);
+    expect(codegenieConfigSchema.safeParse({ ...defaultConfig, review: { ...defaultConfig.review, depth: "normal" } }).success).toBe(false);
+  });
+
+  it("keeps loading a stored depth default but drops it on the next save", () => {
+    const home = tempDir();
+    const paths = getCodegeniePaths(undefined, { CODEGENIE_HOME: home });
+    ensureCodegenieHome(paths);
+    writeFileSync(paths.settingsPath, JSON.stringify({ defaultProvider: "openai", defaultDepth: "normal" }));
+    const settings = loadProviderSettings(paths);
+    expect(settings).toEqual({ defaultProvider: "openai", defaultDepth: "normal" });
+    saveProviderSettings({ ...settings, defaultModel: "gpt-5" }, paths);
+    expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual({ defaultProvider: "openai", defaultModel: "gpt-5" });
   });
 });
 

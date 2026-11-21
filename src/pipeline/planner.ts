@@ -90,7 +90,7 @@ export async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  config: CodegenieConfig,
+  _config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: PlannerOptions = {}
 ): Promise<PlannerDossier> {
@@ -110,7 +110,7 @@ export async function buildPlannerDossier(
   const dossier: PlannerDossier = {
     runId: telemetry.runId,
     mode: resolved.mode,
-    depth: config.review.depth,
+    depth: "normal",
     target: {
       ...(resolved.baseRef !== undefined ? { baseRef: truncate(resolved.baseRef, 200) } : {}),
       ...(resolved.headRef !== undefined ? { headRef: truncate(resolved.headRef, 200) } : {}),

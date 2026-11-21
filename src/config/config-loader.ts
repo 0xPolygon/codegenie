@@ -17,15 +17,16 @@ import type {
   CodegeniePaths,
   ConfigSource,
   ConfigWarning,
-  ReasoningLevel,
-  ReviewDepth
+  DeprecatedReviewDepth,
+  ReasoningLevel
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 
 type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>["pathRules"]>[number];
 
 export type CliConfigOverrides = {
-  depth?: ReviewDepth;
+  /** Deprecated (#129): warned and ignored. */
+  depth?: DeprecatedReviewDepth;
   budgetBoost?: number;
   compositionReasoningStepDown?: boolean;
   skipSvgReview?: boolean;
@@ -57,7 +58,6 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.disabled",
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
-  "review.depth",
   "review.verify",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
@@ -97,7 +97,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
   const userConfig = readConfigIfPresent(paths.configTomlPath, "user-config");
   if (userConfig) {
-    applyRawConfig(config, userConfig, "user-config", sources);
+    applyRawConfig(config, userConfig, "user-config", sources, warnings);
   }
 
   const providerSettings = loadProviderSettings(paths);
@@ -114,8 +114,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     sources["llm.reasoning"] = "provider-settings";
   }
   if (providerSettings.defaultDepth !== undefined) {
-    config.review.depth = providerSettings.defaultDepth;
-    sources["review.depth"] = "provider-settings";
+    warnings.push(ignoredReviewDepthWarning("provider-settings", providerSettings.defaultDepth));
   }
 
   if (opts.loadRepoConfig !== false) {
@@ -123,12 +122,12 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
     if (repoConfig) {
       const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-      applyRawConfig(config, safeRepoConfig, "repo-config", sources);
+      applyRawConfig(config, safeRepoConfig, "repo-config", sources, warnings);
     }
   }
 
   applyEnvironment(config, env, sources);
-  applyCliOverrides(config, opts.cli ?? {}, sources);
+  applyCliOverrides(config, opts.cli ?? {}, sources, warnings);
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
@@ -155,7 +154,7 @@ export function applyRepoConfigLayer(
   const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codegenie.toml"), "repo-config");
   if (repoConfig) {
     const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-    applyRawConfig(config, safeRepoConfig, "repo-config", sources);
+    applyRawConfig(config, safeRepoConfig, "repo-config", sources, warnings);
   }
 
   const validated = codegenieConfigSchema.safeParse(config);
@@ -200,7 +199,8 @@ function applyRawConfig(
   config: CodegenieConfig,
   raw: RawCodegenieConfig,
   source: ConfigSource,
-  sources: Record<string, ConfigSource>
+  sources: Record<string, ConfigSource>,
+  warnings: ConfigWarning[]
 ): void {
   if (raw.lenses?.enabled !== undefined) {
     config.lenses.enabled = [...raw.lenses.enabled];
@@ -216,8 +216,7 @@ function applyRawConfig(
   }
 
   if (raw.review?.depth !== undefined) {
-    config.review.depth = raw.review.depth;
-    sources["review.depth"] = source;
+    warnings.push(ignoredReviewDepthWarning(source, raw.review.depth));
   }
   if (raw.review?.verify !== undefined) {
     config.review.verify = raw.review.verify;
@@ -438,6 +437,26 @@ function warnTopLevelRepoSection(
   }
 }
 
+const DEPTH_SETTING_ORIGIN: Partial<Record<ConfigSource, string>> = {
+  "user-config": "user config.toml sets review.depth",
+  "repo-config": "repo codegenie.toml sets review.depth",
+  "provider-settings": "the stored provider default (settings.json) sets depth",
+  "eval-case": "the eval case sets review.depth",
+  cli: "--depth is"
+};
+
+/** #129: codegenie has one review mode; a depth input is ignored for one release, then rejected. */
+export function ignoredReviewDepthWarning(source: ConfigSource, value: DeprecatedReviewDepth): ConfigWarning {
+  const removal = source === "provider-settings"
+    ? "codegenie drops it the next time it saves provider settings"
+    : "remove it; the next release rejects it";
+  return {
+    source,
+    key: "review.depth",
+    message: `${DEPTH_SETTING_ORIGIN[source] ?? "review.depth is"} "${value}", but review depth was removed and codegenie has one review mode. The value is ignored; ${removal}.`
+  };
+}
+
 function warnIgnoredRepoKey(warnings: ConfigWarning[], key: string): void {
   warnings.push({
     source: "repo-config",
@@ -478,11 +497,11 @@ function applyEnvironment(
 function applyCliOverrides(
   config: CodegenieConfig,
   cli: CliConfigOverrides,
-  sources: Record<string, ConfigSource>
+  sources: Record<string, ConfigSource>,
+  warnings: ConfigWarning[]
 ): void {
   if (cli.depth !== undefined) {
-    config.review.depth = cli.depth;
-    sources["review.depth"] = "cli";
+    warnings.push(ignoredReviewDepthWarning("cli", cli.depth));
   }
   if (cli.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
