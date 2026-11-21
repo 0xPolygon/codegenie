@@ -7,7 +7,7 @@ status: verified
 
 # Stage 9 reject replay
 
-**Update: Rule 1 was killed in the paired A/B and removed.** On identical Stage 9 input, the Rule 1 build lost a required finding that the baseline build published, which fired the pre-registered kill rule. Verifier template p9.31 restores the p9.28 text. The replay below records why Rule 1 was tried; the A/B result note records why it was removed.
+**Update: Rule 1 was killed in the paired A/B and removed.** On identical Stage 9 input, the Rule 1 build lost a required finding that the baseline build published, which fired the pre-registered kill rule. Verifier template p9.31 restores the p9.28 text. The replay below records why Rule 1 was tried. The [paired verifier results](20261121-125051-stage9-paired-verifier-results.md) record why it was removed.
 
 **Original recommendation: ship Rule 1 only.** Under explicitly behaviour-preserving intent, a proven base-versus-head difference counts as the defect, and production reachability only sets severity. In the replay this rule turned 17 rejects into revisions. All 17 were real at the function level, none was wholly false, and none touched the negative sentinel. Rule 2, which narrows a refuted claim instead of rejecting it, met the pre-registered kill criterion and was dropped. [Campaign plan](../../specs/plans/128-issue-124-stage9-and-depth-campaign.md) · [First-round results](20261121-043636-first-round-baseline-results.md)
 
@@ -70,4 +70,5 @@ The first optional expectation was rejected 10 times, and Rule 1 recovers only 2
 - **Change tried:** the Rule 1 text was added to verifier template p9.29, clarified in p9.30, only when the explicitly behaviour-preserving signal was present. The submit schema and the proof gate were unchanged.
 - **Validation:** the Luna-high A/B in plan 128 compared the builds through a verifier-boundary replay, so both received identical Stage 9 input. In a valid draw, the Rule 1 build lost a required finding that the baseline published, so the pre-registered kill rule fired.
 - **Removal:** Rule 1 was taken out, and template p9.31 restores the p9.28 text.
+- **Lesson:** even gated verifier text can shift general verdicts. In the paired draw it changed both intent framing and severity calibration on candidates the rule did not target. Judge any verifier edit on paired verdicts over identical Stage 9 input, not only on the flips it targets.
 - **Open question:** the baseline also published the second required expectation in that draw. Recall of that expectation at the baseline needs to be understood before any narrower rule is pre-registered.
