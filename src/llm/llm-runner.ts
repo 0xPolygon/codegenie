@@ -301,8 +301,6 @@ export type PiModelRef = {
   provider: string;
   id: string;
   raw: unknown;
-  apiKey?: string;
-  oauthProvider?: string;
 };
 
 // Why resolveModel returned undefined. "unresolved" covers every case the
@@ -314,8 +312,8 @@ export type ModelResolutionFailure = {
   model?: string;
 };
 
-export interface PiAiAdapter {
-  resolveModel(input: { provider?: string; model?: string }): PiModelRef | undefined;
+export interface PiAiAdapter<Resolution = PiModelRef | undefined> {
+  resolveModel(input: { provider?: string; model?: string }, signal?: AbortSignal): Resolution;
   // Optional: explains a resolveModel miss. Test adapters may omit it; the
   // runner then reports the generic unresolved message.
   explainUnresolvedModel?(input: { provider?: string; model?: string }): ModelResolutionFailure;

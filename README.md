@@ -163,7 +163,7 @@ Each provider reads its key from its own env var. The common ones:
 | `amazon-bedrock` | AWS credentials (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, or OIDC via `aws-actions/configure-aws-credentials`) |
 | `google-vertex` | `GOOGLE_CLOUD_API_KEY`, or Application Default Credentials plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` |
 
-Most names are the provider id in capitals plus `_API_KEY`. Exceptions include `google` → `GEMINI_API_KEY`, `vercel-ai-gateway` → `AI_GATEWAY_API_KEY`, `huggingface` → `HF_TOKEN`, `github-copilot` → `COPILOT_GITHUB_TOKEN`, and shared names such as `MOONSHOT_API_KEY` and `CLOUDFLARE_API_KEY`. `openai-codex` uses a stored ChatGPT-plan login, so in CI it needs a self-hosted runner with that login. The full table for every provider is in [models.md#credentials](./models.md#credentials). A missing key fails the review with a message naming the env var to set.
+Most names are the provider id in capitals plus `_API_KEY`. Exceptions include `google` → `GEMINI_API_KEY`, `vercel-ai-gateway` → `AI_GATEWAY_API_KEY`, `huggingface` → `HF_TOKEN`, `github-copilot` → `COPILOT_GITHUB_TOKEN`, and shared names such as `MOONSHOT_API_KEY` and `CLOUDFLARE_API_KEY`. `openai-codex` uses a stored ChatGPT-plan login, so in CI it needs a self-hosted runner with that login. Pi checks whether the selected provider is configured. See [models.md#credentials](./models.md#credentials) for key variables and cloud credential options.
 
 ### Triggers, trust and cancellation
 

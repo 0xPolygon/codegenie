@@ -32,7 +32,7 @@ function valueAt(payload: unknown, dottedPath: string): unknown {
 
 async function capture(provider: string, model: string, forced: boolean): Promise<unknown> {
   const adapter = createRealPiAiAdapter();
-  const ref = adapter.resolveModel({ provider, model });
+  const ref = await adapter.resolveModel({ provider, model });
   expect(ref).toBeDefined();
   let payload: unknown;
   await adapter.complete(ref!, {
@@ -107,7 +107,7 @@ describe("forced submits on Responses APIs carry the native tool_choice", () => 
     });
     try {
       const adapter = createRealPiAiAdapter();
-      const ref = adapter.resolveModel({ provider, model });
+      const ref = await adapter.resolveModel({ provider, model });
       expect(ref).toBeDefined();
       await adapter.complete(ref!, {
         messages: [{ role: "user", content: "synthetic", timestamp: 0 }],

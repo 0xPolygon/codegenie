@@ -1,16 +1,11 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { CredentialStore, Models, ProviderEnv } from "@earendil-works/pi-ai";
+import type { CredentialStore, ModelAuth, Models, ProviderAuth } from "@earendil-works/pi-ai";
+import { registerSecret } from "../telemetry/redaction.js";
 
 const piModels = builtinModels();
 
-// Hand copy of pi-ai's env-api-keys table (not a public export). Keep in sync
-// on pi-ai upgrades; the registry coverage test fails when a provider is added
-// upstream without a key mapping here or an ambient note below.
-// ANTHROPIC_AUTH_TOKEN is deliberately absent: pi's getEnvApiKey skips it too,
-// because it is sent as a Bearer header rather than an API key.
+// Explicit GitHub Action key routing and its generated documentation. The
+// runtime obtains credentials from Pi, including header-only bearer tokens.
 const API_KEY_ENV_VARS: Record<string, string[]> = {
   "ant-ling": ["ANT_LING_API_KEY"],
   "anthropic": ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
@@ -69,7 +64,46 @@ const AMBIENT_CREDENTIAL_NOTES: Record<string, string> = {
 };
 
 export function getCodegeniePiModels(credentials?: CredentialStore): Models {
-  return credentials === undefined ? piModels : builtinModels({ credentials });
+  if (credentials === undefined) return piModels;
+  const models = builtinModels({ credentials });
+  // Register the actual request credentials for redaction as Pi resolves them.
+  // The preflight only needs checkAuth's metadata and never refreshes OAuth.
+  for (const provider of models.getProviders()) {
+    const { apiKey, oauth } = provider.auth;
+    const auth: ProviderAuth = {};
+    if (apiKey) {
+      auth.apiKey = {
+        ...apiKey,
+        resolve: async (input) => {
+          const result = await apiKey.resolve(input);
+          if (result) registerModelAuth(result.auth);
+          return result;
+        }
+      };
+    }
+    if (oauth) {
+      auth.oauth = {
+        ...oauth,
+        toAuth: async (credential) => {
+          const result = await oauth.toAuth(credential);
+          registerModelAuth(result);
+          return result;
+        }
+      };
+    }
+    models.setProvider({ ...provider, auth });
+  }
+  return models;
+}
+
+function registerModelAuth(auth: ModelAuth): void {
+  registerSecret(auth.apiKey);
+  // Auth-resolved headers carry credentials (Authorization, Cloudflare AI
+  // Gateway's cf-aig-authorization, ...); provider defaults merge in later.
+  // Register the secret part of each value, without an auth scheme prefix.
+  for (const value of Object.values(auth.headers ?? {})) {
+    if (typeof value === "string") registerSecret(value.replace(/^\S+\s+/u, ""));
+  }
 }
 
 // The API-key env var a provider reads (OAuth-token vars are skipped when an
@@ -96,51 +130,4 @@ export function getPiCredentialEnvVarNames(provider: string): string[] {
 
 export function getAmbientCredentialNote(provider: string): string | undefined {
   return AMBIENT_CREDENTIAL_NOTES[provider];
-}
-
-// One-line "how to authenticate" hint for error messages.
-export function describeProviderCredentials(provider: string): string {
-  const envVar = getPiApiKeyEnvVarName(provider);
-  const note = getAmbientCredentialNote(provider);
-  if (envVar !== undefined) {
-    return `set ${envVar}${note !== undefined ? ` ${note}` : ""} (or run \`codegenie provider login ${provider}\`)`;
-  }
-  return note ?? `run \`codegenie provider login ${provider}\``;
-}
-
-export function getPiEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
-  const envVars = API_KEY_ENV_VARS[provider];
-  const firstKey = envVars?.find((name) => providerEnvValue(name, env) !== undefined);
-  if (firstKey !== undefined) {
-    return providerEnvValue(firstKey, env);
-  }
-
-  if (provider === "google-vertex" && hasVertexAdcCredentials(env)) {
-    return "<authenticated>";
-  }
-  if (provider === "amazon-bedrock" && hasBedrockAmbientCredentials(env)) {
-    return "<authenticated>";
-  }
-  return undefined;
-}
-
-function providerEnvValue(name: string, env?: ProviderEnv): string | undefined {
-  return env?.[name] || process.env[name] || undefined;
-}
-
-function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
-  const credentialsPath = providerEnvValue("GOOGLE_APPLICATION_CREDENTIALS", env) ?? path.join(homedir(), ".config", "gcloud", "application_default_credentials.json");
-  const hasCredentials = existsSync(credentialsPath);
-  const hasProject = providerEnvValue("GOOGLE_CLOUD_PROJECT", env) !== undefined || providerEnvValue("GCLOUD_PROJECT", env) !== undefined;
-  const hasLocation = providerEnvValue("GOOGLE_CLOUD_LOCATION", env) !== undefined;
-  return hasCredentials && hasProject && hasLocation;
-}
-
-function hasBedrockAmbientCredentials(env?: ProviderEnv): boolean {
-  return providerEnvValue("AWS_PROFILE", env) !== undefined ||
-    (providerEnvValue("AWS_ACCESS_KEY_ID", env) !== undefined && providerEnvValue("AWS_SECRET_ACCESS_KEY", env) !== undefined) ||
-    providerEnvValue("AWS_BEARER_TOKEN_BEDROCK", env) !== undefined ||
-    providerEnvValue("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", env) !== undefined ||
-    providerEnvValue("AWS_CONTAINER_CREDENTIALS_FULL_URI", env) !== undefined ||
-    providerEnvValue("AWS_WEB_IDENTITY_TOKEN_FILE", env) !== undefined;
 }

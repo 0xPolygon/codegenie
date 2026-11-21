@@ -61,6 +61,18 @@ describe("independent recommendation judge", () => {
     expect(timed.judgment.error).toContain("timed out");
     expect(vi.mocked(adapter.complete).mock.calls[1]![2].signal).toMatchObject({ aborted: true });
   });
+  it("bounds model/auth resolution by the same deadline and cancels it", async () => {
+    const adapter = adapterFor([result]);
+    let resolveSignal: AbortSignal | undefined;
+    adapter.resolveModel = (_input, signal) => {
+      resolveSignal = signal;
+      return new Promise(() => {}) as never;
+    };
+    const timed = await judgeRecommendations(config, report, adapter, 5);
+    expect(timed.judgment).toMatchObject({ status: "error", error: "Recommendation judge timed out" });
+    expect(resolveSignal?.aborted).toBe(true);
+    expect(adapter.complete).not.toHaveBeenCalled();
+  });
   it("never truncates the published report silently", async () => {
     const adapter = adapterFor([result]);
     expect((await judgeRecommendations(config, "x".repeat(120001), adapter)).judgment.status).toBe("error");

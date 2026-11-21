@@ -792,7 +792,7 @@ async function createPipelineServices(
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
-  const runner = overrides.runner ?? createRunner(config, run, cache, overrides.piAdapter);
+  const runner = overrides.runner ?? await createRunner(config, run, cache, overrides.piAdapter);
   return {
     runner,
     skills: skillsResult.skills,
@@ -883,7 +883,7 @@ export function reviewCacheFingerprint(
   });
 }
 
-function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner {
+function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner | Promise<LlmRunner> {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
   }

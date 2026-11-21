@@ -1357,7 +1357,7 @@ function fakeProviderServices(
         opts.modelsByProvider?.[id] ?? [fakeModel(id, `${id}-large`, `${id} large`)]
       ),
     modelExists: (provider, model) => model === `${provider}-large`,
-    authStatus: (provider) => {
+    authStatus: async (provider) => {
       const entry = auth.get(provider);
       if (entry) {
         return { provider, configured: true, source: "stored", kind: entry.type };

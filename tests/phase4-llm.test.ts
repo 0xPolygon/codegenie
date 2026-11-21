@@ -59,7 +59,8 @@ import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_EXAMPLE } from "..
 import type { LlmSchemaInvalidSubmitRecoveryInput } from "../src/llm/llm-runner.js";
 import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
-import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
+import { createPiCredentialStore, type PiAuthStorage, type ProviderAuthEntry } from "../src/provider/provider-services.js";
+import { getCodegeniePiModels } from "../src/provider/pi-ai-models.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { hardToolBudget, scaleToolBudget } from "../src/util/budget.js";
 import {
@@ -6617,17 +6618,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("resolves provider-qualified real models only when auth is usable", () => {
+  it("resolves provider-qualified real models only when auth is usable", async () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "plain-provider-qualified-secret";
     clearRegisteredSecretsForTests();
     try {
-      const model = createRealPiAiAdapter().resolveModel({ model: "openai/gpt-4.1-mini" });
-      expect(model).toMatchObject({
-        provider: "openai",
-        id: "gpt-4.1-mini",
-        apiKey: "plain-provider-qualified-secret"
-      });
+      const model = await createRealPiAiAdapter().resolveModel({ model: "openai/gpt-4.1-mini" });
+      expect(model).toMatchObject({ provider: "openai", id: "gpt-4.1-mini" });
+      expect(model).not.toHaveProperty("apiKey");
       expect(stripCredentials("error plain-provider-qualified-secret")).toBe("error [redacted:secret]");
     } finally {
       if (previous === undefined) {
@@ -6639,18 +6637,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("does not resolve deprecated real Pi models even when auth is usable", () => {
+  it("does not resolve deprecated real Pi models even when auth is usable", async () => {
     const previous = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "plain-deprecated-anthropic-secret";
     clearRegisteredSecretsForTests();
     try {
-      expect(
+      await expect(
         createRealPiAiAdapter().resolveModel({
           provider: "anthropic",
           model: "claude-3-5-haiku-20241022"
         })
-      ).toBeUndefined();
-      const fallback = createRealPiAiAdapter().resolveModel({ provider: "anthropic" });
+      ).resolves.toBeUndefined();
+      const fallback = await createRealPiAiAdapter().resolveModel({ provider: "anthropic" });
       expect(fallback?.id).not.toMatch(/^claude-3/u);
     } finally {
       if (previous === undefined) {
@@ -6662,12 +6660,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("rejects unknown real model ids during runner construction", () => {
+  it("rejects unknown real model ids during runner construction", async () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "plain-unknown-model-secret";
     clearRegisteredSecretsForTests();
     try {
-      expect(() =>
+      await expect(
         createPiRunner({
           llmConfig: {
             model: "openai/not-a-real-codegenie-test-model",
@@ -6678,7 +6676,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           runSignal: new AbortController().signal,
           hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
         })
-      ).toThrow(CodegenieError);
+      ).rejects.toThrow(CodegenieError);
     } finally {
       if (previous === undefined) {
         delete process.env.OPENAI_API_KEY;
@@ -6698,9 +6696,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const adapter = createRealPiAiAdapter({ streamSimple });
 
     await adapter.complete(
-      { provider: "fake", id: "fake-model", raw: { id: "fake-model" }, apiKey: "fake-api-key" },
+      { provider: "fake", id: "fake-model", raw: { id: "fake-model" } },
       { messages: [], tools: [] },
-      { reasoning: "xhigh", maxRetries: 0, submitToolName: "submit_review", onRejectedArguments: vi.fn() }
+      { apiKey: "fake-api-key", reasoning: "xhigh", maxRetries: 0, submitToolName: "submit_review", onRejectedArguments: vi.fn() }
     );
 
     expect(optionsSeen).toEqual([
@@ -6722,7 +6720,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         return streamForMessage(assistant([validSubmitReviewCall("malformed")]), '{"findings":');
       });
       const adapter = createRealPiAiAdapter({ streamSimple: stream as PiStreamSimpleForTest });
-      const result = await adapter.complete({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "openai-completions" }, apiKey: "fake-api-key" },
+      const result = await adapter.complete({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "openai-completions" } },
         { messages: [], tools: [] }, { toolChoice, submitToolName: "submit_review", onRejectedArguments });
       expect(onRejectedArguments).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "malformed", prefix: '{"findings":' }));
       expect(result.content[0]).toMatchObject({ type: "invalidToolCall", syntaxDiagnostic: { excerpt: '{"findings":' } });
@@ -6743,11 +6741,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       {
         provider: "openai",
         id: "gpt-test",
-        raw: { api: "openai-completions", provider: "openai", id: "gpt-test", maxTokens: 4096, reasoning: true },
-        apiKey: "fake-api-key"
+        raw: { api: "openai-completions", provider: "openai", id: "gpt-test", maxTokens: 4096, reasoning: true }
       },
       { messages: [], tools: [] },
-      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
+      { apiKey: "fake-api-key", reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
     expect(optionsSeen).toEqual([
@@ -6773,11 +6770,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       {
         provider: "anthropic",
         id: "claude-test",
-        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true },
-        apiKey: "fake-api-key"
+        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true }
       },
       { messages: [], tools: [] },
-      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
+      { apiKey: "fake-api-key", reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
     expect(optionsSeen).toEqual([
@@ -6803,8 +6799,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       {
         provider: "anthropic",
         id: "claude-test",
-        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true },
-        apiKey: "fake-api-key"
+        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true }
       },
       { messages: [], tools: [] },
       { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false, submitToolName: "submit_review" }
@@ -6842,31 +6837,35 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       optionsSeen.push(options as Record<string, unknown>);
       return streamForMessage(assistant([validSubmitReviewCall("submit-oauth-refresh")]));
     }) as PiStreamSimpleForTest;
-    const getOAuthApiKey = vi.fn(async (
-      _provider: string,
-      credentials: Record<string, typeof oldCredentials>,
-      signal: AbortSignal
-    ) => {
-      expect(credentials["github-copilot"]).toEqual(oldCredentials);
-      expect(signal).toBe(requestController.signal);
-      return { newCredentials, apiKey: "new-oauth-api-key" };
-    }) as NonNullable<RealPiAiAdapterDepsForTest["getOAuthApiKey"]>;
-    const adapter = createRealPiAiAdapter({ authStorage, streamSimple, getOAuthApiKey });
+    const models = getCodegeniePiModels(createPiCredentialStore(authStorage));
+    const refresh = vi.spyOn(models.getProvider("github-copilot")!.auth.oauth!, "refresh").mockImplementation(async (credential) => {
+      expect(credential).toEqual({ ...oldCredentials, type: "oauth" });
+      return { ...newCredentials, type: "oauth" };
+    });
+    const getAuth = vi.spyOn(models, "getAuth");
+    const adapter = createRealPiAiAdapter({ authStorage, streamSimple, models });
+    const model = await adapter.resolveModel({ provider: "github-copilot" });
+    expect(model).toBeDefined();
+    expect(refresh).not.toHaveBeenCalled();
 
     await adapter.complete(
-      { provider: "github-copilot", id: "fake-model", raw: { id: "fake-model" }, oauthProvider: "github-copilot" },
+      model!,
       { messages: [], tools: [] },
       { maxRetries: 0, signal: requestController.signal, submitToolName: "submit_review" }
     );
 
-    expect(getOAuthApiKey).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The caller's AbortSignal reaches Pi's auth resolution, so a network
+    // OAuth refresh stays cancellable by the request controller.
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(getAuth.mock.calls[0]?.[1]?.signal).toBe(requestController.signal);
     expect(entries.get("github-copilot")).toMatchObject({
       type: "oauth",
       credentials: newCredentials,
       createdAt: new Date(0).toISOString()
     });
-    expect(optionsSeen[0]).toMatchObject({ apiKey: "new-oauth-api-key" });
-    expect(stripCredentials("new-oauth-api-key")).toBe("[redacted:secret]");
+    expect(optionsSeen[0]).toMatchObject({ apiKey: newCredentials.access });
+    expect(stripCredentials(newCredentials.access)).toBe("[redacted:secret]");
     clearRegisteredSecretsForTests();
   });
 
