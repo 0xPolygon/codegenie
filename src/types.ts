@@ -906,7 +906,7 @@ export type PacketReviewResult = {
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
   // Total Stage-7 passes that produced this result (first pass + adaptive
-  // second pass); absent on stage-8 system results.
+  // second pass).
   passesRun?: number;
   /** Supplemental investigation only; never substitutes for baseline coverage. */
   adaptiveReview?: AdaptiveReviewOutcome;
