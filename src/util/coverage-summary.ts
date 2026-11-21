@@ -2,17 +2,6 @@ import type { RunCoverageStatus } from "../types.js";
 import { isDisclosableCoverageReason, PLANNER_DEGRADED_REASON } from "./coverage-reasons.js";
 import { inlineCode } from "./markdown.js";
 
-export function renderCoverageTrustBanner(coverage: RunCoverageStatus): string {
-  if (coverage.partial) {
-    return (
-      "> [!WARNING]\n" +
-      "> **Review incomplete.** Some review or verification work did not complete. " +
-      "Treat the results below as partial and consider rerunning."
-    );
-  }
-  return "";
-}
-
 export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[] {
   if (coverage.unavailable) {
     return ["**Coverage unavailable:** the review failed before a trustworthy coverage summary could be assembled."];
@@ -72,7 +61,7 @@ export function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
 export function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
   const lines: string[] = [];
   if (coverage.degradedPlanning) {
-    lines.push("- Planning used deterministic recovery or fallback coverage.");
+    lines.push("- Planning needed deterministic recovery or fallback. This changes how review attention is allocated while keeping every eligible hunk in scope.");
   }
   const adaptive = coverage.adaptiveReviews?.counts;
   if (adaptive && adaptive.triggered > 0) {

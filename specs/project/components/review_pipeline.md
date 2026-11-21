@@ -206,7 +206,7 @@ interface WorkerRunner {
 | Soft budget exhaustion | Degradation ladder; partial disclosure; exit 0 |
 | 2x runtime budget | Fatal `timeout`; best-effort telemetry flush |
 
-These dispositions never consume fields from the invalid response. Complete planner-fallback reviews render a prominent degraded banner. Partial output renders a prominent incomplete banner; if nothing publishable remains it concludes `Review Incomplete` and never uses approval-equivalent wording such as `Everything looks good.`
+These dispositions never consume fields from the invalid response. Planner recovery or fallback appears in a coverage disclosure line. Partial output renders a prominent incomplete banner. If nothing publishable remains, it concludes `Review Incomplete`.
 
 ## Internal Design
 

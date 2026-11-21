@@ -1372,7 +1372,7 @@ Content-stage invalidity is binary: known-invalid model data is never used. A st
 | Stage-10 composition invalid | Already verified findings | Use deterministic composition; do not drop verified findings. |
 | Diff/base/repository identity, authentication, provider-wide availability, or another non-isolatable foundation is untrusted | No trustworthy review foundation | Fail the run and leave the scrubbed failure artifact. |
 
-Publication is equally explicit: normal complete reviews publish normally; complete reviews using planner fallback carry a prominent degraded banner; partial reviews carry a prominent incomplete banner and publish only trusted findings; partial reviews with no findings say `Review Incomplete`, never `Everything looks good`; foundational failures never render a normal review.
+Complete reviews publish normally. Planner recovery or fallback appears in a coverage disclosure line. Partial reviews carry a prominent incomplete banner and publish only trusted findings. Partial reviews with no findings conclude `Review Incomplete`. Foundational failures stop the review.
 
 ```ts
 type RunCoverageStatus = {

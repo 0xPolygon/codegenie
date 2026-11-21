@@ -7504,7 +7504,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.coverage).toMatchObject({ degradedPlanning: true, partial: incomplete, reasons: [legacyReason] });
     expect(budget.completeness).toBe(incomplete ? "partial" : "complete");
     expect(budget.partialReasons).toEqual(incomplete ? [`Stage 7: ${evidenceFailure}`] : []);
-    const disclosure = "Planning used deterministic recovery or fallback coverage.";
+    const disclosure = "Planning needed deterministic recovery or fallback. This changes how review attention is allocated while keeping every eligible hunk in scope.";
     for (const output of [renderMarkdownReview(result), result.postingPlan!.reviewBody]) {
       expect(output.split(disclosure)).toHaveLength(2);
       expect(output).not.toMatch(/planner failed|default plan used|review completed with degraded planning/iu);
