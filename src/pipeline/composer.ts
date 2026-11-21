@@ -195,7 +195,11 @@ export async function dedupeRankAndComposeReview(
     let attributed = false;
     if (composed.sections !== undefined || composed.evidenceRefs !== undefined) {
       try {
-        const presentation = composePresentation(mergedFindings, (composed.sections ?? []).map(section => ({ ...section, text: normalizeFinalBodyForRendering(section.text, representative) })), composed.evidenceRefs ?? [], link, composed, pretrim.kept);
+        const normalizeProse = (text: string) => normalizeFinalBodyForRendering(text, representative);
+        const sections = (composed.sections ?? []).map(section => ({ ...section, text: normalizeProse(section.text) }));
+        const presentation = composePresentation(mergedFindings, sections, composed.evidenceRefs ?? [], link, composed, pretrim.kept, {
+          normalizeRecordedVerification: normalizeProse
+        });
         body = presentation.body;
         recordPresentation(ids, "composed", presentation.metrics);
         attributed = true;

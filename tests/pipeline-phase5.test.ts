@@ -7655,7 +7655,8 @@ describe("phase 5 pipeline regressions", () => {
       behaviorChange: "intentional_needs_confirmation",
       intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"],
       failureMode: "The changed path rejects an explicit preference that previously fell back.",
-      whyThisMatters: "Existing callers may need to opt into or document the stricter contract."
+      whyThisMatters: "Existing callers may need to opt into or document the stricter contract.",
+      verification: "The fallback accidentally contradicts intent."
     };
     const runner: LlmRunner = {
       runStructured: async <T>() => ({
@@ -7703,6 +7704,38 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings[0]?.finalBody).not.toMatch(/\baccidentally\b|\bsilently\b|contradicts intent/iu);
     expect(result.findings[0]?.finalBody).toContain("changes the contract");
+    expect(result.findings[0]?.finalBody).not.toContain("**Recorded verification:**");
+  });
+
+  it("normalizes both selected and alternate legacy verification in fallback", async () => {
+    const lead: CandidateFinding = {
+      ...fakeFinding(),
+      id: "lead",
+      behaviorChange: "intentional_needs_confirmation",
+      verification: "This behavior accidentally contradicts intent."
+    };
+    const alternate: CandidateFinding = {
+      ...structuredClone(lead),
+      id: "other",
+      verification: "The retry path silently changes the fallback."
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [lead, alternate], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    const { finalBody, mergedCandidateIds } = result.findings[0]!;
+    expect(mergedCandidateIds).toEqual(["lead", "other"]);
+    expect(finalBody).toContain("**Verification and uncertainty:** This behavior changes the contract.");
+    expect(finalBody).toContain("**Recorded verification:**\n\nThe retry path changes the fallback.");
+    expect(finalBody.split("This behavior changes the contract.")).toHaveLength(2);
+    expect(finalBody).not.toMatch(/\baccidentally\b|\bsilently\b|contradicts intent/iu);
   });
 
   it("does not strip non-intent silent-failure wording from final composition", async () => {

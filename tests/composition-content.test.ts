@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compositionSources, eligibleCompositionSource, renderCompositionSections, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
+import { composePresentation, compositionSources, eligibleCompositionSource, renderCompositionSections, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
 import type { CandidateFinding } from "../src/types.js";
 
 // Minimal sanitized run-79 rounding/zero/caller chain plus the independently
@@ -36,10 +36,10 @@ describe("attributed composition", () => {
     const fix = proposal.sections.find(section => section.kind === "fix")!;
     proposal.sections = proposal.sections.filter(section => section.kind !== "fix");
     proposal.retainedSourceRefs.push(...fix.sourceRefs);
-    const body = renderCompositionSections([item], proposal.sections, proposal.evidenceRefs, undefined, proposal);
+    const { body, metrics } = composePresentation([item], proposal.sections, proposal.evidenceRefs, undefined, proposal);
     expect(body.split(item.suggestedTest)).toHaveLength(2);
     expect(body).not.toContain("remains unverified");
-    expect(proposal.retainedSourceRefs).toContain("testing/suggestedFix");
+    expect(metrics.retainedSuggestionSources).toEqual(["testing/suggestedFix"]);
     expect(body).not.toContain("<details>");
   });
 

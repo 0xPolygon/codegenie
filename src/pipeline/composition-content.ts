@@ -215,7 +215,21 @@ function renderEvidence(source: CompositionSource, link?: (path: string, line?: 
   return location + "\n" + content + (source.explanation ? "\n" + safeReportProse(source.explanation) : "");
 }
 
-export function composePresentation(findings: CandidateFinding[], sections: CompositionSection[], evidenceRefs: string[], link?: (path: string, line?: number) => string | undefined, presentation: CompositionPresentation = {}, assessmentFindings = findings, unreconciledSuggestionKinds: ReadonlyArray<"fix" | "test"> = []) {
+export function composePresentation(
+  findings: CandidateFinding[],
+  sections: CompositionSection[],
+  evidenceRefs: string[],
+  link?: (path: string, line?: number) => string | undefined,
+  presentation: CompositionPresentation = {},
+  assessmentFindings = findings,
+  {
+    unreconciledSuggestionKinds = [],
+    normalizeRecordedVerification = text => text
+  }: {
+    unreconciledSuggestionKinds?: ReadonlyArray<"fix" | "test">;
+    normalizeRecordedVerification?: (text: string) => string;
+  } = {}
+) {
   const { sources, byId, primary } = validateSources(findings, sections, evidenceRefs, presentation, "", assessmentFindings);
   const labels = { impact: "Impact", verification: "Verification and uncertainty", fix: "Suggested fix", test: "Suggested test" };
   const prose = sections.map(section => "**" + labels[section.kind] + ":** " + safeReportProse(section.text));
@@ -258,11 +272,12 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
     ...disputedProofEvidence,
     ...findings.flatMap(finding => {
       const ref = finding.id + "/verification";
-      const text = finding.verification?.trim();
-      if (!text || verificationBlock.includes(`\n\n${text}\n\n`) || superseded.has(ref)) return [];
+      const text = finding.verification;
+      if (!text || superseded.has(ref)) return [];
       return !finding.proofAssessment || unresolved.has(ref) ? [text] : [];
     })
-  ])];
+  ].map(text => normalizeRecordedVerification(text).trim())
+    .filter(text => text.length > 0 && !verificationBlock.includes(`\n\n${text}\n\n`)))];
   const recordedBody = recordedVerification.length ? "**Recorded verification:**\n\n" + recordedVerification.map(safeReportProse).join("\n\n") : "";
   const evidenceBody = primary.map(ref => renderEvidence(byId.get(ref)!, link)).join("\n\n");
   prose.push("**Evidence:**\n\n" + evidenceBody);
@@ -352,7 +367,10 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
     retainedSourceRefs.push(...matching.filter(source => !equivalent.includes(source)).map(source => source.id));
   }
   const presentation: CompositionPresentation = { retainedSourceRefs };
-  const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, unreconciledSuggestionKinds);
+  const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, {
+    unreconciledSuggestionKinds,
+    normalizeRecordedVerification: normalizeProse
+  });
   onMetrics?.(rendered.metrics);
   return "Source-based presentation because synthesis was unavailable.\n\n" + rendered.body;
 }
