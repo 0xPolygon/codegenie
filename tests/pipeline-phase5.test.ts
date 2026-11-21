@@ -170,6 +170,7 @@ describe("phase 5 pipeline regressions", () => {
       expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections.find(section => section.kind === "verification")!.text);
       expect(result.postingPlan!.reviewBody).not.toContain("Original assessments and supporting evidence");
       expect(result.postingPlan!.reviewBody).not.toContain(finding.proofAssessment!.evidence);
+      expect(result.postingPlan!.reviewBody).toContain("Secondary assumption: " + finding.proofAssessment!.assumptions[0]!.question);
       expect(artifacts.get("composition-sources.json")).toMatchObject({
         mode: "llm",
         sourceComponents: expect.arrayContaining([expect.objectContaining({
@@ -256,7 +257,9 @@ describe("phase 5 pipeline regressions", () => {
     expect(body).toContain(fixture.findings[1]!.verification);
     if (resolved) expect(body).not.toContain(historical);
     else {
+      expect(body).toContain("**Open conditions:**\n\n- " + fixture.presentation.reconciliations[0]!.rationale);
       expect(body).toContain(historical);
+      expect(body).not.toContain("<details>");
       expect(body).not.toContain("**Suggested fix:**");
     }
     expect(artifacts.get("composition-sources.json")).toMatchObject({
@@ -1078,6 +1081,32 @@ describe("phase 5 pipeline regressions", () => {
     }
     // Source data was not mutated to satisfy the output policy.
     expect(finding.suggestedFix).toBeDefined();
+  });
+
+  it("records submitted suggestion status separately from the effective fallback assessment", async () => {
+    const finding = authorizationComposition().findings[0]!;
+    const conflicting = structuredClone(finding);
+    conflicting.id = "conflicting";
+    conflicting.suggestionAssessments!.suggestedFix!.status = "incompatible";
+    const artifacts = new Map<string, unknown>();
+    await dedupeRankAndComposeReview({ verified: [finding, conflicting], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(),
+      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } },
+      { runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder() });
+
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining([expect.objectContaining({
+        id: "authorization/suggestedFix",
+        text: finding.suggestedFix,
+        suggestionAssessment: expect.objectContaining({ status: "unverified" })
+      })]),
+      candidateMetadata: expect.arrayContaining([expect.objectContaining({
+        findingId: "authorization",
+        severity: finding.severity,
+        confidence: finding.confidence,
+        submittedSuggestionStatuses: expect.objectContaining({ suggestedFix: "supported" })
+      })])
+    });
   });
 
   it("composes across initial clusters, retains all sources and selects a valid member anchor", async () => {

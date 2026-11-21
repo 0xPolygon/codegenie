@@ -251,13 +251,15 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
   const uncertaintyBody = concerns.length ? "**Open conditions:**\n\n" + concerns.map(text => "- " + safeReportProse(text)).join("\n") : "";
   // Legacy verification has no structured assumptions. Keep its recorded
   // wording, and the wording of any explicitly unresolved reconciliation.
-  const composedVerification = sections.find(section => section.kind === "verification")?.text.trim();
+  const verification = sections.find(section => section.kind === "verification")?.text.trim() ?? "";
+  // A substring match can hide a caveat that was quoted inside a different claim.
+  const verificationBlock = `\n\n${verification}\n\n`;
   const recordedVerification = [...new Set([
     ...disputedProofEvidence,
     ...findings.flatMap(finding => {
       const ref = finding.id + "/verification";
       const text = finding.verification?.trim();
-      if (!text || text === composedVerification || superseded.has(ref)) return [];
+      if (!text || verificationBlock.includes(`\n\n${text}\n\n`) || superseded.has(ref)) return [];
       return !finding.proofAssessment || unresolved.has(ref) ? [text] : [];
     })
   ])];

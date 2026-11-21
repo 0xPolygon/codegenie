@@ -264,7 +264,11 @@ describe("phase 6 live review path", () => {
       expect(compositionSources).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(JSON.parse(compositionSources)).toMatchObject({
         sourceComponents: expect.arrayContaining([
-          expect.objectContaining({ kind: "fix", text: "Restore the guard or reject zero counts before division." }),
+          expect.objectContaining({
+            kind: "fix",
+            text: "Restore the guard or reject zero counts before division.",
+            suggestionAssessment: expect.objectContaining({ status: "unverified" })
+          }),
           expect.objectContaining({ kind: "evidence", text: "return total / count;" })
         ]),
         candidateMetadata: [expect.objectContaining({ findingId: expect.any(String), severity: "high", confidence: "high" })]

@@ -79,7 +79,7 @@ describe("attributed composition", () => {
     ] }, [input])).toThrow(/repeated finding/);
   });
 
-  it("publishes the lead assessment in fallback with the original contributions accounted for", () => {
+  it("publishes the lead and alternate legacy verification when synthesis is unavailable", () => {
     const first = finding("first");
     const second = finding("second");
     first.verification = "No cross-decimal tests were found in the inspected excerpt.";
@@ -89,8 +89,27 @@ describe("attributed composition", () => {
     const body = renderRetainedComposition([first, second]);
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
     expect(body).toContain(first.verification);
+    expect(body).toContain("**Recorded verification:**\n\n" + second.verification);
     expect(body).toContain("synthesis was unavailable");
     expect(body).not.toContain("<details>");
+  });
+
+  it("shows a legacy verification once when fallback appends proof status to the section", () => {
+    const lead = finding("lead");
+    lead.verification = "The arithmetic truncates.\n\nThe original bound still applies.";
+    const structured = finding("structured");
+    structured.proofAssessment = {
+      status: "established",
+      evidence: "The conversion is rounded down.",
+      assumptions: [{ question: "Can callers pass a fractional amount?", essential: false }]
+    };
+    const alternate = finding("alternate");
+    alternate.verification = "Only the callers with an exact-output contract are affected.";
+
+    const body = renderRetainedComposition([lead, structured, alternate]);
+    expect(body).toContain("Retained proof status (not synthesized): established.");
+    expect(body.split(lead.verification)).toHaveLength(2);
+    expect(body).toContain("**Recorded verification:**\n\n" + alternate.verification);
   });
 
   it("rejects omitted, invented, duplicate, and wrong-kind source references", () => {
