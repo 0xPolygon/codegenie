@@ -442,7 +442,7 @@ async function buildPacket(
     labels: first.facts.labels,
     attentionNotes,
     relatedChangedContext,
-    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetBoost),
+    toolBudget: scaleToolBudget(toolBudget(coverage, reviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
@@ -2921,7 +2921,7 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, profile: ReviewProfile): ToolBudget {
   if (profile === "simple") {
     return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
   }
@@ -2937,12 +2937,10 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
         deep: { maxToolCalls: 10, maxInvestigationRounds: 3, maxResultChars: 20000 }
       };
   const base = baseByProfile[coverage];
-  const scale = depth === "deep" ? 1.5 : depth === "light" ? 0.5 : 1;
-  const round = depth === "light" ? Math.floor : Math.ceil;
-  const maxResultChars = Math.max(4000, round(base.maxResultChars * scale));
+  const maxResultChars = Math.max(4000, base.maxResultChars);
   return {
-    maxToolCalls: Math.max(1, round(base.maxToolCalls * scale)),
-    maxInvestigationRounds: Math.max(1, round(base.maxInvestigationRounds * scale)),
+    maxToolCalls: base.maxToolCalls,
+    maxInvestigationRounds: base.maxInvestigationRounds,
     maxResultChars,
     maxDiscoveryResultChars: Math.min(4000, Math.floor(maxResultChars / 2)),
     reservedSourceResultChars: Math.min(4000, Math.floor(maxResultChars / 2))

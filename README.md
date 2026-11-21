@@ -68,7 +68,6 @@ The dedicated JavaScript skill and narrowed TypeScript skill create a second int
 Common options:
 
 ```bash
-codegenie review --depth light|normal|deep         # review budget & planner bias
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
 codegenie review --provider anthropic --model claude-opus-5   # one-run model override
 codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
@@ -193,7 +192,6 @@ Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a t
 baseBranch = "main"
 
 [review]
-depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
@@ -320,7 +318,7 @@ The planning check rejects degraded plans even when every hunk was reviewed. The
 
 SVG files are skipped by default. Set `[review] skipSvgReview = false` in `codegenie.toml`, or run `codegenie review --no-skip-svg-review`, to include them subject to other exclusion rules. `--skip-svg-review` enables the skip explicitly. This controls changed-file review; repository evidence searches can still find SVG content and disclose oversized matches they omit.
 
-Local investigation budgets are soft targets, with hard ceilings of **2×** the target for aggregate tool calls, investigation rounds, and result characters. This applies to packet review and verification. At normal depth with `budgetBoost = 1`, investigate packets target 20 calls / 6 rounds / 48,000 characters for deep coverage, 6 / 2 / 12,000 for normal coverage, and 4 / 2 / 4,000 for light coverage. Verification targets 8 / 3 / 32,000. Depth and budget scaling apply before deriving the ceilings. Zero budgets remain disabled. Existing source extensions are subsumed by this allowance and cannot add capacity beyond it. Per-result caps, explicit spending limits, provider context limits, stage deadlines, and repair budgets are unchanged.
+Local investigation budgets are soft targets, with hard ceilings of **2×** the target for aggregate tool calls, investigation rounds, and result characters. This applies to packet review and verification. With `budgetBoost = 1`, investigate packets target 20 calls / 6 rounds / 48,000 characters for deep coverage, 6 / 2 / 12,000 for normal coverage, and 4 / 2 / 4,000 for light coverage. Verification targets 8 / 3 / 32,000. Budget scaling applies before deriving the ceilings. Zero budgets remain disabled. Existing source extensions are subsumed by this allowance and cannot add capacity beyond it. Per-result caps, explicit spending limits, provider context limits, stage deadlines, and repair budgets are unchanged.
 
 Before the first request and after each repository-tool batch, models receive remaining soft targets and a nudge to finish or resolve concrete remaining questions when a target is reached. Traces record soft targets, hard ceilings, and remaining capacity in `tool_budget_initial` / `tool_budget_remaining`, plus a single `tool_budget_soft_target_reached` event per investigation. Crossing a target alone is not a refusal or an incomplete-review diagnostic. Executed calls and cache hits each count; invalid arguments and pre-execution refusals do not consume those calls, but a separate refusal limit and the round ceiling bound repeated invalid requests. Source allocations are guidance within the shared character allowance. Discovery results retain their per-result cap of 4,000 characters (2,000 for light investigations), subject to existing budget scaling. Searches and file lists keep whole entries and disclose omissions. Invalid raw tool arguments receive correction feedback before SDK coercion. `read_range` requires both inclusive 1-based bounds; requests entirely beyond EOF return empty text, not a different line.
 

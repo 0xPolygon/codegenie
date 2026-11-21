@@ -279,7 +279,7 @@ The dossier is the compact deterministic artifact consumed by the Stage 5 planne
 type PlannerDossier = {
   runId: string
   mode: ReviewMode
-  depth: "light" | "normal" | "deep"           // configured review depth for this run
+  depth: "normal"                              // fixed label: review depth was removed (#129); the planner input stays as measured
   target: {
     baseRef?: string
     headRef?: string
@@ -496,22 +496,22 @@ Packet assembly details:
 - `dispatchRank = [fileClassRank, -packetChangedLines]`, where changed lines are counted from the source `DiffHunk`s before packet rendering or truncation. File class uses first-match precedence: snapshot/fixture (3), docs/config (2), test source (1), product source (0).
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
-- `toolBudget` is assigned from the review-profile/coverage/depth table below.
+- `toolBudget` is assigned from the review-profile/coverage table below.
 - `labels`, `attentionNotes`: configured labels from `FileFacts`; hunk-scoped planner focus notes, selected coverage reasons, context-hint reasons, and attached relationship reasons, capped to 3 short advisory entries. When related changed context is present, Stage 6 keeps the strongest relationship notes first so planner focus notes cannot crowd out the mechanical changed-symbol topology.
 - `relatedChangedContext`: bounded snippets/patch excerpts from mechanically related changed hunks and changed symbols, never a cross-file packet.
 - Every packet is persisted to `packets/<packet-id>.json` before Stage 7 dispatch.
 
-Tool budget table (implementation defaults; base budget by packet profile and coverage, then scaled by configured run depth — `light` depth halves values rounding down with a floor of 1 call / 1 round / 4000 chars for tool-capable profiles, `deep` depth multiplies by 1.5 rounding up):
+Tool budget table (implementation defaults by packet profile and coverage; `maxResultChars` has a 4000-char floor for tool-capable profiles, and `review.budgetBoost` scales the result. There is no run-level depth scaling since #129):
 
 | Packet profile | Packet coverage | maxToolCalls | maxInvestigationRounds | maxResultChars |
 | --- | --- | --- | --- | --- |
 | `simple` | any | 0 | 0 | 0 |
-| `standard` | `light` | 1 | 1 | 3000 |
+| `standard` | `light` | 1 | 1 | 4000 |
 | `standard` | `normal` | 4 | 2 | 10000 |
 | `standard` | `deep` | 10 | 3 | 20000 |
-| `investigate` | `light` | 2 | 1 | 4000 |
+| `investigate` | `light` | 4 | 2 | 4000 |
 | `investigate` | `normal` | 6 | 2 | 12000 |
-| `investigate` | `deep` | 15 | 5 | 32000 |
+| `investigate` | `deep` | 20 | 6 | 48000 |
 
 ### Worker Runner
 
@@ -686,7 +686,7 @@ This component depends on:
 - `components/repository_and_github.md`: `resolveReviewInput`, `parseDiff` (`UnifiedDiff`, hunk ids, changed-line maps), Stage 3 classification (`FileFacts` with detector provenance), and diff-anchor validation primitives used by the Stage 7/9/10 anchor checks. Stage 11 posting consumes this component's `ReviewResult.postingPlan`.
 - `components/context_and_tools.md`: `buildRepositoryIndex` (`RepositoryIndex` with `HunkSymbolFacts`, static signals, `RepositoryTools`), the tools-host seams `buildPacketContext` (packet context plus the likely-tests list for `relevantTests`) and `bindPackets` (called between Stage 6 and Stage 7), and base/head source reads for deletion packets. Path containment is enforced in that layer.
 - `components/skills_llm_telemetry.md`: lens registry and skill projections, prompt building (including `renderDossier` — used by dossier compaction for size estimation — and untrusted-content fencing), `LlmRunner.runStructured` (submit-tool schemas, schema repair, provider retries, the agent loop, abort/timeout, cache), and the telemetry recorder/logger that persist every artifact named here.
-- `src/config/`: validated `CodegenieConfig` (depth, lens set, caps, budgets, concurrency, and the single run-wide `llm.*` settings).
+- `src/config/`: validated `CodegenieConfig` (lens set, caps, budgets, concurrency, and the single run-wide `llm.*` settings).
 - Libraries: `p-limit` (worker concurrency), Node `crypto` (sha256 ids/fingerprints), `AbortController` (cancellation).
 
 Depends on this component:
@@ -745,7 +745,7 @@ Worker runner and lens execution:
 - `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.
 - `workers_budget_checkpoint_stops_dispatch`: model-call budget exhausts mid-queue; remaining tasks settle `not_dispatched`; their hunks are `review_failed` with the budget reason.
 - `lens_one_composite_call_per_packet`: a packet with three lenses produces exactly one model call whose prompt contains all three projections.
-- `lens_coverage_profiles`: light/normal/deep packets receive the table's tool budgets, scaled by run depth.
+- `lens_coverage_profiles`: light/normal/deep packets receive the table's tool budgets.
 - `lens_out_of_hunk_anchor_stripped`: a candidate anchored to an unchanged line loses its anchor, becomes summary-only with `changedLine: false`, and records `out_of_hunk_anchor`.
 - `lens_candidate_ids_and_producer`: candidate ids follow `"<packet8>-f<seq>"`; `producedBy` is stamped deterministically with stage 7, the packet id, the packet's primary (first) lens, that lens's skill ids, and the worker id; the model output contains no lens claim to honor.
 - `lens_vague_hints_dropped`: a hint without files and symbols is dropped; a pointer-rich hint survives.

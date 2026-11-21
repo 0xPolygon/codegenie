@@ -440,7 +440,6 @@ command:
   head: 49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c
   base: main
 review:
-  depth: normal
   lenses: ["core/code-review", "lang/go"]
   verify: true
   cache: true
@@ -478,7 +477,7 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 
 | Case field | Engine setting | Notes |
 | --- | --- | --- |
-| `depth` | `review.depth` | |
+| `depth` | none: deprecated (#129), accepted and ignored with a warning for one release | |
 | `lenses` | run lens set | Same semantics as repeated `--lens`: restricts the run to the named lenses and may enable default-disabled lenses; the planner still routes lenses per hunk. |
 | `maxFindings` | `review.maxFindings` | Engine report cap, distinct from the `expect.maxFindings` assertion. |
 | `concurrency` | `review.concurrency` | |

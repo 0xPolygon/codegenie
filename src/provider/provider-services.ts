@@ -18,7 +18,7 @@ import {
 import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
 import { registerSecret } from "../telemetry/redaction.js";
-import type { CodegeniePaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
+import type { CodegeniePaths, ProviderSettings, ReasoningLevel } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { filterDeprecatedProviderModels } from "./model-policy.js";
 import { getCodegeniePiModels } from "./pi-ai-models.js";
@@ -564,12 +564,6 @@ async function commandConfig(
       writeOut(`default model set to ${provider}/${model}; reasoning set to high\n`);
       return;
     }
-    case "set-depth": {
-      const depth = parseDepth(requireArg(rest[0], "provider config set-depth <light|normal|deep>"));
-      saveProviderSettings({ ...settings, defaultDepth: depth }, services.paths);
-      writeOut(`default depth set to ${depth}\n`);
-      return;
-    }
     case "set-reasoning": {
       const value = requireArg(rest[0], `provider config set-reasoning ${REASONING_USAGE}`);
       const reasoning = parseReasoningLevel(value, "reasoning");
@@ -790,13 +784,11 @@ async function renderProviderConfig(
     `  provider   ${settings.defaultProvider ?? "unset"}`,
     `  model      ${settings.defaultModel ?? "unset"}`,
     `  reasoning  ${settings.defaultReasoning ?? "unset"}`,
-    `  depth      ${settings.defaultDepth ?? "unset"}`,
     "",
     "Effective for reviews:",
     `  provider   ${formatConfigValue(effectiveProvider, layers.effective.sources["llm.provider"])}`,
     `  model      ${formatConfigValue(effectiveModel, layers.effective.sources["llm.model"])}`,
     `  reasoning  ${formatConfigValue(effectiveReasoning, effectiveReasoningSource)}`,
-    `  depth      ${formatConfigValue(layers.effective.config.review.depth, layers.effective.sources["review.depth"])}`,
     `  auth       ${auth ? formatProviderAuth(auth) : "not checked; no provider selected"}`,
     "",
     "Commands:",
@@ -804,9 +796,8 @@ async function renderProviderConfig(
     "  codegenie provider config set-provider <provider>",
     "  codegenie provider config set-model <provider> <model>",
     `  codegenie provider config set-reasoning ${REASONING_USAGE}`,
-    "  codegenie provider config set-depth <light|normal|deep>",
     "",
-    "Depth controls review budget and investigation intensity. Reasoning controls model thinking effort.",
+    "Reasoning controls model thinking effort.",
     ""
   ];
   return lines.join("\n");
@@ -908,11 +899,9 @@ async function providerConfigJson(
     sessionsDir: services.paths.sessionsDir,
     defaultProvider: configuredDefault(settings.defaultProvider, layers.defaults.config.llm.provider, layers.defaults.sources["llm.provider"]),
     defaultModel: configuredDefault(settings.defaultModel, layers.defaults.config.llm.model, layers.defaults.sources["llm.model"]),
-    defaultDepth: configuredDefault(settings.defaultDepth, layers.defaults.config.review.depth, layers.defaults.sources["review.depth"]),
     defaultReasoning: configuredDefault(settings.defaultReasoning, layers.defaults.config.llm.reasoning, layers.defaults.sources["llm.reasoning"]),
     effectiveProvider: layers.effective.config.llm.provider ?? null,
     effectiveModel: layers.effective.config.llm.model ?? null,
-    effectiveDepth: layers.effective.config.review.depth,
     effectiveReasoning: layers.effective.config.llm.reasoning ?? "high",
     auth: provider ? await services.modelRegistry.authStatus(provider) : null
   };
@@ -1236,11 +1225,3 @@ function requireArg(value: string | undefined, usage: string): string {
   }
   return value;
 }
-
-function parseDepth(value: string): ReviewDepth {
-  if (value === "light" || value === "normal" || value === "deep") {
-    return value;
-  }
-  throw new CodegenieError("invalid_args", "depth must be one of: light, normal, deep");
-}
-

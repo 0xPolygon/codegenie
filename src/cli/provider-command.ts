@@ -132,13 +132,6 @@ Examples:
       parsed = { args: ["provider", "config", "set-model", providerId, modelId], options: {} };
     });
   helpByPath.set("provider config set-model", configSetModelCommand);
-  const configSetDepthCommand = config
-    .command("set-depth")
-    .argument("<light|normal|deep>")
-    .action((depth: string) => {
-      parsed = { args: ["provider", "config", "set-depth", depth], options: {} };
-    });
-  helpByPath.set("provider config set-depth", configSetDepthCommand);
   const configSetReasoningCommand = config
     .command("set-reasoning")
     .argument(REASONING_USAGE)

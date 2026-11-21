@@ -237,20 +237,14 @@ resolved base itself, or no base branch can be resolved, codegenie
 should fail with a clear error asking for an explicit review target.
 Reviewing uncommitted working-tree changes is out of scope for v1.</p>
 <p>Common review options:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--depth</span> light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
 <span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
 <span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
 <span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
 <span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--ci</span></span>
 <span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--no-progress</span></span></code></pre></div>
-<p><code>--depth</code> controls the global review budget and planner
-bias. The default is <code>normal</code>. <code>light</code> should
-favor cheaper packet review and smaller tool budgets. <code>deep</code>
-should allow more <code>deep</code> packet coverage and larger tool
-budgets. Per-hunk coverage may still vary inside the selected depth when
-the planner sees concrete risk evidence.</p>
+<p>Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as <code>normal</code>. For one release <code>--depth</code>, <code>review.depth</code> in either TOML file, a stored <code>defaultDepth</code> and an eval case's <code>depth</code> still accept <code>light</code>, <code>normal</code> or <code>deep</code>, and each such input is ignored with a config warning. The release after that rejects them.</p>
 <p><code>--lens</code> restricts the run to the named lenses and may be
 repeated. It overrides the config-enabled lens set for the run, and it
 may explicitly enable a lens that is disabled by default, such as a
@@ -466,7 +460,6 @@ setup, backed by Pi’s provider/model registry and auth storage:</p>
 <span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config</span>
 <span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-provider <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
 <span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-model <span class="op">&lt;</span>provider<span class="op">&gt;</span> <span class="op">&lt;</span>model<span class="op">&gt;</span></span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-depth <span class="op">&lt;</span>light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span><span class="op">&gt;</span></span>
 <span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
 <p>Behavior:</p>
 <ul>
@@ -489,16 +482,13 @@ include provider, model id, context window, max output tokens when
 known, reasoning support, and vision/input capability when known.</li>
 <li><code>provider config</code> prints user-level effective defaults as
 JSON, including the codegenie home directory, auth path, models path,
-settings path, default provider/model, default depth, default reasoning
-override, and effective depth/reasoning.</li>
+settings path, default provider/model, default reasoning override, and
+effective reasoning.</li>
 <li><code>provider config set-provider</code> sets the user-level
 default provider after validating that the provider exists.</li>
 <li><code>provider config set-model</code> validates the model exists
 for the provider and stores both the default provider and default
 model.</li>
-<li><code>provider config set-depth</code> stores the user-level default
-review depth using codegenie’s <code>light|normal|deep</code> depth
-vocabulary.</li>
 <li><code>provider config set-reasoning</code> stores a user-level
 reasoning override; <code>auto</code> clears the stored override,
 letting resolution fall through to <code>~/.codegenie/config.toml</code>
@@ -510,7 +500,7 @@ default, overridable with <code>CODEGENIE_HOME</code>:</p>
 <pre class="text"><code>~/.codegenie/
   auth.json       # provider credentials, chmod 0600
   models.json     # Pi model registry custom providers/models when supported
-  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  settings.json   # default provider/model/reasoning, chmod 0600
   config.toml     # optional user-level config overrides and trust opt-ins
   sessions/       # provider/session state when Pi needs it</code></pre>
 <p>The home directory should be created with mode <code>0700</code>
@@ -528,10 +518,6 @@ in v1):</p>
 <code>config.toml</code> because the dedicated
 <code>provider config set-*</code> commands write
 <code>settings.json</code>.</p>
-<p>Stored <code>defaultDepth</code> participates in review-depth
-resolution; repo project policy outranks the personal default, and depth
-has no environment layer:</p>
-<pre class="text"><code>--depth &gt; repo codegenie.toml &gt; settings.json defaultDepth &gt; config.toml &gt; built-in normal</code></pre>
 <p>If no authenticated model can be resolved, codegenie should fail
 before Stage 5 with a clear <code>config_error</code>, for example:
 <code>no authenticated provider model is available; run: codegenie provider login &lt;provider&gt;</code>.</p>
@@ -793,7 +779,7 @@ Pass</h2>
 review pass and must not produce publishable findings.</p>
 <p>V1 planner input should be a compact deterministic dossier: PR
 metadata, commit messages, changed file inventory, file processing
-facts, configured review depth, configured labels/priorities, hunk
+facts, the fixed review-mode label (<code>normal</code>), configured labels/priorities, hunk
 ranges, <code>HunkSymbolFacts</code>, changed symbol summaries, touched
 tests, static signals, and available lenses.</p>
 <p>The planner should explicitly build a diff understanding before
@@ -833,11 +819,7 @@ lenses and context hints for specific hunks. Later stages may validate
 malformed planner output or apply deterministic default coverage to
 omitted hunks, but they should not become independent risk
 classifiers.</p>
-<p>Configured review depth should influence budgets and defaults, not
-replace judgment. A <code>light</code> run may still review a concrete
-critical-risk hunk at <code>normal</code>; a <code>deep</code> run may
-still give mechanical hunks <code>light</code> coverage. Deterministic
-file exclusions apply at every depth.</p>
+<p>Budgets follow each packet's coverage and profile; there is no run-level depth (#129). Deterministic file exclusions always apply.</p>
 <h2 id="large-review-handling">Large Review Handling</h2>
 <p>codegenie must handle large PRs and large commit ranges without
 trying to fit the entire diff into one model context.</p>
@@ -1520,7 +1502,7 @@ repositories. A case may point at:</p>
 <li>An external local repository path.</li>
 <li>A fixture repository.</li>
 <li>A branch, commit, commit range, or PR target.</li>
-<li>Review settings such as depth, lenses, max findings, concurrency,
+<li>Review settings such as lenses, max findings, concurrency,
 cache on/off, verification on/off, provider/model/reasoning overrides,
 and telemetry/debug options.</li>
 <li>Expected final findings.</li>
@@ -1767,8 +1749,6 @@ user-scoped provider state.</p>
 <p>V1 configuration should support:</p>
 <ul>
 <li>Default base branch for branch review.</li>
-<li>Default review depth: <code>light</code>, <code>normal</code>, or
-<code>deep</code>.</li>
 <li>Independent verification on or off. Verification is enabled by
 default and may be disabled only through this explicit configuration,
 per Stage 9.</li>
@@ -1800,7 +1780,6 @@ directory.</li>
 <p>If no config exists, codegenie should run with sensible defaults:</p>
 <ul>
 <li>Core correctness-oriented lenses enabled.</li>
-<li>Review depth set to <code>normal</code>.</li>
 <li>Independent verification enabled.</li>
 <li>Style/lint lenses disabled.</li>
 <li>Low-confidence findings suppressed.</li>
@@ -1858,7 +1837,7 @@ and rejected if option-like (leading <code>-</code>).</li>
 <p>Config trust partitioning:</p>
 <ul>
 <li>Repo <code>codegenie.toml</code> may set safe keys only: lenses
-on/off, classification path rules, depth, base branch, labels, caps, and
+on/off, classification path rules, base branch, labels, caps, and
 <code>telemetry.enabled</code>.</li>
 <li>Out-of-repo or provider-routing settings —
 <code>lenses.extraSkillPaths</code> outside the repo,

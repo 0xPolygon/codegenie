@@ -441,7 +441,6 @@ async function startRun(
       review: {
         mode: input.mode,
         target: input,
-        depth: config.review.depth,
         concurrency: config.review.concurrency,
         budgetBoost: config.review.budgetBoost,
         llmMaxConcurrentCalls: config.llm.maxConcurrentCalls,
