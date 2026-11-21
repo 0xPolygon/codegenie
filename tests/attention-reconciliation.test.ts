@@ -351,62 +351,37 @@ describe("evidence-backed attention reconciliation", () => {
       evidenceRefs: [...composed.evidenceRefs, "attention/question/proofAssessment"] }] }, composed.findings)).toThrow();
   });
 
-  it.each(["supported", "unverified", "incompatible"] as const)("makes existing %s assessment observations referenceable without duplicating them", status => {
-    const f = fixture();
-    const assessment = f.candidate.suggestionAssessments!.suggestedTest!;
-    assessment.status = status;
-    assessment.evidence = [{ path: "documents.test.ts", lines: "expect(readDocument(revokedSession)).toDeny();",
-      whyRelevant: "The head test checks revoked access; this does not establish deployment." }];
-    const before = structuredClone(f.candidate);
-    const input = buildAttentionReconciliation(f.verdicts, [f.candidate], [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
-    const id = "authorization/suggestedTest";
-    const reference = input.inventory.evidence.find(source => source.id === id)!;
-    expect(reference).toMatchObject({ sourceRef: id, sourceField: "suggestionAssessment", candidateId: "authorization" });
-    expect(reference).not.toHaveProperty("text");
-    const supplied = compositionSources([f.candidate]).find(source => source.id === reference.sourceRef)!;
-    expect(supplied.suggestionAssessment).toMatchObject({ status, evidence: assessment.evidence });
-    expect(JSON.parse(input.allEvidence.find(source => source.id === id)!.text)).toMatchObject({ status, evidence: assessment.evidence });
-    // A scripted evidence-backed resolution exercises transport and validation,
-    // not the model's ability to infer this semantic conclusion.
-    const result = reconcileAttention(input, [{ ...f.proposal, supportingRefs: [id] }], true);
-    expect(result.decisions[0]!.accepted).toBe(true);
-    expect(result.notes[0]!.question).toBe("Is this endpoint deployed?");
-    expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
-    expect(f.candidate).toEqual(before);
-  });
-
-  it("carries unpublished verifier assessment evidence inline with its qualifications", () => {
+  it.each(["published", "unpublished", "conflicting"] as const)("emits no suggestion-assessment observations for %s verifier assessments (#146)", variant => {
     const f = fixture();
     const assessment = structuredClone(f.candidate.suggestionAssessments!.suggestedTest!);
-    assessment.status = "unverified";
-    assessment.rationale = "The test exists, but its assertion does not establish the proposed fix's contract.";
-    f.observation.suggestionAssessments = { suggestedTest: assessment };
-    delete f.candidate.suggestionAssessments;
-    const input = f.build();
-    const evidence = input.inventory.evidence.find(source => source.id === "attention/authorization/suggestedTest")!;
-    expect(evidence.sourceRef).toBeUndefined();
-    expect(JSON.parse(evidence.text!)).toEqual(assessment);
-    expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [evidence.id] }], true).notes[0]!.question).toBe("Is this endpoint deployed?");
-  });
-
-  it("references the same conflict-qualified assessment as composition and still rejects self-support", () => {
-    const f = fixture();
-    const opposing = structuredClone(f.candidate);
-    opposing.id = "opposing";
-    opposing.suggestionAssessments!.suggestedTest!.status = "incompatible";
-    const findings = [f.candidate, opposing];
-    const input = buildAttentionReconciliation(f.verdicts, findings, [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
-    const id = "authorization/suggestedTest";
-    const original = input.allEvidence.find(source => source.id === id)!;
-    const supplied = compositionSources(findings).find(source => source.id === id)!;
-    expect(JSON.parse(original.text)).toEqual(supplied.suggestionAssessment);
-    expect(supplied.suggestionAssessment).toMatchObject({ status: "unverified", rationale: expect.stringContaining("Conflicting compatibility assessments") });
-    expect(input.inventory.evidence.find(source => source.id === id)).toMatchObject({ sourceRef: id });
-    // Reuse this valid registered reference against its own candidate's concern.
-    input.groups[0]!.concerns[0]!.candidateId = f.candidate.id;
-    const result = reconcileAttention(input, [{ ...f.proposal, supportingRefs: [id] }], true);
-    expect(result.decisions[0]).toMatchObject({ accepted: false, rejectionReason: "self_support" });
-    expect(result.notes).toEqual([f.concern.unresolvedConcern]);
+    assessment.evidence = [{ path: "documents.test.ts", lines: "expect(readDocument(revokedSession)).toDeny();",
+      whyRelevant: "The head test checks revoked access; this does not establish deployment." }];
+    f.candidate.suggestionAssessments!.suggestedTest = assessment;
+    const findings = [f.candidate];
+    if (variant === "unpublished") {
+      f.observation.suggestionAssessments = { suggestedTest: assessment };
+      delete f.candidate.suggestionAssessments;
+    }
+    if (variant === "conflicting") {
+      const opposing = structuredClone(f.candidate);
+      opposing.id = "opposing";
+      opposing.suggestionAssessments!.suggestedTest!.status = "incompatible";
+      findings.push(opposing);
+    }
+    const input = variant === "unpublished" ? f.build()
+      : buildAttentionReconciliation(f.verdicts, findings, [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
+    // Stage 10 sources carry no label, so neither a published reference nor an
+    // inline copy of the assessment is registered as attention evidence.
+    expect(compositionSources(findings).some(source => "suggestionAssessment" in source)).toBe(false);
+    expect(input.inventory.evidence.some(source => source.sourceField !== undefined)).toBe(false);
+    expect(input.allEvidence.some(source => source.sourceField !== undefined)).toBe(false);
+    expect(JSON.stringify(input.inventory)).not.toContain(assessment.evidence[0]!.lines);
+    for (const id of ["authorization/suggestedTest", "attention/authorization/suggestedTest"]) {
+      expect(input.allEvidence.map(source => source.id)).not.toContain(id);
+      const result = reconcileAttention(input, [{ ...f.proposal, supportingRefs: [id] }], true);
+      expect(result.decisions[0]).toMatchObject({ accepted: false, rejectionReason: "unknown_or_omitted_evidence" });
+      expect(result.notes).toEqual([f.concern.unresolvedConcern]);
+    }
   });
 
   it("does not spend the inventory budget repeating large observations already in the composition input", () => {
@@ -419,18 +394,6 @@ describe("evidence-backed attention reconciliation", () => {
     expect(input.allEvidence.find(source => source.id === id)!.text).toBe(f.candidate.evidence.relatedCode![0]!.lines);
     expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
     expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [id] }], true).decisions[0]!.accepted).toBe(true);
-  });
-
-  it.each(["empty", "truncated", "incomplete"])("cannot use %s recommendation evidence even when its source is published", mode => {
-    const f = fixture();
-    const assessment = f.candidate.suggestionAssessments!.suggestedTest!;
-    if (mode === "empty") assessment.evidence = [];
-    if (mode === "truncated") assessment.evidence[0]!.lines = "[tool result truncated by codegenie tool budget]";
-    if (mode === "incomplete") f.observation.verificationIncomplete = true;
-    const input = buildAttentionReconciliation(f.verdicts, [f.candidate], [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
-    const result = reconcileAttention(input, [{ ...f.proposal, supportingRefs: ["authorization/suggestedTest"] }], true);
-    expect(result.decisions[0]!.accepted).toBe(false);
-    expect(result.notes).toEqual([f.concern.unresolvedConcern]);
   });
 
   it("keeps optional resolution schema strict while allowing local rejection of invalid references", () => {

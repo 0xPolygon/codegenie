@@ -15,16 +15,19 @@ function fixture(build: typeof contractComposition = contractComposition) {
 }
 
 describe("composition attribution repair", () => {
-  it.each(["wrong-kind", "empty", "unsupported"])("can remove %s advice and restore visible proof without changing diagnosis", kind => {
+  it.each(["wrong-kind", "empty", "provenance-only"])("can remove %s advice and restore visible proof without changing diagnosis", kind => {
     const { findings, original, group } = fixture(authorizationComposition);
     const test = group.sections.find(section => section.kind === "test")!;
     const verification = group.sections.find(section => section.kind === "verification")!;
     const proofRef = findings[0]!.id + "/proofAssessment";
-    findings[0]!.suggestionAssessments!.suggestedTest!.status = "unverified";
+    // The verifier replaced the test advice with none; only its original remains, as provenance.
+    findings[0]!.originalSuggestions = { suggestedTest: { status: "unverified", suggestionText: findings[0]!.suggestedTest!, rationale: "Historical proposal.", evidence: [] } };
+    delete findings[0]!.suggestedTest;
+    delete findings[0]!.suggestionAssessments;
     verification.sourceRefs = verification.sourceRefs.filter(ref => ref !== proofRef);
-    const suggestionRef = findings[0]!.id + "/suggestedTest";
+    const suggestionRef = findings[0]!.id + "/originalSuggestions/suggestedTest";
     test.sourceRefs = kind === "wrong-kind" ? [proofRef] : kind === "empty" ? [] : [suggestionRef];
-    group.retainedSourceRefs = kind === "unsupported" ? [proofRef] : [suggestionRef];
+    group.retainedSourceRefs = kind === "provenance-only" ? [proofRef] : [suggestionRef];
     const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
     const repair = createCompositionAttributionRepair(schema, original, findings)!;
     expect(repair.paths).toContain("composedFindings.0.sections");

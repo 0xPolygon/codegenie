@@ -1,6 +1,5 @@
 import type { CandidateFinding, SuggestionAssessment } from "../types.js";
 import { codeBlock, fenceLanguageForPath, inlineCode } from "../util/markdown.js";
-import { conflictingSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 
 export type CompositionSource = {
   id: string; findingId: string; kind: "impact" | "verification" | "fix" | "test" | "evidence";
@@ -27,24 +26,20 @@ export function compositionCompletionDiagnostics(sections: CompositionSection[],
   });
 }
 
-export function compositionSources(findings: CandidateFinding[], assessmentFindings = findings): CompositionSource[] {
-  const conflicts = conflictingSuggestions(assessmentFindings);
+export function compositionSources(findings: CandidateFinding[], _assessmentFindings = findings): CompositionSource[] {
+  // #146: Stage 10 sources carry no suggestion label; provenanceOnly alone
+  // separates current proposals from historical originals.
   return findings.flatMap(finding => {
     const sources: CompositionSource[] = [];
     for (const [field, kind] of [["failureMode", "impact"], ["whyThisMatters", "impact"], ["verification", "verification"], ["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
       const text = finding[field];
-      const assessment = kind === "fix" || kind === "test" ? suggestionAssessment(finding, field as "suggestedFix" | "suggestedTest") : undefined;
-      const effective = assessment?.status === "supported" && conflicts.has(field + "\0" + text)
-        ? { ...assessment, status: "unverified" as const, rationale: "Conflicting compatibility assessments for this exact proposal remain unresolved. " + assessment.rationale }
-        : assessment;
-      if (text) sources.push({ id: finding.id + "/" + field, findingId: finding.id, kind, text,
-        ...(effective ? { suggestionAssessment: effective } : {}) });
+      if (text) sources.push({ id: finding.id + "/" + field, findingId: finding.id, kind, text });
     }
     for (const [field, kind] of [["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
       const original = finding.originalSuggestions?.[field];
       if (original && original.suggestionText !== finding[field]) sources.push({
         id: finding.id + "/originalSuggestions/" + field, findingId: finding.id, kind,
-        text: original.suggestionText, suggestionAssessment: original, provenanceOnly: true
+        text: original.suggestionText, provenanceOnly: true
       });
     }
     if (finding.proofAssessment) sources.push({
@@ -60,12 +55,12 @@ export function compositionSources(findings: CandidateFinding[], assessmentFindi
   });
 }
 
-// Shared by validation, live schemas, repair schemas and fallback. Historical
-// assessments remain auditable but never authorize current recommendations.
+// Shared by validation, live schemas, repair schemas and fallback. Verifier-final
+// fix and test advice is eligible without a label (#146); provenance-only
+// originals never authorize current recommendations.
 export function eligibleCompositionSource(source: CompositionSource, kind?: string): boolean {
   if (kind === undefined) return true;
-  return source.kind === kind && !source.provenanceOnly
-    && ((kind !== "fix" && kind !== "test") || source.suggestionAssessment?.status === "supported");
+  return source.kind === kind && !source.provenanceOnly;
 }
 
 // Model prose never owns HTML containers. Close unbalanced Markdown fences so
@@ -124,7 +119,7 @@ export function compositionAttributionDiagnostics(sources: CompositionSource[], 
       : "Move this reference to a matching-kind section or retainedSourceRefs; preserve its source." });
     else if (!eligibleCompositionSource(source, list.kind)) diagnostics.push({ ...common, code: "unsupported_suggestion",
       allowedPaths: [prefix + "retainedSourceRefs"],
-      correction: "Only supported current suggestions may appear in fix/test sections. Retain this source in provenance and rewrite or omit the unsupported advice section; changing attribution alone cannot endorse its prose." });
+      correction: "Only current fix/test sources may appear in fix/test sections; original suggestions are provenance only. Retain this source in provenance and rewrite or omit that advice section; changing attribution alone cannot endorse its prose." });
     else if (accounted.get(ref) !== path) diagnostics.push({ ...common, code: "duplicate_reference", correction: "Remove the extra occurrence; preserve the correctly accounted occurrence." });
   });
   for (const source of sources) if (!accounted.has(source.id)) diagnostics.push({
@@ -223,10 +218,10 @@ export function composePresentation(
   presentation: CompositionPresentation = {},
   assessmentFindings = findings,
   {
-    unreconciledSuggestionKinds = [],
+    withheldSuggestionKinds = [],
     normalizeRecordedVerification = text => text
   }: {
-    unreconciledSuggestionKinds?: ReadonlyArray<"fix" | "test">;
+    withheldSuggestionKinds?: ReadonlyArray<"fix" | "test">;
     normalizeRecordedVerification?: (text: string) => string;
   } = {}
 ) {
@@ -237,8 +232,8 @@ export function composePresentation(
     const proposals = sources.filter(source => source.kind === kind && !source.provenanceOnly);
     if (proposals.length && !proposals.some(source => eligibleCompositionSource(source, kind))) {
       prose.push(label + " remains unverified.");
-    } else if (unreconciledSuggestionKinds.includes(kind)) {
-      prose.push(label + " remains unreconciled because multiple supported proposals differ.");
+    } else if (withheldSuggestionKinds.includes(kind)) {
+      prose.push(label + " was not composed: without report synthesis, proposals are not checked against the verified evidence, so they are omitted from this report.");
     }
   }
   const superseded = new Set((presentation.reconciliations ?? [])
@@ -335,16 +330,17 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
   const sources = compositionSources(findings, assessmentFindings);
   const sections: CompositionSection[] = [];
   const retainedSourceRefs: string[] = [];
-  const unreconciledSuggestionKinds: Array<"fix" | "test"> = [];
+  const withheldSuggestionKinds: Array<"fix" | "test"> = [];
   for (const kind of ["impact", "verification", "fix", "test"] as const) {
     const matching = sources.filter(source => source.kind === kind);
     if (!matching.length) continue;
     const eligible = matching.filter(source => eligibleCompositionSource(source, kind));
-    // Exact duplicates may share one presentation. Without synthesis, neither
-    // ordering nor a supported label reconciles differently worded proposals.
-    if ((kind === "fix" || kind === "test") && new Set(eligible.map(source => source.text)).size > 1) {
+    // #146: without labels, only synthesis can check advice against the
+    // verified evidence. The deterministic fallback never publishes advice; it
+    // retains every proposal in provenance.
+    if (kind === "fix" || kind === "test") {
       retainedSourceRefs.push(...matching.map(source => source.id));
-      unreconciledSuggestionKinds.push(kind);
+      if (eligible.length) withheldSuggestionKinds.push(kind);
       continue;
     }
     const chosen = eligible[0];
@@ -362,13 +358,12 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
         && finding.proofAssessment ? [finding.proofAssessment] : []);
       if (proofs.length) renderedTexts.push("Retained proof status (not synthesized): " + [...new Set(proofs.map(proof => proof.status))].join(", ") + ".");
     }
-    if (kind === "verification" && conflictingSuggestions(assessmentFindings).size) renderedTexts.push("Compatibility assessments conflict for an identical proposal. The disputed recommendation remains unverified.");
     sections.push({ kind, sourceRefs: equivalent.map(source => source.id), text: renderedTexts.join("\n\n") });
     retainedSourceRefs.push(...matching.filter(source => !equivalent.includes(source)).map(source => source.id));
   }
   const presentation: CompositionPresentation = { retainedSourceRefs };
   const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, {
-    unreconciledSuggestionKinds,
+    withheldSuggestionKinds,
     normalizeRecordedVerification: normalizeProse
   });
   onMetrics?.(rendered.metrics);

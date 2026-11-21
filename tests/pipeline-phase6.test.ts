@@ -255,7 +255,8 @@ describe("phase 6 live review path", () => {
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-      expect(finalReview).not.toContain("Restore the guard");
+      // #146: a cited current fix publishes without a suggestion label.
+      expect(finalReview).toContain("**Suggested fix:** Restore the guard or reject zero counts before division.");
       expect(finalReview).not.toContain("Original assessments and supporting evidence");
       expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(finalReview).toContain("Diagnostic token: [redacted:");
@@ -266,8 +267,7 @@ describe("phase 6 live review path", () => {
         sourceComponents: expect.arrayContaining([
           expect.objectContaining({
             kind: "fix",
-            text: "Restore the guard or reject zero counts before division.",
-            suggestionAssessment: expect.objectContaining({ status: "unverified" })
+            text: "Restore the guard or reject zero counts before division."
           }),
           expect.objectContaining({ kind: "evidence", text: "return total / count;" })
         ]),
@@ -461,7 +461,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("composition")) {
         callsByPrompt.composer += 1;
-        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string }; sourceComponents: Array<{ id: string; kind: string; text: string; suggestionAssessment?: { status: string }; provenanceOnly?: boolean }> }>>(prompt, "grouped-findings") ?? [];
+        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string }; sourceComponents: Array<{ id: string; kind: string; text: string; provenanceOnly?: boolean }> }>>(prompt, "grouped-findings") ?? [];
         const findingId = groups[0]?.representativeId ?? groups[0]?.representative?.id;
         if (!findingId) {
           throw new Error("composer prompt did not include a finding id");
@@ -474,13 +474,13 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
             {
               findingIds: [findingId],
               sections: ["impact", "verification", "fix", "test"].flatMap(kind => {
-                const sources = groups.flatMap(group => group.sourceComponents).filter(source => source.kind === kind && !source.provenanceOnly && ((kind !== "fix" && kind !== "test") || source.suggestionAssessment?.status === "supported"));
+                const sources = groups.flatMap(group => group.sourceComponents).filter(source => source.kind === kind && !source.provenanceOnly);
                 const refs = sources.map(source => source.id);
                 // Redundant wrong-kind attribution is corrected locally.
                 if (callsByPrompt.composer === 1 && kind === "impact") refs.push(groups.flatMap(group => group.sourceComponents).find(source => source.kind === "verification")!.id);
                 return sources.length ? [{ kind, text: sources.map(source => source.text).join("\n") + (kind === "impact" ? " Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890." : ""), sourceRefs: refs }] : [];
               }),
-              retainedSourceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.provenanceOnly || ((source.kind === "fix" || source.kind === "test") && source.suggestionAssessment?.status !== "supported")).map(source => source.id),
+              retainedSourceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.provenanceOnly).map(source => source.id),
               evidenceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.kind === "evidence").map(source => source.id),
               finalBody:
                 "Restoring the guard preserves the previous behavior when count is zero. Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890.",

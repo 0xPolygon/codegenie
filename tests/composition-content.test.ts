@@ -28,10 +28,6 @@ describe("attributed composition", () => {
     const item = finding("testing");
     item.category = "testing";
     item.suggestedFix = item.suggestedTest = "Assert that a revoked session cannot read the document.";
-    const assessment = { status: "supported" as const, suggestionText: item.suggestedTest, rationale: "Tests the required access boundary.",
-      contractCheck: { status: "established" as const, requirement: "Revoked sessions cannot read documents." },
-      evidence: [{ path: "contract.go", lines: "deny revoked sessions", whyRelevant: "Established requirement." }] };
-    item.suggestionAssessments = { suggestedFix: assessment, suggestedTest: assessment };
     const proposal = composed([item]);
     const fix = proposal.sections.find(section => section.kind === "fix")!;
     proposal.sections = proposal.sections.filter(section => section.kind !== "fix");
@@ -49,7 +45,7 @@ describe("attributed composition", () => {
     const body = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal);
     for (const text of [findings[0]!.failureMode, findings[0]!.verification, "amount.Div(amount, factor)"]) expect(body.split(text)).toHaveLength(2);
     for (const field of ["suggestedFix", "suggestedTest"] as const) {
-      expect(body).not.toContain(findings[0]![field]);
+      expect(body.split(findings[0]![field]!)).toHaveLength(2);
     }
     expect(body).not.toContain("591-602");
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
@@ -155,7 +151,7 @@ describe("attributed composition", () => {
     expect(body).toContain(first.evidence.changedCode);
     expect(body).toContain(second.evidence.changedCode);
     expect(body).toContain(second.failureMode);
-    expect(body).not.toContain(second.suggestedTest);
+    expect(body).toContain(second.suggestedTest);
     expect(body).not.toContain(first.evidence.relatedCode![0]!.whyRelevant);
     expect(body).toContain(second.evidence.relatedCode![0]!.whyRelevant);
   });

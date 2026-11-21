@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateToolCall } from "./helpers/pi-validation.js";
-import { SuggestionAssessmentSchema } from "../src/llm/schemas.js";
 import { composePresentation, compositionSources, renderRetainedComposition, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
-import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 
@@ -58,19 +55,19 @@ describe("report synthesis and requirement support", () => {
     expect(accounted).toBe(compositionSources(findings).length);
   });
 
-  it("can withhold a supported but disputed remedy without changing its assessment", () => {
+  it("can withhold a disputed remedy without changing the finding", () => {
     const { findings, sections, evidenceRefs } = authorizationComposition();
     const finding = findings[0]!;
+    delete finding.suggestionAssessments;
     finding.suggestedFix = "Return no documents to any principal.";
-    finding.suggestionAssessments!.suggestedFix = { ...finding.suggestionAssessments!.suggestedFix!, suggestionText: finding.suggestedFix,
-      rationale: "No document can leak if every request returns nothing." };
+    const before = structuredClone(finding);
     const retainedSourceRefs = sections.filter(section => section.kind === "fix").flatMap(section => section.sourceRefs);
     const finished = sections.filter(section => section.kind !== "fix");
     finished.find(section => section.kind === "verification")!.text += " The proposed blanket denial does not establish that active members retain required read access; remedy compatibility remains unresolved.";
     const { body } = composePresentation(findings, finished, evidenceRefs, undefined, { retainedSourceRefs });
     expect(body).not.toContain("**Suggested fix:**");
     expect(body).not.toContain(finding.suggestedFix);
-    expect(finding.suggestionAssessments!.suggestedFix!.status).toBe("supported");
+    expect(finding).toEqual(before);
     const canRead = (active: boolean) => active;
     const denyAll = (_active: boolean) => false;
     // A denial-only test passes a remedy which removes required successful behavior.
@@ -149,47 +146,6 @@ describe("report synthesis and requirement support", () => {
     expect(body).toContain("Does the audit logger retain the revoked principal?");
     expect(body).not.toContain("Original verification assessments differ");
     expect(renderRetainedComposition(findings)).not.toContain("Original verification assessments differ");
-  });
-
-  it.each([undefined, { status: "unresolved", requirement: "Active membership is required." },
-    { status: "established", requirement: "   " }] as const)("downgrades missing/unresolved/blank checks locally: %j", check => {
-    const finding = authorizationComposition().findings[0]!;
-    const assessment = finding.suggestionAssessments!.suggestedFix!;
-    delete assessment.contractCheck;
-    if (check) assessment.contractCheck = check;
-    expect(() => validateToolCall([{ name: "assess", description: "", parameters: SuggestionAssessmentSchema }],
-      { type: "toolCall", id: "test", name: "assess", arguments: assessment })).not.toThrow();
-    expect(assessFinalSuggestions(finding, finding.suggestionAssessments)).toMatchObject({
-      suggestedFix: { status: "unverified" }, suggestedTest: { status: "supported" }
-    });
-  });
-
-  it("requires complete evidence and keeps malformed optional types strict", () => {
-    const finding = authorizationComposition().findings[0]!;
-    const assessment = finding.suggestionAssessments!.suggestedFix!;
-    assessment.evidence = [{ path: "", lines: " ", whyRelevant: "" }];
-    expect(() => validateToolCall([{ name: "assess", description: "", parameters: SuggestionAssessmentSchema }],
-      { type: "toolCall", id: "blank", name: "assess", arguments: assessment })).not.toThrow();
-    expect(assessFinalSuggestions(finding, finding.suggestionAssessments).suggestedFix!.status).toBe("unverified");
-    expect(() => validateToolCall([{ name: "assess", description: "", parameters: SuggestionAssessmentSchema }],
-      { type: "toolCall", id: "test", name: "assess", arguments: { ...assessment, contractCheck: { status: "established", requirement: { invalid: true } } } })).toThrow();
-  });
-
-  it("cannot endorse identical proposals by selecting only a favorable assessment", () => {
-    const { findings } = authorizationComposition();
-    const conflicting = structuredClone(findings[0]!);
-    conflicting.id = "conflicting";
-    conflicting.suggestionAssessments!.suggestedFix!.status = "incompatible";
-    conflicting.suggestionAssessments!.suggestedFix!.rationale = "This branch requires a separate capability, not membership.";
-    const sources = compositionSources([...findings, conflicting]);
-    expect(sources.find(source => source.id === "authorization/suggestedFix")!.suggestionAssessment!.status).toBe("unverified");
-    expect(sources.find(source => source.id === "conflicting/suggestedFix")!.suggestionAssessment!.status).toBe("incompatible");
-    const body = renderRetainedComposition([...findings, conflicting]);
-    expect(body).toContain("Remediation remains unverified");
-    expect(body).not.toContain(findings[0]!.suggestedFix);
-    expect(body).toContain("Compatibility assessments conflict");
-    delete conflicting.suggestionAssessments!.suggestedFix;
-    expect(compositionSources([...findings, conflicting]).find(source => source.id === "authorization/suggestedFix")!.suggestionAssessment!.status).toBe("supported");
   });
 
   it("permits consolidation across clusters but retains independent contracts and testing defects", () => {
