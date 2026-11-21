@@ -7447,35 +7447,71 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown.indexOf("**Review incomplete.**")).toBeLessThan(markdown.indexOf("0 confirmed findings"));
   });
 
-  it("renders planner degradation prominently without inventing partial coverage", () => {
-    const coverage: RunCoverageStatus = {
-      totalHunks: 1,
-      reviewedHunks: 1,
-      skippedHunks: 0,
-      failedHunks: 0,
-      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
-      degradedPlanning: true,
-      budgetStopped: false,
-      verificationIncompleteCount: 0,
-      partial: false,
-      reasons: []
-    };
-    const markdown = renderMarkdownReview({
-      summary: "Review completed.",
-      coverage,
-      findings: [],
-      summaryOnlyFindings: [],
-      needsHumanAttention: [],
-      noFindings: true
+  it.each([
+    { scenario: "complete recovered plan", fallback: false, incomplete: false },
+    { scenario: "complete default fallback", fallback: true, incomplete: false },
+    { scenario: "recovered plan with incomplete evidence", fallback: false, incomplete: true }
+  ])("discloses planning separately from incomplete work: $scenario", async ({ fallback, incomplete }) => {
+    const cfg = { ...config(), github: { ...defaultConfig.github, summaryWhenNoFindings: true } };
+    const telemetry = nullTelemetry();
+    const dossier = fakeDossier(["app.ts", "b.ts", "c.ts", "d.ts", "e.ts"]);
+    const { reason: _reason, ...decision } = fakePlan().coverage[0]!;
+    const rawPlan = { diffUnderstanding: fakePlan().diffUnderstanding, coverage: [decision] };
+    const lenses = [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+      enabledByDefault: true, enabled: true, languages: [] }];
+    const { plan, degradedPlanning } = await runPlanner(dossier, cfg, telemetry, {
+      runner: { async runStructured<T>(request: LlmStructuredRequest<T>) {
+        if (fallback) throw new CodegenieError("llm_schema_invalid", "Planner could not submit a valid plan");
+        return request.schemaRepair?.recoverInvalidSubmit?.({ stage: 5, submitTool: "submit_plan", error: "missing reason",
+          submitCalls: [{ id: "submit", arguments: rawPlan }], extraToolNames: [], schemaRepairUsed: false }) as T;
+      } },
+      promptBuilder: fakePromptBuilder(), skills: [], lenses
     });
+    expect(degradedPlanning).toBe(true);
+    expect(plan.plannerRecovery?.sparseRecoveredPlan).toBe(fallback ? undefined : true);
+    const files = dossier.hunkIndex.map(({ path, hunkIds }) => {
+      const file = fakeDiffFile(path);
+      file.hunks[0]!.id = hunkIds[0]!;
+      return file;
+    });
+    const packets = await buildReviewPackets(plan, files, [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: ["core/code-review"] });
+    const evidenceFailure = "Required evidence read timed out.";
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => ({
+      packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "completed",
+      ...(incomplete && index === 0 ? { diagnostics: [{ stage: 7, kind: "incomplete", code: "timeout",
+        reason: evidenceFailure, origin: "tool", workItem: packet.id, recoveryExhausted: true }] } : {})
+    }));
+    const verified = { verified: [], verdicts: [], incompleteCount: 0 };
+    const coverage = aggregateRunCoverage(plan, [], packetResults, verified, telemetry, { allFiles: files, packets, degradedPlanning });
+    const legacyReason = "planner degraded; deterministic default plan used";
+    expect(coverage.reasons).toContain(legacyReason);
+    expect(coverage).toMatchObject({ degradedPlanning: true, reviewedHunks: 5, failedHunks: 0, partial: false });
+    const coverageForComposer = structuredClone(coverage);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const expectedPrompt = promptBuilder.buildComposerPrompt({ groupedFindingsJson: "[]", coverage: coverageForComposer,
+      intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\nNo explicit intent signals were detected from PR or commit text.`,
+      followUpHintNotes: [] }).prompt;
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      expect(request.prompt).toBe(expectedPrompt);
+      return { summary: "Review completed.", composedFindings: [] } as T;
+    } };
+    const result = await dedupeRankAndComposeReview(verified, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, telemetry, { runner, promptBuilder, packets, packetResults, postGithubComments: true });
+    refreshReviewHealth(result);
+    const budget = new BudgetLedger(cfg).summary(result.coverage);
 
-    expect(markdown).toContain("**Degraded run: planner fallback.**");
-    expect(markdown.indexOf("**Degraded run: planner fallback.**")).toBeLessThan(markdown.indexOf("Review completed."));
-    expect(markdown).toContain("## ✅ No Findings");
-    expect(markdown).toContain("No credible findings were found within the reviewed scope");
-    expect(markdown).not.toContain("**Review incomplete.**");
-    expect(markdown).not.toContain("**Review incomplete.");
-    expect(markdown).not.toContain("**Partial review:**");
+    expect(result.coverage).toMatchObject({ degradedPlanning: true, partial: incomplete, reasons: [legacyReason] });
+    expect(budget.completeness).toBe(incomplete ? "partial" : "complete");
+    expect(budget.partialReasons).toEqual(incomplete ? [`Stage 7: ${evidenceFailure}`] : []);
+    const disclosure = "Planning needed deterministic recovery or fallback. This changes how review attention is allocated while keeping every eligible hunk in scope.";
+    for (const output of [renderMarkdownReview(result), result.postingPlan!.reviewBody]) {
+      expect(output.split(disclosure)).toHaveLength(2);
+      expect(output).not.toMatch(/planner failed|default plan used|review completed with degraded planning/iu);
+      expect(output.includes("**Review incomplete.**")).toBe(incomplete);
+      if (incomplete) expect(output).toContain("required evidence gathering remains incomplete");
+      else expect(output).toContain("Reviewed 5/5 hunks.");
+    }
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {

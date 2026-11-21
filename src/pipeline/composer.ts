@@ -24,7 +24,7 @@ import type {
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
-import { coverageDisclosureLines, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
+import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { codeBlock, fenceLanguageForPath, FINDING_ORDER_NOTE, inlineCode, presentationOrder, severityBadge } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
@@ -1853,8 +1853,7 @@ function renderReviewBody(
   health: import("../types.js").ReviewHealth,
   composition?: ReviewResult["composition"]
 ): string {
-  const trustBanner = renderReviewHealth(health, composition, { shown: notes.length, omitted: omittedNoteCount ?? 0 })
-    || renderCoverageTrustBanner(coverage);
+  const trustBanner = renderReviewHealth(health, composition, { shown: notes.length, omitted: omittedNoteCount ?? 0 });
   const lines = [
     "### 🧞 Codegenie Review",
     "",

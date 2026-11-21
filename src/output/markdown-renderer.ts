@@ -1,6 +1,6 @@
 import { healthForResult, renderReviewHealth, factualReviewSummary } from "../util/review-health.js";
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
-import { renderBudgetStopNotice, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
+import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { FINDING_ORDER_NOTE, inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
@@ -12,7 +12,6 @@ export function renderMarkdownReview(result: ReviewResult): string {
       shown: result.needsHumanAttention.length,
       omitted: result.needsHumanAttentionOmittedCount ?? 0
     }),
-    ...(health.status === "completed" ? [renderCoverageTrustBanner(result.coverage)] : []),
     renderBudgetStopNotice(result.coverage),
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
     "",
