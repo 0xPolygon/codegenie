@@ -118,6 +118,16 @@ describe("contract-aware concise composition", () => {
     expect(() => validateWithSchema(schema, legacy)).toThrow();
   });
 
+  it("routes a source discussed under another section kind to retainedSourceRefs (#155)", () => {
+    const registry = {} as LensRegistry;
+    const coverage = { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0 } as RunCoverageStatus;
+    const built = createPromptBuilder(registry).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "Review", coverage });
+    expect(built.templateVersion).toBe("p10.28");
+    expect(built.prompt).toContain("A section's sourceRefs name only sources of that section's kind; when a section discusses a source of another kind (test advice stored in suggestedFix, or a proposal you are explaining but not recommending), cite that source in retainedSourceRefs.");
+    // Label-free wording survives the removal of suggestion assessment labels.
+    expect(built.prompt).not.toMatch(/explaining but not recommending[^.]*(?:supported|incompatible|unverified)/);
+  });
+
   it("asks for publication on every composedFindings item, not once at the root (#98)", () => {
     const registry = {} as LensRegistry;
     const coverage = { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0 } as RunCoverageStatus;

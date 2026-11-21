@@ -188,6 +188,11 @@ describe("evidence-backed attention reconciliation", () => {
     const input = f.build();
     const source = input.inventory.evidence.find(item => item.origin === "repository_tool")!;
     expect(source).toMatchObject({ source: "base", text: f.packet.repositoryEvidence[0]!.text });
+    // #155: the internal packet key is not shown beside the read's own ID, and
+    // a read has no verifier qualification to share.
+    expect(source.id).toBe("repository/auth/read-1");
+    expect(source).not.toHaveProperty("candidateId");
+    expect(JSON.stringify(input.inventory)).not.toContain("repository:");
     expect(JSON.stringify(input.inventory)).not.toContain("Everything is safe");
     expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
     expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [source.id] }], true).decisions[0]!.accepted).toBe(true);
