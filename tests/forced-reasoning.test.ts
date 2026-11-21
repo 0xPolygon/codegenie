@@ -82,6 +82,37 @@ describe("forced submits keep Pi's native reasoning mapping", () => {
   });
 });
 
+describe("forced submits over Vercel's Anthropic Messages API", () => {
+  it.each([
+    { model: "openai/gpt-6-astra", alwaysOn: true },
+    { model: "openai/gpt-6.1-sol", alwaysOn: true },
+    { model: "openai/gpt-6.2-sol", alwaysOn: true },
+    { model: "openai/gpt-6.2-astra", alwaysOn: true },
+    { model: "openai/gpt-6.2-sol-fast", alwaysOn: true },
+    { model: "openai/gpt-6-luna", alwaysOn: false }
+  ])("uses a supported thinking mode for $model", async ({ model, alwaysOn }) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-vercel-thinking-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
+    vi.stubEnv("AI_GATEWAY_API_KEY", "test-only-key");
+    try {
+      const forced = await capture("vercel-ai-gateway", model, true);
+      if (alwaysOn) {
+        const ordinary = await capture("vercel-ai-gateway", model, false);
+        const reasoning = reasoningFields(ordinary);
+        expect(reasoning).toHaveProperty("thinking");
+        expect(reasoningFields(forced)).toEqual(reasoning);
+        expect(valueAt(forced, "tool_choice")).toEqual({ type: "auto" });
+      } else {
+        expect(valueAt(forced, "thinking")).toEqual({ type: "disabled" });
+        expect(valueAt(forced, "tool_choice")).toEqual({ type: "tool", name: "submit_review" });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 // OpenAI-family Responses APIs get the forced choice injected by
 // withToolChoicePayload after Pi's own onPayload hooks, so the request body is
 // captured at a blocked fetch instead (Codex compresses it with zstd).

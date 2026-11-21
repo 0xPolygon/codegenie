@@ -35,9 +35,9 @@ export function modelProviderRouting(raw: unknown): OpenRouterRouting | undefine
 }
 
 // Use automatic selection for the pinned DeepSeek family (the V4.1 Flash
-// endpoint rejected named forced tool_choice in run 78) and for Anthropic
-// models that cannot disable thinking (below). Expose only the submit tool when
-// finalizing and validates its arguments before accepting the result.
+// endpoint rejected named forced tool_choice in run 78) and for models on
+// Anthropic Messages that cannot disable thinking (below). Finalization
+// exposes only the submit tool and validates its arguments before acceptance.
 export function requiresAutomaticSubmitToolChoice(model: Model<Api>): boolean {
   if (anthropicThinkingAlwaysOn(model)) return true;
   const routing = modelProviderRouting(model);
@@ -57,5 +57,10 @@ export function requiresAutomaticSubmitToolChoice(model: Model<Api>): boolean {
 // takes the automatic path too. Models without off: null (e.g. Opus 5,
 // Haiku 5.5) keep forced submit.
 function anthropicThinkingAlwaysOn(model: Model<Api>): boolean {
-  return model.api === "anthropic-messages" && model.reasoning === true && model.thinkingLevelMap?.off === null;
+  if (model.api !== "anthropic-messages" || model.reasoning !== true) return false;
+  // Pi's Vercel catalog omits the off restriction for these GPT models.
+  // They require reasoning on OpenAI, so keep Pi's normal thinking payload
+  // when the gateway translates Anthropic Messages requests (issue #94).
+  return model.thinkingLevelMap?.off === null || (model.provider === "vercel-ai-gateway" &&
+    /^openai\/(?:gpt-6-astra|gpt-6\.1-sol|gpt-6\.2-(?:astra|sol))(?:-(?:fast|batch))?$/u.test(model.id));
 }
