@@ -150,6 +150,8 @@ describe("Plan 98 shared language foundation", () => {
     const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, nullTelemetry());
     const lenses = languageLenses();
     const dossier = await buildPlannerDossier(resolved, kept, facts, decisions, index, defaultConfig, nullTelemetry(), { lenses });
+    // #129: the planner keeps the input label the depth campaign measured.
+    expect(dossier.depth).toBe("normal");
     const plan = defaultPlan(dossier, lenses, "shared language foundation");
     const packets = await buildReviewPackets(plan, kept, facts, index, nullTelemetry(), {
       config: defaultConfig,

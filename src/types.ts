@@ -1,7 +1,9 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
-export type ReviewDepth = "light" | "normal" | "deep";
+// #129 removed the review depth setting. These values are still accepted on
+// every input for one release, then ignored with a config warning.
+export type DeprecatedReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -17,6 +19,7 @@ export type ConfigSource =
   | "provider-settings"
   | "repo-config"
   | "environment"
+  | "eval-case"
   | "cli";
 
 export type ClassificationPathRule = {
@@ -35,7 +38,6 @@ export type CodegenieConfig = {
     restrictTo?: string[];
   };
   review: {
-    depth: ReviewDepth;
     verify: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
@@ -103,7 +105,8 @@ export type CodegeniePaths = {
 export type ProviderSettings = {
   defaultProvider?: string;
   defaultModel?: string;
-  defaultDepth?: ReviewDepth;
+  /** Deprecated (#129): loaded only to warn; never saved again. */
+  defaultDepth?: DeprecatedReviewDepth;
   defaultReasoning?: ReasoningLevel;
 };
 
@@ -1119,7 +1122,8 @@ export type EvalCase = {
     target?: string;
   };
   review?: {
-    depth?: ReviewDepth;
+    /** Deprecated (#129): accepted and ignored with a warning. */
+    depth?: DeprecatedReviewDepth;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
@@ -1630,7 +1634,9 @@ export type DossierCompaction = {
 export type PlannerDossier = {
   runId: string;
   mode: ReviewMode;
-  depth: ReviewDepth;
+  // The single review mode keeps the planner input measured as "normal" in
+  // the plan 128 campaign; changing this label is a prompt change.
+  depth: "normal";
   target: {
     baseRef?: string;
     headRef?: string;

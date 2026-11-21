@@ -185,7 +185,7 @@ User-local provider/auth state:
 ~/.codegenie/             # overridable with CODEGENIE_HOME
   auth.json               # Pi provider credentials, chmod 0600
   models.json             # Pi custom provider/model registry data when supported
-  settings.json           # default provider/model/depth/reasoning, chmod 0600
+  settings.json           # default provider/model/reasoning, chmod 0600
   config.toml             # optional user-level CodegenieConfig overrides and trust opt-ins
   sessions/               # provider/session state when Pi needs it
 ```
@@ -756,7 +756,7 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, the deprecated and ignored `--depth` (#129), repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codegenie.toml`.
@@ -779,17 +779,13 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
 
-Review depth also has no environment layer; stored `defaultDepth` in `settings.json` participates as user-scoped config:
-
-```text
---depth > repo codegenie.toml > settings.json defaultDepth > config.toml > built-in normal
-```
+Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as `normal`. For one release `--depth`, `review.depth` in either TOML file, a stored `defaultDepth` and an eval case's `depth` still accept `light`, `normal` or `deep`, and each such input is ignored with a config warning. The release after that rejects them.
 
 Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
+| `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
 | `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
@@ -814,7 +810,6 @@ type CodegenieConfig = {
     extraSkillPaths: string[]
   }
   review: {
-    depth: "light" | "normal" | "deep"
     verify: boolean
     minSeverity?: Severity
     maxFindings: number
@@ -872,7 +867,6 @@ Provider/model defaults are user-level state, not repo policy. Repo `codegenie.t
 
 Chosen defaults:
 
-- `review.depth = "normal"`
 - `review.verify = true`
 - `review.maxFindings = 25` (report cap)
 - `review.softCommentCap = 7` (inline target)
@@ -941,7 +935,6 @@ codegenie provider models [provider-or-search] [--all]
 codegenie provider config
 codegenie provider config set-provider <provider>
 codegenie provider config set-model <provider> <model>
-codegenie provider config set-depth <light|normal|deep>
 codegenie provider config set-reasoning <low|medium|high|xhigh|auto>
 ```
 
@@ -1727,7 +1720,7 @@ type EvalCase = {
     target?: string
   }
   review?: {
-    depth?: "light" | "normal" | "deep"
+    depth?: "light" | "normal" | "deep"   // deprecated (#129): accepted, ignored with a warning
     lenses?: string[]
     maxFindings?: number
     concurrency?: number

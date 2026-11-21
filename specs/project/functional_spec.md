@@ -42,7 +42,6 @@ With no target arguments, `codegenie review` reviews the current branch against 
 Common review options:
 
 ```bash
-codegenie review --depth light|normal|deep
 codegenie review --lens <lens-name> [--lens <lens-name> ...]
 codegenie review --provider <provider>
 codegenie review --model <model-or-provider/model>
@@ -52,7 +51,7 @@ codegenie review --ci
 codegenie review --no-progress
 ```
 
-`--depth` controls the global review budget and planner bias. The default is `normal`. `light` should favor cheaper packet review and smaller tool budgets. `deep` should allow more `deep` packet coverage and larger tool budgets. Per-hunk coverage may still vary inside the selected depth when the planner sees concrete risk evidence.
+Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as `normal`. For one release `--depth`, `review.depth` in either TOML file, a stored `defaultDepth` and an eval case's `depth` still accept `light`, `normal` or `deep`, and each such input is ignored with a config warning. The release after that rejects them.
 
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 
@@ -152,7 +151,6 @@ codegenie provider models [provider-or-search] [--all]
 codegenie provider config
 codegenie provider config set-provider <provider>
 codegenie provider config set-model <provider> <model>
-codegenie provider config set-depth <light|normal|deep>
 codegenie provider config set-reasoning <low|medium|high|xhigh|auto>
 ```
 
@@ -163,10 +161,9 @@ Behavior:
 - `provider logout [provider]` removes stored credentials for one provider, or all providers after confirmation.
 - `provider auth-status [provider]` reports whether auth is available and where it came from, such as stored credentials, environment variables, runtime override, or model-registry configuration. It must not print secret values.
 - `provider models [provider-or-search] [--all]` lists models from Pi's registry. By default it lists authenticated/available models; `--all` lists every known model. Output should include provider, model id, context window, max output tokens when known, reasoning support, and vision/input capability when known.
-- `provider config` prints user-level effective defaults as JSON, including the codegenie home directory, auth path, models path, settings path, default provider/model, default depth, default reasoning override, and effective depth/reasoning.
+- `provider config` prints user-level effective defaults as JSON, including the codegenie home directory, auth path, models path, settings path, default provider/model, default reasoning override, and effective reasoning.
 - `provider config set-provider` sets the user-level default provider after validating that the provider exists.
 - `provider config set-model` validates the model exists for the provider and stores both the default provider and default model.
-- `provider config set-depth` stores the user-level default review depth using codegenie's `light|normal|deep` depth vocabulary.
 - `provider config set-reasoning` stores a user-level reasoning override; `auto` clears the stored override, letting resolution fall through to `~/.codegenie/config.toml` and then the built-in `high` default. Providers with different reasoning scales map onto codegenie's four levels.
 
 User provider state should live under `~/.codegenie/` by default, overridable with `CODEGENIE_HOME`:
@@ -175,7 +172,7 @@ User provider state should live under `~/.codegenie/` by default, overridable wi
 ~/.codegenie/
   auth.json       # provider credentials, chmod 0600
   models.json     # Pi model registry custom providers/models when supported
-  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  settings.json   # default provider/model/reasoning, chmod 0600
   config.toml     # optional user-level config overrides and trust opt-ins
   sessions/       # provider/session state when Pi needs it
 ```
@@ -189,12 +186,6 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 ```
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
-
-Stored `defaultDepth` participates in review-depth resolution; repo project policy outranks the personal default, and depth has no environment layer:
-
-```text
---depth > repo codegenie.toml > settings.json defaultDepth > config.toml > built-in normal
-```
 
 If no authenticated model can be resolved, codegenie should fail before Stage 5 with a clear `config_error`, for example: `no authenticated provider model is available; run: codegenie provider login <provider>`.
 
@@ -343,7 +334,7 @@ The LLM decides whether a signal matters in the context of the PR. A static sign
 
 The planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
 
-V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
+V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, the fixed review-mode label (`normal`), configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
 
 The planner should explicitly build a diff understanding before assigning coverage and lenses. It should distinguish declared intent from inferred behavior:
 
@@ -368,7 +359,7 @@ The deterministic file filter owns exclusions. Every hunk in a kept file is elig
 
 The planner ranks attention with `light`, `normal`, or `deep` coverage and may suggest lenses and context hints for specific hunks. Later stages may validate malformed planner output or apply deterministic default coverage to omitted hunks, but they should not become independent risk classifiers.
 
-Configured review depth should influence budgets and defaults, not replace judgment. A `light` run may still review a concrete critical-risk hunk at `normal`; a `deep` run may still give mechanical hunks `light` coverage. Deterministic file exclusions apply at every depth.
+Budgets follow each packet's coverage and profile; there is no run-level depth (#129). Deterministic file exclusions always apply.
 
 ## Large Review Handling
 
@@ -749,7 +740,7 @@ Eval cases should be YAML files stored outside the codegenie repository when the
 - An external local repository path.
 - A fixture repository.
 - A branch, commit, commit range, or PR target.
-- Review settings such as depth, lenses, max findings, concurrency, cache on/off, verification on/off, provider/model/reasoning overrides, and telemetry/debug options.
+- Review settings such as lenses, max findings, concurrency, cache on/off, verification on/off, provider/model/reasoning overrides, and telemetry/debug options.
 - Expected final findings.
 - Expected candidate findings.
 - Findings that must not appear.
@@ -931,7 +922,6 @@ This section covers the resolved configuration surface. Repo `codegenie.toml` ma
 V1 configuration should support:
 
 - Default base branch for branch review.
-- Default review depth: `light`, `normal`, or `deep`.
 - Independent verification on or off. Verification is enabled by default and may be disabled only through this explicit configuration, per Stage 9.
 - Path-based file handling rules, including processing mode, review priority, labels, and reasons.
 - Enabling and disabling lenses.
@@ -950,7 +940,6 @@ V1 configuration should support:
 If no config exists, codegenie should run with sensible defaults:
 
 - Core correctness-oriented lenses enabled.
-- Review depth set to `normal`.
 - Independent verification enabled.
 - Style/lint lenses disabled.
 - Low-confidence findings suppressed.
@@ -995,7 +984,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 
 Config trust partitioning:
 
-- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, caps, and `telemetry.enabled`.
+- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, base branch, labels, caps, and `telemetry.enabled`.
 - Out-of-repo or provider-routing settings — `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`). Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 

@@ -129,7 +129,6 @@ describe("run telemetry", () => {
         review: {
           mode: "branch",
           target: { mode: "branch", branchName: "feature", baseBranch: "main" },
-          depth: "deep",
           lenses: ["core/tests"],
           format: "json",
           postGithubComments: false
@@ -335,7 +334,7 @@ describe("run telemetry", () => {
         prNumber: null,
         baseSha: null,
         headSha: null,
-        depth: "deep",
+        depth: null,
         lenses: ["core/tests"],
         format: "json",
         postGithubComments: false

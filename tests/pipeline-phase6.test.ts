@@ -49,7 +49,6 @@ describe("phase 6 live review path", () => {
     for (const config of [
       { ...baseConfig, llm: { ...baseConfig.llm, model: "different-model" } },
       { ...baseConfig, llm: { ...baseConfig.llm, reasoning: "high" as const } },
-      { ...baseConfig, review: { ...baseConfig.review, depth: "deep" as const } },
       { ...baseConfig, lenses: { ...baseConfig.lenses, restrictTo: ["core/tests"] } }
     ]) {
       expect(reviewCacheFingerprint(config, resolved, "registry")).not.toBe(fingerprint);
