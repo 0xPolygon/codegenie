@@ -205,13 +205,17 @@ export function renderCaseResult(result: EvalCaseResult): string {
           ? "gate pass"
           : "gate FAIL";
       const fingerprint = expectation.fingerprintsStable === false ? " | FINGERPRINT UNSTABLE" : "";
+      const adjudicate = expectation.needsAdjudication > 0 ? ` | adjudicate ${expectation.needsAdjudication}/${repeats.repeat}` : "";
       lines.push(
-        `  ${expectation.expectationId}: finalRecall ${expectation.finalMatched}/${repeats.repeat} (${expectation.finalRecallRate.toFixed(2)}) | candidate ${expectation.candidateMatched}/${repeats.repeat} | note ${expectation.noteSurfaced}/${repeats.repeat} | ${gate}${loss.length > 0 ? ` | loss{${loss}}` : ""}${fingerprint}`
+        `  ${expectation.expectationId}: finalRecall ${expectation.finalMatched}/${repeats.repeat} (${expectation.finalRecallRate.toFixed(2)}) | candidate ${expectation.candidateMatched}/${repeats.repeat} | note ${expectation.noteSurfaced}/${repeats.repeat} | ${gate}${loss.length > 0 ? ` | loss{${loss}}` : ""}${adjudicate}${fingerprint}`
       );
     }
   }
   for (const failure of score.expectationResults.filter((item) => item.status === "fail")) {
     lines.push(`  FAIL ${failure.expectationId}: ${failure.loss?.label ?? "expectation failed"}${failure.loss?.subReason ? ` (${failure.loss.subReason})` : ""}`);
+  }
+  for (const result of score.expectationResults.filter((item) => item.needsAdjudication !== undefined)) {
+    lines.push(`  ADJUDICATE ${result.expectationId}: ${result.needsAdjudication!.reason} ${result.needsAdjudication!.findingIds.join(", ")}`);
   }
   for (const violation of score.violations) {
     lines.push(`  VIOLATION ${violation.expectationId}: ${violation.findingId} ${violation.publication}`);

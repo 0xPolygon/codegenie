@@ -19,7 +19,6 @@ should_find:
     path: src/positive.js
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
 should_not_find:
   - id: javascript-marker-free-negative-control
     path: src/negative.js

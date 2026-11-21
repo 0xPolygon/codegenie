@@ -11,7 +11,13 @@ review:
   cache: false
 should_find:
 - id: write-failure-loses-verified-output
-  path: "src/pipeline/{composer,review-runner}.ts"
+  path: src/pipeline/composer.ts
+  lineRange: [346, 406]
+  severityAtLeast: low
+- id: write-failure-loses-verified-output-runner
+  tier: optional
+  path: src/pipeline/review-runner.ts
+  lineRange: [400, 416]
   severityAtLeast: low
 - id: primitive-composer-rejection
   path: src/pipeline/composer.ts

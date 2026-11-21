@@ -19,7 +19,6 @@ should_find:
     path: contracts/Positive.sol
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
 should_not_find:
   - id: solidity-marker-free-negative-control
     path: contracts/Negative.sol

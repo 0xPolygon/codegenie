@@ -23,7 +23,7 @@ A fatal, non-recoverable composer rejection followed by a failure to write a fin
 
 ### Anchor
 
-src/pipeline/composer.ts:396-406 (deferred rethrow after artifact writes) and the review-runner failure path that looks up the retained review by the caught error
+src/pipeline/composer.ts:348-406: the artifact writes at 348-379 run before the deferred rethrow at 402-406. The review-runner failure path at src/pipeline/review-runner.ts:404-415, which looks up the retained review by the caught error, is an optional second anchor (`write-failure-loses-verified-output-runner`); a hit on either counts as the same detection after adjudication. The earlier #112 matcher used a lexical failure-mode pattern, which gave false credit and missed detections (#127).
 
 ### Severity floor
 
@@ -32,6 +32,24 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 edd3ec2 keeps the retained review when an artifact write fails after composition. Its regression test, a composer error plus a write failure, expects the write error together with the retained finding, and fails at the intro. This is the public TypeScript case used in #112 and #128.
+
+## Expectation `write-failure-loses-verified-output-runner` (optional)
+
+### Expected finding
+
+The same defect as `write-failure-loses-verified-output`, anchored at the review-runner failure path. Count a hit here as the same detection after adjudication.
+
+### Anchor
+
+src/pipeline/review-runner.ts:404-415
+
+### Severity floor
+
+The matcher floor is low. Expected severity is low; record it as a calibration note, not as a miss.
+
+### Fixing evidence
+
+Same fix as the required expectation.
 
 ## Expectation `primitive-composer-rejection`
 

@@ -19,4 +19,3 @@ should_find:
     path: src/core.js
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
