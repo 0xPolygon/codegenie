@@ -15101,6 +15101,84 @@ function fakePacket(opts: {
   };
 }
 
+describe("#151 related-group hint", () => {
+  const packetWithHunkSymbol = (id: string, hunkId: string, enclosingSymbol: string, path = "app.ts"): ReviewPacket => ({
+    ...fakePacket(), id,
+    symbolFacts: [{ path, hunkId, enclosingSymbol, changedLines: [1], changedLinesSide: "new", source: "fallback", confidence: "heuristic" }]
+  });
+
+  it("lists same-category groups anchored in the same changed symbol as leads, never merging them itself", async () => {
+    const base = fakeFinding();
+    const finding = (id: string, packetId: string, hunkId: string, line: number, overrides: Partial<CandidateFinding>): CandidateFinding => ({
+      ...base, id, producedBy: { ...base.producedBy, packetId },
+      anchor: { ...base.anchor!, hunkId, line }, evidence: { ...base.evidence, changedCode: "changed line " + id }, ...overrides
+    });
+    const first = finding("route-selection", "packet-route", "h-route", 3, { category: "correctness",
+      title: "Explicit preference selection errors abort routing", failureMode: "A preference selection error now returns before default routing runs." });
+    // Produced by another packet but anchored in the routing hunk: symbols resolve across packets.
+    const second = finding("route-retry", "packet-caller", "h-route", 40, { category: "correctness",
+      title: "Failed preferred routes no longer retry with AUTO", failureMode: "When the selected providers cannot route, the AUTO retry is skipped." });
+    const otherSymbol = finding("ledger-total", "packet-ledger", "h-ledger", 80, { category: "correctness",
+      title: "Ledger totals drop refunds", failureMode: "Refund rows are excluded from the running total." });
+    const otherCategory = finding("route-test", "packet-route", "h-route", 60, { category: "testing",
+      title: "Routing fallback tests stop covering selection errors", failureMode: "The rewritten test no longer exercises a selection error." });
+    let grouped: Array<{ representativeId: string; relatedGroups?: string[] }> = [];
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const promptBuilder = { ...builder, buildComposerPrompt: (input: Parameters<typeof builder.buildComposerPrompt>[0]) => {
+      grouped = JSON.parse(input.groupedFindingsJson);
+      return builder.buildComposerPrompt(input);
+    } };
+    const runner: LlmRunner = { runStructured: async <T>() => ({ summary: "Routing preferences changed.", composedFindings:
+      [first, second, otherSymbol, otherCategory].map((member) => ({ findingIds: [member.id], finalBody: member.failureMode, publication: "inline" })) }) as T };
+    const result = await dedupeRankAndComposeReview({ verified: [first, second, otherSymbol, otherCategory], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner, promptBuilder, diff: fakeDiff(),
+        packets: [packetWithHunkSymbol("packet-route", "h-route", "SolveRoute"), packetWithHunkSymbol("packet-caller", "h-caller", "QuoteIntent"),
+          packetWithHunkSymbol("packet-ledger", "h-ledger", "LedgerTotal")]
+      });
+    const related = Object.fromEntries(grouped.map((group) => [group.representativeId, group.relatedGroups]));
+    expect(grouped).toHaveLength(4);
+    expect(related["route-selection"]).toEqual(["route-retry"]);
+    expect(related["route-retry"]).toEqual(["route-selection"]);
+    expect(related["ledger-total"]).toBeUndefined();
+    expect(related["route-test"]).toBeUndefined();
+    // The composer chose to keep them separate; the hint never merges by itself.
+    expect([...result.findings, ...result.summaryOnlyFindings].map((published) => published.id).sort())
+      .toEqual(["ledger-total", "route-retry", "route-selection", "route-test"]);
+  });
+
+  it("does not link same-named functions in different files", async () => {
+    const base = fakeFinding();
+    const left: CandidateFinding = { ...base, id: "left-validate", producedBy: { ...base.producedBy, packetId: "packet-left" },
+      path: "lib/a/handler.ts", anchor: { ...base.anchor!, path: "lib/a/handler.ts", hunkId: "h-left", line: 5 }, category: "correctness",
+      title: "Validation accepts empty IDs", failureMode: "An empty ID now passes validation in package a." };
+    const right: CandidateFinding = { ...base, id: "right-validate", producedBy: { ...base.producedBy, packetId: "packet-right" },
+      path: "lib/b/handler.ts", anchor: { ...base.anchor!, path: "lib/b/handler.ts", hunkId: "h-right", line: 50 }, category: "correctness",
+      title: "Validation drops the length limit", failureMode: "Long names are no longer rejected in package b." };
+    let grouped: Array<{ representativeId: string; relatedGroups?: string[] }> = [];
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const promptBuilder = { ...builder, buildComposerPrompt: (input: Parameters<typeof builder.buildComposerPrompt>[0]) => {
+      grouped = JSON.parse(input.groupedFindingsJson);
+      return builder.buildComposerPrompt(input);
+    } };
+    const runner: LlmRunner = { runStructured: async <T>() => ({ summary: "Validation changed.", composedFindings:
+      [left, right].map((member) => ({ findingIds: [member.id], finalBody: member.failureMode, publication: "inline" })) }) as T };
+    await dedupeRankAndComposeReview({ verified: [left, right], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner, promptBuilder, diff: fakeDiff(),
+        packets: [packetWithHunkSymbol("packet-left", "h-left", "Validate", "lib/a/handler.ts"), packetWithHunkSymbol("packet-right", "h-right", "Validate", "lib/b/handler.ts")]
+      });
+    expect(grouped).toHaveLength(2);
+    expect(grouped.every((group) => group.relatedGroups === undefined)).toBe(true);
+  });
+
+  it("asks the composer to compare listed related groups under the existing merge rule (p10.27)", () => {
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "", coverage: fakeCoverage(), followUpHintNotes: [] });
+    expect(prompt.templateVersion).toBe("p10.27");
+    expect(prompt.prompt).toContain("A group's relatedGroups lists other groups (by representativeId) with the same category whose findings are anchored in the same changed symbol; compare each listed group with this rule before keeping them separate. The list is a lead, not a decision.");
+  });
+});
+
 function packetWithSymbol(id: string, enclosingSymbol: string): ReviewPacket {
   return {
     ...fakePacket(),
