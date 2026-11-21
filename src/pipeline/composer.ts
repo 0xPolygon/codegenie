@@ -306,7 +306,7 @@ export async function dedupeRankAndComposeReview(
   // without a label gate (#146), an uncited proposal must not leak into JSON.
   for (const finding of capped.findings) {
     const presentation = presentationMeasurements.find(record => record.findingIds.includes(finding.id));
-    publishSupportedSuggestions(finding, pretrim.kept, presentation?.metrics.publishedSuggestionSources);
+    publishSupportedSuggestions(finding, pretrim.kept, presentation?.metrics.publishedSuggestionSources ?? []);
   }
   // Explicitly answering every retained question can finish an evidence handoff.
   // This never rescues a worker that failed to complete its required review.
@@ -772,7 +772,7 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "- attentionResolutions: when an attention inventory is supplied, assess every listed concern exactly once as resolved, narrowed, or unresolved. Resolved/narrowed require independent supportingRefs; unresolved may use [] and preserves the question. Compare published findings as well as other supplied evidence.",
     "- findingIds: non-empty array of known finding IDs.",
     "- Write one concise current conclusion per section kind. Do not generate legacy finalBody.",
-    "- Fix/test sections require supported current suggestion sources. Retain all other proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
+    "- Fix/test sections may cite only current fix/test sources. Retain original (provenance-only) and withheld proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
     "- publication: \"inline\" or \"summary-only\".",
     "",
     "Verified finding groups:",
@@ -965,17 +965,16 @@ function liftConfidenceOneStep(confidence: Confidence): Confidence {
   return "high";
 }
 
-function publishSupportedSuggestions(finding: FinalFinding, candidates: CandidateFinding[], publishedSourceRefs?: string[]): void {
+function publishSupportedSuggestions(finding: FinalFinding, candidates: CandidateFinding[], publishedSourceRefs: string[]): void {
   const memberIds = new Set([finding.id, ...(finding.mergedCandidateIds ?? [])]);
   const sources = compositionSources(candidates.filter(candidate => memberIds.has(candidate.id)), candidates);
   delete finding.suggestionAssessments;
   for (const [field, kind] of [["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
     delete finding[field];
-    const source = sources.find(source => eligibleCompositionSource(source, kind)
-      && (publishedSourceRefs === undefined || publishedSourceRefs.includes(source.id)));
+    const source = sources.find(source => eligibleCompositionSource(source, kind) && publishedSourceRefs.includes(source.id));
     if (source) {
       finding[field] = source.text;
-      (finding.suggestionAssessments ??= {})[field] = source.suggestionAssessment!;
+      if (source.suggestionAssessment) (finding.suggestionAssessments ??= {})[field] = source.suggestionAssessment;
     }
   }
 }

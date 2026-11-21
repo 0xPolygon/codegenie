@@ -1,8 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { defaultConfig } from "../src/config/schema.js";
+import type { LlmStructuredRequest } from "../src/llm/llm-runner.js";
 import { compositionSources, composePresentation, renderRetainedComposition, validateCompositionSubmission, type CompositionMetrics } from "../src/pipeline/composition-content.js";
-import { composerSubmissionSchema } from "../src/pipeline/composer.js";
+import { composerSubmissionSchema, dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
+import { createPromptBuilder } from "../src/skills/prompt-builder.js";
+import type { CodegenieConfig, RunCoverageStatus } from "../src/types.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
+import { CodegenieError } from "../src/util/errors.js";
+import { nullTelemetry } from "./helpers/git.js";
+
+// Lets one test drop the fallback presentation record; every other caller passes through.
+const presentation = vi.hoisted(() => ({ dropFallbackMetrics: false }));
+vi.mock("../src/pipeline/composition-content.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/pipeline/composition-content.js")>();
+  return { ...actual, renderRetainedComposition: (...args: Parameters<typeof actual.renderRetainedComposition>) =>
+    actual.renderRetainedComposition(args[0], args[1], args[2], presentation.dropFallbackMetrics ? undefined : args[3], args[4]) };
+});
 
 function fixture() {
   const data = authorizationComposition();
@@ -84,8 +98,13 @@ describe("supported recommendation publication", () => {
       for (const original of Object.values(finding.originalSuggestions)) expect(body).not.toContain(original.suggestionText);
       expect([...published].sort()).toEqual(["authorization/suggestedFix", "authorization/suggestedTest"]);
     }
-    expect(compositionSources(findings).filter(s => s.findingId === finding.id && (s.kind === "fix" || s.kind === "test") && !s.provenanceOnly)
-      .map(s => s.suggestionAssessment?.status)).toEqual(["unverified", "unverified"]);
+    // Stage 10 sources carry no suggestion label; provenanceOnly alone separates originals.
+    const adviceSources = compositionSources(findings).filter(s => s.findingId === finding.id && (s.kind === "fix" || s.kind === "test"));
+    expect(adviceSources.map(s => [s.id, s.provenanceOnly === true])).toEqual([
+      ["authorization/suggestedFix", false], ["authorization/suggestedTest", false],
+      [originals[0], true], [originals[1], true]
+    ]);
+    for (const source of adviceSources) expect(source).not.toHaveProperty("suggestionAssessment");
     // A provenance-only original cannot be cited as advice even when its historical label claimed support.
     group.sections.find(s => s.kind === "test")!.sourceRefs.push(originals[1]!);
     group.retainedSourceRefs = [originals[0]!];
@@ -167,8 +186,9 @@ describe("supported recommendation publication", () => {
     const rendered = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
     expect(rendered.body).not.toContain(original.suggestionText);
     expect(compositionSources(findings)).toContainEqual(expect.objectContaining({
-      id: ref, text: original.suggestionText, suggestionAssessment: original, provenanceOnly: true
+      id: ref, text: original.suggestionText, provenanceOnly: true
     }));
+    expect(compositionSources(findings).find(s => s.id === ref)).not.toHaveProperty("suggestionAssessment");
     group.sections.find(s => s.kind === "fix")!.sourceRefs.push(ref);
     expect(() => validateCompositionSubmission(submission, findings)).toThrow(/unsupported_suggestion/);
     expect(normalizeCompositionReferences(submission, findings)).toBeUndefined();
@@ -201,7 +221,8 @@ describe("supported recommendation publication", () => {
     expect(() => validateCompositionSubmission(submission, findings)).toThrow(/unsupported_suggestion/);
     const before = structuredClone(submission);
     const repair = createCompositionAttributionRepair(schemaFor(findings), submission, findings)!;
-    expect(repair.prompt).toContain("Repair unsupported composition advice");
+    expect(repair.prompt).toContain("Repair composition advice");
+    expect(repair.prompt).toContain("using only current fix/test sources; original suggestions are provenance only");
     const sections = group.sections.filter(s => s.kind !== "fix");
     const updates = { "composedFindings.0.sections": sections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix", original] };
     const repaired = repair.merge(updates) as typeof submission;
@@ -213,5 +234,91 @@ describe("supported recommendation publication", () => {
     changed[0]!.text = "Rewrite diagnosis";
     expect(() => repair.merge({ ...updates, "composedFindings.0.sections": changed })).toThrow(/preserve impact/);
     expect(() => repair.merge({ "composedFindings": [] })).toThrow();
+  });
+});
+
+describe("#146 Stage 10 advice publication", () => {
+  const coverage = (): RunCoverageStatus => ({ totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0,
+    coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
+    verificationIncompleteCount: 0, partial: false, reasons: [] });
+  const config = (): CodegenieConfig => ({ ...defaultConfig, lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },
+    telemetry: { ...defaultConfig.telemetry, enabled: false }, llm: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 } });
+  const lensRegistry = { allLenses: () => [], enabledLenses: () => [], lens: () => undefined, skillsForLens: () => [], skillsById: () => [], registryHash: () => "fake" };
+  const plan = { diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+    coverage: [{ hunkId: "h1", path: "documents.ts", coverage: "normal" as const, lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }] };
+  const original = "authorization/originalSuggestions/suggestedFix";
+  function withOriginal() {
+    const data = fixture();
+    data.findings[0]!.originalSuggestions = { suggestedFix: { status: "supported", suggestionText: "Use an older membership snapshot.", rationale: "Historical proposal.", evidence: [] } };
+    data.group.retainedSourceRefs = [original];
+    return data;
+  }
+  function citingOriginal(submission: ReturnType<typeof fixture>["submission"]) {
+    const invalid = structuredClone(submission);
+    const group = invalid.composedFindings[0]!;
+    group.sections.find(s => s.kind === "fix")!.sourceRefs = [original];
+    group.retainedSourceRefs = ["authorization/suggestedFix"];
+    return invalid;
+  }
+  function compose(findings: ReturnType<typeof fixture>["findings"], runStructured: <T>(request: LlmStructuredRequest<T>) => Promise<T>) {
+    return dedupeRankAndComposeReview({ verified: findings, verdicts: [] }, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage(), config(), nullTelemetry(), { runner: { runStructured }, promptBuilder: createPromptBuilder(lensRegistry) });
+  }
+
+  it("keeps assessment-label wording out of the composer prompt and both repair prompts", async () => {
+    const { findings, submission } = withOriginal();
+    const prompts: Record<string, string> = {};
+    await compose(findings, async <T>(request: LlmStructuredRequest<T>) => {
+      const invalid = citingOriginal(submission);
+      prompts.composer = request.prompt;
+      prompts.schemaRepair = request.schemaRepair!.buildPrompt!({ stage: 10, submitTool: "submit_composition",
+        error: "schema-invalid arguments: missing required property publication", submitCalls: [{ id: "bad", arguments: invalid }], extraToolNames: [] });
+      prompts.attributionRepair = request.schemaRepair!.createFieldRepair!(request.schema, invalid)!.prompt ?? "";
+      return submission as T;
+    });
+    expect(prompts.composer).toContain("Fix/test sections may cite only current fix/test sources");
+    expect(prompts.schemaRepair).toContain("Fix/test sections may cite only current fix/test sources");
+    expect(prompts.attributionRepair).toContain("Repair composition advice");
+    expect(prompts.attributionRepair).toContain("unsupported_suggestion");
+    for (const prompt of Object.values(prompts)) {
+      for (const phrase of ["supported current", "suggestionAssessment", "unverified"]) expect(prompt).not.toContain(phrase);
+    }
+  });
+
+  it("publishes a cited current fix source and rejects a cited provenance-only original", async () => {
+    const { findings, submission } = withOriginal();
+    const validations: unknown[] = [];
+    const result = await compose(findings, async <T>(request: LlmStructuredRequest<T>) => {
+      validations.push(request.validateSubmit!(citingOriginal(submission) as T), request.validateSubmit!(submission as T));
+      return submission as T;
+    });
+    expect(validations[0]).toMatchObject({ ok: false, details: expect.stringContaining("unsupported_suggestion") });
+    expect(validations[1]).toEqual({ ok: true });
+    const [final] = [...result.findings, ...result.summaryOnlyFindings];
+    if (!final) throw new Error("expected one final finding");
+    expect(final.suggestedFix).toBe(findings[0]!.suggestedFix);
+    expect(final.suggestedTest).toBe(findings[0]!.suggestedTest);
+    expect(final.finalBody).toContain(findings[0]!.suggestedFix);
+    expect(final.finalBody).not.toContain("Use an older membership snapshot.");
+    expect(final.suggestionAssessments).toBeUndefined();
+  });
+
+  it("publishes no structured advice for a final finding without a presentation record", async () => {
+    const { findings } = fixture();
+    const fallback = async () => compose(findings, async () => { throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true }); })
+      .then(result => [...result.findings, ...result.summaryOnlyFindings]);
+    // Control: with its fallback record the same finding mirrors the cited advice.
+    expect((await fallback())[0]!.suggestedFix).toBe(findings[0]!.suggestedFix);
+    presentation.dropFallbackMetrics = true;
+    try {
+      const [final] = await fallback();
+      // The fallback body still renders the advice; only the structured mirror lacks a record to follow.
+      expect(final!.finalBody).toContain(findings[0]!.suggestedFix);
+      expect(final!.suggestedFix).toBeUndefined();
+      expect(final!.suggestedTest).toBeUndefined();
+      expect(final!.suggestionAssessments).toBeUndefined();
+    } finally {
+      presentation.dropFallbackMetrics = false;
+    }
   });
 });

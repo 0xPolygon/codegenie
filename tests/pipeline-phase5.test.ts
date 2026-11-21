@@ -134,26 +134,27 @@ describe("phase 5 pipeline regressions", () => {
           expect(request.prompt).toContain("Incomplete evidence for the whole question can still justify narrowing");
           expect(request.prompt).toContain("keep all unanswered deployment, configuration, caller-contract or other conditions");
           expect(request.prompt).toContain("Explanations of guards must agree with their branch conditions");
-          expect(request.prompt).toContain("explicitly scope a remedy-specific test to its assessed alternative");
+          expect(request.prompt).toContain("explicitly scope a remedy-specific test to the alternative it targets");
           expect(request.prompt).toContain("never invent a replacement test or remedy");
           if (mode === "assessment") {
-            expect(request.prompt).toContain('"sourceRef":"authorization/suggestedTest"');
-            expect(request.prompt).toContain('"sourceField":"suggestionAssessment"');
-            expect(request.prompt.split("Head checks current membership explicitly.")).toHaveLength(2);
+            // #146: Stage 10 sources carry no suggestion label, so assessment
+            // evidence is no longer an attention observation or a citable ref.
+            expect(request.prompt).not.toContain("suggestionAssessment");
+            expect(request.prompt).not.toContain("Head checks current membership explicitly.");
           }
           if (mode === "fallback") throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true });
           const response = { summary: "The document reader violates current-membership policy; deployment remains unconfirmed.",
             composedFindings: mode === "no-findings" ? [] : [{ findingIds: [finding.id], publication: "summary-only",
               ...(mode === "legacy" ? { finalBody: "Legacy prose" } : { sections: fixture.sections, evidenceRefs: fixture.evidenceRefs }) }],
             attentionResolutions: mode === "duplicate" ? [proposal, proposal] : [proposal, { concernId: "policy-question/assumptions/1", disposition: "unresolved", supportingRefs: [], rationale: "Deployment remains unconfirmed." }] };
-          if (mode !== "legacy") expect(request.validateSubmit?.(response as T)?.ok).toBe(!["unknown", "duplicate", "no-findings"].includes(mode));
+          if (mode !== "legacy") expect(request.validateSubmit?.(response as T)?.ok).toBe(!["unknown", "assessment", "duplicate", "no-findings"].includes(mode));
           return response as T;
         } }
       });
     expect(calls).toBe(1);
     expect(verdicts).toEqual(before);
     expect(coverage.partial).toBe(false);
-    const expected = mode === "resolved" || mode === "assessment" ? secondQuestion : mode === "narrowed"
+    const expected = mode === "resolved" ? secondQuestion : mode === "narrowed"
       ? `Does the deployed policy match this repository policy?; ${secondQuestion}` : original.question;
     expect(result.needsHumanAttention).toEqual([{ ...original, question: expected }]);
     if (mode !== "no-findings") {
@@ -1047,10 +1048,12 @@ describe("phase 5 pipeline regressions", () => {
       expect(artifacts.get("composition-sources.json")).toMatchObject({
         sourceComponents: expect.arrayContaining([expect.objectContaining({
           id: finding.id + "/" + field,
-          text: finding[field],
-          suggestionAssessment: expect.objectContaining({ status: "supported" })
+          text: finding[field]
         })])
       });
+    }
+    for (const source of (artifacts.get("composition-sources.json") as { sourceComponents: object[] }).sourceComponents) {
+      expect(source).not.toHaveProperty("suggestionAssessment");
     }
     expect(candidates).toEqual(before);
   });
@@ -1074,7 +1077,8 @@ describe("phase 5 pipeline regressions", () => {
     if (supported) {
       expect(final.finalBody).toContain(finding.suggestedFix);
       expect(final.finalBody).toContain(finding.suggestedTest);
-      expect(final.suggestionAssessments).toMatchObject({ suggestedFix: { status: "supported" }, suggestedTest: { status: "supported" } });
+      // #146: composition sources carry no label, so published advice carries none either.
+      expect(final.suggestionAssessments).toBeUndefined();
     } else {
       expect(final.finalBody).not.toContain(finding.suggestedFix);
       expect(final.finalBody).not.toContain(finding.suggestedTest);
@@ -1083,7 +1087,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(finding.suggestedFix).toBeDefined();
   });
 
-  it("records submitted suggestion status separately from the effective fallback assessment", async () => {
+  it("records submitted suggestion status in candidate metadata while composition sources carry no label", async () => {
     const finding = authorizationComposition().findings[0]!;
     const conflicting = structuredClone(finding);
     conflicting.id = "conflicting";
@@ -1097,16 +1101,22 @@ describe("phase 5 pipeline regressions", () => {
     expect(artifacts.get("composition-sources.json")).toMatchObject({
       sourceComponents: expect.arrayContaining([expect.objectContaining({
         id: "authorization/suggestedFix",
-        text: finding.suggestedFix,
-        suggestionAssessment: expect.objectContaining({ status: "unverified" })
+        text: finding.suggestedFix
       })]),
       candidateMetadata: expect.arrayContaining([expect.objectContaining({
         findingId: "authorization",
         severity: finding.severity,
         confidence: finding.confidence,
         submittedSuggestionStatuses: expect.objectContaining({ suggestedFix: "supported" })
+      }), expect.objectContaining({
+        findingId: "conflicting",
+        submittedSuggestionStatuses: expect.objectContaining({ suggestedFix: "incompatible" })
       })])
     });
+    // #146: neither label reaches the composition sources.
+    for (const source of (artifacts.get("composition-sources.json") as { sourceComponents: object[] }).sourceComponents) {
+      expect(source).not.toHaveProperty("suggestionAssessment");
+    }
   });
 
   it("composes across initial clusters, retains all sources and selects a valid member anchor", async () => {
@@ -1127,7 +1137,8 @@ describe("phase 5 pipeline regressions", () => {
       const built = base.buildComposerPrompt(input);
       expect(built.prompt).toContain("summary must be diagnosis-only");
       expect(built.prompt).toContain("Impact and verification prose must not contain recommendation advice");
-      expect(built.prompt).toContain("Do not invent advice, strengthen a supported proposal");
+      expect(built.prompt).toContain("Do not invent advice, strengthen a proposal");
+      expect(built.prompt).toContain("Fix/test sections may cite only current fix/test sources");
       expect(built.prompt).toContain("a caveat cannot authorize disputed advice");
       expect(built.prompt).toContain("Distinguish counterevidence from missing verification");
       expect(built.prompt).toContain("do not call differently worded alternatives identical");
