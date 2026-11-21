@@ -34,6 +34,10 @@ import {
 import { buildLensRegistry } from "../src/skills/lens-registry.js";
 import type { Skill } from "../src/skills/skill-loader.js";
 import { canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
+import { RepositoryToolsFacade } from "../src/repo/repository-index.js";
+import { SourceResolver } from "../src/repo/source-resolver.js";
+import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
 import type {
   CandidateFinding,
@@ -1774,6 +1778,48 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain('"kind": "whole-file"');
     expect(prompt).toContain('"fileContext"');
     expect(prompt).toContain("export const value = 1;");
+  });
+
+  it.each([
+    { name: "matching whole-file source", mode: "whole-file", large: false, deletionOnly: false, loss: false },
+    { name: "without whole-file context", mode: "per-hunk", large: false, deletionOnly: false, loss: true },
+    { name: "outline omitted the source", mode: "whole-file", large: true, deletionOnly: false, loss: true },
+    { name: "outline used base while the packet used head", mode: "whole-file", large: false, deletionOnly: true, loss: true }
+  ] as const)("counts no-tree outline loss by delivered source (#189): $name", async ({ mode, large, deletionOnly, loss }) => {
+    const repo = initRepo();
+    const filePath = "app.ts";
+    const unchanged = "// Unchanged line\n".repeat(5) + "// Outside the patch\n" + (large ? `// ${"x".repeat(3_000)}\n` : "");
+    const baseText = `export const original = 0;\n${unchanged}`;
+    const headText = (deletionOnly ? "" : "export const changed = 1;\n") + unchanged;
+    writeRepoFile(repo, filePath, baseText);
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, filePath, headText);
+    const head = commitAll(repo, "head");
+    const rawDiff = git(repo, ["diff", base, head]);
+    const diff = parseDiff(rawDiff);
+    const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: base,
+      endCommit: head, mergeBase: base, headSha: head, commits: [], rawDiff });
+    const telemetry = nullTelemetry();
+    const registry = new LanguageAdapterRegistry(new TreeSitterService({ loadLanguage: async () => { throw new Error("grammar unavailable"); } }));
+    const tools = new RepositoryToolsFacade({ diff, resolver, registry, telemetry });
+    const outline = await tools.readFileOutline(filePath, { kind: deletionOnly ? "base" : "head" });
+    const reason = "tree-sitter unavailable; using text outline";
+    expect(outline.meta).toMatchObject({ backend: "text", degraded: true, degradationReason: reason });
+    expect(outline.outline.sourceText?.text).toBe(large ? undefined : deletionOnly ? baseText : headText);
+
+    const file = diff.files[0]!;
+    const packets = await buildReviewPackets(fakePlanForHunks(file.hunks.map(hunk => hunk.id)), [file], [fakeFacts(filePath, mode)],
+      fakeRepositoryIndex(tools), telemetry, { config: config(), enabledLenses: ["core/code-review"] });
+    expect(packets).toHaveLength(1);
+    const packet = packets[0]!;
+    expect(packet.degraded?.reason).toBe(reason);
+    expect(packet.contextDegradationReasons).toContain(reason);
+    expect(packet.contextText.includes(headText)).toBe(mode === "whole-file");
+    expect(packet.contextLoss).toEqual(loss ? [reason] : undefined);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    expect(promptBuilder.buildPacketReviewPrompt({ packet, skills: [] }).prompt).toBe(
+      promptBuilder.buildPacketReviewPrompt({ packet: { ...packet, contextLoss: [reason] }, skills: [] }).prompt
+    );
   });
 
   it("uses base content for configured whole-file deleted files", async () => {

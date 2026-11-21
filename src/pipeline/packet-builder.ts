@@ -333,7 +333,7 @@ async function buildPacket(
     lenses: decisions.flatMap((decision) => decision.lenses),
     attentionNotes,
     labels: first.facts.labels
-  }, symbolContextMetrics);
+  }, symbolContextMetrics, group.wholeFileText);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
@@ -1681,7 +1681,8 @@ async function buildContext(
   symbolFacts: HunkSymbolFacts[],
   telemetry: TelemetryRecorder,
   symbolContextInput: PacketSymbolContextInput,
-  symbolContextMetrics: SymbolContextMetrics
+  symbolContextMetrics: SymbolContextMetrics,
+  wholeFileText: string | undefined
 ): Promise<PacketContextBuildResult> {
   if (!isToolsHost(repoIndex.tools)) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1705,6 +1706,10 @@ async function buildContext(
       ...((result.noSymbolHunkIds ?? []).length > 0 ? [`no_enclosing_symbol: ${(result.noSymbolHunkIds ?? []).join(", ")}`] : [])
     ];
     const degradation = [result.degradation, symbolSource.degradation].filter(Boolean).join("; ");
+    // The fallback outline's source isn't rendered. Compare the delivered whole-file
+    // text with the outline source, which can come from base for a deletion-only hunk.
+    const fallbackSourceDelivered = wholeFileText !== undefined && result.outline?.symbolExtraction === "unavailable"
+      && result.outline.sourceText?.text === wholeFileText;
     return {
       context: result.context,
       text: contextText,
@@ -1713,7 +1718,8 @@ async function buildContext(
       contextDegradationReasons: reasons,
       packetSymbols: result.packetSymbols ?? (result.primarySymbol !== undefined ? [result.primarySymbol] : []),
       ...(degradation.length > 0 ? { degradation } : {}),
-      contextLoss: [result.degradation, symbolSource.loss].filter((reason): reason is string => reason !== undefined && reason.length > 0),
+      contextLoss: [fallbackSourceDelivered ? undefined : result.degradation, symbolSource.loss]
+        .filter((reason): reason is string => reason !== undefined && reason.length > 0),
       ...(symbolSource.quality === "sliced" ? { symbolSliced: true } : {})
     };
   } catch (error) {

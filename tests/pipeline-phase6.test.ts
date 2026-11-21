@@ -323,8 +323,9 @@ describe("phase 6 live review path", () => {
     });
 
     expect(review.health?.status).toBe("failed");
-    const calls = readJsonl<{ stage: number; callId: string; workerId: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
+    const calls = readJsonl<{ stage: number; callId: string; workerId?: unknown }>(path.join(runArtifactDir, "model-calls.jsonl"));
     const call = calls.find((call) => call.stage === 9)!;
+    expect(call.workerId).toEqual(expect.any(String));
     const detail = { stage: 9, workerId: call.workerId, callId: call.callId, providerErrorCode: "invalid_encrypted_content" };
     const events = readJsonl<{ message: string }>(path.join(runArtifactDir, "events.jsonl"));
     expect(events.filter((event) => event.message === "review_health_failed")).toEqual([
