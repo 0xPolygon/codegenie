@@ -1,0 +1,16 @@
+# Public eval case pi/pi-10. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-10
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-10
+command:
+  base: ed76cca69b136931fd93198b4d44f5c3b59e684c
+  head: 7314819f0fe30fa616f32fa3a1fc8d1a856a1446
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: const-rewrite-corrupts-literal-data
+  path: packages/ai/src/api/google-shared.ts
+  lineRange: [381, 397]
+  severityAtLeast: low

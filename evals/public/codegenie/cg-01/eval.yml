@@ -1,0 +1,20 @@
+# Public eval case codegenie/cg-01. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-01
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-01
+command:
+  base: 8a4c5bd1574d4c841343fae94c3cabf9cdc31ff4
+  head: 8f322934e8ff5af44d7e193a84ebcfa7e4a30a81
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: auth-header-redaction
+  path: src/provider/pi-ai-models.ts
+  lineRange: [99, 106]
+  severityAtLeast: low
+- id: judge-resolution-deadline
+  path: src/evals/recommendation-judge.ts
+  lineRange: [66, 82]
+  severityAtLeast: low

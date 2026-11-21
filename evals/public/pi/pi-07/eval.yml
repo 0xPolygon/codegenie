@@ -1,0 +1,16 @@
+# Public eval case pi/pi-07. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-07
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-07
+command:
+  base: 47b5119d09f00cb785409d53d74c4950acc7d803
+  head: 4d9aa837c2ec6e0ebc7599f7e724c7c19c06441e
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: default-tools-disables-extension-tools
+  path: packages/coding-agent/src/core/sdk.ts
+  lineRange: [246, 256]
+  severityAtLeast: low

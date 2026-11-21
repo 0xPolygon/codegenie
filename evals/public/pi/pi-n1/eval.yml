@@ -1,0 +1,15 @@
+# Public eval case pi/pi-n1. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-n1
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-n1
+command:
+  base: 66cd061ab468aeae9fd2e38715d3931f7f77f569
+  head: 4523528b21c66084fdece7ed3ffa10888bc5ac60
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: material-finding-in-clean-change
+  path: "packages/ai/src/utils/error-body.ts"
+  severityAtLeast: medium

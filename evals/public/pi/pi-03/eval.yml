@@ -1,0 +1,16 @@
+# Public eval case pi/pi-03. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-03
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-03
+command:
+  base: f4f0ac7adaef08f2ec750ccb4c76cd90e93922a7
+  head: b94482762321ed0b9f8f245be57c84d786a7105d
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: abort-leaves-tool-calls-unanswered
+  path: packages/agent/src/agent-loop.ts
+  lineRange: [436, 500]
+  severityAtLeast: low

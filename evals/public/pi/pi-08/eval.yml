@@ -1,0 +1,17 @@
+# Public eval case pi/pi-08. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-08
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-08
+command:
+  base: bb437b097bf31f32608580d2f3d09d994533751c
+  head: 3595e080cb013232c4141cab9976eebcdddcc417
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: paste-marker-undefined-suffix
+  path: packages/tui/src/components/editor.ts
+  lineRange: [1303, 1311]
+  severityAtLeast: low
+  failureModePattern: "undefined|optional|suffix"

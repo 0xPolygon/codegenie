@@ -1,0 +1,15 @@
+# Public eval case codegenie/cg-05. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-05
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-05
+command:
+  base: 51e8625293b8792f1ccdd31d82f5d5f3d2af332f
+  head: 3e7a960cda68366c66dd1ec469063d309f7b9cb7
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: replay-signature-cache-credentials
+  path: "src/llm/{model-call-cache,assistant-replay}.ts"
+  severityAtLeast: low

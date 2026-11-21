@@ -1,0 +1,16 @@
+# Public eval case pi/pi-06. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-06
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-06
+command:
+  base: b7f788194971a2397526f17aa836881d77394df5
+  head: d7951ec3624fa3c8fed15426292de905cf496e3d
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: skill-prefix-no-longer-lists-skills
+  path: packages/tui/src/autocomplete.ts
+  lineRange: [333, 341]
+  severityAtLeast: low
