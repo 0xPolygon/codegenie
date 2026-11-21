@@ -1,5 +1,10 @@
 # Dogfood: codegenie reviews this repo's PRs, built from the TRUSTED base.
 #
+# Manual only. PR reviews run locally (Luna high, full debug telemetry) so the
+# team keeps every trace; this workflow is kept to smoke-test the Action, e.g.
+# before a release. Trigger it with a PR comment containing the trigger phrase
+# ("codegenie review").
+#
 # Deliberately NOT `uses: 0xPolygon/codegenie@<tag>` — the published action
 # installs from npm, while this builds from source. The checkout pins the base
 # revision (default branch on comment events), so a PR cannot modify the
@@ -14,8 +19,6 @@
 name: codegenie review
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -31,7 +34,8 @@ env:
 
 concurrency:
   group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  # false: an unrelated PR comment must not cancel an in-flight manual run.
+  cancel-in-progress: false
 
 jobs:
   review:
