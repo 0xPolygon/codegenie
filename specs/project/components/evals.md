@@ -427,7 +427,7 @@ Validation rules (all violations are collected across all case files and reporte
 - `category` must be a valid `FindingCategory`; `severityAtLeast` a valid `Severity`.
 - `titlePattern` / `failureModePattern` must compile as ECMAScript regular expressions; compilation failures are load-time errors.
 - `verifier` and `merge` blocks do not exist in the v1 `EvalCase`; their presence is an unknown-key validation error (verifier/merge expectations are deferred — see architecture.md Future Considerations).
-- `expect.maxPromptCharsByStage` keys must parse as numeric stage ids `1`–`11` (YAML keys are strings, e.g. `"7"`); values must be positive integers. All other `expect.*` values must be positive numbers (`minFindings` may be `0`).
+- `expect.maxPromptCharsByStage` keys must parse as current numeric stage ids (`1`–`7` and `9`–`11`; Stage 8 was deleted in #114; YAML keys are strings, e.g. `"7"`); values must be positive integers. All other `expect.*` values must be positive numbers (`minFindings` may be `0`).
 - `review.*` values must satisfy the same constraints the config schema applies to the corresponding `CodegenieConfig` fields.
 
 A complete case, illustrating literal key mapping:

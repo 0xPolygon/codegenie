@@ -49,7 +49,7 @@ A control case was proposed: a synthetic fixture shaped like the historical trig
 
 ## Repeated hints after removal
 
-Follow-up hints raised by several packets are now handled exactly like isolated hints. They are recorded in telemetry, and medium- and high-confidence hints appear as "needs human attention" notes. Nothing suppresses them any more. Stage ids 9 to 11 are unchanged.
+Follow-up hints raised by several packets are now handled exactly like isolated hints. They are recorded in telemetry, and medium- and high-confidence hints appear as "needs human attention" notes. The Stage 8 resolution path that removed hints on an exact key match is gone. Duplicate grouping, and evidence-backed resolution in Stages 9 and 10, still apply. Stage ids 9 to 11 are unchanged.
 
 ## Limits of the evidence
 
