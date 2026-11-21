@@ -60,7 +60,7 @@ import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/stdout-renderer.js";
-import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
+import { isDisclosableCoverageReason, PLANNER_DEGRADED_REASON, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
@@ -1032,7 +1032,7 @@ export function aggregateRunCoverage(
     reasons.push("verification disabled by config; candidates were not independently verified");
   }
   if (opts.degradedPlanning) {
-    reasons.push("planner degraded; deterministic default plan used");
+    reasons.push(PLANNER_DEGRADED_REASON);
   }
   if (opts.budgetStopped) {
     reasons.push("budget exhausted before all review work completed");
@@ -1537,8 +1537,7 @@ export class BudgetLedger {
         ...(coverage.diagnostics ?? []).map(diagnostic => `Stage ${diagnostic.stage}: ${diagnostic.reason}`),
         ...(coverage.failedHunks ? [`${coverage.failedHunks} hunks failed review`] : []),
         ...(coverage.verificationIncompleteCount ? [`${coverage.verificationIncompleteCount} verifications incomplete`] : []),
-        ...(coverage.budgetStopped ? ["Review budget exhausted"] : []),
-        ...(coverage.degradedPlanning ? ["Planning incomplete"] : [])
+        ...(coverage.budgetStopped ? ["Review budget exhausted"] : [])
       ] : [],
       multiplier: this.config.review.budgetBoost,
       configured: {
