@@ -1,6 +1,8 @@
 import type { ReviewDiagnostic, ReviewHealth, ReviewResult, RunCoverageStatus } from "../types.js";
+import type { LlmToolResultSummary } from "../llm/llm-runner.js";
 import { isCodegenieError } from "./errors.js";
 import { stripCredentials } from "../telemetry/redaction.js";
+import { isLocalToolBudgetRejectionReason } from "./context-pressure.js";
 
 export function reviewDiagnostic(stage: number, error: unknown, workItem?: string, outcome?: string): ReviewDiagnostic {
   const code = isCodegenieError(error) ? error.code : "unknown_execution_error";
@@ -65,13 +67,30 @@ function safeText(text: string): string {
   return stripCredentials(text).replace(/[\r\n]+/g, " ").replace(/[<>&`*\[\]]/g, "").slice(0, 600);
 }
 
+// Keep the original diagnostic in the coverage shown to the composer. Apply the
+// completed-packet exception only when deciding what remains required work.
+const completedPacketDiagnosticReplacements = new WeakMap<ReviewDiagnostic, ReviewDiagnostic[]>();
+
+export function requiredDiagnosticsAfterComposition(diagnostic: ReviewDiagnostic): ReviewDiagnostic[] {
+  return completedPacketDiagnosticReplacements.get(diagnostic) ?? [diagnostic];
+}
+
 /** Operational recovery requires the same complete request to succeed, not just a valid final payload. */
-export function unresolvedToolDiagnostic(stage: number, results: import("../llm/llm-runner.js").LlmToolResultSummary[], workItem: string): ReviewDiagnostic | undefined {
+export function unresolvedToolDiagnostic(stage: number, results: LlmToolResultSummary[], workItem: string, completedPacket = false): ReviewDiagnostic | undefined {
   const failures = results.filter((result, index) => result.errorCode &&
     !["invalid_args", "path_outside_repo"].includes(result.errorCode) &&
     !results.slice(index + 1).some(later => result.requestKey !== undefined && later.requestKey === result.requestKey && later.status === "ok" && !later.truncated));
   const failed = failures.find(result => result.errorCode !== "budget_exhausted" && result.errorCode !== "timeout") ?? failures[0];
   if (!failed) return undefined;
+  const diagnostic = toolFailureDiagnostic(stage, failed, workItem);
+  if (completedPacket && isLocalToolBudgetRejectionReason(failed.rejectionReason)) {
+    const requiredFailure = failures.find(result => !isLocalToolBudgetRejectionReason(result.rejectionReason));
+    completedPacketDiagnosticReplacements.set(diagnostic, requiredFailure ? [toolFailureDiagnostic(stage, requiredFailure, workItem)] : []);
+  }
+  return diagnostic;
+}
+
+function toolFailureDiagnostic(stage: number, failed: LlmToolResultSummary, workItem: string): ReviewDiagnostic {
   return { stage, workItem, origin: "tool", code: failed.errorCode!, kind: failed.errorCode === "budget_exhausted" || failed.errorCode === "timeout" ? "incomplete" : "failure",
     reason: stripCredentials(failed.preview ?? "A tool failed and required evidence remains unresolved; recovery could not be established.").slice(0, 600), recoveryExhausted: true };
 }

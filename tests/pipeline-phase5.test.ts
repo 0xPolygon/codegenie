@@ -5839,6 +5839,66 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it.each([
+    { incomplete: false, confidence: "medium", health: "unresolved" },
+    { incomplete: false, confidence: "low", health: "completed" },
+    { incomplete: true, confidence: "medium", health: "incomplete" }
+  ])("reports $health after a packet result budget refusal", async ({ incomplete, confidence, health }) => {
+    const packet = fakePacket();
+    const plan = fakePlan();
+    const question = "Does the caller validate the input before calling the changed function?";
+    const adapter = scriptedPiAdapter([
+      assistantMessage([
+        toolCall("fill", "read_range", { path: packet.path, startLine: 1, endLine: 1 }),
+        toolCall("refused", "read_range", { path: packet.path, startLine: 2, endLine: 2 })
+      ]),
+      assistantMessage([toolCall("submit", "submit_review", {
+        reviewStatus: incomplete ? "incomplete" : "no_findings",
+        noFindingReason: "Caller evidence could not be retrieved.",
+        findings: [],
+        followUpHints: [{ question, files: [packet.path], symbols: [], suggestedLenses: [],
+          reason: "The requested caller evidence was unavailable.", confidence }],
+        uncertainties: []
+      })])
+    ]);
+    const events: Array<Pick<TelemetryEvent, "stage" | "message" | "data">> = [];
+    const cfg = config();
+    const { recorder } = createRunTelemetry({ telemetryConfig: cfg.telemetry });
+    const telemetry = { ...recorder, event: (event: (typeof events)[number]) => { events.push(event); } };
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const packets = [packet];
+    const packetResults = await runLensPackets(plan, packets, fakeTools("x".repeat(20_000)), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    const verified = { verified: [], incompleteCount: 0, verdicts: [] };
+    const coverage = aggregateRunCoverage(plan, [], packetResults, verified, telemetry, { packets });
+    const result = await dedupeRankAndComposeReview(verified, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, telemetry, { packets, packetResults, promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        runner: { runStructured: async request => {
+          expect(extractPromptJson<RunCoverageStatus>(request.prompt, "coverage-status")?.diagnostics)
+            .toEqual([expect.objectContaining({ stage: 7, code: "budget_exhausted", kind: "incomplete" })]);
+          throw composerTransientError();
+        } } });
+    refreshReviewHealth(result);
+
+    expect(events).toContainEqual(expect.objectContaining({ stage: 7, message: "tool_call_rejected",
+      data: expect.objectContaining({ reason: "tool_result_budget_exhausted" }) }));
+    expect(telemetry.snapshotContextPressure?.()).toMatchObject({
+      toolBudgetRejections: 1, toolBudgetRejectionsByStage: { 7: 1 },
+      rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 1 }]
+    });
+    expect(packetResults[0]!.status).toBe(incomplete ? "incomplete" : "completed");
+    expect(result.coverage).toMatchObject({
+      totalHunks: 1, reviewedHunks: incomplete ? 0 : 1, failedHunks: incomplete ? 1 : 0,
+      verificationIncompleteCount: 0, budgetStopped: false, partial: incomplete
+    });
+    expect(result.health).toMatchObject({ status: health, diagnostics: incomplete
+      ? [expect.objectContaining({ stage: 7, kind: "incomplete", code: "budget_exhausted", origin: "tool" })] : [] });
+    if (confidence === "low") expect(renderMarkdownReview(result)).not.toContain(question);
+    else expect(renderMarkdownReview(result)).toContain(question);
+  });
+
   it("persists local tool-budget pressure from recorded tool calls into budget artifacts", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export function value() {\n  return 1;\n}\n");
