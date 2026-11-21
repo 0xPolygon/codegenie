@@ -321,14 +321,24 @@ export function reconcileAttention(
 ) {
   const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
   const concerns = new Map(input.groups.flatMap(group => group.concerns).filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern]));
+  // A remaining question identical to the concern answers nothing: the decision
+  // is unresolved, and the original question is retained either way.
+  const canonicalizedConcernIds: string[] = [];
+  const submitted = (proposals ?? []).map(proposal => {
+    const concern = concerns.get(proposal.concernId);
+    if (!concern || proposal.disposition === "resolved" || proposal.remainingQuestion?.trim() !== concern.question.trim()) return proposal;
+    canonicalizedConcernIds.push(proposal.concernId);
+    const { remainingQuestion: _unchanged, ...decision } = proposal;
+    return { ...decision, disposition: "unresolved" as const };
+  });
   // sourceRef exists only when the full observation is already supplied in
   // published finding components. It remains usable when its duplicate registry
   // entry was omitted from the separate attention inventory's size cap.
   const evidence = citableEvidence(input);
   const counts = new Map<string, number>();
-  for (const proposal of proposals ?? []) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);
+  for (const proposal of submitted) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);
   const accepted = new Map<string, Resolution>();
-  const decisions = (proposals ?? []).map(proposal => {
+  const decisions = submitted.map(proposal => {
     const concern = concerns.get(proposal.concernId);
     const refs = proposal.supportingRefs;
     const reason = !enabled ? "composition_unavailable"
@@ -359,7 +369,7 @@ export function reconcileAttention(
     return { candidateId: group.candidateId, original: group.original, remainingQuestion: remaining,
       concernIds: group.concerns.map(concern => concern.id), ...(group.ineligibleReason ? { ineligibleReason: group.ineligibleReason } : {}) };
   });
-  return { notes, decisions, outcomes };
+  return { notes, decisions, outcomes, canonicalizedConcernIds };
 }
 
 /** Require coverage only for concerns actually delivered within the inventory cap. */
@@ -389,11 +399,15 @@ export function attentionResolutionErrors(input: AttentionReconciliation, propos
 // source accounting untouched. Index merging cannot remove duplicate decisions.
 export function createAttentionResolutionRepair(schema: TSchema, original: SubmitComposition, input: AttentionReconciliation): FieldRepair | undefined {
   const errors = attentionResolutionErrors(input, original.attentionResolutions);
-  if (!errors.length || submissionIssues(schema, original).some(issue => !issue.path.startsWith("attentionResolutions"))) return;
+  // Unexpected keys are dropped by shape cleanup; they must not divert an
+  // attention-only failure to index-merging field repair, whose partial lists
+  // cannot meet the pinned decision count.
+  const cleaned = cleanupSubmitShape(schema, original);
+  if (!errors.length || cleaned.unusablePaths.length || submissionIssues(schema, cleaned.arguments).some(issue => !issue.path.startsWith("attentionResolutions"))) return;
   const patchSchema = Type.Object({ attentionResolutions: structuredClone((schema as typeof SubmitCompositionSchema).properties.attentionResolutions) }, { additionalProperties: false, required: ["attentionResolutions"] });
-  const baseline = structuredClone(original) as unknown as Record<string, unknown>;
+  const baseline = structuredClone(cleaned.arguments) as Record<string, unknown>;
   return {
-    schema: patchSchema, baseline, paths: ["attentionResolutions"], diagnostics: focusedRepairDiagnostics(schema, original),
+    schema: patchSchema, baseline, paths: ["attentionResolutions"], diagnostics: focusedRepairDiagnostics(schema, cleaned.arguments),
     prompt: `Repair only attentionResolutions; return the complete replacement list. Assess every supplied concern exactly once. Compare with supplied evidence and published findings; use unresolved with a reason and empty supportingRefs when evidence cannot answer it. Resolved/narrowed decisions require independent supporting references. Preserve unanswered parts in narrowed remainingQuestion. All findings and their sources are retained unchanged.\n${errors.join("\n")}`,
     merge(values) {
       const cleaned = cleanupSubmitShape(patchSchema, values);

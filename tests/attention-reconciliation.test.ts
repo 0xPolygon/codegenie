@@ -146,6 +146,23 @@ describe("evidence-backed attention reconciliation", () => {
     expect(attentionResolutionErrors({ ...omitted, inventory: { ...omitted.inventory, concerns: [] } }, undefined)).toEqual([]);
   });
 
+  it("repairs attention-only failures atomically even when the draft carries an unexpected top-level key (#155)", () => {
+    const f = fixture();
+    const input = f.build();
+    const schema = composerSubmissionSchema([], input);
+    const original = { summary: "Keep the finding.", composedFindings: [], publication: "inline", attentionResolutions: [f.proposal, f.proposal] };
+    expect(submissionIssues(schema, original)).toContainEqual({ path: "publication", kind: "unknown" });
+    const repair = createAttentionResolutionRepair(schema, original, input)!;
+    expect(repair.paths).toEqual(["attentionResolutions"]);
+    expect(repair.prompt).toContain("return the complete replacement list");
+    const values = { attentionResolutions: [f.proposal, { concernId: input.inventory.concerns[1]!.id,
+      disposition: "unresolved" as const, supportingRefs: [], rationale: "Deployment cannot be established." }] };
+    const merged = repair.merge(values);
+    expect(merged).toEqual({ summary: original.summary, composedFindings: [], ...values });
+    expect(submissionIssues(schema, merged)).toEqual([]);
+    expect(original.publication).toBe("inline");
+  });
+
   it("retains verifier answers before large matching tables consume the inventory", () => {
     const f = fixture(["Does readDocument reject revoked sessions?", "Does restoreArchive preserve archived records?"]);
     f.concern.unresolvedConcern!.files = ["permissions.ts", "archives.ts"];
@@ -282,6 +299,27 @@ describe("evidence-backed attention reconciliation", () => {
     expect(result.decisions[0]!.accepted).toBe(true);
   });
 
+  it("treats a remaining question identical to the concern as unresolved instead of rejecting it (#155)", () => {
+    const f = fixture();
+    const input = f.build();
+    const [first, second] = input.inventory.concerns;
+    const unchanged = { ...f.proposal, disposition: "narrowed" as const, remainingQuestion: `  ${first!.question} ` };
+    const repeated = { concernId: second!.id, disposition: "unresolved" as const, supportingRefs: [], rationale: "No deployment evidence.", remainingQuestion: second!.question };
+    expect(attentionResolutionErrors(input, [unchanged, repeated])).toEqual([]);
+    const result = reconcileAttention(input, [unchanged, repeated], true);
+    expect(result.canonicalizedConcernIds).toEqual([first!.id, second!.id]);
+    expect(result.decisions.map(decision => [decision.disposition, decision.accepted, "remainingQuestion" in decision])).toEqual([["unresolved", true, false], ["unresolved", true, false]]);
+    expect(result.decisions[0]!.supportingRefs).toEqual(f.proposal.supportingRefs);
+    expect(result.notes).toEqual([f.concern.unresolvedConcern]);
+    // Only exact identity after trimming is canonicalized; invalid references and
+    // a resolved decision that repeats its question are still rejected.
+    expect(reconcileAttention(input, [{ ...unchanged, remainingQuestion: first!.question + "?" }], true).decisions[0]).toMatchObject({ disposition: "narrowed", accepted: true });
+    expect(attentionResolutionErrors(input, [{ ...unchanged, supportingRefs: ["invented/source"] }, repeated])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
+    expect(attentionResolutionErrors(input, [{ ...f.proposal, remainingQuestion: first!.question }, repeated])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    const { remainingQuestion: _repeated, ...plain } = repeated;
+    expect(reconcileAttention(input, [f.proposal, plain], true).canonicalizedConcernIds).toEqual([]);
+  });
+
   it("removes a fully answered concern while preserving its original and supporting evidence in the outcome", () => {
     const f = fixture(["Does head include a revoked-session test?"]);
     const result = reconcileAttention(f.build(), [f.proposal], true);
@@ -290,16 +328,15 @@ describe("evidence-backed attention reconciliation", () => {
     expect(result.decisions[0]).toMatchObject({ accepted: true, supportingRefs: f.proposal.supportingRefs });
   });
 
-  it.each(["unknown-concern", "unknown-evidence", "self-support", "blank-rationale", "duplicate", "empty-narrowing", "unchanged-narrowing", "conflicting-question"])("rejects %s without dropping the concern", mode => {
+  it.each(["unknown-concern", "unknown-evidence", "self-support", "blank-rationale", "duplicate", "empty-narrowing", "conflicting-question"])("rejects %s without dropping the concern", mode => {
     const f = fixture();
     const input = f.build();
-    let proposal: NonNullable<Parameters<typeof reconcileAttention>[1]>[number] = { ...f.proposal };
+    const proposal: NonNullable<Parameters<typeof reconcileAttention>[1]>[number] = { ...f.proposal };
     if (mode === "unknown-concern") proposal.concernId = "missing";
     if (mode === "unknown-evidence") proposal.supportingRefs = ["missing"];
     if (mode === "self-support") proposal.supportingRefs = ["attention/question/proofAssessment"];
     if (mode === "blank-rationale") proposal.rationale = " ";
     if (mode === "empty-narrowing") proposal.disposition = "narrowed";
-    if (mode === "unchanged-narrowing") proposal = { ...proposal, disposition: "narrowed", remainingQuestion: input.inventory.concerns[0]!.question };
     if (mode === "conflicting-question") proposal.remainingQuestion = "Still open?";
     const result = reconcileAttention(input, mode === "duplicate" ? [proposal, proposal] : [proposal], true);
     expect(result.notes).toEqual([f.concern.unresolvedConcern]);

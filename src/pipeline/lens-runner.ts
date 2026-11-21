@@ -518,7 +518,7 @@ async function runPacket(
   const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, telemetry, workerId);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, telemetry, workerId);
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
-    ? unresolvedToolDiagnostic(7, toolResults, packet.id) : undefined;
+    ? unresolvedToolDiagnostic(7, toolResults, packet.id, reviewStatus !== "incomplete") : undefined;
   const result: PacketReviewResult = {
     repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ?? []),
     ...(diagnostic ? { diagnostics: [diagnostic] } : {}),

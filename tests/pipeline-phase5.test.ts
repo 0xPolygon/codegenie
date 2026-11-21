@@ -92,7 +92,7 @@ describe("phase 5 pipeline regressions", () => {
     if (!exhaust) expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections[0]!.text);
   });
 
-  it.each(["resolved", "assessment", "narrowed", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
+  it.each(["resolved", "assessment", "narrowed", "unchanged", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
     // Supplied semantic decisions exercise plumbing, not model inference.
     const fixture = authorizationComposition();
     const finding = fixture.findings[0]!;
@@ -114,14 +114,16 @@ describe("phase 5 pipeline regressions", () => {
       status: "completed", adaptiveReview: { outcome: "timed_out", attempts: 1, trigger: "concrete_hint" } }])!;
     const artifacts = new Map<string, unknown>();
     let calls = 0;
-    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" ? "narrowed" : "resolved",
+    const events: Array<{ message: string; data?: unknown }> = [];
+    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" || mode === "unchanged" ? "narrowed" : "resolved",
       supportingRefs: [mode === "unknown" ? "absent-source" : mode === "assessment" ? "authorization/suggestedTest" : "authorization/evidence/relatedCode/0"],
       rationale: "Supplied policy makes current membership authoritative; production exposure is separate.",
-      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}) };
+      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}),
+      ...(mode === "unchanged" ? { remainingQuestion: ` ${firstQuestion} ` } : {}) };
     const promptBuilder = createPromptBuilder(fakeLensRegistry());
     const result = await dedupeRankAndComposeReview({ verified: mode === "no-findings" ? [] : fixture.findings, verdicts }, fakePlan(),
       { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, coverage, config(),
-      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
+      { ...nullTelemetry(), event: event => { events.push(event); }, writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
         postGithubComments: true, promptBuilder,
         runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
           calls++;
@@ -152,6 +154,8 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(calls).toBe(1);
     expect(verdicts).toEqual(before);
+    expect(events.filter(event => event.message === "attention_unchanged_question_canonicalized").map(event => event.data))
+      .toEqual(mode === "unchanged" ? [{ concernIds: ["policy-question/assumptions/0"], disposition: "unresolved" }] : []);
     expect(coverage.partial).toBe(false);
     const expected = mode === "resolved" || mode === "assessment" ? secondQuestion : mode === "narrowed"
       ? `Does the deployed policy match this repository policy?; ${secondQuestion}` : original.question;
@@ -5837,6 +5841,66 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ status: "review_failed", reason: "budget_stopped before dispatch" }),
       expect.objectContaining({ status: "review_failed", reason: "budget_stopped before dispatch" })
     ]));
+  });
+
+  it.each([
+    { incomplete: false, confidence: "medium", health: "unresolved" },
+    { incomplete: false, confidence: "low", health: "completed" },
+    { incomplete: true, confidence: "medium", health: "incomplete" }
+  ])("reports $health after a packet result budget refusal", async ({ incomplete, confidence, health }) => {
+    const packet = fakePacket();
+    const plan = fakePlan();
+    const question = "Does the caller validate the input before calling the changed function?";
+    const adapter = scriptedPiAdapter([
+      assistantMessage([
+        toolCall("fill", "read_range", { path: packet.path, startLine: 1, endLine: 1 }),
+        toolCall("refused", "read_range", { path: packet.path, startLine: 2, endLine: 2 })
+      ]),
+      assistantMessage([toolCall("submit", "submit_review", {
+        reviewStatus: incomplete ? "incomplete" : "no_findings",
+        noFindingReason: "Caller evidence could not be retrieved.",
+        findings: [],
+        followUpHints: [{ question, files: [packet.path], symbols: [], suggestedLenses: [],
+          reason: "The requested caller evidence was unavailable.", confidence }],
+        uncertainties: []
+      })])
+    ]);
+    const events: Array<Pick<TelemetryEvent, "stage" | "message" | "data">> = [];
+    const cfg = config();
+    const { recorder } = createRunTelemetry({ telemetryConfig: cfg.telemetry });
+    const telemetry = { ...recorder, event: (event: (typeof events)[number]) => { events.push(event); } };
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const packets = [packet];
+    const packetResults = await runLensPackets(plan, packets, fakeTools("x".repeat(20_000)), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    const verified = { verified: [], incompleteCount: 0, verdicts: [] };
+    const coverage = aggregateRunCoverage(plan, [], packetResults, verified, telemetry, { packets });
+    const result = await dedupeRankAndComposeReview(verified, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, telemetry, { packets, packetResults, promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        runner: { runStructured: async request => {
+          expect(extractPromptJson<RunCoverageStatus>(request.prompt, "coverage-status")?.diagnostics)
+            .toEqual([expect.objectContaining({ stage: 7, code: "budget_exhausted", kind: "incomplete" })]);
+          throw composerTransientError();
+        } } });
+    refreshReviewHealth(result);
+
+    expect(events).toContainEqual(expect.objectContaining({ stage: 7, message: "tool_call_rejected",
+      data: expect.objectContaining({ reason: "tool_result_budget_exhausted" }) }));
+    expect(telemetry.snapshotContextPressure?.()).toMatchObject({
+      toolBudgetRejections: 1, toolBudgetRejectionsByStage: { 7: 1 },
+      rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 1 }]
+    });
+    expect(packetResults[0]!.status).toBe(incomplete ? "incomplete" : "completed");
+    expect(result.coverage).toMatchObject({
+      totalHunks: 1, reviewedHunks: incomplete ? 0 : 1, failedHunks: incomplete ? 1 : 0,
+      verificationIncompleteCount: 0, budgetStopped: false, partial: incomplete
+    });
+    expect(result.health).toMatchObject({ status: health, diagnostics: incomplete
+      ? [expect.objectContaining({ stage: 7, kind: "incomplete", code: "budget_exhausted", origin: "tool" })] : [] });
+    if (confidence === "low") expect(renderMarkdownReview(result)).not.toContain(question);
+    else expect(renderMarkdownReview(result)).toContain(question);
   });
 
   it("persists local tool-budget pressure from recorded tool calls into budget artifacts", async () => {
