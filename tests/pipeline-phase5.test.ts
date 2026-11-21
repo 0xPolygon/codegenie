@@ -3364,6 +3364,7 @@ describe("phase 5 pipeline regressions", () => {
     { name: "capped symbol read with exact excerpts", truncated: true, excerpts: "all", changed: [12], coverage: "normal" as const, loss: undefined },
     { name: "excerpts unavailable", truncated: true, excerpts: "none", changed: [12], coverage: "normal" as const, loss: "enclosing symbol excerpts unavailable" },
     { name: "one of two excerpts unread", truncated: false, excerpts: "first", changed: [12, 300], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 2 unread" },
+    { name: "fifth excerpt range past the cap", truncated: false, excerpts: "all", changed: [12, 80, 160, 240, 320], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 5 unread" },
     { name: "slice with no review tools", truncated: false, excerpts: "all", changed: [12], coverage: "light" as const, loss: "enclosing symbol source sliced with no review tools" }
   ])("separates designed symbol slicing from real context loss without changing the prompt (#175): $name", async ({ truncated, excerpts, changed, coverage, loss }) => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, ...(truncated ? { truncated: true } : {}) };

@@ -127,6 +127,7 @@ const MAX_CONTEXT_CHARS = 8_000;
 const DEFAULT_SYMBOL_CONTEXT_CHARS = 3_000;
 const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
 const SYMBOL_EXCERPT_WINDOW = 8;
+const MAX_SYMBOL_EXCERPT_RANGES = 4;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
@@ -2223,9 +2224,11 @@ async function readChangedLineExcerpts(
   source: { kind: "base" } | { kind: "head" },
   telemetry: TelemetryRecorder
 ): Promise<{ excerpts: string[]; missing: number }> {
-  const ranges = excerptRanges(fact);
+  const allRanges = excerptRanges(fact);
+  const ranges = allRanges.slice(0, MAX_SYMBOL_EXCERPT_RANGES);
   const excerpts: string[] = [];
-  let missing = 0;
+  // Ranges past the cap are changed lines the slice cannot show (#175).
+  let missing = allRanges.length - ranges.length;
   for (const range of ranges) {
     const normalized = normalizeStage6ReadRange({
       startLine: range[0],
@@ -2277,7 +2280,7 @@ function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
       ranges.push([start, end]);
     }
   }
-  return ranges.slice(0, 4);
+  return ranges;
 }
 
 function compactLineRanges(lines: number[]): string[] {
