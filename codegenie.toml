@@ -2,11 +2,16 @@
 compositionReasoningStepDown = true
 
 [[classification.pathRules]]
-pattern = "**/specs/**"
+pattern = "{specs/project,specs/reviews}/**"
 processingMode = "skip"
-reason = "spec documents are not reviewed"
+reason = "project specifications and archived review studies"
 
 [[classification.pathRules]]
-pattern = "{evals,tests/fixtures}/**"
+pattern = "{tests/fixtures,evals/fixtures/{repos,artifacts},evals/skill-semantics/repos}/**"
 processingMode = "skip"
-reason = "eval and test fixture data, often intentionally defective"
+reason = "fixture source and saved artifacts, often intentionally defective"
+
+[[classification.pathRules]]
+pattern = "evals/{public/**/{eval.{yml,yaml},oracle.md},{fixtures,skill-semantics}/*.{yml,yaml}}"
+processingMode = "skip"
+reason = "eval case manifests and adjudication oracles"
