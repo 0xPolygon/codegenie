@@ -2352,15 +2352,21 @@ describe("eval command fixture suite", () => {
       "logs:",
       `  dir: ${JSON.stringify(logsDir)}`
     ].join("\n"));
-    const config = { ...defaultConfig, llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" } };
     const suite = await loadEvalSuite(suiteDir);
     expect(suite.cases[0]!.evalCase.review?.depth).toBe("normal");
-    const result = await runEvalCase(suite, suite.cases[0]!, { config });
-    expect(result.status).toBe("pass");
+    // The user layer's warning reaches the review through codegenie eval too.
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-depth-home-"));
+    writeFileSync(path.join(home, "config.toml"), "[review]\ndepth = \"deep\"\n\n[llm]\nprovider = \"fake\"\nmodel = \"fake-model\"\n");
+    let output = "";
+    const exitCode = await executeEvalCommand(["eval", "--eval-dir", suiteDir, "--no-cache"], {
+      repoRoot: repo, homeOverride: home, writeOutput: (text) => { output += text; }
+    });
+    expect(exitCode).toBe(0);
+    expect(output).toContain("depth run 1: pass");
     const events = readFileSync(path.join(logsDir, "1", "telemetry", "events.jsonl"), "utf8").trim().split("\n")
       .map(line => JSON.parse(line) as { message: string; data?: { key?: string; source?: string } });
     expect(events.filter(event => event.message === "config_warning" && event.data?.key === "review.depth")
-      .map(event => event.data?.source)).toEqual(["eval-case"]);
+      .map(event => event.data?.source)).toEqual(["user-config", "eval-case"]);
   });
 
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {

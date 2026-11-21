@@ -53,6 +53,8 @@ export type EvalRunOptions = {
   judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
+  /** Warnings from loading the user layers, reported with each review (#129). */
+  configWarnings?: ConfigWarning[];
 };
 
 const positiveNumberSchema = z.number().positive();
@@ -487,7 +489,7 @@ async function runLiveCase(
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
-      configWarnings: [...repoLayer.warnings, ...caseConfig.warnings],
+      configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
       onRunStart: (run) => {
         reviewRunId = run.runId;
       },
@@ -577,7 +579,7 @@ async function runRepeatedLiveCase(
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
-          configWarnings: [...repoLayer.warnings, ...caseConfig.warnings],
+          configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
           writeOutput: (chunk) => {
             reviewOutput += chunk;
           }

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
-import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
+import type { CodegenieConfig, ConfigWarning, EvalCaseResult, EvalLossLabel } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { safeDiagnosticLine } from "../util/review-health.js";
 import { CliDisplayExit } from "../cli/review-command.js";
@@ -37,13 +37,16 @@ export async function executeEvalCommand(argv: string[], opts: ExecuteEvalComman
     ...(opts.homeOverride !== undefined ? { homeOverride: opts.homeOverride } : {}),
     ...(opts.env !== undefined ? { env: opts.env } : {})
   });
-  return runEvalCommand(parsed, loaded.config, opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {});
+  return runEvalCommand(parsed, loaded.config, {
+    configWarnings: loaded.warnings,
+    ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
+  });
 }
 
 export async function runEvalCommand(
   options: EvalCommandOptions,
   config: CodegenieConfig,
-  runtime: { writeOutput?: (text: string) => void } = {}
+  runtime: { writeOutput?: (text: string) => void; configWarnings?: ConfigWarning[] } = {}
 ): Promise<0 | 1 | 2> {
   validateEvalOptions(options, config);
   const write = runtime.writeOutput ?? (() => undefined);
@@ -68,6 +71,7 @@ export async function runEvalCommand(
     const result = await runEvalCase(suite, entry, {
       config,
       judgeReplay: options.judge === true,
+      ...(runtime.configWarnings !== undefined ? { configWarnings: runtime.configWarnings } : {}),
       ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
     });
     results.push(result);
