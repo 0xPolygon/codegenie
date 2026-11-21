@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 1dac09902 says "Regression from 80c918c2 which replaced randomUUID with uuidv7". It adds no test.
-

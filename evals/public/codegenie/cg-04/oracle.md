@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 34e39b7 admits only inventory sources of kind verification. Its regression test expects no diagnostic and no attribution repair for an invalid unresolved reconciliation source, and fails at the intro.
-

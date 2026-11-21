@@ -50,4 +50,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 747cd06 adds an explicit failure flag and wraps primitive rejections in an Error that carries the retained review. Its regression test covers undefined, string and null rejections.
-

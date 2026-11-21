@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 790271cd0 says the intro "was built from a tree that predates 6085986e4 and reverted its terminate type change, regression test, and changelog entries", and restores them.
-

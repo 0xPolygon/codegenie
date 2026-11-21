@@ -50,4 +50,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 dd59976 creates one deadline before resolution, races both `resolveModel` and `complete` against it, and threads the abort signal into model resolution. Its regression test uses a `resolveModel` that never settles and expects a timeout with an aborted signal; that test hangs at the intro.
-

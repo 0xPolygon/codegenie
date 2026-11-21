@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is high; record it as a calibration 
 ### Fixing evidence
 
 4438c58ba removes exactly these three breaks, returns "Operation aborted" from prepareToolCall up front, and adds 123 lines of tests (closes #9986).
-

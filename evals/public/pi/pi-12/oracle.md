@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 612a172e6 returns `escapeRegex(normalized)` for the single-segment case and adds tests.
-

@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 805d3b8 renders secondary assumptions under Open conditions and adds a recorded-verification block for legacy and unresolved verification text. Its regression test, which checks that proof and caveats survive composed text that erases them, fails at the intro.
-

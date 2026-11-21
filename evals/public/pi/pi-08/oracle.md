@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 a77207d9c uses `suffixGroup ?? ''` and adds the test "renumbers short paste markers without a size suffix".
-

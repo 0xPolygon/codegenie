@@ -50,4 +50,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 Same fix as the required expectation.
-

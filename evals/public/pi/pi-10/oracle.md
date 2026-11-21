@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 a7b94a03f recurses only into schema-bearing keywords, copies with `Object.fromEntries`, and adds the test "rewrites only schema-bearing keywords" (closes #11308).
-

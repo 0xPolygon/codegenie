@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 bdaebe1 deduplicates the strings before the limit. Its regression test, ten identical skips plus one other file, expects the other file to be disclosed, and fails at the intro.
-

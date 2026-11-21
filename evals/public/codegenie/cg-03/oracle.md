@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 3d66957 redacts the recorded reason before capping it and stops composition diagnostics echoing unknown references. Two regression tests (redaction and cap, no echo of unknown references) fail at the intro.
-

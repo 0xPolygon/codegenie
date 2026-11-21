@@ -50,4 +50,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 7b82873 validates keys against the current stage list. Its regression test expects `loadEvalSuite` to reject key 8, and the suite loads at the intro.
-

@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 541045ae0 removes the setting from `allowedToolNames`, rewrites the doc comment to say "initial built-in selection", and adds extension-tool tests.
-

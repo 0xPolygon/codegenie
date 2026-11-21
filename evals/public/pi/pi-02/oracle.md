@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is high; record it as a calibration 
 ### Fixing evidence
 
 c5f5b3282 removes the `metadata &&` guard, rejects in that case and changes the tests. Its message describes the attack and credits an external reporter.
-

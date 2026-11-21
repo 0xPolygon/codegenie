@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 36af9dc48 adds a second pass on the full name and the test "lists skills while typing the skill prefix" (regression test for #9944).
-

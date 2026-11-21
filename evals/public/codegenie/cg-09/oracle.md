@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 ### Fixing evidence
 
 6f43d71 requires a non-empty plain object. Its regression tests for `{}` and `[]` fail at the intro.
-

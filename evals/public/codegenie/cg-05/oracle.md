@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 67079ca rejects, on both put and get, any replay signature that credential stripping would change, including inside decoded envelopes. Its regression test expects a put miss with no credential on disk and eviction of a legacy entry, and fails at the intro.
-

@@ -32,4 +32,3 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 ### Fixing evidence
 
 98633d8 tags each task with its packet and ensemble pass and groups outcomes by `outcome.task` instead of position. Its regression test reorders dispatch on purpose and fails with positional grouping. The defect was also observed in a live eval run.
-

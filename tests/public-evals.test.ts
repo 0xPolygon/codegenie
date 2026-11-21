@@ -37,11 +37,18 @@ describe("public eval cases", () => {
     expect(["positive", "negative-control", "spare"]).toContain(oracle.role);
     const expectations = [...(evalCase.should_find ?? []), ...(evalCase.should_not_find ?? [])];
     expect(expectations.length).toBeGreaterThan(0);
-    for (const expectation of evalCase.should_find ?? []) {
+    for (const expectation of expectations) {
       // Matchers are pre-filters: every expectation states its severity floor
       // (the suite schema validates the value) and none relies on a title pattern.
       expect(expectation.severityAtLeast).toBeDefined();
       expect(expectation.titlePattern).toBeUndefined();
+    }
+    if (oracle.role === "negative-control") {
+      // A clean change is only contradicted by a material finding.
+      expect(evalCase.should_not_find?.length).toBeGreaterThan(0);
+      for (const expectation of evalCase.should_not_find ?? []) {
+        expect(["medium", "high", "critical"]).toContain(expectation.severityAtLeast);
+      }
     }
   });
 });
