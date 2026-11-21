@@ -92,7 +92,7 @@ describe("phase 5 pipeline regressions", () => {
     if (!exhaust) expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections[0]!.text);
   });
 
-  it.each(["resolved", "assessment", "narrowed", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
+  it.each(["resolved", "assessment", "narrowed", "unchanged", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
     // Supplied semantic decisions exercise plumbing, not model inference.
     const fixture = authorizationComposition();
     const finding = fixture.findings[0]!;
@@ -114,14 +114,16 @@ describe("phase 5 pipeline regressions", () => {
       status: "completed", adaptiveReview: { outcome: "timed_out", attempts: 1, trigger: "concrete_hint" } }])!;
     const artifacts = new Map<string, unknown>();
     let calls = 0;
-    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" ? "narrowed" : "resolved",
+    const events: Array<{ message: string; data?: unknown }> = [];
+    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" || mode === "unchanged" ? "narrowed" : "resolved",
       supportingRefs: [mode === "unknown" ? "absent-source" : mode === "assessment" ? "authorization/suggestedTest" : "authorization/evidence/relatedCode/0"],
       rationale: "Supplied policy makes current membership authoritative; production exposure is separate.",
-      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}) };
+      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}),
+      ...(mode === "unchanged" ? { remainingQuestion: ` ${firstQuestion} ` } : {}) };
     const promptBuilder = createPromptBuilder(fakeLensRegistry());
     const result = await dedupeRankAndComposeReview({ verified: mode === "no-findings" ? [] : fixture.findings, verdicts }, fakePlan(),
       { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, coverage, config(),
-      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
+      { ...nullTelemetry(), event: event => { events.push(event); }, writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
         postGithubComments: true, promptBuilder,
         runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
           calls++;
@@ -152,6 +154,8 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(calls).toBe(1);
     expect(verdicts).toEqual(before);
+    expect(events.filter(event => event.message === "attention_unchanged_question_canonicalized").map(event => event.data))
+      .toEqual(mode === "unchanged" ? [{ concernIds: ["policy-question/assumptions/0"], disposition: "unresolved" }] : []);
     expect(coverage.partial).toBe(false);
     const expected = mode === "resolved" || mode === "assessment" ? secondQuestion : mode === "narrowed"
       ? `Does the deployed policy match this repository policy?; ${secondQuestion}` : original.question;
