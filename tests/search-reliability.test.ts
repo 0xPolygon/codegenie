@@ -9,7 +9,7 @@ import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.j
 import { createGitClient } from "../src/git/git-client.js";
 import { packSearchToolResult } from "../src/llm/search-result-packing.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
-import { commitAll, initRepo, writeRepoFile } from "./helpers/git.js";
+import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 async function fixture() {
   const repo = initRepo();
@@ -51,6 +51,19 @@ describe("reliable search", () => {
     expect(await resolver.grep("absent", { glob })).toEqual([]);
     expect(await resolver.grep("valid", { glob: "missing/**" })).toEqual([]);
   });
+
+  it("lists literal non-ASCII paths from the selected revision with or without a glob", async () => {
+    const { resolver, repo } = await fixture();
+    git(repo, ["config", "core.quotePath", "true"]);
+    const file = "src/café/entrée.txt";
+    writeRepoFile(repo, file, "needle\n");
+    resolver.binding.headCommit = commitAll(repo, "non-ASCII filename");
+
+    expect(await resolver.listFiles()).toContain(file);
+    await expect(resolver.listFiles("src/café/**")).resolves.toEqual([file]);
+    await expect(resolver.listFiles("src/café/**", { kind: "base" })).resolves.toEqual([]);
+  });
+
   it("rejects invalid syntax even in empty scopes and preserves backend failure", async () => {
     const { resolver, git } = await fixture();
     for (const query of ["[", "(?=x)"]) await expect(resolver.grep(query, { glob: "missing/**" })).rejects.toMatchObject({ code: "invalid_args", message: expect.stringContaining("query") });

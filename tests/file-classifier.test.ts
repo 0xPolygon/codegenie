@@ -258,6 +258,26 @@ describe("file filtering and classification", () => {
     ]);
   });
 
+  it("finds package roots with non-ASCII directory names in the head tree", async () => {
+    const repo = initRepo();
+    git(repo, ["config", "core.quotePath", "true"]);
+    const packageRoot = "packages/café";
+    const file = `${packageRoot}/src/index.ts`;
+    writeRepoFile(repo, "package.json", "{}\n");
+    writeRepoFile(repo, `${packageRoot}/package.json`, "{}\n");
+    writeRepoFile(repo, file, "export const value = 1;\n");
+    const baseRef = commitAll(repo, "base");
+    writeRepoFile(repo, file, "export const value = 2;\n");
+    const headRef = commitAll(repo, "change nested package");
+    const telemetry = nullTelemetry();
+    const resolved = await resolveReviewInput({ mode: "head", baseRef, headRef }, defaultConfig, telemetry, { repoRoot: repo });
+    const { kept, decisions } = await filterDiffFiles(resolved, parseDiff(resolved.rawDiff), defaultConfig, telemetry);
+
+    await expect(classifyChangedFiles(resolved, kept, decisions, defaultConfig, telemetry)).resolves.toEqual([
+      expect.objectContaining({ path: file, packageRoot })
+    ]);
+  });
+
   it("uses capped revision reads for generated-marker detection", async () => {
     let prefixRead = false;
     const gitClient: InternalGitClient = {
