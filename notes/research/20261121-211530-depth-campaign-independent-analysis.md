@@ -7,9 +7,9 @@ status: verified
 
 # Depth campaign: independent analysis
 
-**Neither rule for changing the default is met. Deep found no required finding that normal missed, and light is not cheaper.** Under the pre-registered rules that leaves one mode with today's normal budgets, so the depth setting can be removed rather than renamed. The larger lessons are elsewhere: Stage 9 rejects the harder required findings, and on Luna Stage 10 rarely produces a valid first submission.
+**Neither rule for changing the default is met. Deep found no required finding that normal missed. Light is faster on the registered measure but no cheaper, and it loses a required finding.** Under the pre-registered rules that leaves one mode with today's normal budgets, so the depth setting can be removed rather than renamed. The larger lessons are elsewhere: Stage 9 rejects the harder required findings, and on Luna Stage 10 rarely produces a valid first submission.
 
-Reconciled with [the other independent analysis](20261121-211400-depth-campaign-independent-codex.md). Both reach one mode at today's normal budgets, from the same required-finding counts per arm and model, cost and time medians, partial causes, padded-call splits, three Stage 10 fallbacks and six false scorer credits. They differ in four places, none of which changes the decision: that note keeps the name deep for the single mode, where this one removes the setting, which is what the operator decided after both analyses; it counts light as passing the speed bar on the raw 41% median and failing on quality, where this one discounts the raw figure to 19%; it counts hunks named in the plan, where this one counts coverage after defaults; and under source adjudication it finds an Opus hint for the TypeScript seeded defect in 5 of 9 reviews, where this note's topic mapping first said 7. That note also checked all 177 published entries against the source and found none false, which this one did not do. [Campaign plan](../../specs/plans/128-issue-124-stage9-and-depth-campaign.md)
+Reconciled with [the other independent analysis](20261121-211400-depth-campaign-independent-codex.md). Both reach one mode at today's normal budgets, from the same required-finding counts per arm and model, cost and time medians, partial causes, padded-call splits, three Stage 10 fallbacks and six false scorer credits. They differ in three places, none of which changes the decision: that note keeps the name deep for the single mode, where this one removes the setting, which is what the operator decided after both analyses; it counts hunks named in the plan, where this one counts coverage after defaults; and under source adjudication it finds an Opus hint for the TypeScript seeded defect in 5 of 9 reviews, where this note's topic mapping first said 7. That note also checked all 177 published entries against the source and found none false, which this one did not do. This note first read light as failing the time limb once padded calls were set aside; the registered measure is the raw median, so that was corrected in review and the two notes agree. [Campaign plan](../../specs/plans/128-issue-124-stage9-and-depth-campaign.md)
 
 ## What ran
 
@@ -49,7 +49,7 @@ Expected findings are mapped by topic from the frozen case files. I did not re-v
 | Opus | 14.06 | 13.68 | -3% |
 
 - Cost does not move. Light halves Stage 7 tool calls (421 to 186 on Luna, 181 to 113 on Opus), but tool calls are not what a review costs: Stage 7 cost falls 13% on Luna and rises 2% on Opus.
-- Raw elapsed time on Luna is 41% lower (8.3 against 14.0 minutes), but that is an accident of which reviews hit a padded call. Among reviews without one, light takes 6.9 minutes against 8.6: 19% lower. On Opus it is 5% lower.
+- Raw elapsed time on Luna is 41% lower (8.3 against 14.0 minutes), which meets the registered 30% bar on time. Among reviews without a padded call, light takes 6.9 minutes against 8.6, 19% lower, so much of the raw gap comes from which reviews hit one. On Opus it is 5% lower.
 - Detections are not held. Required 2 on Luna is published in 2 of 5 light reviews against 4 of 5 normal ones.
 - Light misses the fast criteria because required detections are not held (Required 2 is 2 of 5 against 4 of 5) and its cost saving is 1 to 3%. On raw elapsed time, the registered measure, it is about 41% faster (8.3 against 14.0 minutes) and passes that limb; with padded calls set aside the gain is 19%, which is a sensitivity result.
 
@@ -57,13 +57,14 @@ Expected findings are mapped by topic from the frozen case files. I did not re-v
 
 - Cost is negligible on Luna (under one cent) and about 2.5% of an Opus review. It takes under a minute.
 - The plan lists only part of the diff. On the larger case Luna listed 20 to 40 of 131 hunks in 14 of 15 reviews; Opus listed 34 to 55. Unlisted hunks default to normal coverage. Planning was flagged degraded in 6 of 15 larger Luna reviews and in no Opus review.
-- **The depth setting does not move the plan.** Share of hunks at deep coverage:
+- **The plans show no consistent shift with the depth setting, but the label's effect is unresolved.** Share of hunks at deep coverage, after unlisted hunks default to normal:
 
   | Model | Normal | Deep | Light |
   | --- | ---: | ---: | ---: |
   | Luna | 26% | 19% | 23% |
   | Opus | 19% | 24% | 18% |
 
+- Assignments did differ between arms. Hunks the plans named at deep coverage, summed over the five larger Luna reviews: 128 under normal, 78 under deep and 92 under light.
 - Luna never assigned light coverage (0 of 1,965 hunk instances). Opus used it for 4%.
 - Every eligible hunk was dispatched: 1,964 of 1,965 on Luna and 1,179 of 1,179 on Opus were reviewed.
 
@@ -155,7 +156,7 @@ So two of the four partial labels describe complete work, and both are in the li
 3. **Fix Stage 10 on Luna.** 14 of 15 invalid first submissions and 3 fallbacks on the larger case is the least reliable part of the pipeline on the primary model.
 4. **Treat Luna's miss of the TypeScript seeded defect as a Stage 7 recall problem.** No depth setting changed it in 15 reviews.
 5. **Look at what the planner buys on Luna.** It lists a third of the hunks, never uses light coverage, and is flagged degraded in 6 of 15 larger reviews.
-6. **Do not compare arms on the "partial" label or on raw time from this build.** Both are dominated by harness artifacts that are already ticketed.
+6. **Read the "partial" label and raw time from this build with their harness artifacts in view.** Raw time is the registered measure and stands, but two of the four partial labels describe complete work, and padded calls account for much of the raw time gap between arms. Both artifacts are already ticketed.
 
 ## Limits
 
