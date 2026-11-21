@@ -2,14 +2,14 @@
 created: 2026-11-21T16:43:11Z
 author: "@architect"
 source: "Requested by @operator under the owner's 2026-11-21 directive on independent campaign analyses. Read-only scripts over the telemetry of the 15 verifier-variance replays on codegenie 0850ed6; frozen case expectations. Written without sight of the other analyst's adjudication or metrics."
-status: provisional
+status: verified
 ---
 
 # Stage 9 verifier variance: independent analysis
 
 **On identical input, the verifier changes its mind on 8 of 18 candidates, and one of the two required findings of the larger case is lost in 2 of 10 replays.** The loss happens when both candidates for that finding are rejected in the same replay, almost always as "unresolved". Stage 9 is also where the time and money go: about 90% of downstream cost, and most replays spend eight minutes waiting on a call that pads its output with whitespace.
 
-This is one of two independent analyses. It is provisional until the operator merges it with the other.
+This is one of two independent analyses. It agrees with the [reconciled baseline variance note](20261121-154810-verifier-baseline-variance.md) on every count the two share: Required 1 published in 10 of 10 replays and Required 2 in 8 of 10; 8 candidates split, 8 always accepted and 2 always rejected; 42 keeps, 87 revisions and 51 rejections (28 refuted, 23 unresolved); one behavior published twice in 3 of 10 replays; the lexical scorer's 8 of 10 and 9 of 10; 11 deadline timeouts; and $1.26 of recorded spend. That note adds the source inspection this one lacks: no wholly false publication among 77. This note adds the unresolved-rejection breakdown, the verifier tool-budget and padded-call figures, and the Stage 10 first-submission and merge rates.
 
 ## What ran
 
