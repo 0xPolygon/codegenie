@@ -313,7 +313,7 @@ export type ModelResolutionFailure = {
 };
 
 export interface PiAiAdapter<Resolution = PiModelRef | undefined> {
-  resolveModel(input: { provider?: string; model?: string }): Resolution;
+  resolveModel(input: { provider?: string; model?: string }, signal?: AbortSignal): Resolution;
   // Optional: explains a resolveModel miss. Test adapters may omit it; the
   // runner then reports the generic unresolved message.
   explainUnresolvedModel?(input: { provider?: string; model?: string }): ModelResolutionFailure;

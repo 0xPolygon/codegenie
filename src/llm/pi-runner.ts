@@ -980,8 +980,8 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): RealPiAiA
   const resolveModelWithReason = (request: ModelRequest, signal?: AbortSignal) => resolveRealModelWithReason(request, models, signal);
   return {
     resolveModelWithReason,
-    resolveModel: async (request) => {
-      const resolution = await resolveModelWithReason(request);
+    resolveModel: async (request, signal) => {
+      const resolution = await resolveModelWithReason(request, signal);
       return "model" in resolution ? resolution.model : undefined;
     },
     complete: async (model, context, options) => {

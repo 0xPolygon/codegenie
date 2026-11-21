@@ -66,7 +66,9 @@ export async function judgeRecommendations(
       JSON.stringify({ rubrics: stripCredentials(checks), publishedReport: published })
     ].join("\n\n");
     judgment.inputHash = sha256Hex(prompt);
-    const model = await adapter.resolveModel(judge);
+    // One deadline covers model/auth resolution and the completion.
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Recommendation judge timed out")); }, timeoutMs); });
+    const model = await Promise.race([adapter.resolveModel(judge, controller.signal), deadline]);
     if (!model) throw new Error("Judge model could not be resolved");
     assertReasoningSupported({ provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) }, judge.reasoning);
     const tool = { name: TOOL, description: "Submit independent recommendation quality judgments.", parameters: Type.Object({ results: Type.Array(Type.Object({
@@ -77,7 +79,7 @@ export async function judgeRecommendations(
     response = await Promise.race([
       adapter.complete(model, { messages: [{ role: "user", content: prompt, timestamp: 0 }], tools: [tool] },
         { submitToolName: TOOL, reasoning: judge.reasoning, toolChoice: "auto", maxRetries: 0, maxTokens: 6000, signal: controller.signal }),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Recommendation judge timed out")); }, timeoutMs); })
+      deadline
     ]);
     if (response.usage) judgment.usage = response.usage;
     if (response.usage?.cost?.total !== undefined) judgment.costUSD = response.usage.cost.total;
