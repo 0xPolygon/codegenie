@@ -1,7 +1,7 @@
 import { buildAttentionReconciliation, attentionResolutionErrors, createAttentionResolutionRepair } from "../src/pipeline/attention-reconciliation.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { unresolvedToolDiagnostic } from "../src/util/review-health.js";
+import { requiredDiagnosticsAfterComposition, unresolvedToolDiagnostic } from "../src/util/review-health.js";
 import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
@@ -5444,6 +5444,22 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       requestKey: captured[0]!.requestKey!, status: "ok", resultChars: 2 }], "refusal")).toBeUndefined();
     expect(adapter.contexts[1]).toContain("not a zero-match result");
   });
+
+  it.each(["tool_call_budget_exhausted", "investigation_round_budget_exhausted"])(
+    "preserves required tool failures behind a completed packet's %s refusal", rejectionReason => {
+      const refusal = { id: "refused", tool: "read_range", target: "a.ts", status: "rejected" as const,
+        resultChars: 0, errorCode: "budget_exhausted" as const, rejectionReason };
+      const timedOut = { id: "timed-out", tool: "read_range", target: "b.ts", status: "error" as const,
+        resultChars: 0, errorCode: "timeout" as const, preview: "Source read timed out." };
+      const composerDiagnostic = unresolvedToolDiagnostic(7, [refusal, timedOut], "packet", true)!;
+      expect(composerDiagnostic.code).toBe("budget_exhausted");
+      expect(requiredDiagnosticsAfterComposition(composerDiagnostic)).toEqual([
+        expect.objectContaining({ code: "timeout", reason: timedOut.preview, kind: "incomplete" })
+      ]);
+      const verifierDiagnostic = unresolvedToolDiagnostic(9, [refusal, timedOut], "candidate")!;
+      expect(requiredDiagnosticsAfterComposition(verifierDiagnostic)).toEqual([verifierDiagnostic]);
+    }
+  );
 
   it("packs cached search data into complete JSON under each caller cap and records its scope", async () => {
     const telemetry = fakeTelemetry();

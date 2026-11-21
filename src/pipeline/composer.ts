@@ -1,4 +1,4 @@
-import { deriveReviewHealth, factualReviewSummary, renderReviewHealth } from "../util/review-health.js";
+import { deriveReviewHealth, factualReviewSummary, renderReviewHealth, requiredDiagnosticsAfterComposition } from "../util/review-health.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
@@ -316,7 +316,7 @@ export async function dedupeRankAndComposeReview(
     const answered = groups.length > 0 && groups.every(group => !group.ineligibleReason && group.concerns.length > 0 && group.concerns.every(concern => decisionsByHint.get(concern.id)?.disposition === "resolved"));
     if (answered) telemetry.event({ stage: 10, level: "info", message: "tool_evidence_limitation_reconciled", data: { diagnostic, concernIds: groups.flatMap(group => group.concerns.map(concern => concern.id)) } });
     return !answered;
-  });
+  }).flatMap(requiredDiagnosticsAfterComposition);
   const unresolvedCount = humanAttention.notes.length + humanAttention.omittedCount;
   if (humanAttention.notes.length > MAX_HUMAN_ATTENTION_NOTES) {
     humanAttention.omittedCount += humanAttention.notes.length - MAX_HUMAN_ATTENTION_NOTES;
