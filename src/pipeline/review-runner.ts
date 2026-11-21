@@ -989,13 +989,13 @@ export function aggregateRunCoverage(
   const packetById = new Map(packets.map((packet) => [packet.id, packet]));
   const totalHunks = opts.allFiles?.reduce((sum, file) => sum + file.hunks.length, 0) ?? plan.coverage.length;
   const coverageByLevel: Record<CoverageLevel, number> = { deep: 0, normal: 0, light: 0, skip: 0 };
-  const skippedByFilter = filterSkippedHunkCount(opts.allFiles ?? [], decisions);
-  coverageByLevel.skip += skippedByFilter;
+  const skippedHunks = filterSkippedHunkCount(opts.allFiles ?? [], decisions);
+  coverageByLevel.skip = skippedHunks;
 
   let reviewedHunks = 0;
   let failedHunks = 0;
   const reasons: string[] = [];
-  const unreviewedHunksByPath = unreviewedCoverageGaps(plan, decisions, packetResults, packets, opts.allFiles ?? []);
+  const unreviewedHunksByPath = unreviewedCoverageGaps(decisions, packetResults, packets, opts.allFiles ?? []);
   for (const result of packetResults) {
     const packet = packetById.get(result.packetId);
     const packetHunks = packet?.hunks.length ?? 0;
@@ -1016,12 +1016,10 @@ export function aggregateRunCoverage(
   // no longer sums to totalHunks on runs with packet-less hunks.
   const packetHunkIds = new Set(packets.flatMap((packet) => packet.hunks.map((hunk) => hunk.hunkId)));
   for (const decision of plan.coverage) {
-    if (decision.coverage !== "skip" && !packetHunkIds.has(decision.hunkId)) {
-      coverageByLevel[decision.coverage] += 1;
+    if (!packetHunkIds.has(decision.hunkId)) {
+      coverageByLevel[decision.coverage === "skip" ? "normal" : decision.coverage] += 1;
     }
   }
-  const skippedHunks = plan.coverage.filter((decision) => decision.coverage === "skip").length + skippedByFilter;
-  coverageByLevel.skip += plan.coverage.filter((decision) => decision.coverage === "skip").length;
   const unaccountedHunks = Math.max(0, totalHunks - reviewedHunks - failedHunks - skippedHunks);
   failedHunks += unaccountedHunks;
   if (failedHunks > 0) {
@@ -1039,15 +1037,9 @@ export function aggregateRunCoverage(
   if (opts.budgetStopped) {
     reasons.push("budget exhausted before all review work completed");
   }
-  if (plan.partialReview?.isPartial === true && plan.partialReview.reason.trim().length > 0) {
-    reasons.push(plan.partialReview.reason.trim());
-  }
-  // Configuration and planner skips are disclosed alike: path and reason,
-  // deduplicated before the ten-entry limit so repeats cannot hide others.
-  const skipped = [...new Set([
-    ...decisions.filter((decision) => decision.action === "skip"),
-    ...plan.coverage.filter((decision) => decision.coverage === "skip")
-  ].map((decision) => `${decision.path}: ${decision.reason}`))];
+  // Deduplicate filter exclusions before the disclosure limit.
+  const skipped = [...new Set(decisions.filter((decision) => decision.action === "skip")
+    .map((decision) => `${decision.path}: ${decision.reason}`))];
   for (const reason of skipped.slice(0, 10)) {
     reasons.push(reason);
   }
@@ -1059,7 +1051,7 @@ export function aggregateRunCoverage(
     ...(adaptiveReviews ? { adaptiveReviews } : {}),
     reviewedHunks,
     skippedHunks,
-    excludedHunks: skippedByFilter + (plan.partialReview?.isPartial ? 0 : plan.coverage.filter(decision => decision.coverage === "skip").length),
+    excludedHunks: skippedHunks,
     failedHunks,
     coverageByLevel,
     degradedPlanning: opts.degradedPlanning === true,
@@ -1068,13 +1060,12 @@ export function aggregateRunCoverage(
     ...(unreviewedHunksByPath.length > 0 ? { unreviewedHunksByPath } : {}),
     verificationIncompleteCount: verified.incompleteCount,
     verificationSkipped: verified.verificationSkipped === true,
-    partial: failedHunks > 0 || verified.incompleteCount > 0 || opts.budgetStopped === true || plan.partialReview?.isPartial === true,
+    partial: failedHunks > 0 || verified.incompleteCount > 0 || opts.budgetStopped === true,
     reasons: uniqueDisclosableCoverageReasons(reasons)
   };
 }
 
 function unreviewedCoverageGaps(
-  plan: ReviewPlan,
   decisions: FileFilterDecision[],
   packetResults: PacketReviewResult[],
   packets: ReviewPacket[],
@@ -1089,16 +1080,12 @@ function unreviewedCoverageGaps(
   }
   const resultByPacket = new Map(packetResults.map((result) => [result.packetId, result]));
   const filterSkippedPaths = new Set(decisions.filter((decision) => decision.action === "skip").map((decision) => decision.path));
-  const plannerSkippedHunks = new Set(plan.coverage.filter((decision) => decision.coverage === "skip").map((decision) => decision.hunkId));
 
   for (const file of allFiles) {
     if (filterSkippedPaths.has(file.path)) {
       continue;
     }
     for (const hunk of file.hunks) {
-      if (plannerSkippedHunks.has(hunk.id)) {
-        continue;
-      }
       const packet = packetByHunk.get(hunk.id);
       if (!packet) {
         addCoverageGap(gaps, file.path, "no review packet was built");
@@ -1244,14 +1231,11 @@ function buildCoverageRecords(
       }
       const planDecision = planByHunk.get(hunk.id);
       const coverageSource = coverageSourceFor(planDecision);
-      if (planDecision?.coverage === "skip") {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: coverageSource, status: "skipped", reason: planDecision.reason });
-        continue;
-      }
       const packet = packetByHunk.get(hunk.id);
       const result = packet ? resultByPacket.get(packet.id) : undefined;
       if (!packet) {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "normal", source: coverageSource, status: "degraded", reason: "no review packet was built" });
+        const coverage = !planDecision || planDecision.coverage === "skip" ? "normal" : planDecision.coverage;
+        records.push({ hunkId: hunk.id, path: file.path, coverage, source: coverageSource, status: "degraded", reason: "no review packet was built" });
         continue;
       }
       if (result?.status === "completed") {

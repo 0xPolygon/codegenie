@@ -364,11 +364,11 @@ Findings claiming the implementation contradicts its declared intent must cite b
 
 The planner should also identify where surrounding-code inspection matters. It should not broadly read files itself by default; instead it should name the hunks, symbols, files, tests, or existing patterns that later stages should inspect. Examples include sibling methods that establish a consistency pattern, call sites affected by a changed API, tests for the changed behavior, or nearby lifecycle/resource-management code.
 
-The planner must not skip a reviewable changed hunk without a reason.
+The deterministic file filter owns exclusions. Every hunk in a kept file is eligible for packet review.
 
-The planner owns coverage and lens overrides. It should emit `light`, `normal`, `deep`, or `skip` decisions only for hunks where concrete evidence justifies non-default coverage, specific lenses, context hints, or a skip. Later stages may validate malformed planner output or apply deterministic default coverage to omitted hunks, but they should not become independent risk classifiers.
+The planner ranks attention with `light`, `normal`, or `deep` coverage and may suggest lenses and context hints for specific hunks. Later stages may validate malformed planner output or apply deterministic default coverage to omitted hunks, but they should not become independent risk classifiers.
 
-Configured review depth should influence budgets and defaults, not replace judgment. A `light` run may still review a concrete critical-risk hunk at `normal`; a `deep` run may still skip generated files or keep mechanical hunks at `light`.
+Configured review depth should influence budgets and defaults, not replace judgment. A `light` run may still review a concrete critical-risk hunk at `normal`; a `deep` run may still give mechanical hunks `light` coverage. Deterministic file exclusions apply at every depth.
 
 ## Large Review Handling
 
@@ -443,7 +443,7 @@ Review packet construction is deterministic in v1. It must not call the LLM and 
 
 Default packet construction should be hunk-first. Coalesce only nearby hunks in the same file or same enclosing symbol. Use file/whole-file packets for single-hunk files, small added files, small configured files, or explicit `processingMode = "whole-file"` rules.
 
-The packet builder validates and assembles planner decisions; it does not make primary risk decisions. If a reviewable hunk has no planner coverage, the packet builder quietly applies deterministic `normal` coverage with default core/language lenses. If the planner skips a reviewable hunk without a valid reason, the packet builder falls back to `normal` and records the malformed skip.
+The packet builder validates and assembles planner decisions; it does not make primary risk decisions. If a reviewable hunk has no planner coverage, the packet builder quietly applies deterministic `normal` coverage with default core/language lenses. A legacy `skip` decision is treated as `normal` coverage. The coverage report marks unfinished eligible hunks as incomplete.
 
 Planner notes must be hunk-scoped. Stage 5 may include short `focusNotes`, concrete `relatedSymbols`, concrete `relatedFiles`, and `surroundingContextHints` on a coverage decision. Stage 6 carries those notes into the packet only as advisory `attentionNotes`; it must not turn broad planner prose into review obligations. When deterministic related changed context is attached, the strongest relationship notes should be preserved ahead of planner notes under the attention-note cap so caller/callee/output topology remains visible to Stage 7.
 

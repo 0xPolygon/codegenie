@@ -185,20 +185,13 @@ export async function buildReviewPackets(
 
   for (const file of filtered) {
     const planned = plannedByFile.get(file.path) ?? [];
-    const includedPlanned = planned.filter((entry) => effectiveByHunk.get(entry.hunk.id)?.coverage !== "skip");
-    if (includedPlanned.length === 0) {
-      continue;
-    }
-    const allowWholeFileContext = includedPlanned.length === planned.length;
-
-    for (const group of await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext })) {
+    for (const group of await groupHunks(planned, repoIndex, telemetry)) {
       const first = group.hunks[0];
       if (!first) {
         continue;
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
-      const includedDecisions = groupDecisions.filter(isNonSkipDecision);
-      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
+      const packet = await buildPacket(group.hunks, groupDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
       packets.push(packet);
     }
   }
@@ -225,8 +218,7 @@ export async function buildReviewPackets(
 async function groupHunks(
   planned: PlannedHunk[],
   repoIndex: RepositoryIndex,
-  telemetry: TelemetryRecorder,
-  opts: { allowWholeFileContext: boolean } = { allowWholeFileContext: true }
+  telemetry: TelemetryRecorder
 ): Promise<PacketGroup[]> {
   if (planned.length === 0) {
     return [];
@@ -241,7 +233,7 @@ async function groupHunks(
       ? "small added file"
       : undefined;
 
-  if (opts.allowWholeFileContext && wholeFileReason !== undefined && planned.length <= MAX_HUNKS_PER_PACKET) {
+  if (wholeFileReason !== undefined && planned.length <= MAX_HUNKS_PER_PACKET) {
     const patchChars = combinedPatchChars(planned);
     if (patchChars <= MAX_PATCH_CHARS) {
       const content = await headContentProbe(first.file, repoIndex, telemetry);
@@ -274,7 +266,7 @@ async function groupHunks(
 
 async function buildPacket(
   planned: PlannedHunk[],
-  decisions: NonSkipDecision[],
+  decisions: EffectiveDecision[],
   group: PacketGroup,
   relationshipGraph: HunkRelationshipGraph,
   repoIndex: RepositoryIndex,
@@ -493,7 +485,7 @@ export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketR
   };
 }
 
-function attentionNotesForDecisions(decisions: NonSkipDecision[]): string[] {
+function attentionNotesForDecisions(decisions: EffectiveDecision[]): string[] {
   const notes = [
     ...decisions.flatMap((decision) => {
       const hunkScopedAttention =
@@ -685,24 +677,23 @@ async function buildHunkRelationshipGraph(
   repoIndex: RepositoryIndex,
   telemetry: TelemetryRecorder
 ): Promise<HunkRelationshipGraph> {
-  const included = planned.filter((entry) => effectiveByHunk.get(entry.hunk.id)?.coverage !== "skip");
   const graph: HunkRelationshipGraph = {
     edgesByHunk: new Map(),
     edges: [],
-    plannedByHunk: new Map(included.map((entry) => [entry.hunk.id, entry])),
+    plannedByHunk: new Map(planned.map((entry) => [entry.hunk.id, entry])),
     omittedEdges: 0,
     relatedContextAttached: [],
     relatedContextOmitted: []
   };
-  addSameSymbolEdges(graph, included);
-  addPlannerHintEdges(graph, included, effectiveByHunk);
-  await addSymbolMentionEdges(graph, included, repoIndex, telemetry);
+  addSameSymbolEdges(graph, planned);
+  addPlannerHintEdges(graph, planned, effectiveByHunk);
+  await addSymbolMentionEdges(graph, planned, repoIndex, telemetry);
   telemetry.event({
     stage: 6,
     level: "info",
     message: "relationship_graph_built",
     data: {
-      nodes: included.length,
+      nodes: planned.length,
       edges: graph.edges.length,
       omittedEdges: graph.omittedEdges
     }
@@ -1308,7 +1299,7 @@ function packetKind(group: PacketGroup, planned: PlannedHunk[], file: DiffFile):
 }
 
 type EffectiveDecision = {
-  coverage: CoverageLevel;
+  coverage: Exclude<CoverageLevel, "skip">;
   lenses: string[];
   surroundingContextHints: HunkCoverageDecision["surroundingContextHints"];
   reason: string;
@@ -1317,35 +1308,20 @@ type EffectiveDecision = {
   relatedFiles?: string[];
 };
 
-type NonSkipDecision = EffectiveDecision & { coverage: Exclude<CoverageLevel, "skip"> };
-
-function isNonSkipDecision(decision: EffectiveDecision): decision is NonSkipDecision {
-  return decision.coverage !== "skip";
-}
-
 function effectiveDecision(
   planned: PlannedHunk,
   enabledLenses: string[],
   telemetry: TelemetryRecorder
 ): EffectiveDecision {
   const decision = planned.decision;
-  if (!decision) {
+  if (!decision || decision.coverage === "skip") {
     return {
+      ...decision,
       coverage: "normal",
       lenses: defaultLensesForLanguage(planned.facts, enabledLenses),
-      surroundingContextHints: [],
-      reason: "default_coverage"
+      surroundingContextHints: decision?.surroundingContextHints ?? [],
+      reason: decision ? "planner_skip_overridden" : "default_coverage"
     };
-  }
-  if (decision.coverage === "skip") {
-    telemetry.event({
-      stage: 6,
-      level: "info",
-      message: "planner_hunk_skipped",
-      file: planned.file.path,
-      data: { hunkId: planned.hunk.id, reason: decision.reason }
-    });
-    return decision;
   }
   if (decision.lenses.length === 0) {
     telemetry.event({
@@ -1357,18 +1333,19 @@ function effectiveDecision(
     });
     return {
       ...decision,
+      coverage: decision.coverage,
       lenses: defaultLensesForLanguage(planned.facts, enabledLenses),
       reason: `planner_empty_lenses: ${decision.reason}`
     };
   }
-  return decision;
+  return { ...decision, coverage: decision.coverage };
 }
 
 function plannerFallbackReason(reason: string | undefined): string | undefined {
   if (reason === undefined) {
     return undefined;
   }
-  return reason.startsWith("planner_empty_lenses") || reason.startsWith("planner_invalid_skip")
+  return reason.startsWith("planner_empty_lenses") || reason === "planner_skip_overridden"
     ? reason
     : undefined;
 }

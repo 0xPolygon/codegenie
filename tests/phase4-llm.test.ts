@@ -93,7 +93,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(() => submitToolNameForStage(8 as never)).toThrow("stage 8 does not have a submit schema");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(7);
     expect(SCHEMA_VERSIONS.submit_verdict).toBe(11);
 
     const valid = {
@@ -125,6 +125,16 @@ describe("Phase 4 schemas and repository tool definitions", () => {
         arguments: { ...valid, diffUnderstanding: { summary: "old", intent: "old" } }
       })
     ).toThrow();
+  });
+
+  it.each([
+    { coverage: [{ hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], reason: "Legacy skip" }] },
+    { coverage: [], partialReview: { isPartial: true, reason: "Legacy partial", reviewedHunks: 0, totalHunks: 1 } }
+  ])("the live planner schema rejects legacy scheduling decisions (%j)", legacy => {
+    expect(() => validateToolCall([{ name: "submit_plan", description: "submit", parameters: SubmitPlanSchema }], {
+      type: "toolCall", id: "legacy-plan", name: "submit_plan",
+      arguments: { diffUnderstanding: { declaredIntent: "Review", inferredBehavior: "Review" }, ...legacy }
+    })).toThrow();
   });
 
   it("keeps a 2,000-character verifier target with a 4,000-character hard schema buffer", () => {

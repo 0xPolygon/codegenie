@@ -637,7 +637,7 @@ When the walk bottoms out at rung 5, attribution sub-diagnoses why nothing was e
 
 - `path-not-in-diff`: no packet and no coverage/filter record touches the expectation's path. Flagged prominently — the expectation itself may be wrong (stale line numbers, renamed file).
 - `file-filtered`: the path appears in filter decisions (`coverage.json` / filter records) with action `skip` (generated/vendored/lock/ignored/config-skipped); the filter reason is included.
-- `hunk-skipped-by-planner`: `review-plan.json` shows coverage `skip` for the hunks overlapping the expectation's `lineRange` (or any hunk of the file when no `lineRange`); the planner's reason is included.
+- `hunk-skipped-by-planner` (historical runs): `review-plan.json` shows coverage `skip` for the hunks overlapping the expectation's `lineRange` (or any hunk of the file when no `lineRange`); the planner's reason is included.
 - `packet-review-failed`: covering hunks have coverage status `review_failed`.
 - `reviewed-no-candidate`: packets covering the expected path/lines were reviewed and produced no matching candidate — the true model-miss case. The detail lists `coveringPacketIds`, the lenses selected for those packets (`coveringPacketLenses`), and the planner coverage level, so a human can spot "the tests lens never ran on this hunk" without evals needing lens-to-category knowledge.
 - `unknown`: enrichment artifacts unavailable; label stands without a sub-reason.
