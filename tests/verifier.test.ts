@@ -4,7 +4,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import type { LlmRunner, LlmStructuredRequest } from "../src/llm/llm-runner.js";
 import { SCHEMA_VERSIONS } from "../src/llm/schemas.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
-import { renderRetainedComposition } from "../src/pipeline/composition-content.js";
+import { compositionSources, eligibleCompositionSource } from "../src/pipeline/composition-content.js";
 import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
@@ -1417,7 +1417,7 @@ describe("plan 106 verifier revision semantics", () => {
       requirement: "Successful allocation preserves the caller's minimum retention period.",
       cases: [{ request: 30, minimum: 30, delivery: 29 }, { request: 30, minimum: 29, delivery: 29 }, { request: 30, minimum: 30, delivery: 31 }],
       accepts: (x: { request: number; minimum: number; delivery: number }) => x.request <= x.minimum && x.minimum <= x.delivery }
-  ])("publishes the selected $name remedy and aligned test, retaining the compound as provenance", async example => {
+  ])("selects the $name remedy and aligned test as composable advice, retaining the compound as provenance", async example => {
     // Executable counterexamples establish the fixture's contract. The scripted
     // verifier exercises revision/publication, not live model judgment.
     expect(example.cases.map(example.accepts)).toEqual([false, false, true]);
@@ -1438,11 +1438,9 @@ describe("plan 106 verifier revision semantics", () => {
     expect(calls).toBe(1);
     expect(result.incompleteCount).toBe(0);
     const verified = result.verified[0]!;
-    const body = renderRetainedComposition([verified]);
-    expect(body).toContain(example.chosen);
-    expect(body).toContain(example.chosenTest);
-    expect(body).not.toContain(example.compound);
-    expect(body).not.toContain(example.weakTest);
+    expect(verified.suggestedFix).toBe(example.chosen);
+    expect(verified.suggestedTest).toBe(example.chosenTest);
+    expect(composableAdvice(verified)).toEqual({ fix: [example.chosen], test: [example.chosenTest], provenance: [example.compound, example.weakTest] });
     expect(verified.originalSuggestions?.suggestedFix?.suggestionText).toBe(example.compound);
     expect(verified.originalSuggestions?.suggestedTest?.suggestionText).toBe(example.weakTest);
   });
@@ -1482,15 +1480,11 @@ describe("plan 106 verifier revision semantics", () => {
     } });
     expect(finding).not.toHaveProperty("originalSuggestions");
     expect(result.verdicts[0]?.suggestionAssessments).toEqual(result.verified[0]?.suggestionAssessments);
-    // Verifier-final advice publishes without a label; the superseded original stays provenance-only.
-    const body = renderRetainedComposition([result.verified[0]!]);
-    expect(body).toContain(updatedFix);
-    expect(body).toContain(finding.suggestedTest);
-    expect(body).not.toContain(finding.suggestedFix);
-    expect(body).not.toContain("remains unverified");
+    // Verifier-final advice is composable without a label; the superseded original stays provenance-only.
+    expect(composableAdvice(result.verified[0]!)).toEqual({ fix: [updatedFix], test: [finding.suggestedTest], provenance: [finding.suggestedFix] });
   });
 
-  it.each([true, false])("publishes the defect's fix and final test without an assessment label (revised=%s)", async revised => {
+  it.each([true, false])("offers the defect's fix and final test as composable advice without an assessment label (revised=%s)", async revised => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
     const finding = candidate("test-contract", packet, {
@@ -1524,13 +1518,9 @@ describe("plan 106 verifier revision semantics", () => {
       suggestedFix: { status: "unverified", suggestionText: finding.suggestedFix },
       suggestedTest: { status: "unverified", suggestionText: finalTest }
     });
-    const body = renderRetainedComposition([verified]);
-    expect(body).toContain(finding.suggestedFix);
-    expect(body).toContain("**Suggested test:**");
-    expect(body).toContain(finalTest);
-    expect(body).not.toContain("remains unverified");
+    expect(verified.suggestedTest).toBe(finalTest);
+    expect(composableAdvice(verified)).toEqual({ fix: [finding.suggestedFix], test: [finalTest], provenance: revised ? [finding.suggestedTest] : [] });
     if (revised) {
-      expect(body).not.toContain(finding.suggestedTest);
       expect(verified.originalSuggestions?.suggestedTest?.suggestionText).toBe(finding.suggestedTest);
     } else {
       expect(verified).not.toHaveProperty("originalSuggestions");
@@ -2198,3 +2188,15 @@ describe("plan 76 anchor reconstruction", () => {
     expect(result.verified[0]?.anchorSource).toBe("verifier_revised");
   });
 });
+
+// Stage 10 may cite only current fix/test sources; superseded originals are
+// provenance-only. This observes which advice verification leaves composable
+// without going through a renderer (the deterministic fallback withholds all advice).
+function composableAdvice(finding: CandidateFinding) {
+  const sources = compositionSources([finding]);
+  return {
+    fix: sources.filter(source => eligibleCompositionSource(source, "fix")).map(source => source.text),
+    test: sources.filter(source => eligibleCompositionSource(source, "test")).map(source => source.text),
+    provenance: sources.filter(source => source.provenanceOnly).map(source => source.text)
+  };
+}

@@ -772,7 +772,7 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "- attentionResolutions: when an attention inventory is supplied, assess every listed concern exactly once as resolved, narrowed, or unresolved. Resolved/narrowed require independent supportingRefs; unresolved may use [] and preserves the question. Compare published findings as well as other supplied evidence.",
     "- findingIds: non-empty array of known finding IDs.",
     "- Write one concise current conclusion per section kind. Do not generate legacy finalBody.",
-    "- Fix/test sections may cite only current fix/test sources. Retain original (provenance-only) and withheld proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
+    "- Fix/test sections may cite only current fix/test sources, and never advice that supplied evidence contradicts. Retain original (provenance-only) and withheld proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
     "- publication: \"inline\" or \"summary-only\".",
     "",
     "Verified finding groups:",

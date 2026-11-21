@@ -29,57 +29,38 @@ function schemaFor(findings: ReturnType<typeof fixture>["findings"]) {
 }
 
 describe("supported recommendation publication", () => {
-  it.each(["suggestedFix", "suggestedTest"] as const)("withholds distinct %s proposals in fallback regardless of ordering", field => {
+  it.each(["single", "distinct", "reversed", "identical", "historical"] as const)("withholds every fix/test proposal in fallback and retains its source (%s)", variation => {
     const first = fixture().findings[0]!;
     delete first.suggestionAssessments;
-    const second = structuredClone(first);
-    second.id = "alternative";
-    second[field] = field === "suggestedFix" ? "Revalidate the session's membership when loading a document."
-      : "Verify active access, then revoke the session and assert no document is returned.";
-    const before = structuredClone([first, second]);
-    const other = field === "suggestedFix" ? "suggestedTest" : "suggestedFix";
-    const label = field === "suggestedFix" ? "Remediation" : "Regression-test guidance";
-    for (const findings of [[first, second], [second, first]]) {
-      let metrics: CompositionMetrics | undefined;
-      const body = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
-      expect(body).toContain(label + " remains unreconciled");
-      expect(body).not.toContain(label + " remains unverified");
-      expect(body).not.toContain(first[field]);
-      expect(body).not.toContain(second[field]);
-      expect(body).toContain(first[other]);
-      expect(metrics?.publishedSuggestionSources.sort()).toEqual(findings.map(f => f.id + "/" + other).sort());
-      expect(metrics?.retainedSuggestionSources.sort()).toEqual(findings.map(f => f.id + "/" + field).sort());
-      expect(metrics?.accountedSourceComponents).toBe(compositionSources(findings).length);
+    const findings = [first];
+    if (variation === "historical") first.originalSuggestions = { suggestedFix: { status: "supported", suggestionText: "Invalidate every session.", rationale: "Historical proposal.", evidence: [] } };
+    if (variation === "distinct" || variation === "reversed" || variation === "identical") {
+      const second = { ...structuredClone(first), id: "alternative" };
+      if (variation !== "identical") {
+        second.suggestedFix = "Revalidate the session's membership when loading a document.";
+        second.suggestedTest = "Verify active access, then revoke the session and assert no document is returned.";
+      }
+      findings.push(second);
+      if (variation === "reversed") findings.reverse();
     }
-    expect([first, second]).toEqual(before);
-  });
-
-  it("publishes identical proposals once while retaining every originating source", () => {
-    const first = fixture().findings[0]!;
-    delete first.suggestionAssessments;
-    const second = { ...structuredClone(first), id: "duplicate" };
+    const before = structuredClone(findings);
     let metrics: CompositionMetrics | undefined;
-    const body = renderRetainedComposition([first, second], undefined, undefined, value => { metrics = value; });
-    expect(body).not.toContain("remains unreconciled");
-    for (const field of ["suggestedFix", "suggestedTest"] as const) {
-      expect(body.split(first[field]!)).toHaveLength(2);
-      expect(metrics?.publishedSuggestionSources).toContain(first.id + "/" + field);
-      expect(metrics?.publishedSuggestionSources).toContain(second.id + "/" + field);
-    }
-    expect(metrics?.accountedSourceComponents).toBe(compositionSources([first, second]).length);
+    const body = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
+    const advice = compositionSources(findings).filter(s => s.kind === "fix" || s.kind === "test");
+    expect(advice.some(s => s.provenanceOnly)).toBe(variation === "historical");
+    for (const source of advice) expect(body).not.toContain(source.text);
+    expect(body).not.toContain("**Suggested");
+    expect(body.split("Remediation was not composed: without report synthesis")).toHaveLength(2);
+    expect(body.split("Regression-test guidance was not composed: without report synthesis")).toHaveLength(2);
+    for (const stale of ["remains unverified", "remains unreconciled"]) expect(body).not.toContain(stale);
+    expect(body).toContain(first.failureMode);
+    expect(metrics?.publishedSuggestionSources).toEqual([]);
+    expect([...metrics!.retainedSuggestionSources].sort()).toEqual(advice.map(s => s.id).sort());
+    expect(metrics?.accountedSourceComponents).toBe(compositionSources(findings).length);
+    expect(findings).toEqual(before);
   });
 
-  it.each(["supported", "unverified", "incompatible"] as const)("does not let a historical alternative labeled %s block or replace the current proposal", status => {
-    const first = fixture().findings[0]!;
-    first.originalSuggestions = { suggestedFix: { ...first.suggestionAssessments!.suggestedFix!, status, suggestionText: "Invalidate every session." } };
-    delete first.suggestionAssessments;
-    const body = renderRetainedComposition([first]);
-    expect(body).toContain(first.suggestedFix);
-    expect(body).not.toContain("remains unreconciled");
-    expect(body).not.toContain(first.originalSuggestions.suggestedFix!.suggestionText);
-  });
-
-  it("publishes verifier-final fix and test advice without a label, never a provenance-only original", () => {
+  it("composes verifier-final fix and test advice without a label, never a provenance-only original, while fallback withholds both", () => {
     const { findings, group, submission } = fixture();
     const finding = findings[0]!;
     delete finding.suggestionAssessments;
@@ -91,12 +72,19 @@ describe("supported recommendation publication", () => {
     const composed = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
     let metrics: CompositionMetrics | undefined;
     const fallback = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
-    for (const [body, published] of [[composed.body, composed.metrics.publishedSuggestionSources], [fallback, metrics!.publishedSuggestionSources]] as const) {
-      expect(body).toContain("**Suggested fix:** " + finding.suggestedFix);
-      expect(body).toContain("**Suggested test:** " + finding.suggestedTest);
+    expect(composed.body).toContain("**Suggested fix:** " + finding.suggestedFix);
+    expect(composed.body).toContain("**Suggested test:** " + finding.suggestedTest);
+    expect(composed.body).not.toContain("was not composed");
+    expect([...composed.metrics.publishedSuggestionSources].sort()).toEqual(["authorization/suggestedFix", "authorization/suggestedTest"]);
+    expect(fallback).not.toContain(finding.suggestedFix);
+    expect(fallback).not.toContain(finding.suggestedTest);
+    expect(fallback).toContain("Remediation was not composed");
+    expect(fallback).toContain("Regression-test guidance was not composed");
+    expect(metrics!.publishedSuggestionSources).toEqual([]);
+    expect([...metrics!.retainedSuggestionSources].sort()).toEqual(["authorization/suggestedFix", "authorization/suggestedTest", ...originals].sort());
+    for (const body of [composed.body, fallback]) {
       expect(body).not.toContain("remains unverified");
       for (const original of Object.values(finding.originalSuggestions)) expect(body).not.toContain(original.suggestionText);
-      expect([...published].sort()).toEqual(["authorization/suggestedFix", "authorization/suggestedTest"]);
     }
     // Stage 10 sources carry no suggestion label; provenanceOnly alone separates originals.
     const adviceSources = compositionSources(findings).filter(s => s.findingId === finding.id && (s.kind === "fix" || s.kind === "test"));
@@ -126,8 +114,13 @@ describe("supported recommendation publication", () => {
     expect(rendered.body).toContain(findings[0]!.suggestedFix);
     expect(rendered.body).not.toContain("remains unreconciled");
     expect(rendered.metrics.accountedSourceComponents).toBe(sources.length);
-    // Alternatives in unrelated groups do not compete during fallback.
-    expect(renderRetainedComposition([second], undefined, undefined, undefined, findings)).toContain(second.suggestedFix);
+    // Fallback never selects among proposals, and only accounts for its own group's sources.
+    let metrics: CompositionMetrics | undefined;
+    const fallback = renderRetainedComposition([second], undefined, undefined, value => { metrics = value; }, findings);
+    expect(fallback).not.toContain(second.suggestedFix);
+    expect(fallback).not.toContain(findings[0]!.suggestedFix);
+    expect(fallback).toContain("Remediation was not composed");
+    expect([...metrics!.retainedSuggestionSources].sort()).toEqual([second.id + "/suggestedFix", second.id + "/suggestedTest"]);
   });
 
   it.each(["same proposal", "different compound proposal"])("can publish cited advice while retaining an alternative %s", variation => {
@@ -147,7 +140,7 @@ describe("supported recommendation publication", () => {
     expect(result.metrics.accountedSourceComponents).toBe(sources.length);
   });
 
-  it("lets synthesis retain unlabeled proposals without a placeholder, while fallback publishes them", () => {
+  it("lets synthesis retain unlabeled proposals without a placeholder, while fallback withholds them with a status line", () => {
     const { findings, group } = fixture();
     delete findings[0]!.suggestionAssessments;
     group.retainedSourceRefs = group.sections.filter(s => s.kind === "fix" || s.kind === "test").flatMap(s => s.sourceRefs);
@@ -160,8 +153,11 @@ describe("supported recommendation publication", () => {
     }
     for (const field of ["suggestedFix", "suggestedTest"] as const) {
       expect(composed.body).not.toContain(findings[0]![field]);
-      expect(fallback.split(findings[0]![field]!)).toHaveLength(2);
+      expect(fallback).not.toContain(findings[0]![field]);
     }
+    expect(composed.body).not.toContain("was not composed");
+    expect(fallback).toContain("Remediation was not composed");
+    expect(fallback).toContain("Regression-test guidance was not composed");
     expect(composed.metrics.publishedSuggestionSources).toEqual([]);
     expect(composed.metrics.retainedSuggestionSources).toHaveLength(2);
     expect(composed.metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
@@ -174,6 +170,14 @@ describe("supported recommendation publication", () => {
     const body = renderRetainedComposition(findings);
     expect(body).not.toContain("remains unverified");
     expect(body).not.toContain("**Suggested");
+    expect(body).not.toContain("was not composed");
+    // A provenance-only original is not a current proposal, so the fallback adds no status line for it.
+    findings[0]!.originalSuggestions = { suggestedFix: { status: "unverified", suggestionText: "Use an older membership snapshot.", rationale: "Historical proposal.", evidence: [] } };
+    let metrics: CompositionMetrics | undefined;
+    const historical = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
+    expect(historical).not.toContain("Use an older membership snapshot.");
+    expect(historical).not.toContain("was not composed");
+    expect(metrics?.retainedSuggestionSources).toEqual(["authorization/originalSuggestions/suggestedFix"]);
   });
 
   it("keeps historical proposals out of advice even if their old assessment claimed support", () => {
@@ -304,21 +308,79 @@ describe("#146 Stage 10 advice publication", () => {
   });
 
   it("publishes no structured advice for a final finding without a presentation record", async () => {
-    const { findings } = fixture();
-    const fallback = async () => compose(findings, async () => { throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true }); })
-      .then(result => [...result.findings, ...result.summaryOnlyFindings]);
-    // Control: with its fallback record the same finding mirrors the cited advice.
-    expect((await fallback())[0]!.suggestedFix).toBe(findings[0]!.suggestedFix);
+    const { findings, submission } = fixture();
+    const finals = (result: Awaited<ReturnType<typeof compose>>) => [...result.findings, ...result.summaryOnlyFindings];
+    // Control: a composed record that cites the advice mirrors it in structured output.
+    const [composed] = finals(await compose(findings, async <T>() => submission as T));
+    expect(composed!.suggestedFix).toBe(findings[0]!.suggestedFix);
+    expect(composed!.suggestedTest).toBe(findings[0]!.suggestedTest);
     presentation.dropFallbackMetrics = true;
     try {
-      const [final] = await fallback();
-      // The fallback body still renders the advice; only the structured mirror lacks a record to follow.
-      expect(final!.finalBody).toContain(findings[0]!.suggestedFix);
+      const [final] = finals(await compose(findings, async () => { throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true }); }));
+      // A missing record publishes nothing; it never defaults to the eligible current proposals.
+      expect(final!.finalBody).toContain("Remediation was not composed");
+      expect(final!.finalBody).not.toContain(findings[0]!.suggestedFix);
       expect(final!.suggestedFix).toBeUndefined();
       expect(final!.suggestedTest).toBeUndefined();
       expect(final!.suggestionAssessments).toBeUndefined();
     } finally {
       presentation.dropFallbackMetrics = false;
     }
+  });
+
+  // Reviewer case on PR #150: without labels the fallback cannot tell that the
+  // verified evidence contradicts a current proposal, so it publishes none.
+  const rejectedFix = "Return 403 Forbidden when a revoked member reads the document.";
+  const contradicted = () => {
+    const data = fixture();
+    const finding = data.findings[0]!;
+    delete finding.suggestionAssessments;
+    finding.suggestedFix = rejectedFix;
+    finding.verification += " The caller contract rejects a 403 for revoked members: callers must receive 404 so document existence is not disclosed.";
+    return data;
+  };
+  const timeout = async (): Promise<never> => { throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true }); };
+  async function composeRecorded(findings: ReturnType<typeof fixture>["findings"], runStructured: <T>(request: LlmStructuredRequest<T>) => Promise<T>) {
+    const records: Array<{ synthesis: string; publishedSuggestionSources: string[]; retainedSuggestionSources: string[] }> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: { message: string; data?: unknown }) => {
+      if (event.message === "composition_presentation_metrics") records.push(event.data as (typeof records)[number]);
+    } };
+    const result = await dedupeRankAndComposeReview({ verified: findings, verdicts: [] }, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage(), config(), telemetry, { runner: { runStructured }, promptBuilder: createPromptBuilder(lensRegistry) });
+    const [final, ...rest] = [...result.findings, ...result.summaryOnlyFindings];
+    if (!final || rest.length) throw new Error("expected one final finding");
+    return { final, records };
+  }
+
+  it("fallback withholds a current fix that the verification evidence contradicts", async () => {
+    const { findings } = contradicted();
+    const { final, records } = await composeRecorded(findings, timeout);
+    expect(final.finalBody).toContain("callers must receive 404");
+    expect(final.finalBody).not.toContain(rejectedFix);
+    expect(final.finalBody).not.toContain("**Suggested fix:**");
+    expect(final.finalBody).not.toContain("**Suggested test:**");
+    expect(final.finalBody).toContain("Remediation was not composed: without report synthesis, proposals are not checked against the verified evidence, so they stay in provenance.");
+    expect(records).toEqual([expect.objectContaining({ synthesis: "fallback", publishedSuggestionSources: [],
+      retainedSuggestionSources: expect.arrayContaining(["authorization/suggestedFix", "authorization/suggestedTest"]) })]);
+    expect(final.suggestedFix).toBeUndefined();
+    expect(final.suggestedTest).toBeUndefined();
+  });
+
+  it("composes a current uncontradicted fix when synthesis cites it, while fallback still withholds it", async () => {
+    const { findings, submission } = fixture();
+    delete findings[0]!.suggestionAssessments;
+    const fix = findings[0]!.suggestedFix!;
+    const composed = await composeRecorded(findings, async <T>() => submission as T);
+    expect(composed.final.finalBody).toContain("**Suggested fix:** " + fix);
+    expect(composed.final.finalBody).not.toContain("was not composed");
+    expect(composed.final.suggestedFix).toBe(fix);
+    expect(composed.records).toEqual([expect.objectContaining({ synthesis: "composed",
+      publishedSuggestionSources: expect.arrayContaining(["authorization/suggestedFix"]) })]);
+    const fallback = await composeRecorded(findings, timeout);
+    expect(fallback.final.finalBody).not.toContain(fix);
+    expect(fallback.final.finalBody).toContain("Remediation was not composed");
+    expect(fallback.records).toEqual([expect.objectContaining({ synthesis: "fallback", publishedSuggestionSources: [],
+      retainedSuggestionSources: expect.arrayContaining(["authorization/suggestedFix"]) })]);
+    expect(fallback.final.suggestedFix).toBeUndefined();
   });
 });

@@ -1013,7 +1013,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(requests[0]).toMatchObject({ stage: 10, compositionReasoningStepDown: enabled });
   });
 
-  it.each(["timeout", "legacy", "invalid-attribution"] as const)("withholds unreconciled fallback advice in both report and structured output (%s)", async mode => {
+  it.each(["timeout", "legacy", "invalid-attribution"] as const)("withholds all fallback advice in both report and structured output (%s)", async mode => {
     const fixture = authorizationComposition();
     const second = structuredClone(fixture.findings[0]!);
     second.id = "alternative";
@@ -1038,8 +1038,10 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(result.summaryOnlyFindings).toHaveLength(1);
     const final = result.summaryOnlyFindings[0]!;
-    expect(final.finalBody).toContain("Remediation remains unreconciled");
-    expect(final.finalBody).toContain("Regression-test guidance remains unreconciled");
+    expect(final.finalBody).toContain("Remediation was not composed");
+    expect(final.finalBody).toContain("Regression-test guidance was not composed");
+    expect(final.finalBody).not.toContain("remains unreconciled");
+    expect(final.finalBody).not.toContain("**Suggested");
     expect(final.suggestedFix).toBeUndefined();
     expect(final.suggestedTest).toBeUndefined();
     expect(final.suggestionAssessments).toBeUndefined();
@@ -12377,10 +12379,13 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown).not.toContain("Why it matters:");
     expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
     expect(markdown).not.toContain("remains unverified");
-    expect(markdown.split(finding.suggestedFix)).toHaveLength(2);
-    expect(markdown.split(finding.suggestedTest)).toHaveLength(2);
-    expect(result.findings[0]!.suggestedFix).toBe(finding.suggestedFix);
-    expect(result.findings[0]!.suggestedTest).toBe(finding.suggestedTest);
+    // Fallback withholds advice (#146): one status line per kind, no advice text or structured mirror.
+    expect(markdown).not.toContain(finding.suggestedFix);
+    expect(markdown).not.toContain(finding.suggestedTest);
+    expect(markdown.split("Remediation was not composed")).toHaveLength(2);
+    expect(markdown.split("Regression-test guidance was not composed")).toHaveLength(2);
+    expect(result.findings[0]!.suggestedFix).toBeUndefined();
+    expect(result.findings[0]!.suggestedTest).toBeUndefined();
   });
 
   it("cleans duplicate composer titles and metadata before rendering", async () => {

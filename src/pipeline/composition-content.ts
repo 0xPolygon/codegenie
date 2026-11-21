@@ -218,10 +218,10 @@ export function composePresentation(
   presentation: CompositionPresentation = {},
   assessmentFindings = findings,
   {
-    unreconciledSuggestionKinds = [],
+    withheldSuggestionKinds = [],
     normalizeRecordedVerification = text => text
   }: {
-    unreconciledSuggestionKinds?: ReadonlyArray<"fix" | "test">;
+    withheldSuggestionKinds?: ReadonlyArray<"fix" | "test">;
     normalizeRecordedVerification?: (text: string) => string;
   } = {}
 ) {
@@ -232,8 +232,8 @@ export function composePresentation(
     const proposals = sources.filter(source => source.kind === kind && !source.provenanceOnly);
     if (proposals.length && !proposals.some(source => eligibleCompositionSource(source, kind))) {
       prose.push(label + " remains unverified.");
-    } else if (unreconciledSuggestionKinds.includes(kind)) {
-      prose.push(label + " remains unreconciled because multiple proposals differ.");
+    } else if (withheldSuggestionKinds.includes(kind)) {
+      prose.push(label + " was not composed: without report synthesis, proposals are not checked against the verified evidence, so they stay in provenance.");
     }
   }
   const superseded = new Set((presentation.reconciliations ?? [])
@@ -330,16 +330,17 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
   const sources = compositionSources(findings, assessmentFindings);
   const sections: CompositionSection[] = [];
   const retainedSourceRefs: string[] = [];
-  const unreconciledSuggestionKinds: Array<"fix" | "test"> = [];
+  const withheldSuggestionKinds: Array<"fix" | "test"> = [];
   for (const kind of ["impact", "verification", "fix", "test"] as const) {
     const matching = sources.filter(source => source.kind === kind);
     if (!matching.length) continue;
     const eligible = matching.filter(source => eligibleCompositionSource(source, kind));
-    // Exact duplicates may share one presentation. Without synthesis, ordering
-    // does not reconcile differently worded proposals.
-    if ((kind === "fix" || kind === "test") && new Set(eligible.map(source => source.text)).size > 1) {
+    // #146: without labels, only synthesis can check advice against the
+    // verified evidence. The deterministic fallback never publishes advice; it
+    // retains every proposal in provenance.
+    if (kind === "fix" || kind === "test") {
       retainedSourceRefs.push(...matching.map(source => source.id));
-      unreconciledSuggestionKinds.push(kind);
+      if (eligible.length) withheldSuggestionKinds.push(kind);
       continue;
     }
     const chosen = eligible[0];
@@ -362,7 +363,7 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
   }
   const presentation: CompositionPresentation = { retainedSourceRefs };
   const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, {
-    unreconciledSuggestionKinds,
+    withheldSuggestionKinds,
     normalizeRecordedVerification: normalizeProse
   });
   onMetrics?.(rendered.metrics);

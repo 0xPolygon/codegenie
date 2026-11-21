@@ -5,7 +5,7 @@ function validateWithSchema(schema: Tool["parameters"], value: unknown) {
   return validateToolCall([{ name: "submit", description: "fixture", parameters: schema }], { type: "toolCall", id: "fixture", name: "submit", arguments: value as Record<string, unknown> });
 }
 import { contractReview, contractComposition as proposal } from "./fixtures/composition/contract-review.js";
-import { composePresentation, compositionSources, renderRetainedComposition, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { composePresentation, compositionSources, renderRetainedComposition, validateCompositionSubmission, type CompositionMetrics } from "../src/pipeline/composition-content.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { SubmitCompositionSchema, SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
@@ -70,16 +70,21 @@ describe("contract-aware concise composition", () => {
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, presentation)).toThrow(/cannot supersede/);
   });
 
-  it("retains a defect when its remedies are unreconciled in deterministic fallback", () => {
+  it("retains a defect and withholds its remedies in deterministic fallback", () => {
     const findings = contractReview();
-    let accounted = 0;
-    const body = renderRetainedComposition(findings, undefined, text => text, metrics => { accounted = metrics.accountedSourceComponents; });
-    expect(accounted).toBe(compositionSources(findings).length);
+    let metrics: CompositionMetrics | undefined;
+    const body = renderRetainedComposition(findings, undefined, text => text, value => { metrics = value; });
+    const advice = compositionSources(findings).filter(source => source.kind === "fix" || source.kind === "test");
+    expect(metrics?.accountedSourceComponents).toBe(compositionSources(findings).length);
     expect(body).toContain(findings[0]!.failureMode);
-    expect(body).not.toContain(findings[0]!.suggestedFix);
-    expect(body).not.toContain(findings[1]!.suggestedFix);
-    expect(body).toContain("Remediation remains unreconciled");
+    for (const source of advice) expect(body).not.toContain(source.text);
+    expect(body).not.toContain("**Suggested");
+    expect(body).toContain("Remediation was not composed");
+    expect(body).toContain("Regression-test guidance was not composed");
+    expect(body).not.toContain("remains unreconciled");
     expect(body).toContain("synthesis was unavailable");
+    expect(metrics?.publishedSuggestionSources).toEqual([]);
+    expect([...metrics!.retainedSuggestionSources].sort()).toEqual(advice.map(source => source.id).sort());
   });
 
   it("contains model HTML and unclosed fences while preserving immutable originals", () => {
