@@ -229,30 +229,38 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
   }
   const superseded = new Set((presentation.reconciliations ?? [])
     .filter(record => record.disposition === "superseded").flatMap(record => record.sourceRefs));
-  const unresolved = new Set((presentation.reconciliations ?? [])
-    .filter(record => record.disposition === "unresolved").flatMap(record => record.sourceRefs));
-  const proofs = findings.flatMap(finding => finding.proofAssessment && !superseded.has(finding.id + "/proofAssessment")
-    ? [finding.proofAssessment] : []);
+  const unresolvedReconciliations = (presentation.reconciliations ?? []).filter(record => record.disposition === "unresolved");
+  const unresolved = new Set(unresolvedReconciliations.flatMap(record => record.sourceRefs));
   const assumptions = new Map<string, boolean>();
-  for (const proof of proofs) {
+  const proofConditions: string[] = [];
+  const disputedProofEvidence: string[] = [];
+  for (const { id, proofAssessment: proof } of findings) {
+    const ref = id + "/proofAssessment";
+    if (!proof || superseded.has(ref)) continue;
+    if (proof.status === "unresolved") proofConditions.push(proof.evidence);
+    else if (unresolved.has(ref)) disputedProofEvidence.push(proof.evidence);
     for (const { question, essential } of proof.assumptions) {
       assumptions.set(question, essential || assumptions.get(question) === true);
     }
   }
   const concerns = [...new Set([
-    ...proofs.filter(proof => proof.status === "unresolved").map(proof => proof.evidence),
+    ...unresolvedReconciliations.map(record => record.rationale.trim()),
+    ...proofConditions,
     ...[...assumptions].map(([question, essential]) => (essential ? "Essential assumption: " : "Secondary assumption: ") + question)
   ])];
   const uncertaintyBody = concerns.length ? "**Open conditions:**\n\n" + concerns.map(text => "- " + safeReportProse(text)).join("\n") : "";
   // Legacy verification has no structured assumptions. Keep its recorded
   // wording, and the wording of any explicitly unresolved reconciliation.
   const composedVerification = sections.find(section => section.kind === "verification")?.text.trim();
-  const recordedVerification = [...new Set(findings.flatMap(finding => {
-    const ref = finding.id + "/verification";
-    const text = finding.verification?.trim();
-    if (!text || text === composedVerification || superseded.has(ref)) return [];
-    return !finding.proofAssessment || unresolved.has(ref) ? [text] : [];
-  }))];
+  const recordedVerification = [...new Set([
+    ...disputedProofEvidence,
+    ...findings.flatMap(finding => {
+      const ref = finding.id + "/verification";
+      const text = finding.verification?.trim();
+      if (!text || text === composedVerification || superseded.has(ref)) return [];
+      return !finding.proofAssessment || unresolved.has(ref) ? [text] : [];
+    })
+  ])];
   const recordedBody = recordedVerification.length ? "**Recorded verification:**\n\n" + recordedVerification.map(safeReportProse).join("\n\n") : "";
   const evidenceBody = primary.map(ref => renderEvidence(byId.get(ref)!, link)).join("\n\n");
   prose.push("**Evidence:**\n\n" + evidenceBody);

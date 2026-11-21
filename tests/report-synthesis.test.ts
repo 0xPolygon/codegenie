@@ -109,6 +109,34 @@ describe("report synthesis and requirement support", () => {
     }] })).toThrow(/visible verification/);
   });
 
+  it("renders an unresolved reconciliation on an established proof with no assumptions", () => {
+    const { findings, sections, evidenceRefs } = authorizationComposition();
+    const proofEvidence = "The complete read handler returns the document from the cached membership.";
+    findings[0]!.proofAssessment = { status: "established", evidence: proofEvidence, assumptions: [] };
+    const rationale = "The evidence does not settle the scope of the access-policy exception.";
+    sections.find(section => section.kind === "verification")!.text = "The read handler lacks the active-membership check.";
+    const { body } = composePresentation(findings, sections, evidenceRefs, undefined, {
+      reconciliations: [{ sourceRefs: ["authorization/proofAssessment"], supportingRefs: [], disposition: "unresolved", rationale }]
+    });
+
+    expect(body).toContain("**Open conditions:**\n\n- " + rationale);
+    expect(body).toContain("**Recorded verification:**\n\n" + proofEvidence);
+    expect(body).not.toContain("authorization/proofAssessment");
+  });
+
+  it.each([true, false])("renders a shared assumption once at its strongest qualification (first essential=%s)", firstEssential => {
+    const { findings } = authorizationComposition();
+    const first = findings[0]!;
+    const second = { ...structuredClone(first), id: "second" };
+    const question = "Does the caller supply a current membership?";
+    first.proofAssessment!.assumptions = [{ question, essential: firstEssential }];
+    second.proofAssessment!.assumptions = [{ question, essential: !firstEssential }];
+
+    const body = renderRetainedComposition([first, second]);
+    expect(body).toContain("Essential assumption: " + question);
+    expect(body.split(question)).toHaveLength(2);
+  });
+
   it.each([true, false])("fallback attributes unsynthesized conditions without inventing disagreement, anchor: %s", anchored => {
     const { findings } = authorizationComposition();
     if (anchored) findings[0]!.anchor = { path: "documents.ts", line: 2, side: "RIGHT", hunkId: "h" };

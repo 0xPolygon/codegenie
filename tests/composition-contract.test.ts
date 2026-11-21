@@ -30,6 +30,7 @@ describe("contract-aware concise composition", () => {
     expect(body).toContain("size of the loss depends");
     expect(body).not.toContain("Original assessments and supporting evidence");
     expect(body).not.toContain("**superseded:**");
+    for (const source of compositionSources(findings)) expect(body).not.toContain(source.id);
     expect(metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
     expect(metrics.primaryEvidenceComponents).toBe(1);
     expect(metrics.provenanceWords).toBe(0);
