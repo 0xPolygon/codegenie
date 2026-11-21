@@ -13,7 +13,7 @@ import type {
 } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
-import { inlineCode, severityBadge } from "../util/markdown.js";
+import { FINDING_ORDER_NOTE, inlineCode, severityBadge } from "../util/markdown.js";
 import { codegenieVersionInfo, workflowRunUrl } from "../util/version-info.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
@@ -388,7 +388,13 @@ function appendDemotedFindings(body: string, findings: FinalFinding[]): string {
   if (findings.length === 0) {
     return body;
   }
-  const lines = [body.trim(), "", "**Inline findings included in the review body:**"].filter((line) => line.length > 0);
+  const trimmed = body.trim();
+  const lines = trimmed.length > 0
+    ? [trimmed, "", "**Inline findings included in the review body:**"]
+    : ["**Inline findings included in the review body:**"];
+  if (findings.length > 1 && !trimmed.includes(FINDING_ORDER_NOTE)) {
+    lines.push("", FINDING_ORDER_NOTE);
+  }
   for (const finding of findings) {
     lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
     lines.push(indent(finding.finalBody.trim() || finding.failureMode));
