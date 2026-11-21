@@ -25,7 +25,7 @@ import type {
   VerificationVerdict
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
-import { codeBlock, fenceLanguageForPath, inlineCode, severityBadge } from "../util/markdown.js";
+import { codeBlock, fenceLanguageForPath, FINDING_ORDER_NOTE, inlineCode, presentationOrder, severityBadge } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -265,8 +265,9 @@ export async function dedupeRankAndComposeReview(
     }
   }
   const selection = buildSelectionRecords(capped.findings, baseSelection, capped.suppressedReasons, capped.downgradeReasons);
-  const findings = capped.findings.filter((finding) => finding.publication === "inline");
-  const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
+  // Reader order is applied only here, after the caps (#104).
+  const findings = presentationOrder(capped.findings.filter((finding) => finding.publication === "inline"));
+  const summaryOnlyFindings = presentationOrder(capped.findings.filter((finding) => finding.publication === "summary-only"));
   const publishableCount = findings.length + summaryOnlyFindings.length;
   const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
     compositionMode === "llm");
@@ -1867,7 +1868,7 @@ function renderReviewBody(
     lines.push("", "**Coverage disclosure:**", ...coverageDisclosures);
   }
   if (summaryOnly.length > 0) {
-    lines.push("", "**Summary-only findings:**");
+    lines.push("", "**Summary-only findings:**", ...(summaryOnly.length > 1 ? [FINDING_ORDER_NOTE] : []));
     for (const finding of summaryOnly) {
       lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
       lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));

@@ -1,7 +1,7 @@
 import { healthForResult, renderReviewHealth, factualReviewSummary } from "../util/review-health.js";
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
-import { inlineCode, severityBadge } from "../util/markdown.js";
+import { FINDING_ORDER_NOTE, inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const health = healthForResult(result);
@@ -49,7 +49,7 @@ function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRun
     return "";
   }
 
-  const lines = [`## ${title}`];
+  const lines = [`## ${title}`, ...(findings.length > 1 ? ["", FINDING_ORDER_NOTE] : [])];
   for (const finding of findings) {
     const link = githubFileLink(git, finding.path, finding.anchor?.line);
     lines.push("", `### ${severityBadge(finding.severity)}: ${finding.title}`);
