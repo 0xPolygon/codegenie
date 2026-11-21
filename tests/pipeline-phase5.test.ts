@@ -3360,11 +3360,12 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it.each([
-    { name: "designed slice", truncated: false, excerpts: true, coverage: "normal" as const, loss: undefined },
-    { name: "capped symbol read with exact excerpts", truncated: true, excerpts: true, coverage: "normal" as const, loss: undefined },
-    { name: "excerpts unavailable", truncated: true, excerpts: false, coverage: "normal" as const, loss: "enclosing symbol excerpts unavailable" },
-    { name: "slice with no review tools", truncated: false, excerpts: true, coverage: "light" as const, loss: "enclosing symbol source sliced with no review tools" }
-  ])("separates designed symbol slicing from real context loss without changing the prompt (#175): $name", async ({ truncated, excerpts, coverage, loss }) => {
+    { name: "designed slice", truncated: false, excerpts: "all", changed: [12, 300], coverage: "normal" as const, loss: undefined },
+    { name: "capped symbol read with exact excerpts", truncated: true, excerpts: "all", changed: [12], coverage: "normal" as const, loss: undefined },
+    { name: "excerpts unavailable", truncated: true, excerpts: "none", changed: [12], coverage: "normal" as const, loss: "enclosing symbol excerpts unavailable" },
+    { name: "one of two excerpts unread", truncated: false, excerpts: "first", changed: [12, 300], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 2 unread" },
+    { name: "slice with no review tools", truncated: false, excerpts: "all", changed: [12], coverage: "light" as const, loss: "enclosing symbol source sliced with no review tools" }
+  ])("separates designed symbol slicing from real context loss without changing the prompt (#175): $name", async ({ truncated, excerpts, changed, coverage, loss }) => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, ...(truncated ? { truncated: true } : {}) };
     const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
     const tools = {
@@ -3375,7 +3376,7 @@ describe("phase 5 pipeline regressions", () => {
         meta
       }),
       readRange: async (_path: string, startLine: number, endLine: number) => ({
-        text: excerpts ? Array.from({ length: endLine - startLine + 1 }, () => "  doWork();").join("\n") : "",
+        text: excerpts === "all" || (excerpts === "first" && startLine < 200) ? Array.from({ length: endLine - startLine + 1 }, () => "  doWork();").join("\n") : "",
         meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
       }),
       buildPacketContext: async (file: DiffFile) => ({ context: { path: file.path }, relevantTests: [] })
@@ -3383,7 +3384,7 @@ describe("phase 5 pipeline regressions", () => {
     const repoIndex: RepositoryIndex = {
       ...fakeRepositoryIndex(tools),
       symbolFacts: [{ path: "app.ts", hunkId: "h1", enclosingSymbol: "changed", symbolKind: "function", symbolRange: [10, 420],
-        changedLines: [12], changedLinesSide: "new", source: "tree-sitter", confidence: "syntactic" }]
+        changedLines: changed, changedLinesSide: "new", source: "tree-sitter", confidence: "syntactic" }]
     };
     const plan = { ...fakePlan(), coverage: [{ ...fakePlan().coverage[0]!, coverage }] };
     const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], repoIndex,

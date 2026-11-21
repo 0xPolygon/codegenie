@@ -1810,7 +1810,7 @@ async function readEnclosingSymbolSource(
       return { text: block, quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = renderSlicedSymbolContext(readPath, label, fact, sliced, result.text, budget.maxChars);
+    const text = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -1858,9 +1858,10 @@ async function readEnclosingSymbolSource(
       reasons: ["enclosing symbol source sliced"],
       degradation: "enclosing symbol source truncated",
       // A designed slice keeps exact excerpts around the changed lines, even when
-      // readSymbol's own text was capped. Without excerpts the fallback is the
-      // head of the symbol, which may not contain the change.
-      ...(sliced.length === 0 ? { loss: "enclosing symbol excerpts unavailable" } : {})
+      // readSymbol's own text was capped. A missing excerpt drops changed lines;
+      // with none, the fallback is the head of the symbol.
+      ...(sliced.excerpts.length === 0 ? { loss: "enclosing symbol excerpts unavailable" }
+        : sliced.missing > 0 ? { loss: `enclosing symbol excerpts incomplete: ${sliced.missing} of ${sliced.missing + sliced.excerpts.length} unread` } : {})
     };
   } catch (error) {
     symbolContextMetrics.outlineOnly += 1;
@@ -2221,9 +2222,10 @@ async function readChangedLineExcerpts(
   fact: HunkSymbolFacts,
   source: { kind: "base" } | { kind: "head" },
   telemetry: TelemetryRecorder
-): Promise<string[]> {
+): Promise<{ excerpts: string[]; missing: number }> {
   const ranges = excerptRanges(fact);
   const excerpts: string[] = [];
+  let missing = 0;
   for (const range of ranges) {
     const normalized = normalizeStage6ReadRange({
       startLine: range[0],
@@ -2246,12 +2248,15 @@ async function readChangedLineExcerpts(
       );
       if (result.text.trim().length > 0) {
         excerpts.push(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${result.text.trimEnd()}`);
+      } else {
+        missing += 1;
       }
     } catch {
       // Best-effort debug context; readSymbol output remains the fallback.
+      missing += 1;
     }
   }
-  return excerpts;
+  return { excerpts, missing };
 }
 
 function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
