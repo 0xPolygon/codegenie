@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
 import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
+import { createToolArgumentStreamGuard, type ToolArgumentStreamLimit } from "./tool-argument-stream-limit.js";
 import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
 import {
   validateToolCall,
@@ -79,6 +80,22 @@ class SubmitSemanticValidationError extends Error {
     super(`Submit semantic validation failed: ${classification}${details ? `: ${details}` : ""}`);
     this.name = "SubmitSemanticValidationError";
     this.classification = classification;
+  }
+}
+
+const TOOL_ARGUMENT_LIMIT_REASON = "tool_argument_stream_limit";
+
+class ToolArgumentStreamLimitError extends CodegenieError {
+  readonly observedUsage: NormalizedUsage | undefined;
+
+  constructor(readonly limit: ToolArgumentStreamLimit, rawUsage: unknown, location: { callId: string; workerId: string | undefined }) {
+    super("llm_call_failed", "LLM tool argument stream exceeded its character limit", {
+      recoverable: true,
+      context: definedRecord({ reason: TOOL_ARGUMENT_LIMIT_REASON, ...limit, ...location })
+    });
+    const usage = normalizeUsage(rawUsage);
+    // Pi initializes usage to zero before any provider accounting arrives.
+    this.observedUsage = usage && Object.values(usage).some(value => value > 0) ? usage : undefined;
   }
 }
 
@@ -1296,7 +1313,7 @@ async function completeWithCache(input: CompleteWithCacheInput): Promise<Provide
         : composition && input.taskTimedOut() ? "composition_total"
         : repair ? "schema_repair" : "composition_attempt");
     }
-    const retryable = deadline.timedOut() || (
+    const retryable = cause instanceof ToolArgumentStreamLimitError || deadline.timedOut() || (
       cause instanceof CodegenieError && cause.code === "llm_call_failed"
       && classifyProviderRetry(cause, 1).retryable
     );
@@ -1305,7 +1322,8 @@ async function completeWithCache(input: CompleteWithCacheInput): Promise<Provide
       deadline.cleanup();
       input.opts.telemetry.event({
         stage: input.request.stage, level: "warn", message: "composition_retry_scheduled",
-        data: { reason: deadline.timedOut() ? "timeout" : "transient_provider_failure", nextAttempt: 2 }
+        data: { reason: cause instanceof ToolArgumentStreamLimitError ? TOOL_ARGUMENT_LIMIT_REASON
+          : deadline.timedOut() ? "timeout" : "transient_provider_failure", nextAttempt: 2 }
       });
       return await completeWithCache(input);
     }
@@ -1465,7 +1483,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   }
 
   let lastError: unknown;
-  const maxAttempts = kind === "repair" || request.stage === 10 || request.purpose === "location_clarification" ? 1 : MAX_PROVIDER_ATTEMPTS;
+  let maxAttempts = kind === "repair" || request.stage === 10 || request.purpose === "location_clarification" ? 1 : MAX_PROVIDER_ATTEMPTS;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     let estimatedTokens = 0;
@@ -1542,14 +1560,24 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         Object.defineProperty(responseCapture, "streamProgress", {
           enumerable: true, get: () => progress.snapshot()
         });
+        const argumentGuard = createToolArgumentStreamGuard(request.stage);
+        const streamController = argumentGuard === undefined ? undefined : new AbortController();
+        const streamSignal = streamController === undefined ? taskSignal : AbortSignal.any([taskSignal, streamController.signal]);
         return awaitProviderCall(
           () => adapter.complete(
             model,
             { messages, tools: tools.map(providerToolSpec) },
             {
-              signal: taskSignal,
+              signal: streamSignal,
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
-                if (!taskSignal.aborted) progress.observe(event);
+                if (streamSignal.aborted) return;
+                progress.observe(event);
+                if (event.type !== "toolcall_delta") return;
+                const limit = argumentGuard?.(event.contentIndex, event.delta, progress.toolArgumentChars);
+                if (limit === undefined) return;
+                const error = new ToolArgumentStreamLimitError(limit, event.partial.usage, failureLocation);
+                streamController?.abort(error);
+                throw error;
               },
               onRejectedArguments: (diagnostic: RejectedArgumentDiagnostic) => writeDebugRecord(opts, request, "llm-calls",
                 `${callId}.invalid-arguments-${diagnostic.contentIndex}`, {
@@ -1586,7 +1614,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
               }
             }
           ),
-          taskSignal,
+          streamSignal,
           taskTimedOut
         );
       }), taskSignal, taskTimedOut);
@@ -1686,12 +1714,22 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         throw cause;
       }
       releaseReservation();
-      reportAttemptUsage(opts, request.stage);
+      const argumentLimit = cause instanceof ToolArgumentStreamLimitError ? cause : undefined;
+      const retryLimitLocally = argumentLimit !== undefined && !taskSignal.aborted && attempt < maxAttempts;
+      const retryLimitInComposition = argumentLimit !== undefined && !taskSignal.aborted &&
+        request.stage === 10 && kind !== "repair" && input.compositionAttempts.used < COMPOSITION_MAX_CALLS;
+      // After the cutoff, allow one replacement attempt within the original cap.
+      if (retryLimitLocally) maxAttempts = attempt + 1;
+      const observedUsage = argumentLimit?.observedUsage;
+      const attemptUsage = observedUsage === undefined ? undefined : tokensFromPartialUsage(observedUsage);
+      reportAttemptUsage(opts, request.stage, attemptUsage);
       lastError = cause;
-      const status = taskTimedOut() ? "timeout" : errorStatus(cause);
-      const retry = taskTimedOut()
-        ? { retryable: false, reason: "task_deadline_exhausted" }
-        : classifyProviderRetry(cause, attempt);
+      const status = argumentLimit !== undefined ? "aborted" : taskTimedOut() ? "timeout" : errorStatus(cause);
+      const retry = argumentLimit !== undefined
+        ? { retryable: retryLimitLocally || retryLimitInComposition, reason: TOOL_ARGUMENT_LIMIT_REASON }
+        : taskTimedOut()
+          ? { retryable: false, reason: "task_deadline_exhausted" }
+          : classifyProviderRetry(cause, attempt);
       recordErroredModelCall(opts, request, model, {
         callId,
         protocol,
@@ -1703,14 +1741,28 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         cacheStatus: opts.cache ? "miss" : "disabled",
         promptText,
         durationMs: Date.now() - startedAt,
+        usage: attemptUsage,
         status,
         errorCode: "llm_call_failed",
         errorMessage: cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
         retryReason: retry.reason,
         maxAttempts,
-        retryExhausted: retry.retryable && attempt >= maxAttempts
+        retryExhausted: argumentLimit !== undefined ? !retry.retryable : retry.retryable && attempt >= maxAttempts
       });
+      if (argumentLimit !== undefined) {
+        opts.telemetry.event({
+          stage: request.stage, level: "warn", message: "model_tool_argument_stream_limit",
+          data: {
+            ...request.telemetryContext, callId, kind, attempt, ...argumentLimit.limit,
+            retryScheduled: retry.retryable, usageStatus: observedUsage === undefined ? "unknown" : "partial",
+            ...(observedUsage === undefined ? {} : { observedUsage })
+          }
+        });
+        if (!retryLimitLocally) throw argumentLimit;
+        recordProviderRetryEvent(opts, request, { callId, attempt, maxAttempts, reason: retry.reason, nextDelayMs: 0 });
+        continue;
+      }
       if (status === "transient_error" && retry.retryable && attempt < maxAttempts) {
         const delayMs = retryDelayMs(cause, attempt);
         recordProviderRetryEvent(opts, request, {
@@ -3359,6 +3411,7 @@ function recordErroredModelCall(
     cacheStatus: ModelCallCacheStatus;
     promptText: string;
     durationMs: number;
+    usage?: NormalizedUsage | undefined;
     status: "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode: CodegenieErrorCode;
     errorMessage?: string;
@@ -3388,6 +3441,7 @@ function recordErroredModelCall(
     promptHash: sha256Hex(meta.promptText),
     outputChars: 0,
     outputHash: sha256Hex(""),
+    ...meta.usage,
     durationMs: meta.durationMs,
     cacheStatus: meta.cacheStatus,
     stopReason: "error",
@@ -3486,8 +3540,15 @@ function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiA
   }) as LlmCallUsage);
 }
 
-function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage): void {
-  opts.hooks.onUsage({ stage, providerCalls: 1 });
+function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage, usage?: NormalizedUsage): void {
+  opts.hooks.onUsage({ stage, providerCalls: 1, ...usage });
+}
+
+function tokensFromPartialUsage(usage: NormalizedUsage): NormalizedUsage {
+  // Keep observed token counts for budgeting. The interrupted call's final
+  // cost is unknown, and the event records Pi's partial accounting separately.
+  const { costUSD, inputCostUSD, outputCostUSD, cacheReadCostUSD, cacheWriteCostUSD, ...tokens } = usage;
+  return tokens;
 }
 
 function cacheEntry(stage: ReviewStage, message: PiAssistantMessage): StoredProviderResponse {
@@ -3990,12 +4051,14 @@ async function sleep(ms: number, signal: AbortSignal, timedOut: () => boolean = 
 }
 
 async function awaitProviderCall<T>(call: () => Promise<T>, signal: AbortSignal, timedOut: () => boolean): Promise<T> {
+  const abortError = (): CodegenieError =>
+    signal.reason instanceof ToolArgumentStreamLimitError ? signal.reason : taskAbortError(timedOut());
   if (signal.aborted) {
-    throw taskAbortError(timedOut());
+    throw abortError();
   }
   let cleanup = (): void => undefined;
   const abort = new Promise<never>((_resolve, reject) => {
-    const onAbort = (): void => reject(taskAbortError(timedOut()));
+    const onAbort = (): void => reject(abortError());
     cleanup = () => signal.removeEventListener("abort", onAbort);
     signal.addEventListener("abort", onAbort, { once: true });
   });

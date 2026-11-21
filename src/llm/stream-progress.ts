@@ -22,7 +22,7 @@ export type StreamProgress = {
 export function createStreamProgress(
   report: (progress: StreamProgress) => void,
   now: () => number = Date.now
-): { observe(event: AssistantMessageEvent): void; snapshot(): StreamProgress } {
+): { observe(event: AssistantMessageEvent): void; snapshot(): StreamProgress; readonly toolArgumentChars: number } {
   const started = now();
   const state: Omit<StreamProgress, "idleMs" | "contentIdleMs"> = {
     eventCount: 0, textChunks: 0, textChars: 0, thinkingChunks: 0,
@@ -36,6 +36,7 @@ export function createStreamProgress(
   });
   return {
     snapshot,
+    get toolArgumentChars() { return state.toolArgumentChars; },
     observe(event) {
       const elapsed = now() - started;
       const firstContent = state.firstContentMs === undefined;
