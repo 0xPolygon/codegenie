@@ -9,7 +9,7 @@ import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
-import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket } from "../src/types.js";
+import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket, ReviewPlan } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
@@ -109,6 +109,76 @@ describe("phase 6 live review path", () => {
         expect(events.filter((event) => event.message === "model_call_cache_hit"), name).toHaveLength(3);
       }
     }
+  });
+
+  it.each([false, true])("reviews all eligible hunks in planner priority order until budget stops (limited=%s)", async limited => {
+    const repo = initRepo();
+    const files = ["a.ts", "excluded.ts", "m.ts", "schema.generated.ts", "z.ts"];
+    for (const file of files) writeRepoFile(repo, file, "export const value = 1;\n");
+    const base = commitAll(repo, "base");
+    for (const file of files) writeRepoFile(repo, file, "export const value = 2;\n");
+    const head = commitAll(repo, "change");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-planner-coverage-")), "review");
+    const config = liveConfig(runArtifactDir);
+    const reviewed: Array<Pick<ReviewPacket, "path" | "coverage" | "attentionNotes">> = [];
+    const adapter = partialBudgetAdapter();
+    const complete = adapter.complete!;
+    adapter.complete = async (model, context, options) => {
+      const prompt = firstPrompt(context);
+      const dossier = extractPromptJson<PlannerDossier>(prompt, "planner-dossier");
+      if (dossier) {
+        const entries = [["a.ts", "skip"], ["z.ts", "deep"]] as const;
+        return assistant([toolCall("plan", "submit_plan", {
+          diffUnderstanding: { declaredIntent: "Change constants.", inferredBehavior: "Updates the exported values." },
+          partialReview: { isPartial: true, reason: "Planned only one hunk.", reviewedHunks: 1, totalHunks: 3 },
+          coverage: entries.map(([file, coverage]) => ({
+            hunkId: dossier.hunkIndex.find(entry => entry.path === file)!.hunkIds[0],
+            path: file,
+            coverage,
+            lenses: coverage === "skip" ? [] : ["core/code-review"],
+            reason: "Prioritize the changed constant.",
+            focusNotes: ["Check the exported value."]
+          }))
+        })]);
+      }
+      const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet");
+      if (packet) reviewed.push(packet);
+      return complete(model, context, options);
+    };
+
+    const result = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, {
+      ...config,
+      review: { ...config.review, maxModelCalls: limited ? 3 : 12 },
+      classification: { pathRules: [{ pattern: "excluded.ts", processingMode: "skip", reason: "Excluded by the fixture policy" }] }
+    }, { repoRoot: repo, runArtifactDir, piAdapter: adapter });
+
+    expect(reviewed[0]).toMatchObject({ path: "z.ts", coverage: "deep" });
+    expect(reviewed.map(packet => packet.path).sort()).toEqual(limited ? ["z.ts"] : ["a.ts", "m.ts", "z.ts"]);
+    if (!limited) expect(reviewed).toContainEqual(expect.objectContaining({
+      path: "a.ts", coverage: "normal", attentionNotes: expect.arrayContaining(["Check the exported value."])
+    }));
+    expect(result.coverage).toMatchObject({
+      totalHunks: 5,
+      reviewedHunks: limited ? 1 : 3,
+      skippedHunks: 2,
+      excludedHunks: 2,
+      failedHunks: limited ? 2 : 0,
+      coverageByLevel: { deep: 1, normal: 2, light: 0, skip: 2 },
+      partial: limited,
+      budgetStopped: limited
+    });
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8"));
+    expect(coverage.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "excluded.ts", source: "config", status: "skipped", reason: "configured skip rule" }),
+      expect.objectContaining({ path: "schema.generated.ts", source: "config", status: "skipped", reason: "generated file" }),
+      ...["a.ts", "m.ts"].map(file => expect.objectContaining({ path: file, status: limited ? "review_failed" : "reviewed" }))
+    ]));
+    const plan = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("review-plan.json")), "utf8")) as ReviewPlan;
+    expect(plan.partialReview).toBeUndefined();
+    expect(plan.coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "a.ts", coverage: "normal" }),
+      expect.objectContaining({ path: "z.ts", coverage: "deep" })
+    ]));
   });
 
   it("uses the Pi runner end to end for branch reviews with repair, retry, and explicit unresolved follow-ups", async () => {

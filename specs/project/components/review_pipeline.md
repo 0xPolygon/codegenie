@@ -116,7 +116,7 @@ async function buildReviewPackets(
 ): Promise<ReviewPacket[]>
 ```
 
-- Deterministic; never calls the LLM. Records malformed planner-fallback reasons and skip coverage records on the coverage ledger via telemetry. Each packet is persisted as `packets/<packet-id>.json`.
+- Deterministic; never calls the LLM. Records planner fallback reasons on the coverage ledger via telemetry. Only deterministic filter exclusions are counted as skips. Each packet is persisted as `packets/<packet-id>.json`.
 
 ```ts
 // src/pipeline/lens-runner.ts — Stage 7
@@ -154,7 +154,7 @@ function aggregateRunCoverage(
 ): RunCoverageStatus
 ```
 
-- Pure aggregation over the coverage ledger plus stage results; the orchestrator additionally folds in `degradedPlanning` and the budget ledger's stop state. Owner of the run-level coverage truth (not only `ReviewPlan.partialReview`).
+- Pure aggregation over the coverage ledger plus stage results; the orchestrator additionally folds in `degradedPlanning` and the budget ledger's stop state. Owns run-level coverage and completeness.
 
 ```ts
 // src/pipeline/composer.ts — Stage 10
@@ -407,7 +407,6 @@ Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
 
 - `coverage`: concatenated. Each hunk belongs to exactly one chunk, so no conflicts arise; a duplicate `hunkId` across chunks keeps the first decision and drops the rest with telemetry.
 - `diffUnderstanding`: `declaredIntent` from chunk 1 (all chunks saw identical metadata); `inferredBehavior` joins distinct chunk values labeled by chunk root.
-- `partialReview`: `isPartial` is the OR; `reviewedHunks`/`totalHunks` summed; reasons joined.
 
 If an individual chunk's planner call fails terminally, only that chunk's hunks fall back to the default plan (below); the merged result sets `degradedPlanning: true` with a reason naming the failed chunk roots.
 
@@ -418,7 +417,7 @@ The planner call is one `LlmRunner.runStructured` per dossier (or per chunk) wit
 Semantic validation runs in pipeline code on every schema-valid plan, before the plan is persisted:
 
 - Validation derives known ids, hunk languages, and current/old known paths exclusively from `hunkIndex`, so the accepted identifier set is definitionally the set displayed to the planner. Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
-- A `skip` decision with an empty (after trimming) `reason` is invalid; it is recorded (`planner_invalid_skip`) and the hunk is treated as having no decision. The packet builder applies the `normal` fallback.
+- The live planner tool accepts `light`, `normal`, and `deep`. Legacy entries with `skip` become `normal` with reason `planner_skip_overridden`. Legacy `partialReview` is dropped.
 - Lens names not in the run's enabled lens set are dropped from each decision (`planner_unknown_lens`); a decision left with zero lenses is treated as having an empty lens set, which the packet builder fills with the default lens set.
 - Enabled language-specific lenses whose `languages` do not include the hunk's canonical language are removed with dedicated incompatibility telemetry. If nothing survives, the same deterministic core plus exact-language defaults apply; TypeScript/TSX use `lang/typescript`, while JavaScript uses `lang/javascript`.
 - Coverage `focusNotes`, `relatedSymbols`, and `relatedFiles` are normalized and capped per hunk. They are advisory context only.
@@ -436,7 +435,7 @@ On terminal planner failure (schema-invalid after repair, transient failure afte
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
 - Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens, with TypeScript/TSX using `lang/typescript` and JavaScript using `lang/javascript`, in registry order.
 - `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
-- `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
+- A default plan covers all kept hunks. The run records fallback via `RunCoverageStatus.degradedPlanning` and reports completeness from the work actually performed.
 
 Later stages run normally on the default plan.
 
@@ -449,9 +448,8 @@ Step 1 — planned hunk records. For each hunk of each kept file, assemble an in
 Step 2 — planner validation defaults/fallbacks. Applied per hunk:
 
 - No decision → coverage `normal`, default lens set, coverage record source `deterministic_default`, no warning and no final-report disclosure reason.
-- Invalid skip (empty reason after trimming) → coverage `normal`, default lens set, coverage record source `planner`, reason `planner_invalid_skip`, and telemetry.
-- Non-skip decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), coverage record source `planner`, reason `planner_empty_lenses`. A valid skip with an empty lens set keeps the planner's reason (it runs no lenses).
-- Valid `skip` (non-empty reason) → no packet; coverage record `{ coverage: "skip", source: "planner", status: "skipped", reason: <planner reason> }`.
+- Legacy `skip` → reviewed at `normal` with a `planner_skip_overridden` fallback reason.
+- A decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), coverage record source `planner`, reason `planner_empty_lenses`.
 
 The packet builder validates and assembles; it never makes primary coverage decisions beyond these mechanical defaults/fallbacks.
 
@@ -488,7 +486,7 @@ Step 8 — size enforcement and truncation:
 - A single hunk whose patch alone exceeds `maxPatchChars` is never split below hunk granularity and never receives synthesized sub-hunk ids. Instead the packet carries a truncated patch window of at most `maxPatchChars` rendered characters; the window selection must be deterministic and centered on changed lines, and the truncation must be disclosed — the exact window heuristic is an implementation detail within that contract. `PacketHunk.lines` contains only the window's lines, with `truncated: true` and `omittedLineCount` set to the count of dropped lines; `contentWithLineNumbers` renders deterministic boundary markers (`[... N lines omitted above ...]`, `[... M lines omitted below ...]`) as the prompt rendering of those fields; the per-hunk coverage record carries `reason: "patch truncated: K of L lines included"`; telemetry records the omitted counts. `changedNewLineNumbers`/`changedOldLineNumbers` still list all changed lines of the hunk so anchor validation remains complete.
 - Whole-file content participating in `maxContextChars` is truncated tail-first with the same marker convention.
 
-Step 9 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
+Step 9 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. The inputs are all hunks kept by the deterministic file filter.
 
 Step 10 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, hunk-scoped attention notes, and mechanical-change signals.
 
@@ -616,10 +614,10 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 
 ### Run Coverage Aggregation
 
-`aggregateRunCoverage` runs after Stage 9 and owns the run-level truth (not only `ReviewPlan.partialReview`):
+`aggregateRunCoverage` runs after Stage 9 and reports actual coverage:
 
 - `totalHunks`: all parsed hunks across all changed files, including filtered files.
-- `skippedHunks`: hunks of Stage 2-filtered files plus valid planner skips.
+- `skippedHunks`: hunks excluded by the Stage 2 file filter.
 - `reviewedHunks`: hunks belonging to packets whose `PacketReviewResult.status === "completed"`.
 - `failedHunks`: hunks of packets with terminal worker failure (`review_failed`), plus hunks of packets never dispatched due to budget exhaustion (recorded `review_failed` with reason `"budget_stopped before dispatch"`).
 - `coverageByLevel`: effective per-hunk coverage — the packet's coverage for packeted hunks (post-fallback, post-coalescing max), `skip` for skipped hunks.
@@ -628,7 +626,7 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 - `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_budget_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
 - `unreviewedHunksByPath`: grouped file/path counts for hunks that were reviewable but did not complete packet review, with stable reasons such as `budget_stopped before dispatch`.
 - `verificationIncompleteCount`: from Stage 9.
-- `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or the planner declared `partialReview.isPartial`.
+- `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or required verification was incomplete.
 - `reasons`: deduplicated, ordered notes — filter summary line, malformed planner fallback notes, degraded-planning note, per-chunk failure notes, `review_failed` packet notes, budget-stop notes, verification-incomplete note, truncation notes, degraded packet notes (missing base content). Deterministic default coverage is tracked in per-hunk records, not disclosed as a human-facing warning.
 
 `coverage.json` serializes this `RunCoverageStatus` plus the per-hunk ledger records.
@@ -722,7 +720,7 @@ Planner dossier and planning:
 - `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority while `hunkIndex` remains complete and path-associated; directory rollups contain no bare id pools; every reduction appears in `compaction.omitted`.
 - `planner_chunking_deterministic_merge`: a dossier exceeding the budget after compaction chunks by package root; per-chunk plans concatenate mechanically (coverage concat, dedup of lists, chunk-1 `declaredIntent`); identical chunking across reruns.
 - `planner_chunk_partial_failure`: one chunk fails terminally; only its hunks get default-plan coverage; `degradedPlanning: true` with the chunk root named in reasons.
-- `planner_validation_rules`: unknown-hunk decisions dropped; empty-reason skip treated as missing; unknown lenses dropped and empty lens sets flagged — each with its telemetry code.
+- `planner_validation_rules`: unknown-hunk decisions dropped; legacy skip normalized to normal coverage; unknown lenses dropped and empty lens sets flagged — each with its telemetry code.
 - `planner_terminal_failure_default_plan`: planner fails after repair; default plan covers every reviewable hunk at `normal` with core + language lenses; `degradedPlanning: true`; later stages run.
 
 Packet builder:
@@ -736,7 +734,7 @@ Packet builder:
 - `packets_split_oversized_group`: a coalesced packet exceeding `maxPatchChars` splits back to per-hunk packets deterministically.
 - `packets_truncate_oversized_hunk`: a single 20k-char hunk yields one packet with a changed-line-centered window, `truncated: true` and the correct `omittedLineCount` on the `PacketHunk`, omission markers in `contentWithLineNumbers`, complete `changedNewLineNumbers`, a truncation coverage note, and no synthesized hunk ids.
 - `packets_deleted_file_old_side`: a deleted file yields a packet with `isDeletedContent: true`, old-side line numbers, base-revision context, and `degraded` set when base content is unavailable.
-- `packets_planner_fallbacks`: a hunk without coverage and a hunk with invalid skip both produce `normal` packets with recorded fallback reasons; a valid skip produces a coverage record and no packet.
+- `packets_planner_fallbacks`: a hunk without coverage and a hunk with a legacy skip both produce `normal` packets. The legacy skip produces a recorded fallback reason.
 - `packets_id_stability`: identical diff input across two runs produces identical packet ids; changing the kind or hunk set changes the id.
 
 Worker runner and lens execution:
@@ -783,5 +781,5 @@ Budget and coverage:
 - `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of maxTimeMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
-- `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
+- `coverage_aggregation_matrix`: fixtures combining filtered files, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
 - `coverage_partial_definition`: degraded planning alone does not set `partial`; any failed hunk, budget stop, unreviewed hunk, or planner partial flag does.

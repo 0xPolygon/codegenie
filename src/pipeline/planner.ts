@@ -1,4 +1,4 @@
-import { normalizePlannerBookkeeping } from "../llm/submit-preservation.js";
+import { normalizePlannerBookkeeping, normalizePlannerSubmission } from "../llm/submit-preservation.js";
 import type { LlmRunner, LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
@@ -69,7 +69,7 @@ const MAX_COVERAGE_FOCUS_NOTES = 5;
 const MAX_COVERAGE_RELATED_SYMBOLS = 12;
 const MAX_COVERAGE_RELATED_FILES = 12;
 const MAX_SAFETY_DEEP_SOURCE_HUNKS = 20;
-const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "coverage", "partialReview"]);
+const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "coverage"]);
 const MISPLACED_PLANNER_ROOT_KEYS = new Set(["focusNotes", "relatedSymbols", "relatedFiles", "surroundingContextHints"]);
 
 type PlannerRecoveryDraft = {
@@ -332,6 +332,7 @@ async function runPlannerCall(
     schema: SubmitPlanSchema,
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
+    normalizeSubmit: normalizePlannerSubmission,
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: false,
@@ -350,7 +351,9 @@ async function runPlannerCall(
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
-  const validated = validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+  // Injected runners may return raw submissions without applying the normalizer.
+  const plan = (normalizePlannerSubmission(submitted)?.value ?? submitted) as ReviewPlan;
+  const validated = validatePlan(plan, dossier, opts.lenses, telemetry);
   return {
     ...validated,
     plan: finalizePlannerRecovery(validated.plan, dossier, opts.lenses, telemetry, recovery)
@@ -682,8 +685,7 @@ function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {
 function plannerRecoveryScore(args: Record<string, unknown>): number {
   return [
     "diffUnderstanding",
-    "coverage",
-    "partialReview"
+    "coverage"
   ].filter((key) => Object.prototype.hasOwnProperty.call(args, key)).length;
 }
 
@@ -703,7 +705,7 @@ function buildPlannerSchemaRepairPrompt(
   }));
   const repairDossier = plannerRepairDossierSummary(dossier, lenses);
   return [
-    "Repair the Stage 5 review plan output. Return the full object: {diffUnderstanding: {declaredIntent, inferredBehavior}, coverage: [...], partialReview?: ...}. Preserve every coverage entry, depth, lens, and focus note. Never return diffUnderstanding alone.",
+    "Repair the Stage 5 review plan output. Return the full object: {diffUnderstanding: {declaredIntent, inferredBehavior}, coverage: [...]}. Preserve every coverage entry, depth, lens, and focus note. Review coverage is light, normal, or deep for eligible hunks. Never return diffUnderstanding alone.",
     `Validation error: ${input.error}`,
     "You must call submit_plan exactly once with object arguments matching the ReviewPlan schema.",
     "Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text.",
@@ -1052,7 +1054,6 @@ function mergeChunkPlans(
     })
   );
   const intents = dedupe(plans.map((plan) => plan.diffUnderstanding.declaredIntent));
-  const partialPlans = plans.flatMap((plan) => (plan.partialReview ? [plan.partialReview] : []));
 
   return {
     diffUnderstanding: {
@@ -1060,17 +1061,7 @@ function mergeChunkPlans(
       inferredBehavior: behaviors.join("\n")
     },
     ...(plans[0]?.intentSignals !== undefined ? { intentSignals: plans[0].intentSignals } : {}),
-    coverage,
-    ...(partialPlans.length > 0
-      ? {
-          partialReview: {
-            isPartial: partialPlans.some((partial) => partial.isPartial),
-            reason: dedupe(partialPlans.map((partial) => partial.reason)).join("; "),
-            reviewedHunks: partialPlans.reduce((sum, partial) => sum + partial.reviewedHunks, 0),
-            totalHunks: partialPlans.reduce((sum, partial) => sum + partial.totalHunks, 0)
-          }
-        }
-      : {})
+    coverage
   };
 }
 
@@ -1378,30 +1369,6 @@ function validatePlan(
     }
     acceptedEntries += 1;
     acceptedHunkIds.add(decision.hunkId);
-    if (decision.coverage === "skip" && decision.reason.trim().length === 0) {
-      telemetry.event({
-        stage: 5,
-        level: "warn",
-        message: "planner_invalid_skip",
-        file: decision.path,
-        data: { hunkId: decision.hunkId }
-      });
-      const normalizedDecision: HunkCoverageDecision = normalizeCoverageDecision({
-        ...decision,
-        coverage: "normal",
-        lenses: defaultLensesForFile(hunkLanguageById.get(decision.hunkId) ?? "", lenses),
-        surroundingContextHints: decision.surroundingContextHints ?? [],
-        reason: "planner_invalid_skip"
-      }, knownFiles);
-      const existing = coverageByHunk.get(decision.hunkId);
-      if (existing) {
-        coverageByHunk.set(decision.hunkId, mergeDuplicateDecision(existing, normalizedDecision, true));
-      } else {
-        coverageByHunk.set(decision.hunkId, normalizedDecision);
-        coverageOrder.push(decision.hunkId);
-      }
-      continue;
-    }
     const hunkLanguage = hunkLanguageById.get(decision.hunkId) ?? "";
     const survivingLenses = decision.lenses.filter((lens) => {
       const descriptor = enabledLensById.get(lens);
@@ -1438,8 +1405,7 @@ function validatePlan(
       lenses: !defaultedLenses
         ? survivingLenses
         : defaultLensesForFile(hunkLanguage, lenses),
-      // A skip runs no lenses, so its diagnostic reason stays the planner's own.
-      reason: defaultedLenses && decision.coverage !== "skip" ? `planner_empty_lenses: ${decision.reason}` : decision.reason
+      reason: defaultedLenses && decision.reason !== "planner_skip_overridden" ? `planner_empty_lenses: ${decision.reason}` : decision.reason
     }, knownFiles);
     const existing = coverageByHunk.get(decision.hunkId);
     if (existing) {
@@ -1482,8 +1448,7 @@ function validatePlan(
     coverage: coverageOrder.flatMap((hunkId) => {
       const decision = coverageByHunk.get(hunkId);
       return decision === undefined ? [] : [decision];
-    }),
-    ...(plan.partialReview !== undefined ? { partialReview: plan.partialReview } : {})
+    })
   }, stats, acceptedHunkIds };
 }
 

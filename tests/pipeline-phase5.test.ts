@@ -4135,7 +4135,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("excludes skipped hunks from whole-file packet context and packet hunks", async () => {
+  it("builds a whole-file packet for every kept hunk even with a legacy skip", async () => {
     const file: DiffFile = {
       path: "app.ts",
       status: "modified",
@@ -4150,7 +4150,7 @@ describe("phase 5 pipeline regressions", () => {
           newStart: 1,
           newLines: 1,
           header: "@@ -1 +1 @@",
-          lines: [{ kind: "add", content: "const skippedSecret = true;", newLineNumber: 1 }]
+          lines: [{ kind: "add", content: "const legacySkippedValue = true;", newLineNumber: 1 }]
         },
         {
           id: "h2",
@@ -4175,18 +4175,17 @@ describe("phase 5 pipeline regressions", () => {
       },
       [file],
       [fakeFacts("app.ts", "whole-file")],
-      fakeRepositoryIndex(fakeTools("const skippedSecret = true;\nconst reviewedValue = true;\n")),
+      fakeRepositoryIndex(fakeTools("const legacySkippedValue = true;\nconst reviewedValue = true;\n")),
       nullTelemetry(),
       { config: config(), enabledLenses: ["core/code-review"] }
     );
 
     expect(packets).toHaveLength(1);
-    expect(packets[0]?.kind).toBe("hunk");
-    expect(packets[0]?.hunks.map((hunk) => hunk.hunkId)).toEqual(["h2"]);
-    expect(packets[0]?.hunks[0]?.contentWithLineNumbers).toContain("reviewedValue");
-    expect(packets[0]?.hunks[0]?.contentWithLineNumbers).not.toContain("skippedSecret");
-    expect(packets[0]?.contextText).not.toContain("skippedSecret");
-    expect(packets[0]?.fileContext).toBeUndefined();
+    expect(packets[0]?.kind).toBe("whole-file");
+    expect(packets[0]?.hunks.map((hunk) => hunk.hunkId)).toEqual(["h1", "h2"]);
+    expect(packets[0]?.hunks[0]?.contentWithLineNumbers).toContain("legacySkippedValue");
+    expect(packets[0]?.hunks[0]?.plannerFallbackReason).toBe("planner_skip_overridden");
+    expect(packets[0]?.hunks[1]?.contentWithLineNumbers).toContain("reviewedValue");
   });
 
   it("uses deterministic dossier text for packet PR summary instead of planner-authored behavior", async () => {
@@ -6534,14 +6533,7 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
-  it("preserves invalid planner skip as packet fallback and run coverage reason", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
+  it("reports the normal coverage fallback for a legacy planner skip", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
         ({
@@ -6552,7 +6544,7 @@ describe("phase 5 pipeline regressions", () => {
         }) as T
     };
 
-    const result = await runPlanner(fakeDossier(["app.ts"]), config(), telemetry, {
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
       runner,
       promptBuilder: fakePromptBuilder(),
       lenses: [{
@@ -6583,14 +6575,13 @@ describe("phase 5 pipeline regressions", () => {
       { allFiles: fakeDiff().files, packets }
     );
 
-    expect(events.some((event) => event.message === "planner_invalid_skip")).toBe(true);
     expect(result.plan.coverage[0]).toMatchObject({
       hunkId: "h1",
       coverage: "normal",
-      reason: "planner_invalid_skip"
+      reason: "planner_skip_overridden"
     });
-    expect(packets[0]?.hunks[0]?.plannerFallbackReason).toBe("planner_invalid_skip");
-    expect(coverage.reasons).toContain("app.ts: planner_invalid_skip");
+    expect(packets[0]?.hunks[0]?.plannerFallbackReason).toBe("planner_skip_overridden");
+    expect(coverage.reasons).toContain("app.ts: planner_skip_overridden");
     expect(renderMarkdownReview({
       summary: "Review completed.",
       coverage,
@@ -6598,7 +6589,7 @@ describe("phase 5 pipeline regressions", () => {
       summaryOnlyFindings: [],
       needsHumanAttention: [],
       noFindings: true
-    })).toContain("- app.ts: planner_invalid_skip");
+    })).toContain("- app.ts: planner_skip_overridden");
   });
 
   it("treats omitted planner coverage as a quiet deterministic default", async () => {
@@ -6766,7 +6757,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("uses hunk-index language when recovering invalid skip decisions for compacted hunks", async () => {
+  it("uses hunk-index language when overriding a legacy skip for compacted hunks", async () => {
     const dossier = fakeDossier(["app.ts"]);
     const compacted: PlannerDossier = {
       ...dossier,
@@ -6810,7 +6801,7 @@ describe("phase 5 pipeline regressions", () => {
       hunkId: "h1",
       coverage: "normal",
       lenses: ["core/code-review", "lang/typescript"],
-      reason: "planner_invalid_skip"
+      reason: "planner_skip_overridden"
     });
   });
 
@@ -6847,25 +6838,6 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_coverage_lost",
       data: expect.objectContaining({ submittedEntries: 1, acceptedEntries: 0, rejectedUnknownHunk: 1 })
     }));
-  });
-
-  it("keeps a planner skip reason when the skip has empty lenses (#71)", async () => {
-    const dossier = fakeDossier(["generated.ts"]);
-    const runner: LlmRunner = {
-      runStructured: async <T>() => ({
-        diffUnderstanding: { declaredIntent: "regenerate", inferredBehavior: "regenerate" },
-        coverage: [{ hunkId: "h1", path: "generated.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "generated client code" }]
-      }) as T
-    };
-    const result = await runPlanner(dossier, config(), nullTelemetry(), {
-      runner,
-      promptBuilder: fakePromptBuilder(),
-      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
-      skills: []
-    });
-    expect(result.plan.coverage).toEqual([
-      expect.objectContaining({ hunkId: "h1", coverage: "skip", reason: "generated client code" })
-    ]);
   });
 
   it("records a verifier recovery-inventory overflow as an incomplete verdict, not a run failure (#80)", async () => {
@@ -6994,7 +6966,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.plan.coverage[0]?.lenses).toEqual(["shared/review"]);
   });
 
-  it("carries planner partial-review reasons into coverage disclosure", async () => {
+  it("bases posting completeness on actual coverage even with legacy planner counters", async () => {
     const partialReason = "planner reviewed only the first dossier chunk";
     const partialPlan: ReviewPlan = {
       ...fakePlan(),
@@ -7005,7 +6977,7 @@ describe("phase 5 pipeline regressions", () => {
         totalHunks: 2
       }
     };
-    const coverage = aggregateRunCoverage(
+    const completed = aggregateRunCoverage(
       partialPlan,
       [],
       [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [], followUpHints: [], uncertainties: [], status: "completed" }],
@@ -7014,8 +6986,13 @@ describe("phase 5 pipeline regressions", () => {
       { allFiles: fakeDiff().files, packets: [fakePacket()] }
     );
 
+    expect(completed.partial).toBe(false);
+    expect(completed.reasons).not.toContain(partialReason);
+
+    const coverage = aggregateRunCoverage(partialPlan, [], [], { incompleteCount: 0 }, nullTelemetry(),
+      { allFiles: fakeDiff().files, packets: [] });
     expect(coverage.partial).toBe(true);
-    expect(coverage.reasons).toContain(partialReason);
+    expect(coverage.reasons).toContain("1 hunk(s) could not be reviewed");
 
     const result = await dedupeRankAndComposeReview(
       { verified: [], verdicts: [] },
@@ -7038,8 +7015,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.postingPlan?.reviewBody).toContain("Coverage disclosure:");
-    expect(result.postingPlan?.reviewBody).toContain(partialReason);
+    expect(result.postingPlan?.reviewBody).toContain("**Partial review:** 1 hunk did not complete review.");
     expect(result.postingPlan?.reviewBody).toContain("**Review incomplete.**");
     expect(result.postingPlan?.reviewBody).toContain("Incomplete required work prevents a clean conclusion");
     expect(result.postingPlan?.reviewBody).not.toContain("No credible findings were found within the reviewed scope");
@@ -8393,26 +8369,28 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("discloses planner skips with their path and reason in the rendered coverage (#65)", () => {
+  it("counts a legacy planner skip without a packet as unfinished work", () => {
     const plan = { ...fakePlan(), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }] };
-    const coverage = aggregateRunCoverage(
-      plan,
-      [],
-      [],
-      { verdicts: [], incompleteCount: 0 },
-      nullTelemetry(),
-      { allFiles: fakeDiff().files, packets: [] }
-    );
-    expect(coverage.reasons).toContain("app.ts: generated client code");
-    expect(renderCoverageSummaryLines(coverage)).toContain("- app.ts: generated client code");
+    const coverage = aggregateRunCoverage(plan, [], [], { incompleteCount: 0 }, nullTelemetry(), { allFiles: fakeDiff().files, packets: [] });
+    expect(coverage).toMatchObject({
+      skippedHunks: 0,
+      excludedHunks: 0,
+      failedHunks: 1,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      unreviewedHunksByPath: [{ path: "app.ts", hunks: 1, reason: "no review packet was built" }],
+      partial: true
+    });
   });
 
-  it("deduplicates repeated skip path/reason pairs before the disclosure limit (#65)", () => {
-    const repeated = Array.from({ length: 10 }, (_, index) => ({ hunkId: `r${index}`, path: "gen.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }));
-    const plan = { ...fakePlan(), coverage: [...repeated, { hunkId: "h-last", path: "vendor.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "vendored dependency" }] };
-    const coverage = aggregateRunCoverage(plan, [], [], { verdicts: [], incompleteCount: 0 }, nullTelemetry(), { allFiles: fakeDiff().files, packets: [] });
-    expect(coverage.reasons).toContain("gen.ts: generated client code");
-    expect(coverage.reasons).toContain("vendor.ts: vendored dependency");
+  it("deduplicates deterministic exclusion reasons before the disclosure limit (#65)", () => {
+    const generated = { path: "gen.ts", action: "skip" as const, reason: "generated client code", provenance: [] };
+    const vendored = { path: "vendor.ts", action: "skip" as const, reason: "vendored dependency", provenance: [] };
+    const decisions = [...Array.from({ length: 10 }, () => generated), vendored];
+    const coverage = aggregateRunCoverage(fakePlan(), decisions, [], { incompleteCount: 0 }, nullTelemetry(),
+      { allFiles: [fakeDiffFile("gen.ts"), fakeDiffFile("vendor.ts")], packets: [] });
+    expect(coverage).toMatchObject({ skippedHunks: 2, excludedHunks: 2, partial: false });
+    expect(renderCoverageSummaryLines(coverage)).toContain("- gen.ts: generated client code");
+    expect(renderCoverageSummaryLines(coverage)).toContain("- vendor.ts: vendored dependency");
   });
 
   it("discloses when verification is disabled in coverage", async () => {

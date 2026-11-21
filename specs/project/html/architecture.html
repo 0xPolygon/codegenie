@@ -716,28 +716,22 @@ the diff, symbols, static signals, and configured labels.</p>
 <span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewPlan <span class="op">=</span> {</span>
 <span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>  diffUnderstanding<span class="op">:</span> DiffUnderstanding</span>
 <span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> HunkCoverageDecision[]</span>
-<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>  partialReview<span class="op">?:</span> {</span>
-<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>    isPartial<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>    reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a>    totalHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CoverageLevel <span class="op">=</span> <span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span></span>
-<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketKind <span class="op">=</span> <span class="st">&quot;hunk&quot;</span> <span class="op">|</span> <span class="st">&quot;coalesced-hunks&quot;</span> <span class="op">|</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
-<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> HunkCoverageDecision <span class="op">=</span> {</span>
-<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> CoverageLevel</span>
-<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
-<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a>  focusNotes<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a>  relatedSymbols<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>  relatedFiles<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CoverageLevel <span class="op">=</span> <span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketKind <span class="op">=</span> <span class="st">&quot;hunk&quot;</span> <span class="op">|</span> <span class="st">&quot;coalesced-hunks&quot;</span> <span class="op">|</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> HunkCoverageDecision <span class="op">=</span> {</span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> CoverageLevel</span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a>  focusNotes<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a>  relatedSymbols<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a>  relatedFiles<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>The packet builder is the sole owner of packet identity and physical
 grouping. The planner emits targeted per-hunk coverage/lens overrides
 only; it does not emit scheduling groups in v1 (see Future
@@ -745,18 +739,18 @@ Considerations). Packet scheduling order is derived from effective
 coverage level and configured priority, and all packets may run
 concurrently because v1 packets never span files and workers are
 context-isolated.</p>
-<p>The planner is the only stage allowed to raise or lower coverage,
-select non-default lenses, or skip a hunk. It must not select every lens
-for every packet by default. Omitted changed hunks are not planner
-failures; Stage 6 reviews them with deterministic <code>normal</code>
-coverage and default core/language lenses. Any explicit
-<code>skip</code> still requires a reason. Any planner output intended
-to affect reviewer attention must be hunk-scoped through a coverage
-decision (<code>reason</code>, <code>focusNotes</code>,
-<code>relatedSymbols</code>, <code>relatedFiles</code>, or
-<code>surroundingContextHints</code>); global prose in
-<code>diffUnderstanding</code> is for artifacts and final framing
-only.</p>
+<p>The planner ranks attention using <code>light</code>,
+<code>normal</code>, and <code>deep</code> coverage and can select
+non-default lenses. Only the deterministic filter excludes hunks. It
+must not select every lens for every packet by default. Omitted changed
+hunks are not planner failures; Stage 6 reviews them with deterministic
+<code>normal</code> coverage and default core/language lenses. Any
+planner output intended to affect reviewer attention must be hunk-scoped
+through a coverage decision (<code>reason</code>,
+<code>focusNotes</code>, <code>relatedSymbols</code>,
+<code>relatedFiles</code>, or <code>surroundingContextHints</code>);
+global prose in <code>diffUnderstanding</code> is for artifacts and
+final framing only.</p>
 <p>The planner may request surrounding-code inspection by emitting
 <code>SurroundingContextHint</code> records. It should not broadly
 inspect files itself by default. Hints are instructions for packet
@@ -765,9 +759,10 @@ tests, local patterns, or integration points.</p>
 <p>Later stages may validate planner decisions and apply deterministic
 defaults, but they must not become independent risk classifiers. If a
 reviewable hunk has no planner coverage, packet construction quietly
-uses <code>normal</code> default coverage. If the planner skips a
-reviewable hunk without a valid reason, packet construction falls back
-to <code>normal</code> and records the malformed skip in telemetry.</p>
+uses <code>normal</code> default coverage. The planner normalizes legacy
+<code>skip</code> entries to <code>normal</code> and drops legacy
+completeness counters. Historical plans with <code>skip</code> still
+replay in evals.</p>
 <p>Large PRs use deterministic dossier compaction when the planner
 dossier exceeds configured model or budget limits:</p>
 <pre class="text"><code>full deterministic inventory
@@ -796,7 +791,7 @@ otherwise intentionally unreviewed hunks.</li>
 </ul>
 <p>Partial reviews must be explicit. If the configured runtime, token,
 or provider-call budget prevents full review,
-<code>partialReview.isPartial</code> must be true and the final output
+<code>RunCoverageStatus.partial</code> must be true and the final output
 must report coverage counts.</p>
 <h3 id="review-packets">Review Packets</h3>
 <div class="sourceCode" id="cb11"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketLine <span class="op">=</span> {</span>
@@ -922,7 +917,7 @@ prompting.</p>
 facts, <code>HunkSymbolFacts</code>, planner coverage, selected lenses,
 processing mode, labels, and estimated size.</li>
 <li>Validate planner output and apply deterministic fallbacks for
-missing coverage, invalid skip reasons, or empty lens sets.</li>
+missing coverage, legacy skip entries, or empty lens sets.</li>
 <li>Build a lean deterministic relationship graph over changed
 hunks/symbols using only same-symbol, changed-symbol mention, and
 explicit planner symbol/file hints. Persist
@@ -2011,8 +2006,8 @@ write telemetry artifacts before exiting.</li>
 exponential backoff; retries count against budgets.</li>
 <li>The run-level coverage status is owned by the orchestrator, which
 aggregates plan-time coverage, runtime failures, budget stops, and
-verification incompleteness into the final coverage summary (run-level,
-not only <code>ReviewPlan.partialReview</code>):</li>
+verification incompleteness into the final coverage summary from
+observed review work:</li>
 </ul>
 <div class="sourceCode" id="cb28"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RunCoverageStatus <span class="op">=</span> {</span>
 <span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>  totalHunks<span class="op">:</span> <span class="dt">number</span></span>

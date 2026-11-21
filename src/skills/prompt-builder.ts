@@ -73,7 +73,7 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
-  5: "p5.8",
+  5: "p5.9",
   7: "p7.16",
   9: "p9.28",
   10: "p10.23"
@@ -264,7 +264,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         injectionInstruction(),
         "Build a lightweight coverage plan that schedules later reviewer attention. Summarize the declared intent and likely changed behavior from the planner-dossier, then choose coverage, lenses, and short hunk-scoped reasons.",
         "The planner-dossier is a routing projection, not the full review packet. Every changed file always lists its hunk IDs in hunkIndex; request deeper coverage when compact metadata suggests centrality or uncertainty.",
-        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses, optional hunk-scoped focus notes, related changed symbols/files, context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks.",
+        "Every hunk in hunkIndex is eligible for review. Use light, normal, or deep to rank reviewer attention. Emit coverage entries only for hunks that need non-default coverage, specific lenses, optional hunk-scoped focus notes, related changed symbols/files, or context hints. Omitted hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks.",
         "Use focusNotes, relatedSymbols, relatedFiles, and surroundingContextHints sparingly and only when they are grounded in a specific changed hunk. Omit empty optional arrays; if there are no surroundingContextHints, omit that field or send an empty array. If an observation cannot be tied to a changed hunk, keep it in diffUnderstanding.",
         "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
         renderLensList(lenses),
