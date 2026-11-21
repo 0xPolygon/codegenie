@@ -5339,6 +5339,98 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it.each([
+    { name: "clean sparse" },
+    { name: "missing reason only", missingReason: true },
+    { name: "missing reason, misplaced root and nested bookkeeping", missingReason: true, misplacedRoot: true },
+    { name: "missing reason and invalid coverage", missingReason: true, invalidCoverage: true },
+    { name: "present invalid reason", invalidReason: true }
+  ])("preserves planner validation and safety coverage for $name", async ({ missingReason, misplacedRoot, invalidCoverage, invalidReason }) => {
+    const plan = fakePlan();
+    const { reason, ...decision } = plan.coverage[0]!;
+    const focusNotes = ["Inspect the caller's input guard."];
+    const initial = {
+      diffUnderstanding: { ...plan.diffUnderstanding, ...(misplacedRoot ? { totalHunks: 5 } : {}) },
+      coverage: [{ ...decision, focusNotes, ...(missingReason ? {} : { reason: invalidReason ? "" : reason }),
+        ...(invalidCoverage ? { coverage: "wrong" } : {}) }],
+      ...(misplacedRoot ? { reason: "misplaced reason" } : {})
+    };
+    const messages = [assistantMessage([toolCall("initial", "submit_plan", initial)])];
+    const needsRepair = invalidCoverage || invalidReason;
+    if (needsRepair) {
+      messages.push(assistantMessage([toolCall("repair", "submit_plan", { coverage: [{ coverage: "normal", reason }] })]));
+    }
+    const adapter = { ...scriptedPiAdapter(messages), validateToolCall };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: (typeof events)[number]) => { events.push(event); } };
+    const cfg = config();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const paths = ["app.ts", "b.ts", "c.ts", "d.ts", "e.ts"];
+    const dossier = fakeDossier(paths);
+    const result = await runPlanner(dossier, cfg, telemetry, {
+      runner, promptBuilder: fakePromptBuilder(), skills: [],
+      lenses: [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+        enabledByDefault: true, enabled: true, languages: [] }]
+    });
+
+    expect(events.filter(event => event.message === "model_call_started" && event.stage === 5)).toHaveLength(needsRepair ? 2 : 1);
+    expect(events.some(event => event.message === "planner_schema_repair_scheduled")).toBe(Boolean(needsRepair));
+    expect(events.filter(event => event.message === "planner_recovery_missing_reasons_defaulted").map(event => event.data))
+      .toEqual(missingReason ? [{ count: 1 }] : []);
+    expect(result.plan.diffUnderstanding).toEqual(plan.diffUnderstanding);
+    expect(result.plan.coverage[0]).toMatchObject({ hunkId: "h1", coverage: "normal", focusNotes,
+      reason: missingReason && !needsRepair ? "default_coverage_missing_planner_reason" : reason });
+    const recoveredSparsePlan = missingReason || invalidReason;
+    expect(result.degradedPlanning).toBe(Boolean(recoveredSparsePlan));
+    expect(result.plan.coverage.slice(1).map(entry => [entry.hunkId, entry.coverage])).toEqual(recoveredSparsePlan
+      ? dossier.hunkIndex.slice(1).map(entry => [entry.hunkIds[0], "deep"]) : []);
+    if (missingReason && !needsRepair) {
+      expect(result.plan.plannerRecovery).toMatchObject({ usedDeterministicRecovery: true, usedSchemaRepair: false,
+        strippedRootKeys: misplacedRoot ? ["reason"] : [], safetyCoverageApplied: { upgradedHunks: 4 } });
+    }
+    const files = paths.map((path, index) => {
+      const file = fakeDiffFile(path);
+      file.hunks[0]!.id = dossier.hunkIndex[index]!.hunkIds[0]!;
+      return file;
+    });
+    const packets = await buildReviewPackets(result.plan, files, [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: [] });
+    expect(packets.flatMap(packet => packet.hunks.map(hunk => hunk.hunkId)).sort()).toEqual(dossier.hunkIndex.flatMap(entry => entry.hunkIds));
+    expect(packets.flatMap(packet => packet.attentionNotes)).not.toContain("default_coverage_missing_planner_reason");
+  });
+
+  it.each([false, true])("keeps authored duplicate attention without the placeholder (missing reason first: %s)", async (missingFirst) => {
+    const plan = fakePlan();
+    const { reason, ...decision } = plan.coverage[0]!;
+    const incomplete = { ...decision, coverage: "deep", focusNotes: ["Inspect the caller."] };
+    const authored = { ...decision, reason };
+    const rawPlan = { diffUnderstanding: plan.diffUnderstanding,
+      coverage: missingFirst ? [incomplete, authored] : [authored, incomplete] };
+    const runner: LlmRunner = {
+      async runStructured<T>(request: LlmStructuredRequest<T>) {
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({ stage: 5, submitTool: "submit_plan",
+          error: "missing coverage reason", submitCalls: [{ id: "initial", arguments: rawPlan }],
+          extraToolNames: [], schemaRepairUsed: false });
+        expect(recovered).toBeDefined();
+        return recovered as T;
+      }
+    };
+    const cfg = config();
+    const telemetry = nullTelemetry();
+    const lenses = [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+      enabledByDefault: true, enabled: true, languages: [] }];
+    const { plan: recovered } = await runPlanner(fakeDossier(["app.ts"]), cfg, telemetry, {
+      runner, promptBuilder: fakePromptBuilder(), skills: [], lenses
+    });
+    expect(recovered.coverage[0]).toMatchObject({ coverage: "deep", reason: expect.stringContaining(reason) });
+    const [packet] = await buildReviewPackets(recovered, [fakeDiffFile("app.ts")], [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: lenses.map(lens => lens.id) });
+    expect(packet!.attentionNotes.some(note => note.includes(reason))).toBe(true);
+    expect(packet!.attentionNotes.join("\n")).not.toContain("default_coverage_missing_planner_reason");
+  });
+
   it("recovers a root plan string wrapper before planner schema repair", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const wrappedPlan = fakePlan("app.ts");
