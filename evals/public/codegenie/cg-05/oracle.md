@@ -25,6 +25,8 @@ The model-call cache now writes `redactStoredResponseForReplay(entry)` instead o
 
 src/llm/model-call-cache.ts:101-102 (`put` gates only on `hasRedactedReplaySignature`); src/llm/assistant-replay.ts:22 and :47
 
+Require the finding or question to connect credentials in replay signatures or opaque envelope fields to cache persistence. Questions about unused imports, lost rejection diagnostics or generic redaction boundaries do not identify this cause. In loss attribution, follow the matching question through promotion and verification.
+
 ### Severity floor
 
 The matcher floor is low. Expected severity is medium; record it as a calibration note, not as a miss.

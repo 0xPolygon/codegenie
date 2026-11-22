@@ -13,3 +13,4 @@ should_find:
 - id: replay-signature-cache-credentials
   path: "src/llm/{model-call-cache,assistant-replay}.ts"
   severityAtLeast: low
+  failureModePattern: '^(?=[\s\S]*\b(?:signatures?|(?:thinking|text|thought)Signature|encrypted_content|opaque\s+(?:fields?|data))\b)(?=[\s\S]*\b(?:credentials?|secrets?|api[- ]?keys?|tokens?)\b)(?=[\s\S]*\b(?:cache[ds]?|disk|persist\w*|stor\w*|writ\w*)\b)'

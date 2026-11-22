@@ -23,7 +23,7 @@ Stage 8 is removed from `ReviewStage`, but the local `isReviewStage` guards in e
 
 ### Anchor
 
-src/llm/model-call-cache.ts:351-352 and src/evals/eval-scoring.ts:1896-1897 (also the review-runner guard); the contract change is in src/types.ts
+The contract changed at `src/types.ts:1-2` and `src/review-stages.ts`. The reader guards are at `src/llm/model-call-cache.ts:351-352`, `src/evals/eval-scoring.ts:1896-1897` and in the review runner. Count claims about persisted cache or ledger records. A question about whether a live typed request can still carry stage 8 addresses a different path.
 
 ### Severity floor
 
@@ -41,7 +41,7 @@ Eval-case validation still accepts a `maxPromptCharsByStage` key of 8 through it
 
 ### Anchor
 
-src/evals/eval-runner.ts:252-256 (`parsed < 1 || parsed > 11`)
+`src/types.ts:1-2` removes Stage 8 from the contract. The optional `eval-budget-key-8-accepted-validator` anchor is `src/evals/eval-runner.ts:252-256` (`parsed < 1 || parsed > 11`). The validator is unchanged in this diff. Its acceptance of key 8 became invalid as a result of the contract change. Credit either anchor once after source adjudication when the finding identifies the prompt-budget behavior.
 
 ### Severity floor
 
