@@ -66,7 +66,7 @@ async function runReview(
 async function startRun(config: CodegenieConfig): Promise<RunContext>
 
 // RunContext fields (internal):
-//   runId: string                      — "<yyyyMMdd-HHmmss>-<shortid>", also the run directory name
+//   runId: string                      — "<yyyyMMdd-HHmmss>-<8-hex-digits>" in UTC; default directory name
 //   telemetry: TelemetryRecorder       — recording owned by components/skills_llm_telemetry.md
 //   logger: Logger
 //   budget: BudgetLedger               — internal; see Failure And Budget Semantics
