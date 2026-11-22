@@ -191,7 +191,7 @@ describe("phase 6 live review path", () => {
         })]);
       }
       const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet");
-      if (packet) reviewed.push(packet);
+      if (packet) reviewed.push({ ...packet, attentionNotes: extractPromptJson<Pick<ReviewPacket, "attentionNotes">>(prompt, "review-context")?.attentionNotes ?? [] });
       return complete(model, context, options);
     };
 

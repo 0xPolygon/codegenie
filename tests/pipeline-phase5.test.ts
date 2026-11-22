@@ -2111,6 +2111,41 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ reason: "worker can inspect test", expectedUse: "tool_lookup" }),
       expect.objectContaining({ reason: "out of packet scope", expectedUse: "tool_lookup" })
     ]);
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0]!, skills: [] });
+    expect(extractPromptJson<ReviewPacket>(prompt.prompt, "review-packet")?.contextText).not.toContain("include local caller");
+    expect(extractPromptJson<{ plannerContext: string }>(prompt.prompt, "review-context")?.plannerContext)
+      .toContain("include local caller");
+  });
+
+  it.each([1, 2])("uses only an unambiguous repository definition as a symbol hint fallback (%i matches)", async (matches) => {
+    const plan = fakePlan();
+    plan.coverage[0]!.surroundingContextHints = [{
+      kind: "enclosing_symbol", symbol: "finish", reason: "Check the final step", expectedUse: "packet_context"
+    }];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const fallback = vi.fn(async () => ({
+      definitions: Array.from({ length: matches }, (_, index) => ({
+        symbol: {
+          path: `helpers/${index}.ts`, name: "finish", kind: "function" as const, lineRange: [1, 3] as [number, number]
+        },
+        text: "function finish() { return true; }"
+      })),
+      meta
+    }));
+    const event = vi.fn();
+    const [packet] = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex({ ...fakeTools(), findDefinition: fallback }), { ...nullTelemetry(), event },
+      { config: config(), enabledLenses: ["core/code-review"] });
+    expect(fallback).toHaveBeenCalledOnce();
+    expect(fallback).toHaveBeenCalledWith("finish", { source: { kind: "head" } });
+    if (matches === 1) {
+      expect(packet?.contextText).toContain("for helpers/0.ts:finish:1-3");
+      expect(event).toHaveBeenCalledWith(expect.objectContaining({ message: "packet_symbol_hint_path_fallback" }));
+      expect(packet?.surroundingContextHints).toEqual([]);
+    } else {
+      expect(packet?.contextText).not.toContain("function finish");
+      expect(packet?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "finish", expectedUse: "tool_lookup" })]);
+    }
   });
 
   it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
@@ -3995,7 +4030,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextText).toContain("Signature: export function changed()");
     expect(packets[0]?.contextText).toContain("Excerpt app.ts:42-58");
     expect(packets[0]?.contextText).toContain("Excerpt app.ts:142-158");
-    expect(packets[0]?.contextText).toContain("source outside excerpt ranges omitted");
+    expect(packets[0]?.contextText).toContain("head app.ts, lines 1-220: source outside the displayed lines and any clipped excerpt tails omitted");
     expect(packets[0]?.contextText.length ?? 0).toBeLessThanOrEqual(8000);
   });
 
@@ -4578,8 +4613,11 @@ describe("phase 5 pipeline regressions", () => {
       { id: "h2", newStart: 10, content: "two" },
       { id: "h3", newStart: 100, content: "three" }
     ]);
+    const plan = fakePlanForHunks(["h1", "h2", "h3"]);
+    plan.coverage[0]!.focusNotes = ["First hunk", "Second note on first hunk", "Third note on first hunk"];
+    plan.coverage[1]!.focusNotes = ["Second hunk"];
     const packets = await buildReviewPackets(
-      fakePlanForHunks(["h1", "h2", "h3"]),
+      plan,
       [file],
       [fakeFacts("app.ts", "per-hunk")],
       fakeRepositoryIndex(),
@@ -4590,8 +4628,12 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets).toHaveLength(2);
     expect(packets[0]).toMatchObject({
       kind: "coalesced-hunks",
-      hunks: [{ hunkId: "h1" }, { hunkId: "h2" }]
+      hunks: [{ hunkId: "h1" }, { hunkId: "h2" }],
+      plannerHunkNotes: [{ hunkId: "h1", note: "First hunk" }, { hunkId: "h2", note: "Second hunk" }]
     });
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0]!, skills: [] });
+    expect(extractPromptJson<ReviewPacket>(prompt.prompt, "review-packet")?.plannerHunkNotes).toBeUndefined();
+    expect(extractPromptJson<ReviewPacket>(prompt.prompt, "review-context")?.plannerHunkNotes).toEqual(packets[0]?.plannerHunkNotes);
     expect(packets[1]).toMatchObject({
       kind: "hunk",
       hunks: [{ hunkId: "h3" }]
@@ -5940,11 +5982,13 @@ describe("phase 5 pipeline regressions", () => {
     let callCount = 0;
     let toolCount: number | undefined;
     let toolBudget: LlmStructuredRequest<unknown>["toolBudget"];
+    let finalization: LlmStructuredRequest<unknown>["finalization"];
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         callCount += 1;
         toolCount = request.tools?.length ?? 0;
         toolBudget = request.toolBudget;
+        finalization = request.finalization;
         return { findings: [], followUpHints: [], uncertainties: [] } as T;
       }
     };
@@ -5972,6 +6016,14 @@ describe("phase 5 pipeline regressions", () => {
     expect(callCount).toBe(1);
     expect(toolCount).toBe(0);
     expect(toolBudget).toEqual({ maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 });
+    const continuation = {
+      submitToolName: "submit_review", investigationRounds: 0, toolCallsUsed: 0,
+      resultCharsUsed: 0, lastToolResults: []
+    };
+    expect(finalization?.buildPostToolNudge?.(continuation)).toBeUndefined();
+    const nudge = finalization?.buildPostToolNudge?.({ ...continuation, investigationRounds: 1 });
+    expect(nudge).toContain("Retain those questions even if no finding is confirmed");
+    expect(finalization?.noResultInstruction).toContain("exact failure predicate");
     expect(results).toEqual([expect.objectContaining({ packetId: "simple-packet", status: "completed" })]);
   });
 
@@ -7773,6 +7825,51 @@ describe("phase 5 pipeline regressions", () => {
     expect(attached).toHaveLength(1);
   });
 
+  it.each([true, false])("adds exit-shape hints during packetization with awaited work=%s", async (hasAwait) => {
+    const file = fakeMultiHunkFile([
+      { id: "old", newStart: 1, content: "pending = result;" },
+      { id: "new", newStart: 90, content: "return pending;" },
+      { id: "loop", newStart: 120, content: "break;" }
+    ]);
+    const originalHunk = file.hunks[0]!;
+    originalHunk.lines.unshift({ kind: "delete", content: "return result;", oldLineNumber: 1 });
+    const reads = vi.fn(async () => ({
+      text: hasAwait ? "await finishPending();" : "finishPending();",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex({ ...fakeTools(), readRange: reads }),
+      symbolFacts: ["old", "new"].map(hunkId => ({
+        hunkId, path: "app.ts", enclosingSymbol: "run", changedLines: [], changedLinesSide: "new",
+        source: "tree-sitter", confidence: "syntactic"
+      }))
+    };
+    const event = vi.fn();
+    const plan = fakePlanForHunks(["old", "new", "loop"]);
+    const packets = await buildReviewPackets(plan, [file], [fakeFacts("app.ts", "per-hunk")], repoIndex, { ...nullTelemetry(), event },
+      { config: config(), enabledLenses: ["core/code-review"] });
+    const hunks = packets.flatMap(packet => packet.hunks);
+    expect(hunks.map(hunk => hunk.hunkId)).toEqual(["old", "new", "loop"]);
+    expect(repoIndex.staticSignals).toEqual([]);
+    expect(reads).toHaveBeenCalledExactlyOnceWith("app.ts", 1, 89, { kind: "head" });
+    expect(hunks[1]?.staticSignals?.map(signal => signal.ruleId) ?? []).toEqual(hasAwait ? ["correctness/exit-moved-past-await"] : []);
+    expect(hunks[2]?.staticSignals).toEqual([expect.objectContaining({ ruleId: "correctness/added-loop-control", line: 120 })]);
+    await runLensPackets(plan, packets, repoIndex.tools, config(), { ...nullTelemetry(), event }, {
+      runner: { runStructured: async <T>() => ({ findings: [], followUpHints: [], uncertainties: [] }) as T },
+      promptBuilder: createPromptBuilder(fakeLensRegistry()),
+      lensRegistry: fakeLensRegistry()
+    });
+    expect(event).toHaveBeenCalledWith(expect.objectContaining({
+      message: "stage7_recall_prompt_exposure",
+      data: expect.objectContaining({
+        templateVersion: "p7.17", diffShapeSignals: [
+          ...(hasAwait ? [{ hunkId: "new", ruleId: "correctness/exit-moved-past-await" }] : []),
+          { hunkId: "loop", ruleId: "correctness/added-loop-control" }
+        ]
+      })
+    }));
+  });
+
   it("keeps renamed-file LEFT static signals emitted with the new path", async () => {
     const file: DiffFile = {
       path: "new.ts",
@@ -8053,8 +8150,12 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.intentSignals).toEqual(dossier.intentSignals);
     const builder = createPromptBuilder(fakeLensRegistry());
     const packetPrompt = builder.buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
-    const packetBlock = extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-packet");
-    expect(packetBlock?.intentSignals).toMatchObject({ refactorLike: true, behaviorChangeLike: true });
+    expect(extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-packet")?.intentSignals).toBeUndefined();
+    expect(extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-context")?.intentSignals)
+      .toMatchObject({ refactorLike: true, behaviorChangeLike: true });
+    expect(packetPrompt.prompt.indexOf("label=review-packet")).toBeLessThan(packetPrompt.prompt.indexOf("label=pr-summary"));
+    expect(packetPrompt.prompt.indexOf("label=review-packet")).toBeLessThan(packetPrompt.prompt.indexOf("label=declared-intent"));
+    expect(packetPrompt.prompt.indexOf("label=declared-intent")).toBeLessThan(packetPrompt.prompt.indexOf("label=review-context"));
     expect(packetPrompt.prompt).toContain("intentional_needs_confirmation");
 
     const verifierPrompt = builder.buildVerifierPrompt({

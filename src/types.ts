@@ -589,6 +589,8 @@ export type ReviewPacket = {
   symbolFacts: HunkSymbolFacts[];
   context: PacketContext;
   contextText: string;
+  /** Start of planner-supplied context in contextText, rendered after the source review. */
+  plannerContextOffset?: number;
   contextQuality?: PacketContextQuality;
   contextDegradationReasons?: string[];
   testCoverageDelta?: TestCoverageDelta;
@@ -597,6 +599,7 @@ export type ReviewPacket = {
   surroundingContextHints: SurroundingContextHint[];
   labels: string[];
   attentionNotes: string[];
+  plannerHunkNotes?: Array<{ hunkId: string; note: string }>;
   relatedChangedContext: RelatedChangedContext[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };

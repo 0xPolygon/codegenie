@@ -1,5 +1,8 @@
 import type { SubmitPacketReview } from "./schemas.js";
 
+export const STAGE7_UNSETTLED_CONCERN_GUIDANCE =
+  "For each concrete concern that remains unsettled, use a followUpHint or uncertainty naming the file or symbol and the exact failure predicate to verify. Retain those questions even if no finding is confirmed.";
+
 // Shape-only example: deliberately unrelated to any review fixture.
 export const SUBMIT_REVIEW_EXAMPLE = {
   reviewStatus: "findings",

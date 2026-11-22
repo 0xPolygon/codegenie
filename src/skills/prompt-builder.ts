@@ -11,7 +11,7 @@ import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
 import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
-import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
+import { STAGE7_UNSETTLED_CONCERN_GUIDANCE, SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
 import { VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 
 export { stableJson };
@@ -74,7 +74,7 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
   5: "p5.9",
-  7: "p7.16",
+  7: "p7.17",
   9: "p9.31",
   10: "p10.25"
 };
@@ -119,6 +119,9 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
   7: [
     SHARED_SUBMIT_KEY_CHECK,
     SHARED_FOCUSED_REPAIR,
+    { surface: "base guarantee before intent", reason: "Establish the previous behavior and its changed conditions from evidence before comparing them with the author's account.", evidence: "Plan 132, public discovery misses (#216)" },
+    { surface: "changed exits and deferred results", reason: "Consider outstanding work and guarantees when a changed path exits or an intervening step fails.", evidence: "Plan 132 failure-path probes" },
+    { surface: "unsettled predicates at submit and continuation", reason: "Preserve an exact open question when evidence cannot settle a concrete changed-line concern within the current pass.", evidence: "Plan 132, public discovery and promotion loss accounting" },
     { surface: "cross-packet placement", reason: "Discovery assignment does not constrain valid PR-diff coordinates; unknown placement must not be fabricated.", evidence: "Run 81 test packet discovered valid hyperlane.go:220 anchor" },
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
     { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
@@ -276,19 +279,22 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
     buildPacketReviewPrompt: ({ packet, skills }) => {
       const projection = projectSkills(skills, 7, options);
       const blocks = [
+        fenceUntrusted(renderPacket(packet), "review-packet"),
         fenceUntrusted(packet.prSummary, "pr-summary"),
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
-        fenceUntrusted(renderPacket(packet), "review-packet")
+        fenceUntrusted(renderPacketReviewContext(packet), "review-context")
       ].filter(Boolean);
       return buildPrompt(7, [
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        "Before consulting the later intent and planner context, list in your review reasoning what the base guaranteed on affected paths and whether each guarantee is kept, moved, or dropped. A guarantee that appears narrowed or gone stays open unless source evidence shows it still holds or a pre-existing contract settles the change. Docs, tests and comments added by this change describe the author's claim. If that is the only support for the new contract, ask a concrete question.",
+        "For each changed exit or deferred result, check what still needs to happen for every pending item or resource when the path exits, and what survives if the next operation fails.",
         DOCUMENTATION_IMPACT_GUIDANCE,
         TEST_COVERAGE_GUIDANCE,
         "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
-        "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
+        `A later verification stage filters false positives. ${STAGE7_UNSETTLED_CONCERN_GUIDANCE}`,
         "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation). If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
@@ -298,7 +304,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         "For lossy transformations that feed caller-visible outputs or bounds, check whether the published value remains deliverable/satisfiable, not only whether units or fields are internally consistent.",
-        "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
+        "After the base and exit checks, use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If authoritative task or spec context requires the new behavior and caller impact is covered, do not report it as a bug.",
         "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.",
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
         "When local context feels tight, prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks over broad search/list tools. Local budgets are targets: aim to finish within them, and use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply.",
@@ -751,19 +757,29 @@ function renderPacket(packet: ReviewPacket): string {
     isDeletedContent: packet.isDeletedContent,
     fileContext: packet.fileContext,
     labels: packet.labels,
-    attentionNotes: packet.attentionNotes,
-    contextText: packet.contextText,
+    contextText: packet.contextText.slice(0, packet.plannerContextOffset).trimEnd(),
     relatedChangedContext: packet.relatedChangedContext,
     testCoverageDelta: packet.testCoverageDelta,
-    intentSignals: packet.intentSignals,
     relevantTests: packet.relevantTests,
-    hunks: packet.hunks,
+    hunks: packet.hunks.map(({ plannerFallbackReason: _plannerFallbackReason, ...hunk }) => hunk),
     symbolFacts: packet.symbolFacts,
     packetSymbols: packet.packetSymbols,
     contextQuality: packet.contextQuality,
-    contextDegradationReasons: packet.contextDegradationReasons,
-    surroundingContextHints: packet.surroundingContextHints,
     degraded: packet.degraded
+  });
+}
+
+function renderPacketReviewContext(packet: ReviewPacket): string {
+  return stableJson({
+    intentSignals: packet.intentSignals,
+    attentionNotes: packet.attentionNotes,
+    plannerHunkNotes: packet.plannerHunkNotes,
+    plannerContext: packet.plannerContextOffset !== undefined ? packet.contextText.slice(packet.plannerContextOffset) : undefined,
+    surroundingContextHints: packet.surroundingContextHints,
+    contextDegradationReasons: packet.contextDegradationReasons,
+    plannerFallbacks: packet.hunks.flatMap(hunk => hunk.plannerFallbackReason === undefined ? [] : [{
+      hunkId: hunk.hunkId, reason: hunk.plannerFallbackReason
+    }])
   });
 }
 

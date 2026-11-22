@@ -2,6 +2,7 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
+import { packetExitSignals } from "./packet-exit-signals.js";
 import type {
   CodegenieConfig,
   CoverageLevel,
@@ -188,13 +189,23 @@ export async function buildReviewPackets(
 
   for (const file of filtered) {
     const planned = plannedByFile.get(file.path) ?? [];
+    const exitSignals = await packetExitSignals(file, planned.flatMap(entry => entry.symbolFacts), async (start, end) => {
+      try {
+        const result = await withRepositoryToolCallContext(repoIndex.tools, { stage: 6, initiator: "harness" },
+          () => repoIndex.tools.readRange(file.path, start, end, { kind: "head" }));
+        return result.text;
+      } catch {
+        telemetry.event({ stage: 6, level: "debug", message: "packet_exit_context_unavailable", file: file.path, data: { start, end } });
+        return "";
+      }
+    });
     for (const group of await groupHunks(planned, repoIndex, telemetry)) {
       const first = group.hunks[0];
       if (!first) {
         continue;
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
-      const packet = await buildPacket(group.hunks, groupDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
+      const packet = await buildPacket(group.hunks, groupDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics, exitSignals);
       packets.push(packet);
     }
   }
@@ -285,7 +296,8 @@ async function buildPacket(
   telemetry: TelemetryRecorder,
   reviewContext: PacketReviewContext | undefined,
   symbolContextMetrics: SymbolContextMetrics,
-  packetBuildMetrics: PacketBuildMetrics
+  packetBuildMetrics: PacketBuildMetrics,
+  exitSignals: ReadonlyMap<string, StaticSignal[]>
 ): Promise<ReviewPacket> {
   const first = planned[0];
   if (!first) {
@@ -302,7 +314,7 @@ async function buildPacket(
   const reviewPriority = maxReviewPriority(planned.map((entry) => entry.facts.reviewPriority));
   const symbolFacts = planned.flatMap((entry) => entry.symbolFacts);
   const packetHunks = planned.map((entry, index) =>
-    renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
+    renderPacketHunk(entry.hunk, [...entry.staticSignals, ...(exitSignals.get(entry.hunk.id) ?? [])], telemetry, plannerFallbackReason(decisions[index]?.reason))
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
@@ -324,6 +336,15 @@ async function buildPacket(
   const plannerAttentionNotes = attentionNotesForDecisions(decisions);
   const attentionNoteSelection = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
   const attentionNotes = attentionNoteSelection.notes;
+  const plannerHunkNotes = planned.length > 1 ? planned.flatMap(({ hunk }, index) => {
+    const decision = decisions[index]!;
+    const notes = normalizeAttentionNotes([
+      ...(decision.focusNotes ?? []),
+      ...(isDisclosableCoverageReason(decision.reason) ? [decision.reason] : []),
+      ...decision.surroundingContextHints.map(hint => hint.reason)
+    ]);
+    return notes[0] === undefined ? [] : [{ hunkId: hunk.id, note: notes[0] }];
+  }) : [];
   emitRelationshipAttentionTelemetry(telemetry, first.file.path, attentionNoteSelection);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
@@ -338,6 +359,14 @@ async function buildPacket(
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
   const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
+  const sourceContext = hintContext.text.length > 0
+    ? renderPacketContextText(first.file.path, group.wholeFileText, context.text).text
+    : undefined;
+  const plannerContextOffset = sourceContext !== undefined && (sourceContext.length === 0
+    ? renderedContext.text.length > 0
+    : renderedContext.text.startsWith(`${sourceContext}\n\n`))
+    ? (sourceContext.length === 0 ? 0 : sourceContext.length + 2)
+    : undefined;
   const contextDropReason = renderedContext.auxiliaryContextDropped
     ? "auxiliary packet context omitted to preserve complete whole-file content"
     : undefined;
@@ -445,6 +474,7 @@ async function buildPacket(
     symbolFacts,
     context: context.context,
     contextText: renderedContext.text,
+    ...(plannerContextOffset !== undefined ? { plannerContextOffset } : {}),
     contextQuality,
     ...(contextDegradationReasons.length > 0 ? { contextDegradationReasons } : {}),
     ...(testCoverageDelta !== undefined ? { testCoverageDelta } : {}),
@@ -453,6 +483,7 @@ async function buildPacket(
     surroundingContextHints: hintContext.workerHints,
     labels: first.facts.labels,
     attentionNotes,
+    ...(plannerHunkNotes.length > 0 ? { plannerHunkNotes } : {}),
     relatedChangedContext,
     toolBudget: scaleToolBudget(toolBudget(coverage, reviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
@@ -1817,7 +1848,7 @@ async function readEnclosingSymbolSource(
       return { text: block, quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
+    const text = renderSlicedSymbolContext(readPath, label, source.kind, fact, sliced.excerpts, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -2175,6 +2206,7 @@ function renderFullSymbolContext(readPath: string, label: string, fact: HunkSymb
 function renderSlicedSymbolContext(
   readPath: string,
   label: string,
+  revision: SourceSelector["kind"],
   fact: HunkSymbolFacts,
   excerpts: string[],
   fallbackSource: string,
@@ -2187,7 +2219,8 @@ function renderSlicedSymbolContext(
     fact.changedLines.length > 0 ? `Changed ranges: ${compactLineRanges(fact.changedLines).join(", ")}` : undefined,
     "Relevant source excerpts:"
   ].filter((part): part is string => part !== undefined && part.length > 0).join("\n");
-  const footer = "[symbol source sliced around changed lines; source outside excerpt ranges omitted]";
+  const scope = fact.symbolRange === undefined ? "the enclosing symbol" : `lines ${fact.symbolRange.join("-")}`;
+  const footer = `[symbol source sliced around changed lines; ${revision} ${readPath}, ${scope}: source outside the displayed lines and any clipped excerpt tails omitted]`;
   const bodyBudget = Math.max(0, maxChars - header.length - footer.length - 2);
   const excerptText = excerpts.length > 0
     ? fitSymbolExcerpts(excerpts, bodyBudget)
@@ -2347,7 +2380,21 @@ async function resolvePacketContextHints(
       continue;
     }
     try {
-      const resolved = await resolvePacketContextHint(repoIndex, hint, hintPath, telemetry);
+      let resolved = await resolvePacketContextHint(repoIndex, hint, hintPath, telemetry);
+      if (resolved === undefined && hint.path === undefined && hint.kind === "enclosing_symbol" && hint.symbol !== undefined) {
+        const result = await withRepositoryToolCallContext(repoIndex.tools, { stage: 6, initiator: "harness" },
+          () => repoIndex.tools.findDefinition(hint.symbol!, { source: { kind: "head" } }));
+        const definition = result.definitions.length === 1 && !result.meta.degraded && !result.meta.discoveryLimited
+          ? result.definitions[0]
+          : undefined;
+        if (definition?.text?.trim()) {
+          const { symbol } = definition;
+          resolved = renderHintContextBlock(hint, symbol.path,
+            `${symbol.name}:${symbol.lineRange.join("-")} [definition path fallback]`, definition.text);
+          telemetry.event({ stage: 6, level: "debug", message: "packet_symbol_hint_path_fallback", file: file.path,
+            data: { symbol: hint.symbol, resolvedPath: symbol.path } });
+        }
+      }
       if (resolved === undefined) {
         workerHints.push(toToolLookupHint(hint));
         continue;

@@ -4,6 +4,7 @@ import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
+import { STAGE7_UNSETTLED_CONCERN_GUIDANCE } from "../llm/submit-review-guidance.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -459,6 +460,23 @@ async function runPacket(
     packet.language
   );
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
+  telemetry.event({
+    stage: 7,
+    level: "debug",
+    message: "stage7_recall_prompt_exposure",
+    packetId: packet.id,
+    workerId,
+    data: {
+      templateVersion: prompt.templateVersion,
+      instructions: ["base_guarantee_before_intent", "changed_exit_sweep", "unsettled_concern_question"],
+      plannerHunkIds: (packet.plannerHunkNotes ?? []).map(note => note.hunkId),
+      slicedSourceDisclosure: packet.contextText.includes("[symbol source sliced around changed lines;"),
+      symbolHintPathFallback: packet.contextText.includes("[definition path fallback]"),
+      diffShapeSignals: packet.hunks.flatMap(hunk => (hunk.staticSignals ?? [])
+        .filter(signal => signal.ruleId === "correctness/added-loop-control" || signal.ruleId === "correctness/exit-moved-past-await")
+        .map(signal => ({ hunkId: hunk.hunkId, ruleId: signal.ruleId })))
+    }
+  });
   const passSkillIds = projectedSkillIds(prompt.projection);
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
@@ -817,14 +835,14 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 }
 
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
-  "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
+  `Submit supported findings. ${STAGE7_UNSETTLED_CONCERN_GUIDANCE} When no finding is confirmed, use reviewStatus:"no_findings", findings: [], and a short noFindingReason.`;
 
 function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput): string | undefined {
   const threshold = closeNudgeThreshold(packet);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
-  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
+  return `Only continue if the next repository tool call can resolve one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
 }
 
 export function closeNudgeThreshold(packet: Pick<ReviewPacket, "coverage" | "reviewProfile">): number {
