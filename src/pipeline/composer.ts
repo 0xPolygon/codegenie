@@ -269,25 +269,64 @@ export async function dedupeRankAndComposeReview(
   const findings = presentationOrder(capped.findings.filter((finding) => finding.publication === "inline"));
   const summaryOnlyFindings = presentationOrder(capped.findings.filter((finding) => finding.publication === "summary-only"));
   const publishableCount = findings.length + summaryOnlyFindings.length;
+  // Post-cap publication-aware reconciliation (#52): Stage 10 inputs stay
+  // unchanged; resolutions citing a suppressed keep/revise finding are rejected
+  // so at least one of the finding or its source concern remains visible.
+  const publishedCandidateIds = new Set(
+    [...findings, ...summaryOnlyFindings].flatMap((finding) => [finding.id, ...finding.mergedCandidateIds])
+  );
   const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
-    compositionMode === "llm");
+    compositionMode === "llm", { publishedCandidateIds });
   if (reconciledAttention.canonicalizedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unchanged_question_canonicalized",
     data: { concernIds: reconciledAttention.canonicalizedConcernIds, disposition: "unresolved" } });
   const decisionsByHint = new Map(reconciledAttention.decisions.filter(decision => decision.accepted).map(decision => [decision.concernId, decision]));
+  const suppressedEvidenceConcernIds = new Set(
+    reconciledAttention.decisions
+      .filter(decision => decision.rejectionReason === "suppressed_finding_evidence")
+      .map(decision => decision.concernId)
+  );
   const regroupedAttention = buildHumanAttentionNotes([], { packets: opts.packets ?? [], rawHints: attention.raw.flatMap(hint => {
     const decision = decisionsByHint.get(`packet/${hint.id}`);
     return decision?.disposition === "resolved" ? [] : [{ ...hint, question: decision?.remainingQuestion ?? hint.question }];
   }) });
+  const isSuppressedEvidencePacketGroup = (group: (typeof regroupedAttention.groups)[number]) =>
+    [...group.rawNoteIds].some(id => suppressedEvidenceConcernIds.has(`packet/${id}`));
+  const prioritizedPacketGroups = suppressedEvidenceConcernIds.size > 0
+    ? [
+        ...regroupedAttention.groups.filter(isSuppressedEvidencePacketGroup),
+        ...regroupedAttention.groups.filter(group => !isSuppressedEvidencePacketGroup(group))
+      ]
+    : regroupedAttention.groups;
   const humanAttention = selectHumanAttentionForOutput(
-    regroupedAttention.groups,
+    prioritizedPacketGroups,
     [], // Finding overlap alone does not establish that every question was answered.
     packetsById,
     [], // Packet questions require explicit evidence-backed reconciliation, not verdict/word similarity.
     telemetry
   );
-  const verifierQuestions = new Set(reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:")).map(outcome => outcome.remainingQuestion));
+  const prioritizedPacketNotes = new Set(
+    humanAttention.selectedGroups.filter(isSuppressedEvidencePacketGroup).map(group => group.representative.question)
+  );
+  const verifierOutcomes = reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:") && outcome.remainingQuestion.length > 0);
+  const verifierQuestions = new Set(verifierOutcomes.map(outcome => outcome.remainingQuestion));
+  const prioritizedVerifierQuestions = new Set(
+    verifierOutcomes
+      .filter(outcome => outcome.concernIds.some(id => suppressedEvidenceConcernIds.has(id)))
+      .map(outcome => outcome.remainingQuestion)
+  );
+  const prioritizedVerifierNotes: NeedsHumanAttentionNote[] = [];
+  const ordinaryVerifierNotes: NeedsHumanAttentionNote[] = [];
   for (const note of reconciledAttention.notes.filter(note => verifierQuestions.has(note.question))) {
-    if (!humanAttention.notes.some(existing => existing.question === note.question)) humanAttention.notes.push(note);
+    if (humanAttention.notes.some(existing => existing.question === note.question)) continue;
+    if (prioritizedVerifierQuestions.has(note.question)) prioritizedVerifierNotes.push(note);
+    else ordinaryVerifierNotes.push(note);
+  }
+  if (prioritizedVerifierNotes.length > 0) {
+    const priorityPacketNotes = humanAttention.notes.filter(note => prioritizedPacketNotes.has(note.question));
+    const ordinaryPacketNotes = humanAttention.notes.filter(note => !prioritizedPacketNotes.has(note.question));
+    humanAttention.notes = [...priorityPacketNotes, ...prioritizedVerifierNotes, ...ordinaryPacketNotes, ...ordinaryVerifierNotes];
+  } else {
+    humanAttention.notes.push(...ordinaryVerifierNotes);
   }
   telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
     suppliedConcerns: attentionReconciliation.inventory.concerns.length,
@@ -300,6 +339,8 @@ export async function dedupeRankAndComposeReview(
     assessedUnresolved: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "unresolved").length,
     missingDecisions: attentionReconciliation.inventory.concerns.filter(concern => !reconciledAttention.decisions.some(decision => decision.concernId === concern.id)).length,
     rejected: reconciledAttention.decisions.filter(decision => !decision.accepted).length,
+    restoredForSuppressedFinding: reconciledAttention.restoredForSuppressedFindingCount,
+    restoredWithSurvivingRef: reconciledAttention.restoredWithSurvivingRefCount,
     resolvedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "resolved").map(decision => decision.concernId).slice(0, 30),
     narrowedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "narrowed").map(decision => decision.concernId).slice(0, 30)
   } });
