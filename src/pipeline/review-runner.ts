@@ -810,7 +810,7 @@ async function createPipelineServices(
     telemetry: run.telemetry
   });
   const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry, skillsResult.failures);
-  const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry });
+  const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry, toolSurface: config.review.toolSurface ?? "current" });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
