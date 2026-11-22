@@ -70,6 +70,7 @@ export type CodegenieConfig = {
     provider?: string;
     model?: string;
     reasoning?: ReasoningLevel;
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>;
     maxConcurrentCalls: number;
     // Plan 86 step 3 escape hatch: when true (default), Anthropic
     // finalize/repair/no-tool calls run with thinking disabled and genuinely
@@ -1023,6 +1024,7 @@ export type PostingPlan = {
 };
 
 export type ReviewRunStats = {
+  stageModels?: Partial<Record<"plan" | "review" | "verify" | "compose", { provider: string; id: string; reasoning: ReasoningLevel }>>;
   model?: {
     provider?: string;
     id?: string;
@@ -1411,6 +1413,7 @@ export type EvalRunInfo = {
       provider?: string;
       model?: string;
       reasoning?: ReasoningLevel;
+      stages?: CodegenieConfig["llm"]["stages"];
       maxConcurrentCalls: number;
     };
   };
