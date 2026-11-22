@@ -892,7 +892,7 @@ export { internal as Public }
     await expect(tools.findDefinition("SaveUser", { pathGlob: "../bad" })).rejects.toMatchObject({ code: "path_outside_repo" });
     expect(telemetry.toolCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ tool: "search_files", engine: "git-grep", status: "ok", degraded: true }),
+        expect.objectContaining({ tool: "search_files", engine: "git-grep", status: "ok", degraded: false, deliveryStatus: "truncated" }),
         expect.objectContaining({ tool: "search_files", status: "ok", truncated: true, omittedCount: expect.any(Number) }),
         expect.objectContaining({ tool: "search_files", status: "ok", args: expect.objectContaining({ query: "--follow" }) }),
         expect.objectContaining({ tool: "read_file_outline", status: "ok", args: expect.objectContaining({ path: "many/many.go" }), omittedCount: expect.any(Number) }),

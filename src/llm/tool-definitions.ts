@@ -6,6 +6,7 @@ import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
+import { SearchBudgetError } from "../repo/search.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -328,7 +329,7 @@ async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionRes
         text: `tool error: ${error.code}: ${error.message}`,
         isError: true,
         errorCode: error.code,
-        meta: { backend: "text", precision: "text", degraded: true, degradationReason: error.code }
+        meta: error instanceof SearchBudgetError ? error.meta : { backend: "text", precision: "text", degraded: true, degradationReason: error.code }
       };
     }
     throw error;
