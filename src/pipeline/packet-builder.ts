@@ -35,6 +35,8 @@ import type {
 import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
 import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
+import { isProsePath } from "../util/path-roles.js";
+import { numberSourceLine, renderSourceBlockHeader } from "../llm/repository-tool-guidance.js";
 
 type PacketBuildOptions = {
   config: CodegenieConfig;
@@ -338,6 +340,13 @@ async function buildPacket(
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
   const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
+  for (const entry of hintContext.emitted) {
+    if (!renderedContext.text.includes(entry.text)) {
+      hintContext.workerHints.push(toToolLookupHint(entry.hint));
+      telemetry.event({ stage: 6, level: "warn", message: "packet_context_hint_unresolved", file: entry.hint.path ?? first.file.path,
+        data: { kind: entry.hint.kind, reason: entry.hint.reason, outcome: "context_truncated" } });
+    }
+  }
   const contextDropReason = renderedContext.auxiliaryContextDropped
     ? "auxiliary packet context omitted to preserve complete whole-file content"
     : undefined;
@@ -2331,8 +2340,8 @@ async function resolvePacketContextHints(
   file: DiffFile,
   hints: SurroundingContextHint[],
   telemetry: TelemetryRecorder
-): Promise<{ text: string; workerHints: SurroundingContextHint[]; degradation?: string }> {
-  const blocks: string[] = [];
+): Promise<{ text: string; workerHints: SurroundingContextHint[]; emitted: Array<{ hint: SurroundingContextHint; text: string }>; degradation?: string }> {
+  const blocks: Array<{ hint: SurroundingContextHint; text: string; recovered: boolean }> = [];
   const workerHints: SurroundingContextHint[] = [];
   const failures: string[] = [];
 
@@ -2342,17 +2351,21 @@ async function resolvePacketContextHints(
       continue;
     }
     const hintPath = hint.path ?? file.path;
-    if (hintPath !== file.path) {
+    if (hintPath !== file.path && (hint.kind === "call_site" || hint.symbol === undefined || hint.lineRange !== undefined)) {
+      telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: hintPath,
+        data: { kind: hint.kind, reason: hint.reason, outcome: "outside_packet" } });
       workerHints.push(toToolLookupHint(hint));
       continue;
     }
     try {
       const resolved = await resolvePacketContextHint(repoIndex, hint, hintPath, telemetry);
       if (resolved === undefined) {
+        telemetry.event({ stage: 6, level: "warn", message: "packet_context_hint_unresolved", file: hintPath,
+          data: { kind: hint.kind, reason: hint.reason, outcome: "not_resolved" } });
         workerHints.push(toToolLookupHint(hint));
         continue;
       }
-      blocks.push(resolved);
+      blocks.push({ hint, ...resolved });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       telemetry.event({
@@ -2360,15 +2373,40 @@ async function resolvePacketContextHints(
         level: "warn",
         message: "packet_context_hint_unresolved",
         file: hintPath,
-        data: { kind: hint.kind, reason: hint.reason, error: message }
+        data: { kind: hint.kind, reason: hint.reason, outcome: "error", error: message }
       });
       failures.push(`${hintPath}: ${hint.reason}`);
       workerHints.push(toToolLookupHint(hint));
     }
   }
 
+  const hasRecovered = blocks.some(block => block.recovered);
+  const ordered = hasRecovered
+    ? [...blocks.filter(block => block.recovered), ...blocks.filter(block => !block.recovered)] : blocks;
+  const admitted: typeof blocks = [];
+  if (hasRecovered) {
+    let used = 0;
+    for (const block of ordered) {
+      const extra = block.text.length + (admitted.length ? 2 : 0);
+      if (used + extra > MAX_HINT_CONTEXT_CHARS) {
+        workerHints.push(toToolLookupHint(block.hint));
+        telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: block.hint.path ?? file.path,
+          data: { kind: block.hint.kind, reason: block.hint.reason, outcome: "hint_budget" } });
+      } else { admitted.push(block); used += extra; }
+    }
+  } else admitted.push(...ordered);
+  const text = truncateTail(admitted.map(block => block.text).join("\n\n"), MAX_HINT_CONTEXT_CHARS);
+  const emitted = admitted.filter(block => text.includes(block.text) && !block.text.endsWith("[... content truncated to fit packet context budget ...]"));
+  for (const block of admitted) {
+    if (!text.includes(block.text) || block.text.endsWith("[... content truncated to fit packet context budget ...]")) {
+      if (hasRecovered) workerHints.push(toToolLookupHint(block.hint));
+      telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: block.hint.path ?? file.path,
+        data: { kind: block.hint.kind, reason: block.hint.reason, outcome: "hint_budget" } });
+    }
+  }
   return {
-    text: truncateTail(blocks.join("\n\n"), MAX_HINT_CONTEXT_CHARS),
+    text,
+    emitted,
     workerHints,
     ...(failures.length > 0 ? { degradation: `planner packet_context hint(s) unresolved: ${failures.slice(0, 3).join("; ")}` } : {})
   };
@@ -2379,7 +2417,7 @@ async function resolvePacketContextHint(
   hint: SurroundingContextHint,
   path: string,
   telemetry: TelemetryRecorder
-): Promise<string | undefined> {
+): Promise<{ text: string; recovered: boolean } | undefined> {
   if (hint.lineRange !== undefined) {
     const normalized = normalizeStage6ReadRange({
       startLine: hint.lineRange[0],
@@ -2398,22 +2436,49 @@ async function resolvePacketContextHint(
       { stage: 6, initiator: "harness" },
       () => repoIndex.tools.readRange(path, normalized.startLine, normalized.endLine, { kind: "head" })
     );
-    return renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text);
+    return { text: renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text), recovered: false };
   }
   const symbol = hint.symbol;
   if (symbol !== undefined) {
     if (hint.kind === "call_site") {
-      return resolveCallSiteContextHint(repoIndex, hint, path, symbol, telemetry);
+      const text = await resolveCallSiteContextHint(repoIndex, hint, path, symbol, telemetry);
+      return text === undefined ? undefined : { text, recovered: false };
     }
     const result = await withRepositoryToolCallContext(
       repoIndex.tools,
       { stage: 6, initiator: "harness" },
       () => repoIndex.tools.readSymbol(path, { symbolName: symbol }, { kind: "head" })
     );
-    if (result.text === undefined || result.text.trim().length === 0) {
-      return undefined;
+    if (result.text !== undefined && result.text.trim().length > 0 && !result.meta.degraded && result.meta.precision === "syntactic"
+      && (result.meta.lookupStatus === undefined || result.meta.lookupStatus === "found")) {
+      if (result.meta.truncated) telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: path,
+        data: { kind: hint.kind, reason: hint.reason, outcome: "symbol_truncated" } });
+      const text = renderHintContextBlock(hint, path, symbol, result.text);
+      const marker = "\n[... content truncated to fit packet context budget ...]";
+      return { text: result.meta.truncated && !text.endsWith(marker.trimStart())
+        ? truncateTail(text + marker, MAX_HINT_CONTEXT_CHARS) : text, recovered: false };
     }
-    return renderHintContextBlock(hint, path, symbol, result.text);
+    const fallback = await withRepositoryToolCallContext(
+      repoIndex.tools, { stage: 6, initiator: "harness" },
+      () => repoIndex.tools.findDefinition(symbol, { source: { kind: "head" } })
+    );
+    const definition = fallback.definitions[0];
+    // #256 records files that could hide another definition even when the
+    // returned list contains exactly one syntactic hit.
+    const candidateMeta = fallback.meta as ToolResultMeta & { unparsedCandidatePaths?: string[]; incompleteCandidatePaths?: string[] };
+    if (fallback.definitions.length !== 1 || fallback.meta.precision !== "syntactic" || fallback.meta.degraded
+      || fallback.meta.truncated || fallback.meta.discoveryLimited || fallback.meta.deliveryStatus !== "full"
+      || candidateMeta.unparsedCandidatePaths?.some(candidate => !isProsePath(candidate) && !/\.adoc$/iu.test(candidate))
+      || (candidateMeta.incompleteCandidatePaths?.length ?? 0) > 0
+      || definition?.text === undefined || definition.text.trim().length === 0
+      || definition.totalLines === undefined || definition.deliveredLineRange === undefined) return undefined;
+    const [first, last] = definition.deliveredLineRange;
+    const lines = definition.text.split("\n");
+    if (lines.length !== last - first + 1) return undefined;
+    const text = [`Planner packet context (${hint.kind}) for ${definition.symbol.path}:${symbol}`, `Reason: ${hint.reason}`,
+      renderSourceBlockHeader(definition.symbol.path, "head", definition.deliveredLineRange, definition.totalLines),
+      ...lines.map((line, index) => numberSourceLine(line, first + index))].join("\n");
+    return { text, recovered: true };
   }
   return undefined;
 }
