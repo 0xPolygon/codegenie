@@ -43,6 +43,7 @@ export type LoadConfigOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   cli?: CliConfigOverrides;
+  actionStageModels?: NonNullable<CodegenieConfig["llm"]["stages"]>;
   loadRepoConfig?: boolean;
 };
 
@@ -136,6 +137,11 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     model: Boolean(env.CODEGENIE_PROVIDER || env.CODEGENIE_MODEL || cliModelOverride),
     reasoning: Boolean(env.CODEGENIE_REASONING || cliReasoningOverride)
   }, warnings, cliOverridesStage ? "cli" : "environment");
+
+  if (opts.actionStageModels !== undefined) {
+    config.llm.stages = structuredClone(opts.actionStageModels);
+    sources["llm.stages"] = "github-action";
+  }
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {

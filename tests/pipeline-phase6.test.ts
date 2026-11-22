@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { describe, expect, it, vi } from "vitest";
+import { parseReviewCommand } from "../src/cli/review-command.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { scoreEvalRun } from "../src/evals/eval-scoring.js";
+import { parseStageModels } from "../src/github-action/models.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
 import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
@@ -85,24 +87,38 @@ describe("phase 6 live review path", () => {
 
   it("reports actual per-stage models across the production review pipeline", async () => {
     const repo = initRepo();
-    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number): number {\n  return total / Math.max(1, count);\n}\n");
     const base = commitAll(repo, "base");
-    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number): number {\n  return total / count;\n}\n");
     const head = commitAll(repo, "change");
     const scratch = mkdtempSync(path.join(tmpdir(), "codegenie-stage-models-"));
     const runArtifactDir = path.join(scratch, "run");
     const cfg = liveConfig(runArtifactDir);
-    const adapter = partialBudgetAdapter();
-    adapter.resolveModel = request => ({ provider: request.provider ?? "scripted", id: request.model ?? "scripted-model", raw: { id: request.model ?? "scripted-model", api: "faux" } });
-    const result = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, {
-      ...cfg, llm: { ...cfg.llm, stages: { plan: { model: "other/planner" }, compose: { model: "other/composer", reasoning: "low" } } }
-    }, { repoRoot: repo, runArtifactDir, piAdapter: adapter });
-    expect(result.runStats?.stageModels).toMatchObject({ plan: { provider: "other", id: "planner", reasoning: "high" },
-      review: { provider: "scripted", id: "scripted-model", reasoning: "high" }, compose: { provider: "other", id: "composer", reasoning: "low" } });
+    const adapter = liveReviewAdapter();
+    adapter.resolveModel = request => ({ provider: request.provider!, id: request.model!, raw: { id: request.model!, api: "faux" } });
+    const args = ["review", base, head, "--provider", "scripted", "--model", "scripted-model", "--reasoning", "high"];
+    const opts = { repoRoot: repo, env: {} };
+    const parsed = parseReviewCommand(args, {
+      ...opts,
+      actionStageModels: parseStageModels("plan: {model: openrouter/planner}\nverify: {reasoning: medium}\ncompose: {model: anthropic/composer, reasoning: low}")!
+    });
+    const config = { ...cfg, llm: parsed.config.llm };
+    const resolved: ResolvedReviewInput = { mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head, commits: [], rawDiff: "" };
+    expect(reviewCacheFingerprint(config, resolved, "registry"))
+      .not.toBe(reviewCacheFingerprint({ ...cfg, llm: parseReviewCommand(args, opts).config.llm }, resolved, "registry"));
+    const result = await runReview(parsed.target, config, { repoRoot: repo, runArtifactDir, piAdapter: adapter });
+    expect(result.runStats?.stageModels).toEqual({
+      plan: { provider: "openrouter", id: "planner", reasoning: "high" },
+      review: { provider: "scripted", id: "scripted-model", reasoning: "high" },
+      verify: { provider: "scripted", id: "scripted-model", reasoning: "medium" },
+      compose: { provider: "anthropic", id: "composer", reasoning: "low" }
+    });
     expect(renderMarkdownReview(result)).toContain("Stage models (base reasoning)");
     const calls = readJsonl<{ stage: number; provider: string; model: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
-    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "other", model: "planner" }),
-      expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model" }), expect.objectContaining({ stage: 10, provider: "other", model: "composer" })]));
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "openrouter", model: "planner" }),
+      expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model" }),
+      expect.objectContaining({ stage: 9, provider: "scripted", model: "scripted-model", reasoningConfigured: "medium" }),
+      expect.objectContaining({ stage: 10, provider: "anthropic", model: "composer", reasoningConfigured: "low" })]));
   });
 
   it("replays model calls across worktrees and operational settings, with a miss on a budget change", async () => {

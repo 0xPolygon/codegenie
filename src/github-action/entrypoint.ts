@@ -23,9 +23,11 @@ import {
   applyLlmApiKey,
   formatModelSpec,
   parseModelAliases,
+  parseStageModels,
   renderUnknownAliasReply,
   resolveModelConfig,
   selectModel,
+  type ActionStageModels,
   type ModelConfig,
   type ModelSelection
 } from "./models.js";
@@ -38,6 +40,7 @@ type ReviewHooks = {
   onRunStart: (run: RunAttachment) => void;
   onTelemetryEvent: (event: ProgressEvent) => void;
   writeOutput: (text: string) => void;
+  actionStageModels?: ActionStageModels;
 };
 
 type RunAttachment = {
@@ -71,10 +74,11 @@ type GitHubActionInputs = {
   postInlineComments: boolean;
   preflightOnly: boolean;
   botLogin?: string;
-  // Raw `model` / `models` inputs, validated only after the trigger gate so
+  // Raw model inputs, validated only after the trigger gate so
   // a bad block cannot fail unrelated comment events.
   modelInput?: string;
   modelsInput: string;
+  stageModelsInput: string;
   reviewPassthrough: string[];
 };
 
@@ -121,6 +125,10 @@ export async function executeGitHubActionCommand(
   // A configuration error still fails every real trigger (including every
   // push), but "LGTM" comments skip above instead of going red.
   const models: ModelConfig = resolveModelConfig(inputs.modelInput, parseModelAliases(inputs.modelsInput));
+  const stageModels = parseStageModels(inputs.stageModelsInput);
+  if (stageModels !== undefined && models.defaultModel === undefined) {
+    throw new CodegenieError("invalid_args", "--stage-models requires --model to set the global default");
+  }
 
   const comments = opts.issueComments ?? createIssueCommentClient(repoRoot, repoFullName);
 
@@ -172,14 +180,20 @@ export async function executeGitHubActionCommand(
     return;
   }
   const selection = selected.selection;
+  let actionStageModels = stageModels;
+  if (stageModels !== undefined && decision.requestedAlias !== undefined && selection?.alias !== undefined) {
+    actionStageModels = undefined;
+    write("github-action: Per-run model and reasoning overrides ignore matching stage settings.\n");
+  }
+  const modelFields = modelRecordFields(selection, actionStageModels);
   writePreflightOutputs(env, true, decision.prNumber);
-  writeDecisionRecord(write, { ...decisionFields, run: true, ...modelRecordFields(selection) });
+  writeDecisionRecord(write, { ...decisionFields, run: true, ...modelFields });
   if (inputs.preflightOnly) {
     write(`github-action: preflight authorized ${decision.lane} trigger for PR #${decision.prNumber}\n`);
     return;
   }
 
-  const keyProviders = applyLlmApiKey(env, models);
+  const keyProviders = applyLlmApiKey(env, models, stageModels);
   if (keyProviders.length > 0) {
     // pi-ai lets a stored login own its provider ahead of env vars, which
     // would silently bypass llm-api-key. Only self-hosted runners can have one.
@@ -244,7 +258,8 @@ export async function executeGitHubActionCommand(
       onTelemetryEvent: controller.onTelemetryEvent,
       // Pass stdout through to the Actions log; with inline posting on it is
       // the posting summary, which belongs in the log, not the comment.
-      writeOutput: write
+      writeOutput: write,
+      ...(actionStageModels !== undefined ? { actionStageModels } : {})
     });
   } catch (error) {
     const code = actionErrorCode(error);
@@ -264,7 +279,7 @@ export async function executeGitHubActionCommand(
       ...(runUrl !== undefined ? { runUrl } : {})
     });
     await controller.finalizeFailure(code, diagnostic, explanation);
-    emitActionRecord(attachment?.runDir, eventName, authorized, selection, "review_failed", controller.stats(), env, write, code);
+    emitActionRecord(attachment?.runDir, eventName, authorized, modelFields, "review_failed", controller.stats(), env, write, code);
     const detail = diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code;
     write(
       `github-action: review failed — ${detail}${explanation !== undefined ? `: ${explanation}` : ""}\n`
@@ -277,23 +292,26 @@ export async function executeGitHubActionCommand(
   publishReportFiles(runResult.reportMarkdown, env);
   if (runResult.failed) {
     await controller.finalizeFailure("review_failed", undefined, "Required review work failed. See the saved report for diagnostics.", runResult.reportMarkdown);
-    emitActionRecord(runResult.runDir, eventName, authorized, selection, "review_failed", controller.stats(), env, write, "review_failed");
+    emitActionRecord(runResult.runDir, eventName, authorized, modelFields, "review_failed", controller.stats(), env, write, "review_failed");
     throw new CodegenieError("review_failed", "Required review work failed; partial report retained.");
   }
   try {
     await controller.finalizeSuccess(runResult.reportMarkdown);
   } catch (error) {
     const code = actionErrorCode(error);
-    emitActionRecord(runResult.runDir, eventName, authorized, selection, "terminal_post_failed", controller.stats(), env, write, code);
+    emitActionRecord(runResult.runDir, eventName, authorized, modelFields, "terminal_post_failed", controller.stats(), env, write, code);
     throw error;
   }
-  emitActionRecord(runResult.runDir, eventName, authorized, selection, "success", controller.stats(), env, write);
+  emitActionRecord(runResult.runDir, eventName, authorized, modelFields, "success", controller.stats(), env, write);
   write(`github-action: review complete — report posted to PR #${decision.prNumber}\n`);
 }
 
 function defaultRunReview(repoRoot: string): (reviewArgv: string[], hooks: ReviewHooks) => Promise<RunReviewResult> {
   return async (reviewArgv, hooks) => {
-    const parsed = parseReviewCommand(reviewArgv, { repoRoot });
+    const parsed = parseReviewCommand(reviewArgv, {
+      repoRoot,
+      ...(hooks.actionStageModels !== undefined ? { actionStageModels: hooks.actionStageModels } : {})
+    });
     const result = await executeReviewCommand(parsed, {
       onRunStart: hooks.onRunStart,
       onTelemetryEvent: hooks.onTelemetryEvent,
@@ -321,6 +339,7 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     postInlineComments: true,
     preflightOnly: false,
     modelsInput: "",
+    stageModelsInput: "",
     reviewPassthrough: []
   };
   const passthroughFlags = new Set(["--depth", "--lens", "--max-time", "--budget-boost"]);
@@ -347,6 +366,8 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
       inputs.modelInput = value;
     } else if (flag === "--models") {
       inputs.modelsInput = value;
+    } else if (flag === "--stage-models") {
+      inputs.stageModelsInput = value;
     } else if (flag === "--bot-login") {
       if (value.trim() !== "") {
         inputs.botLogin = value.trim();
@@ -574,14 +595,18 @@ type AuthorizedRecordFields = {
   association: string;
 };
 
+type ModelRecordFields = {
+  modelAlias?: string;
+  modelSpec?: string;
+  stageModels?: ActionStageModels;
+};
+
 type DecisionRecord =
   | { eventName: string; run: false; reason: string }
-  | (AuthorizedRecordFields & {
+  | (AuthorizedRecordFields & ModelRecordFields & {
       run: true;
       actorAllowlisted: boolean;
       permissionCheck: PermissionCheck;
-      modelAlias?: string;
-      modelSpec?: string;
     })
   | (AuthorizedRecordFields & {
       run: false;
@@ -596,10 +621,11 @@ type DecisionRecord =
       permissionCheck: PermissionCheck;
     });
 
-function modelRecordFields(selection: ModelSelection | undefined): { modelAlias?: string; modelSpec?: string } {
+function modelRecordFields(selection: ModelSelection | undefined, stages: ActionStageModels | undefined): ModelRecordFields {
   return {
     ...(selection?.alias !== undefined ? { modelAlias: selection.alias } : {}),
-    ...(selection !== undefined ? { modelSpec: formatModelSpec(selection.spec) } : {})
+    ...(selection !== undefined ? { modelSpec: formatModelSpec(selection.spec) } : {}),
+    ...(stages !== undefined ? { stageModels: stages } : {})
   };
 }
 
@@ -631,7 +657,7 @@ function emitActionRecord(
   runDir: string | undefined,
   eventName: string,
   decision: AuthorizedDecision,
-  selection: ModelSelection | undefined,
+  modelFields: ModelRecordFields,
   outcome: "success" | "review_failed" | "terminal_post_failed",
   stats: ReturnType<ReturnType<typeof createStatusCommentController>["stats"]>,
   env: NodeJS.ProcessEnv,
@@ -647,7 +673,7 @@ function emitActionRecord(
     association: decision.association,
     actorAllowlisted: decision.actorAllowlisted,
     permissionCheck: decision.permissionCheck,
-    ...modelRecordFields(selection),
+    ...modelFields,
     outcome,
     ...(errorCode !== undefined ? { errorCode } : {}),
     runUrl: buildRunUrl(env, env.GITHUB_REPOSITORY ?? "") ?? null,

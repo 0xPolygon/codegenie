@@ -34,6 +34,19 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ llm: { stages: { wrong: { model: "provider/model" } } } }).success).toBe(false);
   });
 
+  it("replaces user stages with Action stages after per-run global overrides", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    writeFileSync(path.join(homeOverride, "config.toml"), '[llm.stages.review]\nmodel = "provider/standing"\nreasoning = "low"\n');
+    const loaded = loadConfig({
+      repoRoot, homeOverride, env: {},
+      cli: { provider: "provider", model: "default", reasoning: "auto" },
+      actionStageModels: { plan: { model: "provider/planner" }, compose: { reasoning: "medium" } }
+    });
+    expect(loaded.config.llm.stages).toEqual({ plan: { model: "provider/planner" }, compose: { reasoning: "medium" } });
+    expect(loaded.sources["llm.stages"]).toBe("github-action");
+  });
+
   it("layers composition step-down as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
