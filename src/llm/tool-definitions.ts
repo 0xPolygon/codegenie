@@ -318,6 +318,9 @@ function withMeta(text: string, meta: ToolResultMeta): string {
   if (meta.lookupStatus !== undefined) {
     notes.push(`lookup: ${meta.lookupStatus}`);
   }
+  if (meta.lookupNote !== undefined) {
+    notes.push(meta.lookupNote);
+  }
   if (meta.lookupStatus === "file_missing") {
     notes.push(MISSING_FILE_GUIDANCE);
   }

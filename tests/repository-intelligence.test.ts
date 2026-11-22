@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Tree } from "web-tree-sitter";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
-import { buildRepositoryIndex, RepositoryToolsFacade, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
+import { buildRepositoryIndex, isTextFallbackHit, RepositoryToolsFacade, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
 import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
 import { containGlob, containPath, containRef } from "../src/repo/path-guard.js";
 import { SourceResolver } from "../src/repo/source-resolver.js";
@@ -27,6 +27,75 @@ import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetr
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("repository intelligence", () => {
+  it("finds real local declarations without mistaking imports or prose for definitions", async () => {
+    const repo = initRepo();
+    // Shapes reproduced from cg-01, go-03 and pi-07 frozen campaign revisions.
+    writeRepoFile(repo, "src/pi-runner.ts", `import {\n  type PiAiAdapter,\n} from "./llm-runner.js";\nexport function createAdapter() {\n  const resolveModelWithReason = (request: string) => request;\n  return resolveModelWithReason;\n}\n`);
+    writeRepoFile(repo, "src/settings-manager.ts", `export class SettingsManager {\n  getDefaultTools(): string[] { return []; }\n}\n`);
+    writeRepoFile(repo, "decoder/moepaging_test.go", `package decoder\nfunc greedyN() {}\nfunc benchmark() {\n  const greedyN = 12\n  const first, second = 1, 2\n  runLocal := func() int { return second }\n  _, _, _ = greedyN, first, runLocal\n}\n`);
+    writeRepoFile(repo, "src/worker.rs", "fn outer() {\n    fn inner_worker() {}\n    inner_worker();\n}\n");
+    writeRepoFile(repo, "docs/plan.md", "The removed getAuth method was once provided by the library.\nThe helper resolveModelWithReason is described here.\n```go\nfunc LoadQwenVisionEncoder() {}\n```\n");
+    const head = commitAll(repo, "captured declaration shapes");
+    const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: head, endCommit: head,
+      mergeBase: head, headSha: head, commits: [], rawDiff: "" });
+    const telemetry = recordingTelemetry();
+    const tools = new RepositoryToolsFacade({ diff: { files: [] }, resolver, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry });
+
+    const local = await tools.findDefinition("resolveModelWithReason");
+    expect(local.definitions).toHaveLength(1);
+    expect(local.definitions[0]).toMatchObject({ symbol: { path: "src/pi-runner.ts", name: "resolveModelWithReason", kind: "function" } });
+    expect(local.meta).toMatchObject({ lookupStatus: "found", precision: "syntactic" });
+    const imported = await tools.findDefinition("PiAiAdapter", { pathGlob: "src/pi-runner.ts" });
+    expect(imported.definitions).toEqual([]);
+    expect(imported.meta.lookupStatus).toBe("not_found");
+    const prose = await tools.findDefinition("getAuth");
+    expect(prose.definitions).toEqual([]);
+    expect(prose.meta).toMatchObject({ lookupStatus: "unavailable", lookupNote: expect.stringContaining("docs/plan.md") });
+    expect(telemetry.toolCalls).toContainEqual(expect.objectContaining({ tool: "find_definition", lookupNote: prose.meta.lookupNote }));
+    expect((await tools.findDefinition("LoadQwenVisionEncoder")).meta.lookupStatus).toBe("unavailable");
+    const go = await tools.findDefinition("greedyN");
+    expect(go.definitions.map(item => item.symbol.kind).sort()).toEqual(["function", "value"]);
+    expect(go.meta.lookupStatus).toBe("ambiguous");
+    expect((await tools.findDefinition("second")).definitions[0]?.symbol).toMatchObject({ name: "second", kind: "value" });
+    expect((await tools.findDefinition("runLocal")).definitions[0]?.symbol).toMatchObject({ name: "runLocal", kind: "function" });
+    const rust = await tools.findDefinition("inner_worker");
+    expect(rust.definitions[0]?.symbol).toMatchObject({ name: "inner_worker", kind: "function" });
+    const rustAdapter = new LanguageAdapterRegistry(new TreeSitterService()).forPath("src/worker.rs");
+    const incompleteRegistry = {
+      forPath: () => ({ id: rustAdapter.id, parse: rustAdapter.parse.bind(rustAdapter), listSymbols: () => [] }),
+      languageForPath: () => "rust"
+    } as unknown as LanguageAdapterRegistry;
+    const incompleteTools = new RepositoryToolsFacade({ diff: { files: [] }, resolver, registry: incompleteRegistry, telemetry: recordingTelemetry() });
+    const rustFallback = await incompleteTools.findDefinition("inner_worker", { pathGlob: "src/worker.rs" });
+    expect(rustFallback.definitions[0]?.symbol).toMatchObject({ name: "inner_worker", nativeKind: "text declaration" });
+    expect(rustFallback.meta).toMatchObject({ lookupStatus: "unavailable", precision: "text" });
+    expect((await tools.findDefinition("getDefaultTools")).definitions[0]?.symbol).toMatchObject({ name: "getDefaultTools", kind: "method" });
+  });
+
+  it("does not treat fallback text declarations as verified definition evidence", () => {
+    const symbol = { path: "schema/example.custom", name: "Widget", kind: "type" as const, lineRange: [1, 1] as [number, number] };
+    expect(isTextFallbackHit({ symbol: { ...symbol, nativeKind: "text declaration" } })).toBe(true);
+    expect(isTextFallbackHit({ symbol: { ...symbol, nativeKind: "text match" } })).toBe(true);
+    expect(isTextFallbackHit({ symbol: { ...symbol, nativeKind: "class" } })).toBe(false);
+  });
+
+  it("searches base after unverified head mentions without claiming the symbol is base-only", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "decoder/registry.go", "package decoder\nfunc DeletedHelper() {}\n");
+    const base = commitAll(repo, "base declaration");
+    writeRepoFile(repo, "decoder/registry.go", "package decoder\n");
+    writeRepoFile(repo, "docs/plan.md", "DeletedHelper is mentioned but not defined here.\n");
+    const head = commitAll(repo, "remove declaration");
+    const rawDiff = git(repo, ["diff", base, head]);
+    const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head,
+      mergeBase: base, headSha: head, commits: [], rawDiff });
+    const tools = new RepositoryToolsFacade({ diff: parseDiff(rawDiff), resolver, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: recordingTelemetry() });
+    const result = await tools.findDefinition("DeletedHelper", { source: { kind: "auto" } });
+    expect(result.definitions[0]?.symbol).toMatchObject({ path: "decoder/registry.go", name: "DeletedHelper" });
+    expect(result.meta).toMatchObject({ lookupStatus: "found", sourceUsed: "base", sourceFallback: true });
+    expect(result.meta.baseOnly).toBeUndefined();
+  });
+
   it("directs large unsupported files to bounded source reads at the requested revision", async () => {
     const repo = initRepo();
     const content = "record Widget\n" + "  field: value\n".repeat(400);
@@ -92,7 +161,12 @@ describe("repository intelligence", () => {
       if (!degraded) expect(result.meta.degradationReason).toBeUndefined();
     }
     expect(symbol.text).toContain("Widget");
-    expect(definition.definitions).toHaveLength(1);
+    if (filePath === "schema/widget.ridl" || filePath === "pkg/widget.go") {
+      expect(definition.definitions).toHaveLength(1);
+    } else {
+      expect(definition.definitions).toHaveLength(0);
+      expect(definition.meta).toMatchObject({ lookupStatus: "unavailable", lookupNote: expect.stringContaining("unparsed") });
+    }
     expect(mentions.results).toHaveLength(1);
     expect(context.degradation !== undefined).toBe(degraded);
     expect(telemetry.toolCalls).toHaveLength(5);
@@ -852,7 +926,7 @@ export { internal as Public }
     );
   }, 15_000);
 
-  it("finds declaration text when parser summaries miss a symbol in a parsed file", async () => {
+  it("returns a text declaration as an unverified lead when parsing is unavailable", async () => {
     const source = `package quotes
 
 func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64, error) {
@@ -891,7 +965,6 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
         adapterId: "fake-go",
         source: input.source,
         content: input.content,
-        tree: {},
         hasErrors: false,
         ...(input.contentSha !== undefined ? { contentSha: input.contentSha } : {})
       }),
@@ -921,7 +994,8 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
       precision: "text",
       degraded: true,
       degradationReason: "1 definition candidate(s) used text fallback",
-      lookupStatus: "found",
+      lookupStatus: "unavailable",
+      lookupNote: expect.stringContaining("unverified"),
       deliveryStatus: "full"
     });
   });

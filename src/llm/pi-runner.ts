@@ -1,4 +1,5 @@
 import { assertRepositoryToolArguments } from "./tool-definitions.js";
+import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult } from "./search-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
@@ -1224,7 +1225,7 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
     || meta?.deliveryStatus !== "full" || !text.trim() || text.length > 8_000) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
-    if (hits) return hits.flatMap((hit, index) => hit.text?.trim() ? [{
+    if (hits) return hits.flatMap((hit, index) => hit.text?.trim() && !isTextFallbackHit(hit) ? [{
       id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
       symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
       lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
@@ -2503,6 +2504,7 @@ function recordToolCall(
     omittedCountIsLowerBound: meta.omittedCountIsLowerBound,
     discoveryLimited: meta.discoveryLimited,
     lookupStatus: meta.lookupStatus,
+    lookupNote: meta.lookupNote,
     deliveryStatus: meta.deliveryStatus,
     recovery: meta.recovery,
     budgetState: outcome.budgetState,

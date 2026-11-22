@@ -8070,7 +8070,7 @@ it("keeps bounded redacted key/type feedback with a non-composition custom repai
 it.each(["full", "cached", "truncated", "error", "unknown-revision"] as const)("retains separately identified ambiguous definition hits only when delivered in full: %s", async mode => {
   const definitions = [
     { symbol: { path: "src/access.go", name: "ReadForUser", kind: "function" as const, lineRange: [20, 24] as [number, number] }, text: "func ReadForUser(user) { return read(user.org); }" },
-    { symbol: { path: "docs/design.txt", name: "ReadForUser", kind: "other" as const, lineRange: [8, 8] as [number, number] }, text: "ReadForUser is used by the handler." }
+    { symbol: { path: "docs/design.txt", name: "ReadForUser", kind: "other" as const, nativeKind: "text declaration", lineRange: [8, 8] as [number, number] }, text: "ReadForUser is used by the handler." }
   ];
   const tool: ToolDefinition = { name: "find_definition", description: "Find candidates", parameters: Type.Object({ symbolName: Type.String(), source: Type.Object({ kind: Type.String() }) }),
     execute: async () => ({ text: JSON.stringify(definitions), definitions,
@@ -8092,7 +8092,7 @@ it.each(["full", "cached", "truncated", "error", "unknown-revision"] as const)("
     toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 2000 } });
   expect(captured[0]!.lookupStatus).toBe("ambiguous");
   if (mode === "full" || mode === "cached") {
-    expect(captured[0]!.repositoryEvidence).toEqual(definitions.map((hit, i) => ({ id: `lookup/hit-${i}`, tool: "find_definition",
+    expect(captured[0]!.repositoryEvidence).toEqual(definitions.slice(0, 1).map((hit, i) => ({ id: `lookup/hit-${i}`, tool: "find_definition",
       path: hit.symbol.path, lineRange: hit.symbol.lineRange, symbols: [hit.symbol.name], text: hit.text, source: "base", lookupStatus: "ambiguous" })));
     if (mode === "cached") {
       expect(captured).toHaveLength(2);
