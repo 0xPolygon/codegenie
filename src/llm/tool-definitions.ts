@@ -2,7 +2,7 @@ import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repositor
 import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { RepositoryTools, ReviewToolSurface, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -30,7 +30,17 @@ const PATH_DISCOVERY_GUIDANCE = "Use known file paths; package/import directorie
 
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
+  toolSurface?: ReviewToolSurface;
 };
+
+const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
+const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {};
+
+export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
+  if (surface === "six" && SIX_TOOL_NAMES.some(name => !sixToolFactories[name])) {
+    throw new CodegenieError("config_error", 'review.toolSurface = "six" requires a build with all six repository tools. Select "current" for this build.');
+  }
+}
 
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
@@ -46,6 +56,10 @@ export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" 
 }
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
+  assertRepositoryToolSurfaceAvailable(options.toolSurface);
+  if (options.toolSurface === "six") {
+    return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools));
+  }
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",

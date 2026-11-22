@@ -1,6 +1,6 @@
 import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "typebox";
-import type { CodegenieConfig, RepositoryTools, ReviewRunStats, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
+import type { CodegenieConfig, RepositoryTools, ReviewRunStats, ReviewStage, ReviewToolSurface, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
@@ -144,6 +144,7 @@ export type LlmStructuredRequest<T> = {
     workerId?: string;
     packetId?: string;
     candidateId?: string;
+    toolSurface?: ReviewToolSurface;
   };
   /** Pure stage-specific normalization of trusted, assembled arguments. Raw input remains auditable. */
   normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; reason: string } | undefined;

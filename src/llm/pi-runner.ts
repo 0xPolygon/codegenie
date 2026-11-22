@@ -3171,6 +3171,7 @@ function writeModelCallRequestDebug(
     request: {
       runnerMessageVersion: RUNNER_MESSAGE_VERSION,
       promptTemplateVersion: request.templateVersion,
+      toolSurface: request.telemetryContext?.toolSurface,
       schemaName,
       schemaVersion: SCHEMA_VERSIONS[schemaName],
       toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,
@@ -3428,6 +3429,7 @@ function recordModelCall(
     packetId: request.telemetryContext?.packetId,
     candidateId: request.telemetryContext?.candidateId,
     structuredRequestId: request.telemetryContext?.structuredRequestId,
+    toolSurface: request.telemetryContext?.toolSurface,
     kind: meta.kind,
     finalizeMode: meta.finalizeMode,
     finalizeTarget: meta.finalizeTarget,
@@ -3536,6 +3538,7 @@ function recordErroredModelCall(
     packetId: request.telemetryContext?.packetId,
     candidateId: request.telemetryContext?.candidateId,
     structuredRequestId: request.telemetryContext?.structuredRequestId,
+    toolSurface: request.telemetryContext?.toolSurface,
     kind: meta.kind,
     finalizeMode: meta.finalizeMode,
     finalizeTarget: meta.finalizeTarget,
