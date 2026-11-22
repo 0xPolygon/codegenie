@@ -10,12 +10,44 @@ function renderRecordOpening(open: string, meta: ToolResultMeta): string {
   return open + renderSourceBlockHeader(requestedRange.path, sourceUsed, deliveredLineRange, totalLines) + "\n";
 }
 
+function pageDeliveryNotes(meta: ToolResultMeta): string[] {
+  const search = meta.searchDelivery;
+  if (search) {
+    const notes = [`delivered matches: ${search.deliveredCount}`];
+    if (search.backendOmittedCount) {
+      const next = search.nextRead;
+      notes.push(`matching lines omitted by the Git output cap: ${search.backendOmittedCount}${next ? `; inspect ${JSON.stringify(next.path)}@${search.source}:${next.line} with read_range` : ""}`);
+    }
+    return notes;
+  }
+  return meta.pathListDelivery ? [`delivered paths: ${meta.pathListDelivery.deliveredCount}`] : [];
+}
+
+function updatePageDelivery(meta: ToolResultMeta, records: ToolResultRecords, count: number, refused = false): ToolResultMeta {
+  const budgetOmitted = records.records.length - count;
+  if (records.searchExcerptFlags && meta.searchDelivery) {
+    return searchDeliveryMeta(meta, {
+      ...meta.searchDelivery, deliveredCount: count,
+      budgetOmittedCount: meta.searchDelivery.budgetOmittedCount + budgetOmitted,
+      shortenedExcerpts: records.searchExcerptFlags.slice(0, count).filter(Boolean).length
+    }, refused);
+  }
+  if (meta.pathListDelivery) {
+    return { ...meta, pathListDelivery: {
+      ...meta.pathListDelivery, deliveredCount: count,
+      budgetOmittedCount: meta.pathListDelivery.budgetOmittedCount + budgetOmitted
+    } };
+  }
+  return meta;
+}
+
 /** Derive the canonical text and its packable representation together. */
 export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
   const { open, records, separator, close, diffGroups, labels, nextPage } = packable;
   const notes = diffGroups && meta.truncated
     ? [`truncation: ${meta.degradationReason ?? "diff_result_limit"}`, ...diffDeliveryNotes(diffGroups, meta.omittedCount ?? 0, records.length, labels?.at(-1))]
     : [];
+  notes.push(...pageDeliveryNotes(meta));
   if (nextPage) notes.push(`next: ${nextPage}`);
   return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta, notes), packable, meta };
 }
@@ -59,6 +91,11 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
 
   const { packable, sourceLineRange, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;
+  const unreadAt = (index: number): string | undefined => {
+    const label = labels?.[index];
+    const cursor = packable.cursors?.[index];
+    return cursor ? `${label ? `${label}, ` : ""}cursor=${cursor}` : label;
+  };
   // A backend continuation may be beyond the first line omitted by this cut.
   // The range/record locator below is the authoritative caller continuation.
   const { deliveredLineRange, recovery: _backendRecovery, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
@@ -73,20 +110,21 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
     const diffCut = diffGroups ? diffGroupsAfterCut(diffGroups, count, labels?.[count]) : undefined;
-    const meta: ToolResultMeta = {
+    const meta = updatePageDelivery({
       ...originalMeta,
       truncated: true,
       deliveryStatus: "truncated",
       degradationReason,
       omittedCount: (originalMeta.omittedCount ?? 0) + (diffCut?.omittedCount ?? records.length - count),
       ...(range ? { deliveredLineRange: range } : {})
-    };
+    }, packable, count);
     const notes = ["truncation: tool_result_budget"];
+    notes.push(...pageDeliveryNotes(meta));
     if (diffCut) {
       notes.push(...diffDeliveryNotes(diffCut.groups, meta.omittedCount ?? 0, count, labels?.[count - 1]));
     } else if (!range) {
       const last = labels?.[count - 1];
-      const next = labels?.[count];
+      const next = unreadAt(count);
       if (last) notes.push(`last delivered: ${last}`);
       if (next) notes.push(`next: ${next}`);
     }
@@ -97,6 +135,8 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
         ...(labels ? { labels: labels.slice(0, count) } : {}),
         ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}),
+        ...(packable.cursors ? { cursors: packable.cursors.slice(0, count) } : {}),
+        ...(packable.searchExcerptFlags ? { searchExcerptFlags: packable.searchExcerptFlags.slice(0, count) } : {}),
         ...(diffCut ? { diffGroups: { ...diffCut.groups, lineEnds: diffCut.groups.lineEnds.slice(0, count) } } : {}) };
       return {
         ...result,
@@ -108,19 +148,20 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     }
   }
 
-  const refusalMeta: ToolResultMeta = {
+  const refusalMeta = updatePageDelivery({
     ...originalMeta,
     truncated: true,
     deliveryStatus: "budget_rejected",
     degradationReason,
     omittedCount: (originalMeta.omittedCount ?? 0) + (diffGroups?.rendered.length ?? records.length)
-  };
-  const firstUnread = labels?.[0];
+  }, packable, 0, true);
+  const firstUnread = unreadAt(0);
   const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
     + (firstUnread && !diffGroups ? ` First unread source: ${firstUnread}.` : "");
   return {
     text: diffGroups ? withMeta(refusal, refusalMeta, diffDeliveryNotes(diffGroupsAfterCut(diffGroups, 0, firstUnread).groups,
-      refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
+      refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange || packable.searchExcerptFlags || originalMeta.pathListDelivery
+      ? withMeta(refusal, refusalMeta, pageDeliveryNotes(refusalMeta)) : refusal,
     isError: true,
     errorCode: "budget_exhausted",
     meta: refusalMeta

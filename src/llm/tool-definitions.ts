@@ -2,7 +2,7 @@ import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repositor
 import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, ReviewToolSurface, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { RepositoryTools, ReviewToolSurface, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -35,7 +35,11 @@ export type RepositoryToolDefinitionOptions = {
 };
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
-const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = { read_range: buildSixReadRangeTool };
+const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
+  read_range: buildSixReadRangeTool,
+  search_files: buildSixSearchTool,
+  list_files: buildSixListFilesTool
+};
 
 export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
   if (surface === "six" && SIX_TOOL_NAMES.some(name => !sixToolFactories[name])) {
@@ -466,4 +470,74 @@ function renderSourceFileMap(map: SourceFileMap): ToolExecutionResult {
     open: `${header}, ${totalDeclarations} declarations\n`, records, separator: "\n", close: "", labels,
     ...(next ? { nextPage: `declaration ${offset + declarations.length + 1}, cursor=${next}` } : {})
   }, meta);
+}
+
+export function buildSixSearchTool(tools: RepositoryTools): ToolDefinition {
+  return {
+    name: "search_files",
+    description: 'Search pinned repository source. Use mode "regex" for POSIX ERE (default, e.g. "track\\(") or mode "literal" for source text (e.g. "track("). To search base, pass source: {"kind":"base"}. Continue with the returned cursor and the same query, mode, source, pathGlob and contextMode.',
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1, maxLength: 500 }),
+      mode: Type.Optional(Type.Union([Type.Literal("regex"), Type.Literal("literal")])),
+      pathGlob: Type.Optional(Type.String({ minLength: 1 })),
+      source: SourceSelectorSchema,
+      contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+    }, { additionalProperties: false }),
+    execute: (args, signal) => wrapTool(signal, async () => {
+      const { query, ...options } = args as SearchPageOptions & { query: string };
+      if (!tools.searchFilesPage) throw new CodegenieError("config_error", "This repository cannot produce search pages.");
+      const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, options));
+      const revision = options.source?.kind ?? "head";
+      const total = page.rows.length + (page.meta.omittedCount ?? 0);
+      const scope = page.pathGlob === undefined ? "all files" : JSON.stringify(page.pathGlob);
+      const open = `Search at ${revision} (${page.revision}) in ${scope}: ${page.meta.omittedCountIsLowerBound ? "at least " : ""}${total} matches from this position\n`;
+      const files = new Set<string>();
+      const records = page.rows.map(({ hit, totalLines }) => {
+        const header = files.has(hit.path) ? [] : [`${JSON.stringify(hit.path)}@${revision}: ${totalLines} lines`];
+        files.add(hit.path);
+        const before = hit.contextBefore ?? [];
+        const after = hit.contextAfter ?? [];
+        const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn})` : "";
+        const enclosing = hit.enclosingSymbol;
+        return [
+          ...header,
+          ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
+          ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
+          `${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`,
+          ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
+        ].join("\n");
+      });
+      return createPackableToolResult({
+        open, records, separator: "\n", close: "",
+        labels: page.rows.map(({ hit }) => `${JSON.stringify(hit.path)}@${revision}:${hit.line}`),
+        cursors: page.rows.map(row => row.cursor),
+        searchExcerptFlags: page.rows.map(row => row.hit.excerpt === true),
+        ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}@${revision}:${page.next.line}, cursor=${page.next.cursor}` } : {})
+      }, page.meta);
+    })
+  };
+}
+
+export function buildSixListFilesTool(tools: RepositoryTools): ToolDefinition {
+  return {
+    name: "list_files",
+    description: "List committed paths in the pinned head tree matching a repository glob. Continue with the same glob and returned cursor. Use read_change for removed or renamed paths.",
+    parameters: Type.Object({
+      glob: Type.String({ minLength: 1 }),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+    }, { additionalProperties: false }),
+    execute: (args, signal) => wrapTool(signal, async () => {
+      const { glob, cursor } = args as { glob: string; cursor?: string };
+      if (!tools.listFilesPage) throw new CodegenieError("config_error", "This repository cannot produce file listing pages.");
+      const page = await runWithoutFacadeRecording(tools, () => tools.listFilesPage!(glob, cursor));
+      return createPackableToolResult({
+        open: `Head tree ${page.tree}, glob ${JSON.stringify(page.glob)}: ${page.totalPaths} paths\n`,
+        records: page.rows.map(row => JSON.stringify(row.path)), separator: "\n", close: "",
+        labels: page.rows.map(row => JSON.stringify(row.path)),
+        cursors: page.rows.map(row => row.cursor),
+        ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}, cursor=${page.next.cursor}` } : {})
+      }, page.meta);
+    })
+  };
 }

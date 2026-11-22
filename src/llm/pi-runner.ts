@@ -4281,6 +4281,7 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
     startLine: typeof args.startLine === "number" ? args.startLine : undefined,
     endLine: typeof args.endLine === "number" ? args.endLine : undefined,
     query: typeof args.query === "string" ? args.query : undefined,
+    mode: typeof args.mode === "string" ? args.mode : undefined,
     pathGlob: typeof args.pathGlob === "string" ? args.pathGlob.slice(0, 500) : undefined,
     maxResults: typeof args.maxResults === "number" ? args.maxResults : undefined,
     glob: typeof args.glob === "string" ? args.glob : undefined,

@@ -25,6 +25,9 @@ export type GitCappedCommandOptions = {
   /** Skip complete oversized records, retaining other lines within the same allowance. */
   lineLimitBytes?: number;
   onOmittedLine?: (prefix: string) => void;
+  includeLine?: (prefix: string) => boolean;
+  /** A record can contain newlines in its NUL-delimited header. */
+  nulHeaderFields?: number;
   maxBytes: number;
   maxLines: number;
   timeoutMs?: number;
@@ -85,17 +88,21 @@ export async function runGitCapped(
     let timedOut = false;
     let pending = Buffer.alloc(0);
     let oversized = false;
+    let headerFields = opts.nulHeaderFields ?? 0;
 
     const finishLine = () => {
-      if (oversized || collectedBytes + pending.length + 1 > opts.maxBytes) {
-        if (opts.onOmittedLine) opts.onOmittedLine(pending.toString("utf8", 0, OMITTED_LINE_PREFIX_BYTES));
-      } else {
-        chunks.push(pending, Buffer.from("\n"));
-        collectedBytes += pending.length + 1;
-        collectedLines++;
+      if (!opts.includeLine || opts.includeLine(pending.toString("utf8", 0, OMITTED_LINE_PREFIX_BYTES))) {
+        if (oversized || collectedBytes + pending.length + 1 > opts.maxBytes) {
+          if (opts.onOmittedLine) opts.onOmittedLine(pending.toString("utf8", 0, OMITTED_LINE_PREFIX_BYTES));
+        } else {
+          chunks.push(pending, Buffer.from("\n"));
+          collectedBytes += pending.length + 1;
+          collectedLines++;
+        }
       }
       pending = Buffer.alloc(0);
       oversized = false;
+      headerFields = opts.nulHeaderFields ?? 0;
       if (collectedLines >= opts.maxLines) {
         reachedLimit = true;
         child.kill("SIGTERM");
@@ -117,13 +124,20 @@ export async function runGitCapped(
       if (opts.lineLimitBytes !== undefined) {
         let offset = 0;
         while (offset < chunk.length && !reachedLimit) {
-          const newline = chunk.indexOf(0x0a, offset);
+          let bodyStart = offset;
+          while (headerFields > 0) {
+            const delimiter = chunk.indexOf(0, bodyStart);
+            if (delimiter < 0) break;
+            headerFields--;
+            bodyStart = delimiter + 1;
+          }
+          const newline = headerFields === 0 ? chunk.indexOf(0x0a, bodyStart) : -1;
           const end = newline < 0 ? chunk.length : newline;
           if (!oversized) {
             if (pending.length + end - offset > opts.lineLimitBytes) {
               oversized = true;
               // Keep a bounded Git grep record prefix for path/line recovery.
-              pending = opts.onOmittedLine ? Buffer.concat([
+              pending = opts.onOmittedLine || opts.includeLine ? Buffer.concat([
                 pending.subarray(0, OMITTED_LINE_PREFIX_BYTES),
                 chunk.subarray(offset, Math.min(end, offset + Math.max(0, OMITTED_LINE_PREFIX_BYTES - pending.length)))
               ]) : Buffer.alloc(0);
@@ -173,7 +187,8 @@ export async function runGitCapped(
         return;
       }
       if (opts.lineLimitBytes !== undefined && !reachedLimit && (pending.length || oversized)) finishLine();
-      const output = truncateLines(Buffer.concat(chunks).toString("utf8"), opts.maxLines);
+      const stdout = Buffer.concat(chunks).toString("utf8");
+      const output = opts.nulHeaderFields ? stdout : truncateLines(stdout, opts.maxLines);
       if (reachedLimit || (typeof code === "number" && allowedExitCodes.has(code))) {
         resolve(output);
         return;

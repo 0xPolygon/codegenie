@@ -15,6 +15,12 @@ import {
 } from "./subprocess.js";
 
 export type GrepResults = SearchResult[] & { omittedLines?: number; firstOmitted?: Pick<SearchResult, "path" | "line"> };
+export type GrepPosition = Pick<SearchResult, "path" | "line">;
+type GrepOptions = {
+  glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean;
+  startAt?: GrepPosition;
+  positioned?: boolean;
+};
 
 export interface GitClient {
   revParse(ref: string): Promise<string>;
@@ -24,7 +30,7 @@ export interface GitClient {
   grep(
     ref: string,
     pattern: string,
-    opts?: { glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean }
+    opts?: GrepOptions
   ): Promise<GrepResults>;
   mergeBase(a: string, b: string): Promise<string>;
   log(range: string): Promise<CommitInfo[]>;
@@ -139,7 +145,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async grep(
       ref: string,
       pattern: string,
-      grepOpts: { glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean } = {}
+      grepOpts: GrepOptions = {}
     ): Promise<GrepResults> {
       assertSafeRef(ref);
       if (grepOpts.glob !== undefined) {
@@ -149,6 +155,8 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         throw new CodegenieError("invalid_args", "query uses unsupported regex syntax. Use POSIX ERE (e.g. name|other, [0-9], [[:space:]]); lookarounds and Perl digit classes are unsupported.");
       }
       const maxResults = grepOpts.maxResults ?? 50;
+      const startAt = grepOpts.startAt;
+      const startPath = startAt ? Buffer.from(startAt.path) : undefined;
       if ((grepOpts.paths?.length ?? 0) > 20_000) throw new CodegenieError("budget_exhausted", "pathGlob expands to more than 20000 tracked paths; narrow the scope before searching (no files searched)");
       const chunks: string[][] = [[]];
       let chunkBytes = 0;
@@ -166,7 +174,9 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       const results: GrepResults = [];
       let omittedLines = 0;
       for (const paths of chunks) {
+        const parseLine = (line: string) => parseGrepLine(line, ref, grepOpts.positioned);
         const args = ["grep", "-I", "-n", "--column", "--no-color",
+          ...(grepOpts.positioned ? ["-z"] : []),
           grepOpts.fixedString === true ? "-F" : "-E",
           ...(grepOpts.word === true ? ["-w"] : []),
           ...(grepOpts.caseSensitive === false ? ["-i"] : []),
@@ -181,10 +191,17 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
             maxBytes: Math.max(64 * 1024, (maxResults - results.length) * 1024),
             maxLines: maxResults - results.length,
             lineLimitBytes: 32 * 1024,
+            ...(grepOpts.positioned ? { nulHeaderFields: 3 } : {}),
+            ...(startAt && startPath ? { includeLine: prefix => {
+              const hit = parseLine(prefix);
+              if (!hit) return false;
+              const pathOrder = Buffer.compare(Buffer.from(hit.path), startPath);
+              return pathOrder > 0 || (pathOrder === 0 && hit.line >= startAt.line);
+            } } : {}),
             onOmittedLine: prefix => {
               omittedLines++;
               if (!results.firstOmitted) {
-                const hit = parseGrepLine(prefix, ref);
+                const hit = parseLine(prefix);
                 if (hit) results.firstOmitted = { path: hit.path, line: hit.line };
               }
             },
@@ -197,8 +214,10 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
           }
           throw error;
         }
-        results.push(...stdout.split("\n").filter(Boolean)
-          .slice(0, maxResults - results.length).map((line) => parseGrepLine(line, ref))
+        const records = grepOpts.positioned ? (stdout.match(/[^\0]+\0\d+\0\d+\0[^\n]*(?:\n|$)/gu) ?? [])
+          : stdout.split("\n").filter(Boolean);
+        results.push(...records
+          .slice(0, maxResults - results.length).map(parseLine)
           .filter((result): result is SearchResult => result !== undefined));
         if (results.length >= maxResults) break;
       }
@@ -488,13 +507,15 @@ function parseLog(stdout: string): CommitInfo[] {
     });
 }
 
-function parseGrepLine(line: string, ref: string): SearchResult | undefined {
-  const match = /^(?<path>.*?):(?<line>\d+):(?<column>\d+):(?<text>.*)$/u.exec(line);
+function parseGrepLine(line: string, ref: string, positioned = false): SearchResult | undefined {
+  const pathPrefix = `${ref}:`;
+  const match = positioned
+    ? /^(?<path>[^\0]+)\0(?<line>\d+)\0(?<column>\d+)\0(?<text>[^\n]*)\n?$/u.exec(line)
+    : /^(?<path>.*?):(?<line>\d+):(?<column>\d+):(?<text>.*)$/u.exec(line);
   if (!match?.groups) {
     return undefined;
   }
   const rawPath = match.groups.path ?? "";
-  const pathPrefix = `${ref}:`;
   return {
     path: rawPath.startsWith(pathPrefix) ? rawPath.slice(pathPrefix.length) : rawPath,
     line: Number(match.groups.line ?? "0"),
