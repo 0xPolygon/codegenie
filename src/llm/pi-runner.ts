@@ -1402,6 +1402,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     // messages at the configured reasoning level.
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
     stage: request.stage,
+    ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
     schemaVersion: SCHEMA_VERSIONS[submitToolNameForStage(request.stage)],
@@ -1846,6 +1847,7 @@ function canonicalModelRequest(input: {
   model: string;
   reasoning: string;
   stage: ReviewStage;
+  cacheDraw?: LlmStructuredRequest<unknown>["cacheDraw"];
   templateVersion: string;
   schemaName: string;
   schemaVersion: number;
@@ -1866,6 +1868,7 @@ function canonicalModelRequest(input: {
     ...(input.providerRouting !== undefined ? { providerRouting: input.providerRouting } : {}),
     reasoning: input.reasoning,
     stage: input.stage,
+    ...(input.cacheDraw !== undefined ? { cacheDraw: input.cacheDraw } : {}),
     templateVersion: input.templateVersion,
     schemaName: input.schemaName,
     schemaVersion: input.schemaVersion,

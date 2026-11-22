@@ -467,6 +467,7 @@ async function runPacket(
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
+    ...(adaptivePass !== undefined ? { cacheDraw: "stage7-adaptive-2" as const } : {}),
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
     signal,
