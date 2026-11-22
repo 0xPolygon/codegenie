@@ -19,7 +19,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
 
   const { packable, sourceLineRange, ...result } = input;
-  const { open, records, separator, close, labels } = packable;
+  const { open, records, separator, close, labels, keepWithNext } = packable;
   const { deliveredLineRange, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
   const degradationReason = (originalMeta.degraded ? originalMeta.degradationReason : undefined) ?? "tool_result_budget";
   const lineRange = deliveredLineRange ?? sourceLineRange;
@@ -29,6 +29,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   let recordChars = records.reduce((total, record) => total + record.length, 0);
   for (let count = records.length - 1; count > 0; count--) {
     recordChars -= records[count]!.length;
+    if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
     const meta: ToolResultMeta = {
       ...originalMeta,
@@ -50,7 +51,8 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     const bodyLength = deliveredOpening.length + recordChars + (count - 1) * separator.length + deliveredClosing.length;
     if (bodyLength + footer.length <= allowance) {
       const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
-        ...(labels ? { labels: labels.slice(0, count) } : {}) };
+        ...(labels ? { labels: labels.slice(0, count) } : {}),
+        ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}) };
       return {
         ...result,
         text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
@@ -68,7 +70,9 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     degradationReason,
     omittedCount: (originalMeta.omittedCount ?? 0) + records.length
   };
-  const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source.";
+  const firstUnread = labels?.[0];
+  const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
+    + (firstUnread ? ` First unread source: ${firstUnread}.` : "");
   return {
     text: originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
     isError: true,

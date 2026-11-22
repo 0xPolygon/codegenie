@@ -32,6 +32,8 @@ export type ToolResultRecords = {
   close: string;
   /** Optional short locators, indexed by record, for non-consecutive source. */
   labels?: string[];
+  /** True for an index or block header that cannot be the last delivered record. */
+  keepWithNext?: boolean[];
 };
 
 export type ToolExecutionResult = {

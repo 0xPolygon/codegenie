@@ -338,6 +338,34 @@ describe("whole-record tool packing", () => {
     expect(refused.text).toContain("Narrow the request");
   });
 
+  it("refuses a declaration header when its first source line cannot fit", () => {
+    const records = ["file.ts@head declaration lines 1-2 of 2", "1\t" + "x".repeat(500), "2\t" + "y".repeat(500)];
+    const meta = { backend: "text", precision: "exact", degraded: false } satisfies ToolResultMeta;
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "",
+      keepWithNext: [true, false, false] }, meta);
+    expect(packTextToolResult(result, 127)).toMatchObject({
+      isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected" }
+    });
+
+    const labeled = createPackableToolResult({ ...result.packable!, labels: ["file.ts@head:1", "file.ts@head:1", "file.ts@head:2"] }, meta);
+    const refused = packTextToolResult(labeled, 127);
+    expect(refused.text).toContain("First unread source: file.ts@head:1.");
+    expect(refused.text).not.toContain(records[0]);
+  });
+
+  it("cuts before a later block rather than returning its header alone", () => {
+    const records = ["a.ts@head declaration lines 5-5 of 5", "5\tconst first = 1;",
+      "b.ts@base declaration lines 10-10 of 10", "10\t" + "x".repeat(500)];
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "",
+      labels: ["a.ts@head:5", "a.ts@head:5", "b.ts@base:10", "b.ts@base:10"],
+      keepWithNext: [true, false, true, false] }, exactSource);
+    expect(packTextToolResult(result, result.text.length)).toBe(result);
+    const cut = packTextToolResult(result, 320);
+    expect(cut.packable?.records).toEqual(records.slice(0, 2));
+    expect(cut.text).toContain("last delivered: a.ts@head:5; next: b.ts@base:10");
+    expect(cut.text).not.toContain(records[2]);
+  });
+
   it("repacks canonical symbol results from the cache without losing a complete later delivery", async () => {
     // Codegenie cg-09, classifyVerifierSchemaInvalid in src/pipeline/verifier.ts.
     const records = ["    argumentsValue.verdict === \"revise\" &&",
