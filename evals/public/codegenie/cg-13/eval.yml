@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-13. The oracle stays outside the reviewed checkout.
+name: public-cg-13
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-13
+command:
+  base: fc29575c3857ae8ea1ce4314c88d8d62c3fd348d
+  head: 54ff89ac7ae6f45db2c3b3b0f876f9f884122b96
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: unborn-snapshot-records-unresolved-head
+  path: src/pipeline/review-runner.ts
+  lineRange: [473, 479]
+  severityAtLeast: low

@@ -1,0 +1,20 @@
+# Public eval case codegenie/cg-n5. The oracle stays outside the reviewed checkout.
+name: public-cg-n5
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-n5
+command:
+  base: 466786a2cfc644c608bffb12026c889d8c27f833
+  head: 99bc6185b1c7bbcfcc1c91f3575faa6be53c8232
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: unexpected-post-cap-selection-change
+  path: src/pipeline/composer.ts
+  lineRange: [267, 271]
+  severityAtLeast: medium
+- id: unexpected-reader-order-change
+  path: src/util/markdown.ts
+  lineRange: [82, 100]
+  severityAtLeast: medium

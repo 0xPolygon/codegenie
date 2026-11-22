@@ -8,7 +8,7 @@ Each `<case>/eval.yml` reviews a pinned base and head. The case's `oracle.md` ho
 evals/public/codegenie/setup.sh   # fetches every case; re-running skips ready checkouts
 ```
 
-Every codegenie case head lives only on `refs/pull/<N>/head`, because those PRs were squash-merged. GitHub serves PR-reachable commits by SHA, so `setup.sh` fetches the pinned SHA directly. It falls back to `refs/pull/<pr>/head` (the `pr:` field in `oracle.md`) if the direct fetch is refused.
+Codegenie case heads come from `master` history or a pull request's original commits. `setup.sh` fetches the pinned SHA directly. For a PR-only pin it can fall back to `refs/pull/<pr>/head`, using the `pr:` field in `oracle.md`.
 
 `cg-10` is the public TypeScript case already used in #112 and #128, with a second expectation added (the primitive composer rejection). `cg-n3` is a weak negative control because it changes only three source lines.
 
