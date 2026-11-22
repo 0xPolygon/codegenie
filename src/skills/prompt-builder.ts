@@ -4,6 +4,7 @@ import type {
   PlannerDossier,
   ReviewPacket,
   ReviewStage,
+  ReviewToolSurface,
   RunCoverageStatus
 } from "../types.js";
 import type { Skill, SkillSectionName } from "./skill-loader.js";
@@ -51,10 +52,17 @@ export type ProjectSkillsOptions = {
   onEvent?: (event: SkillProjectionEvent) => void;
 };
 
+type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface };
+
+export const exactSourceToolNames: Record<ReviewToolSurface, string> = {
+  current: "read_symbol, read_range, find_definition, or read_diff_blocks",
+  six: "read_definition, read_range, or read_change"
+};
+
 export type PromptBuilder = {
   renderDossier(dossier: PlannerDossier): string;
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt;
-  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt;
+  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[]; changeDirectory?: string }): BuiltPrompt;
   buildVerifierPrompt(input: {
     candidate: CandidateFinding;
     originContext: string;
@@ -120,6 +128,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     SHARED_SUBMIT_KEY_CHECK,
     SHARED_FOCUSED_REPAIR,
     { surface: "cross-packet placement", reason: "Discovery assignment does not constrain valid PR-diff coordinates; unknown placement must not be fabricated.", evidence: "Run 81 test packet discovered valid hyperlane.go:220 anchor" },
+    { surface: "six-tool source navigation", reason: "Names the active tools and points reporters to both sides of a change, callers, and tests using pinned selectors.", evidence: "#283 cg-01 sibling deletion and cg-10 enclosing-function replay" },
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
     { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
     { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
@@ -253,7 +262,9 @@ const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   9: ["falsePositives", "safePatterns"]
 };
 
-export function createPromptBuilder(_registry: LensRegistry, options: ProjectSkillsOptions = {}): PromptBuilder {
+export function createPromptBuilder(_registry: LensRegistry, options: PromptBuilderOptions = {}): PromptBuilder {
+  const toolSurface = options.toolSurface ?? "current";
+  const six = toolSurface === "six";
   return {
     renderDossier: (dossier) => fenceUntrusted(stableJson(plannerDossierPromptProjection(dossier)), "planner-dossier"),
     buildPlannerPrompt: ({ dossier, lenses, skills }) => {
@@ -273,7 +284,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Finish by calling submit_plan exactly once with object arguments matching the schema, for example {\"diffUnderstanding\": {...}, \"coverage\": [...]}. Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text."
       ], projection, 1);
     },
-    buildPacketReviewPrompt: ({ packet, skills }) => {
+    buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
       const blocks = [
         fenceUntrusted(packet.prSummary, "pr-summary"),
@@ -300,8 +311,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "For lossy transformations that feed caller-visible outputs or bounds, check whether the published value remains deliverable/satisfiable, not only whether units or fields are internally consistent.",
         "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
         "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.",
-        "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
-        "When local context feels tight, prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks over broad search/list tools. Local budgets are targets: aim to finish within them, and use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply.",
+        "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. "
+          + (six
+            ? "Use read_change with a hunkId and context \"function\" to compare the enclosing function. Use read_definition with source {kind:\"base\"} for a declaration removed from head. Use find_usages for caller leads or scope \"tests\" for test leads."
+            : "Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base."),
+        `When local context feels tight, prefer exact source reads such as ${exactSourceToolNames[toolSurface]} over broad search/list tools. Local budgets are targets: aim to finish within them, and use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply.`,
         packet.reviewProfile === "simple"
           ? "This packet is classified as simple. Review the provided packet only, but surface a clear changed-line defect or pointer-rich unresolved predicate visible from the packet text."
           : packet.reviewProfile === "investigate"
@@ -309,10 +323,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
             : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
         depthCloseGuidance(packet),
         "Skill guidance:\n" + projection.text,
+        ...(changeDirectory ? [fenceUntrusted(changeDirectory, "change-directory")] : []),
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
-      ], projection, blocks.length);
+      ], projection, blocks.length + Number(Boolean(changeDirectory)));
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
@@ -350,7 +365,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "For candidates promoted from a follow-up hint or uncertainty, verify the concrete predicate preserved in provenance, failureMode, and verification text. Do not reject a runtime/design/correctness predicate solely because the original question also mentioned tests or coverage.",
         "For promoted lossy-transform predicates, verify that caller-visible outputs or bounds remain deliverable/satisfiable; before rejecting as immaterial precision loss, trace whether the visible output is derived from the transformed value or from the original source value. Documented or deliberate transformation intent can explain why the conversion exists, but it is not evidence that an overstated caller-visible guarantee is safe.",
         "Commit titles, PR text, and intent signals are context, not proof. Refactor-like or behavior-preserving intent can guide framing, but it is not evidence against a behavior-bearing correctness, security, design, or testing candidate. Source behavior and changed diff evidence control the verdict.",
-        "For helper/callee-dependent claims, inspect the complete decisive helper branch before keeping the finding. When keeping such a finding, cite the exact helper/callee branch that proves the failure mode in the reason or final verification text. If a read_symbol/find_definition result says delivery is truncated, includes a recovery hint, or contains '[tool result truncated by codegenie tool budget]', use the recovery read_range when possible. If the decisive helper behavior remains unavailable, reject or mark requiredEvidencePresent=false instead of inferring from partial source.",
+        "For helper/callee-dependent claims, inspect the complete decisive helper branch before keeping the finding. When keeping such a finding, cite the exact helper/callee branch that proves the failure mode in the reason or final verification text. "
+          + (six
+            ? "Follow read_definition body locations with read_range when needed. If read_change cuts the decisive branch, use its cursor with the same selector and context, or read_range at the stated revision."
+            : "If a read_symbol/find_definition result says delivery is truncated, includes a recovery hint, or contains '[tool result truncated by codegenie tool budget]', use the recovery read_range when possible.")
+          + " If the decisive helper behavior remains unavailable, reject or mark requiredEvidencePresent=false instead of inferring from partial source.",
         "If local tool budget is tight, use exact source reads for decisive evidence. Aim to finish within the local targets; use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply.",
         "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
         "For category:\"testing\" candidates, production code does not need to change. A test rewrite, deletion, or helper consolidation can be a real finding when concrete evidence shows the old/base tests covered a named behavior boundary, the new/head tests no longer cover that boundary or only cover a narrower helper, and the boundary remains live or contract-relevant. Prefer revise over reject when the candidate is directionally right but too broad; reject generic add-more-tests comments without a specific missing behavior boundary.",

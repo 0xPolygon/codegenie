@@ -52,7 +52,7 @@ import {
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
 } from "../src/llm/schemas.js";
-import { buildRepositoryToolDefinitions, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
+import { buildRepositoryToolDefinitions, buildSixReadChangeTool, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
@@ -1777,6 +1777,34 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
     expect(telemetry.toolCalls.map((call) => call.backendExecuted)).toEqual([true, false]);
     expect(telemetry.toolCalls[1]?.cacheHitKind).toBe("stored");
+  });
+
+  it("scopes change directories by packet and shares cache entries for identical selected hunks", async () => {
+    const telemetry = fakeTelemetry();
+    const meta = { backend: "text" as const, precision: "exact" as const, degraded: false, deliveryStatus: "full" as const };
+    const readChange = vi.fn(async (args: { hunkId?: string }, currentHunks?: readonly string[]) =>
+      ({ text: args.hunkId ?? currentHunks?.join(",") ?? "change", meta }));
+    const tools = { ...fakeRepositoryTools(), readChange };
+    const selected = { hunkId: "ab8", context: "function", cursor: "pinned-page-two" };
+    const requests = [{}, {}, {}, selected, selected];
+    const adapter = scriptedAdapter(requests.flatMap((arguments_, i) => [
+      assistant([{ type: "toolCall", id: `read-${i}`, name: "read_change", arguments: arguments_ }]),
+      assistant([validSubmitReviewCall(`submit-${i}`)])
+    ]));
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    for (const [i, hunk] of ["ab8", "c71", "ab8", "ab8", "c71"].entries()) {
+      await runner.runStructured({ ...submitReviewRequest(`change-${i}`),
+        tools: [buildSixReadChangeTool(tools, { currentHunks: [hunk] })],
+        toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1200 } });
+    }
+    expect(readChange.mock.calls).toEqual([[{}, ["ab8"]], [{}, ["c71"]], [selected, ["ab8"]]]);
+    expect(telemetry.toolCalls.map(call => call.cacheStatus)).toEqual(["write", "write", "hit", "write", "hit"]);
+    expect(telemetry.toolCalls.slice(-2).map(call => call.args)).toEqual([selected, selected]);
   });
 
   it("coalesces concurrent identical repository tool requests in flight", async () => {
@@ -5778,6 +5806,87 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     })]));
   });
 
+  it.each(["find_definition", "read_symbol", "read_range", "read_diff_blocks", "read_file_outline",
+    "search_files", "find_symbol_mentions", "find_likely_tests", "list_files", "find_usages"])
+    ("returns a complete typed refusal instead of a sliced status for %s with nine hard characters left", async toolName => {
+      const telemetry = fakeTelemetry();
+      const execute = vi.fn(async (args: Record<string, unknown>) => args.path === "padding"
+        ? { text: "x".repeat(19_991) }
+        : { text: '[]\n\n[tool meta: lookup: unavailable; delivery: empty]', meta: { backend: "text" as const,
+          precision: "text" as const, degraded: false, lookupStatus: "unavailable" as const, deliveryStatus: "empty" as const } });
+      const schema = Type.Object({ path: Type.String() });
+      const target: ToolDefinition = { name: toolName, description: "test", parameters: schema, execute };
+      const padding: ToolDefinition = toolName === "read_range" ? target
+        : { name: "read_range", description: "padding", parameters: schema, execute };
+      const adapter = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "fill", name: "read_range", arguments: { path: "padding" } }]),
+        assistant([{ type: "toolCall", id: "replay", name: toolName, arguments: { path: "real" } },
+          { type: "toolCall", id: "after-refusal", name: toolName, arguments: { path: "not-executed" } }]),
+        assistant([validSubmitReviewCall("done")])
+      ]);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("go-06-budget"), tools: toolName === "read_range" ? [target] : [target, padding],
+        toolBudget: { maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10_000 } });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(adapter.contexts[2]).toContain("The result budget is used up; further calls will be refused. Hard result characters remaining: 9.");
+      expect(adapter.contexts[2]).toContain("No result was delivered; this is not a zero-match result.");
+      expect(adapter.contexts[2]).not.toContain("[tool re\\\"");
+      expect(adapter.toolNames[2]).toEqual(["submit_review"]);
+      expect(telemetry.toolCalls[1]).toMatchObject({ tool: toolName, status: "rejected", errorCode: "budget_exhausted",
+        backendExecuted: true, degraded: false, lookupStatus: "unavailable", deliveryStatus: "budget_rejected",
+        budgetState: { remainingResultChars: 9 } });
+      expect(telemetry.toolCalls[1]).not.toHaveProperty("truncated");
+      expect(telemetry.toolCalls[2]).toMatchObject({ tool: toolName, status: "rejected", backendExecuted: false,
+        errorCode: "budget_exhausted", budgetState: { remainingResultChars: 9 } });
+    });
+
+  it("refuses the go-06 unavailable definition result intact when only nine hard characters remain", async () => {
+    const fixture = await textRepository({ "docs/hostmem.md": "The hostmem package is referenced here.\n" });
+    try {
+      const definition = fixture.definitions.find(tool => tool.name === "find_definition")!;
+      const padding: ToolDefinition = { name: "read_range", description: "padding", parameters: Type.Object({ path: Type.String() }),
+        execute: async () => ({ text: "x".repeat(19_991) }) };
+      const adapter = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "fill", name: "read_range", arguments: { path: "padding" } }]),
+        assistant([{ type: "toolCall", id: "go-06", name: "find_definition", arguments: { symbolName: "hostmem", source: { kind: "head" } } }]),
+        assistant([validSubmitReviewCall("done")])
+      ]);
+      const telemetry = fakeTelemetry();
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("go-06-hostmem"), tools: [definition, padding],
+        toolBudget: { maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10_000 } });
+      expect(adapter.contexts[2]).toContain("Hard result characters remaining: 9.");
+      expect(adapter.contexts[2]).toContain("No result was delivered; this is not a zero-match result.");
+      expect(adapter.toolNames[2]).toEqual(["submit_review"]);
+      expect(telemetry.toolCalls[1]).toMatchObject({ tool: "find_definition", status: "rejected", errorCode: "budget_exhausted",
+        backendExecuted: true, lookupStatus: "unavailable", deliveryStatus: "budget_rejected", budgetState: { remainingResultChars: 9 } });
+    } finally { fixture.dispose(); }
+  });
+
+  it("does not expose a backend continuation for source withheld by an unstructured no-fit refusal", async () => {
+    const tool: ToolDefinition = { name: "read_symbol", description: "source", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: "source".repeat(200), meta: { backend: "tree-sitter", precision: "syntactic", degraded: false,
+        lookupStatus: "found", deliveryStatus: "truncated", deliveredLineRange: [1, 40],
+        recovery: { tool: "read_range", path: "src/long.ts", source: "head", startLine: 41, endLine: 80, reason: "backend cut" } } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "read", name: tool.name, arguments: { path: "src/long.ts" } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const telemetry = fakeTelemetry();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("withheld-source"), tools: [tool],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1_000, maxSingleToolResultChars: 500 } });
+    expect(adapter.contexts[1]).toContain("No result was delivered");
+    expect(adapter.contexts[1]).not.toContain("src/long.ts@head:41");
+    expect(telemetry.toolCalls[0]).toMatchObject({ status: "rejected", errorCode: "budget_exhausted", deliveryStatus: "budget_rejected" });
+    expect(telemetry.toolCalls[0]).not.toHaveProperty("recovery");
+    expect(telemetry.toolCalls[0]).not.toHaveProperty("deliveredLineRange");
+  });
+
   it("allows a narrower request when only the per-result cap prevented delivery", async () => {
     const telemetry = fakeTelemetry();
     const execute = vi.fn(async args => createPackableToolResult({ open: "", records: [
@@ -6404,15 +6513,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ).resolves.toMatchObject({ verdict: "reject" });
 
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(adapter.contexts[1]).toContain("[tool result truncated by codegenie tool budget]");
+    expect(adapter.contexts[1]).toContain("This tool result does not fit its 300-character delivery limit.");
     expect(adapter.contexts[1]).not.toContain("requireActiveMembership(user)");
     expect(adapter.contexts[2]).toContain("SmallHelper");
     expect(adapter.contexts[2]).toContain("decisiveBranch");
     expect(telemetry.toolCalls[0]).toMatchObject({
       tool: "read_symbol",
-      status: "ok",
-      truncated: true,
-      resultChars: 300,
+      status: "rejected",
+      errorCode: "budget_exhausted",
       budgetState: expect.objectContaining({
         maxSingleToolResultChars: 300,
         toolResultCharLimit: 300
@@ -6423,7 +6531,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       status: "ok",
       deliveryStatus: "full",
       budgetState: expect.objectContaining({
-        resultCharsUsed: 300,
+        resultCharsUsed: 0,
         toolResultCharLimit: 300
       })
     });
