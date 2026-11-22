@@ -213,6 +213,25 @@ processingMode = "skip"
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
 - **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
 
+### Advanced: per-stage models
+
+Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.
+
+For example, put the following in `~/.codegenie/config.toml`:
+
+```toml
+[llm.stages.plan] # also review, verify and compose
+model = "provider/model-id"
+reasoning = "low"
+```
+
+- Each field is optional and inherits the global setting when omitted.
+- A stage model must include the provider and cannot include a reasoning suffix.
+- These settings are user-scoped; repo configuration cannot set them.
+- Per-run CLI, environment or eval-case model and reasoning settings override matching fields for every stage, with a warning. Stored provider defaults remain fallbacks.
+- Explicit composition reasoning is used as written. Inherited composition reasoning may run one supported level lower by default; repairs and location clarification use the selected model's lowest supported level.
+- Every selected model and reasoning level is validated before model calls. Smaller models may lack the context window for large prompts.
+
 ## How a review runs
 
 Ten active stages, each with a telemetry and artifact boundary. Four stages make LLM calls (shaded); everything else is deterministic code. Stage 8 was removed and its ID remains unused.

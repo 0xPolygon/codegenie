@@ -205,6 +205,9 @@ export async function runReview(
     const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry);
     throwIfHardAborted(run);
     const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
+    if (services.runner.stageModels) {
+      run.telemetry.event({ stage: 0, level: "info", message: "stage_models", data: { models: services.runner.stageModels } });
+    }
     const dossier = await buildPlannerDossier(resolved, kept, fileFacts, decisions, repoIndex, config, run.telemetry, {
       lenses: services.lenses,
       allFiles: diff.files
@@ -358,7 +361,7 @@ export async function runReview(
         }
       });
     }
-    finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage);
+    finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage, services.runner.stageModels);
     await renderOutputs(finalReview, overrides, run.telemetry);
     const failed = finalReview.health?.status === "failed";
     const failure = finalReview.health?.diagnostics.find((diagnostic) => diagnostic.kind === "failure");
@@ -1369,13 +1372,15 @@ function buildRunStats(
   config: CodegenieConfig,
   resolved: ResolvedReviewInput,
   run: RunContext,
-  plannerCoverage?: ReviewRunStats["plannerCoverage"]
+  plannerCoverage?: ReviewRunStats["plannerCoverage"],
+  stageModels?: ReviewRunStats["stageModels"]
 ): ReviewRunStats {
   const model = modelStats(config);
   const stageTimings = (run.telemetry.snapshotStageTimings?.() ?? [])
     .map((timing) => ({ ...timing, label: (STAGE_LABELS as Record<number, string | undefined>)[timing.stage] ?? `stage ${timing.stage}` }));
   return {
     ...(model !== undefined ? { model } : {}),
+    ...(stageModels !== undefined ? { stageModels } : {}),
     elapsedMs: run.budget.elapsedMs(),
     codegenie: codegenieVersionInfo(),
     ...(stageTimings.length > 0 ? { stageTimings } : {}),

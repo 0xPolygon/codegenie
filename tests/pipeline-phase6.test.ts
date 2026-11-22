@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { validateToolCall } from "./helpers/pi-validation.js";
@@ -8,6 +9,7 @@ import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
+import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket, ReviewPlan } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
@@ -49,10 +51,58 @@ describe("phase 6 live review path", () => {
     for (const config of [
       { ...baseConfig, llm: { ...baseConfig.llm, model: "different-model" } },
       { ...baseConfig, llm: { ...baseConfig.llm, reasoning: "high" as const } },
+      { ...baseConfig, llm: { ...baseConfig.llm, stages: { review: { model: "other/model" } } } },
       { ...baseConfig, lenses: { ...baseConfig.lenses, restrictTo: ["core/tests"] } }
     ]) {
       expect(reviewCacheFingerprint(config, resolved, "registry")).not.toBe(fingerprint);
     }
+  });
+
+  it("ignores stage settings when the deterministic fake runner is selected", async () => {
+    const scratch = mkdtempSync(path.join(tmpdir(), "codegenie-fake-stages-"));
+    const repo = path.join(scratch, "repo");
+    const isolatedGit = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", env: { ...process.env, TMPDIR: scratch } }).trim();
+    mkdirSync(repo);
+    isolatedGit("init", "-b", "main");
+    isolatedGit("config", "user.name", "Test User");
+    isolatedGit("config", "user.email", "test@example.com");
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    isolatedGit("add", "app.ts");
+    isolatedGit("commit", "-m", "base");
+    const base = isolatedGit("rev-parse", "HEAD");
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    isolatedGit("add", "app.ts");
+    isolatedGit("commit", "-m", "change");
+    const head = isolatedGit("rev-parse", "HEAD");
+    const cfg = liveConfig(path.join(scratch, "run"));
+    const result = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, {
+      ...cfg, telemetry: { ...cfg.telemetry, enabled: false },
+      llm: { ...cfg.llm, provider: "fake", model: "fake-model", stages: { review: { model: "invalid/missing" } } }
+    }, { repoRoot: repo, piAdapter: { resolveModel: () => { throw new Error("fake runner resolved a model"); }, complete: vi.fn(), validateToolCall } });
+    expect(result.runStats?.stageModels).toBeUndefined();
+    expect(result.health?.status).not.toBe("failed");
+  });
+
+  it("reports actual per-stage models across the production review pipeline", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    const head = commitAll(repo, "change");
+    const scratch = mkdtempSync(path.join(tmpdir(), "codegenie-stage-models-"));
+    const runArtifactDir = path.join(scratch, "run");
+    const cfg = liveConfig(runArtifactDir);
+    const adapter = partialBudgetAdapter();
+    adapter.resolveModel = request => ({ provider: request.provider ?? "scripted", id: request.model ?? "scripted-model", raw: { id: request.model ?? "scripted-model", api: "faux" } });
+    const result = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, {
+      ...cfg, llm: { ...cfg.llm, stages: { plan: { model: "other/planner" }, compose: { model: "other/composer", reasoning: "low" } } }
+    }, { repoRoot: repo, runArtifactDir, piAdapter: adapter });
+    expect(result.runStats?.stageModels).toMatchObject({ plan: { provider: "other", id: "planner", reasoning: "high" },
+      review: { provider: "scripted", id: "scripted-model", reasoning: "high" }, compose: { provider: "other", id: "composer", reasoning: "low" } });
+    expect(renderMarkdownReview(result)).toContain("Stage models (base reasoning)");
+    const calls = readJsonl<{ stage: number; provider: string; model: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "other", model: "planner" }),
+      expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model" }), expect.objectContaining({ stage: 10, provider: "other", model: "composer" })]));
   });
 
   it("replays model calls across worktrees and operational settings, with a miss on a budget change", async () => {

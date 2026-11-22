@@ -1,6 +1,6 @@
 import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "typebox";
-import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
+import type { CodegenieConfig, RepositoryTools, ReviewRunStats, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
@@ -141,6 +141,7 @@ export type LlmStructuredRequest<T> = {
 };
 
 export interface LlmRunner {
+  stageModels?: ReviewRunStats["stageModels"];
   runStructured<T>(request: LlmStructuredRequest<T>): Promise<T>;
 }
 

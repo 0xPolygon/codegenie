@@ -1187,8 +1187,8 @@ Responsibilities:
 
 - Wrap `@earendil-works/pi-ai`.
 - Execute model calls with prompt, tools, timeout, and schema expectations.
-- Resolve the model once from the resolved `llm.provider`/`llm.model` (already merged from CLI, environment, and user-level settings by the config loader); a single model serves all roles: `llm.model ?? Pi/provider default`.
-- Resolve reasoning effort the same way for all roles: `llm.reasoning ?? "high"`. The runner never reads user state directly.
+- Resolve the global model from `llm.provider`/`llm.model`, then resolve optional user-scoped `llm.stages` model and reasoning selections for plan, review, verify and compose before any model calls. Missing stage fields inherit the resolved global values. Per-run CLI, environment and eval-case settings override matching stage fields with a warning; stored provider defaults remain fallbacks. The runner never reads user state directly.
+- Validate every effective stage model and reasoning level before calls. Use one runner, concurrency limiter and budget ledger. Explicit compose reasoning is used as configured; inherited compose reasoning steps down by default on the selected model. Repairs and location clarification use that model's lowest supported level.
 - Record per-call telemetry: model, provider, duration, token usage, prompt hash, output hash, and schema validation result.
 - Enforce `llm.maxConcurrentCalls`.
 
@@ -2047,9 +2047,9 @@ V1 fetches only codegenie's own prior comments (`listOwnComments`) for rerun dup
 
 Opt-in execution of configured test/typecheck commands (`tools.testCommands` plus a timeout, honored only with user-level opt-in, never from repo config), with command output becoming evidence for reviewers, never automatic findings.
 
-### Per-role model and reasoning tiering
+### Per-stage model and reasoning selection
 
-`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `verifier`, `composer`) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
+The user-scoped `llm.stages` map supports optional model and reasoning overrides for plan, review, verify and compose. The GitHub Action stage mapping is deferred separately. Mixed-model quality requires measurement before recommending a particular mapping.
 
 ### Rich pre-attached packet context
 
