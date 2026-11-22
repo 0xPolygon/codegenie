@@ -930,6 +930,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
       ...(config.llm.provider !== undefined ? { provider: config.llm.provider } : {}),
       ...(config.llm.model !== undefined ? { model: config.llm.model } : {}),
       ...(config.llm.reasoning !== undefined ? { reasoning: config.llm.reasoning } : {}),
+      ...(config.llm.stages !== undefined ? { stages: structuredClone(config.llm.stages) } : {}),
       maxConcurrentCalls: config.llm.maxConcurrentCalls
     }
   };

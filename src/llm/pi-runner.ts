@@ -238,6 +238,22 @@ function stageModelRequest(model: string): ModelRequest {
   return { provider: model.slice(0, slash), model: model.slice(slash + 1) };
 }
 
+function globalModelError(opts: CreateRunnerOptions, failure: ModelResolutionFailure): CodegenieError {
+  return new CodegenieError("config_error", modelResolutionMessage(failure), {
+    context: { provider: opts.llmConfig.provider ?? null, model: opts.llmConfig.model ?? null, modelResolution: failure.kind,
+      hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models" }
+  });
+}
+
+function validateInheritedGlobal(opts: CreateRunnerOptions, base: ModelResolution): void {
+  const inheritsModel = MODEL_STAGES.some(([name]) => opts.llmConfig.stages?.[name]?.model === undefined);
+  if (!inheritsModel) return;
+  if ("failure" in base) throw globalModelError(opts, base.failure);
+  const inheritsBoth = MODEL_STAGES.some(([name]) => opts.llmConfig.stages?.[name]?.model === undefined && opts.llmConfig.stages?.[name]?.reasoning === undefined);
+  if (inheritsBoth) assertReasoningSupported({ provider: base.model.provider, id: base.model.id,
+    thinkingLevels: modelThinkingLevels(base.model.raw) }, opts.llmConfig.reasoning ?? "high", "config_error");
+}
+
 function stageSelection(opts: CreateRunnerOptions, name: StageName, resolution: ModelResolution): StageSelection {
   if ("failure" in resolution) throw new CodegenieError("config_error", `llm.stages.${name}: ${modelResolutionMessage(resolution.failure)}`,
     { context: { stage: name, modelResolution: resolution.failure.kind } });
@@ -250,6 +266,7 @@ function stageSelection(opts: CreateRunnerOptions, name: StageName, resolution: 
 
 function resolveStageModelsSync(opts: CreateRunnerOptions, base: ModelResolution, resolve: (request: ModelRequest) => ModelResolution): Map<ReviewStage, StageSelection> | undefined {
   if (!opts.llmConfig.stages) return undefined;
+  validateInheritedGlobal(opts, base);
   return new Map(MODEL_STAGES.map(([name, stage]) => {
     const model = opts.llmConfig.stages?.[name]?.model;
     return [stage, stageSelection(opts, name, model ? resolve(stageModelRequest(model)) : base)];
@@ -258,6 +275,7 @@ function resolveStageModelsSync(opts: CreateRunnerOptions, base: ModelResolution
 
 async function resolveStageModels(opts: CreateRunnerOptions, base: ModelResolution, resolve: (request: ModelRequest) => Promise<ModelResolution>): Promise<Map<ReviewStage, StageSelection> | undefined> {
   if (!opts.llmConfig.stages) return undefined;
+  validateInheritedGlobal(opts, base);
   const entries: Array<[ReviewStage, StageSelection]> = [];
   for (const [name, stage] of MODEL_STAGES) {
     const model = opts.llmConfig.stages[name]?.model;
@@ -268,14 +286,7 @@ async function resolveStageModels(opts: CreateRunnerOptions, base: ModelResoluti
 
 function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAdapter, resolution: ModelResolution, stages?: Map<ReviewStage, StageSelection>): LlmRunner {
   if ("failure" in resolution && !stages) {
-    throw new CodegenieError("config_error", modelResolutionMessage(resolution.failure), {
-      context: {
-        provider: runnerOpts.llmConfig.provider ?? null,
-        model: runnerOpts.llmConfig.model ?? null,
-        modelResolution: resolution.failure.kind,
-        hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
-      }
-    });
+    throw globalModelError(runnerOpts, resolution.failure);
   }
   const defaultModel = "model" in resolution ? resolution.model : stages!.get(5)!.model;
   const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string; structuredRequestId: string; removedUnexpectedFields?: ReturnType<typeof focusedRepairDiagnostics>["removedUnexpectedFields"] }>();

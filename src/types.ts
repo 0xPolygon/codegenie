@@ -1413,6 +1413,7 @@ export type EvalRunInfo = {
       provider?: string;
       model?: string;
       reasoning?: ReasoningLevel;
+      stages?: CodegenieConfig["llm"]["stages"];
       maxConcurrentCalls: number;
     };
   };

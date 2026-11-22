@@ -517,6 +517,31 @@ describe("Phase 4 schemas and repository tool definitions", () => {
 });
 
 describe("Phase 4 Pi runner and model-call cache", () => {
+  it("reports unresolved inherited global models with the original global diagnostic", () => {
+    const adapter: PiAiAdapter = { resolveModel: () => undefined, complete: vi.fn(), validateToolCall };
+    const opts = { llmConfig: { provider: "missing", model: "missing", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok" as const, onUsage() {} } };
+    const capture = (stages?: { plan: { reasoning: "low" } }) => {
+      try { createPiRunner({ ...opts, llmConfig: { ...opts.llmConfig, ...(stages ? { stages } : {}) } }); }
+      catch (error) { return error as CodegenieError; }
+      throw new Error("expected model resolution failure");
+    };
+    const baseline = capture();
+    const inherited = capture({ plan: { reasoning: "low" } });
+    expect(inherited.message).toBe(baseline.message);
+    expect(inherited.context).toEqual(baseline.context);
+    expect(inherited.context?.hint).toContain("provider login");
+    expect(adapter.complete).not.toHaveBeenCalled();
+    const reasoningAdapter: PiAiAdapter = { ...adapter, resolveModel: () => ({ provider: "one", id: "base", raw: { id: "base", reasoning: true } }) };
+    const unsupported = { ...opts, adapter: reasoningAdapter, llmConfig: { provider: "one", model: "base", reasoning: "max" as const, maxConcurrentCalls: 1 } };
+    let globalError: CodegenieError | undefined;
+    try { createPiRunner(unsupported); } catch (error) { globalError = error as CodegenieError; }
+    expect(globalError).toBeDefined();
+    expect(() => createPiRunner({ ...unsupported, llmConfig: { ...unsupported.llmConfig, stages: { plan: { reasoning: "low" } } } }))
+      .toThrow(globalError!.message);
+  });
+
   it("routes stage models with explicit compose reasoning and per-model protocol records", async () => {
     const telemetry = fakeTelemetry();
     const seen: Array<{ model: string; reasoning: unknown }> = [];

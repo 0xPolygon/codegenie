@@ -185,16 +185,6 @@ The full list of supported models — every provider, model id, context window, 
 
 ## Configuration
 
-Model and reasoning overrides for individual stages are user-scoped. For example, put the following in `~/.codegenie/config.toml`:
-
-```toml
-[llm.stages.plan] # also review, verify and compose
-model = "provider/model-id"
-reasoning = "low"
-```
-
-Each field is optional and inherits the global setting when omitted. A stage model must include the provider and cannot include a reasoning suffix. Repo configuration cannot set these fields. A per-run CLI, environment or eval-case model or reasoning overrides that field for every stage, with a warning when stage settings are ignored; stored provider defaults remain fallbacks. Explicit composition reasoning is used as written; inherited composition reasoning steps down by default. Repairs and location clarification use the stage model's lowest supported reasoning. The selected model must support the effective level; invalid selections fail before model calls. This is an advanced feature: mixed-model review quality has not been measured, and there is no recommended mix yet. Smaller models may lack the context window for large prompts.
-
 Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a typical config is small:
 
 ```toml
@@ -222,6 +212,25 @@ processingMode = "skip"
 - **Telemetry is off by default.** Repo config may only set `telemetry.enabled`; user-level `~/.codegenie/config.toml` can also set run directory, log level, and retention.
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
 - **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
+
+### Advanced: per-stage models
+
+Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.
+
+For example, put the following in `~/.codegenie/config.toml`:
+
+```toml
+[llm.stages.plan] # also review, verify and compose
+model = "provider/model-id"
+reasoning = "low"
+```
+
+- Each field is optional and inherits the global setting when omitted.
+- A stage model must include the provider and cannot include a reasoning suffix.
+- These settings are user-scoped; repo configuration cannot set them.
+- Per-run CLI, environment or eval-case model and reasoning settings override matching fields for every stage, with a warning. Stored provider defaults remain fallbacks.
+- Explicit composition reasoning is used as written. Inherited composition reasoning may run one supported level lower by default; repairs and location clarification use the selected model's lowest supported level.
+- Every selected model and reasoning level is validated before model calls. Smaller models may lack the context window for large prompts.
 
 ## How a review runs
 

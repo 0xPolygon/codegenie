@@ -2112,13 +2112,16 @@ describe("eval command fixture suite", () => {
 
     const config = {
       ...defaultConfig,
-      llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" },
+      llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model", stages: { plan: { model: "provider/model", reasoning: "low" as const } } },
       cache: { ...defaultConfig.cache, enabled: true }
     };
     const suite = await loadEvalSuite(suiteDir);
     const result = await runEvalCase(suite, suite.cases[0]!, { config });
 
     expect(result.status).toBe("pass");
+    expect(result.info.effectiveConfig?.llm.stages).toEqual({ plan: { model: "provider/model", reasoning: "low" } });
+    expect(JSON.parse(readFileSync(path.join(result.runDir, "info.json"), "utf8")).effectiveConfig.llm.stages)
+      .toEqual({ plan: { model: "provider/model", reasoning: "low" } });
     expect(result.info.cache).toMatchObject({ enabled: true, source: "config" });
   });
 
