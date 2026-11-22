@@ -7,11 +7,12 @@ import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { classifyUsageSyntax, type UsageOccurrence } from "./usage-syntax.js";
 import pathUtil from "node:path";
 
-export type UsageSearchOptions = { source?: SourceSelector; scope?: "all" | "tests"; pathGlob?: string; cursor?: string; maxRows?: number };
+export type UsageSearchOptions = { source?: SourceSelector; scope?: "all" | "tests"; pathGlob?: string; cursor?: string; maxRows?: number; signal?: AbortSignal };
 export type UsageRow = UsageOccurrence & { revision: "head" | "base"; fileLines: number; excerpt?: string; excerptOmitted?: true };
 export type TextUsageRow = { revision: "head" | "base"; path: string; line: number; column: number; fileLines: number; excerpt?: string; excerptOmitted?: true };
-export type UsagePage = { revision: "head" | "base"; scope: "all" | "tests"; rows: UsageRow[]; textMatches: TextUsageRow[];
-  candidateFiles: number; filesScanned: number; filesParsed: number; scanComplete: boolean; coverageComplete: boolean; nextCursor?: string; omissions: string[]; omittedDiagnostics: number };
+export type UsageEntry = { kind: "syntactic"; row: UsageRow; cursor: string } | { kind: "text"; row: TextUsageRow; cursor: string };
+export type UsagePage = { revision: "head" | "base"; scope: "all" | "tests"; pathGlob?: string; rows: UsageRow[]; textMatches: TextUsageRow[];
+  entries: UsageEntry[]; candidateFiles: number; filesScanned: number; filesParsed: number; scanComplete: boolean; coverageComplete: boolean; nextCursor?: string; omissions: string[]; omittedDiagnostics: number };
 
 type Cursor = { version: 1; binding: string; path: string; line: number; column: number; incomplete?: boolean };
 const MAX_FILES_PER_PAGE = 500;
@@ -23,6 +24,7 @@ export async function findUsages(
   resolver: SourceResolver, registry: LanguageAdapterRegistry, name: string, options: UsageSearchOptions = {}
 ): Promise<UsagePage> {
   if (!name || name.length > 500 || /[\r\n\0]/u.test(name)) throw new CodegenieError("invalid_args", "name must be a non-empty single-line name of at most 500 characters");
+  checkAbort(options.signal);
   const source = options.source ?? { kind: "head" };
   const scope = options.scope ?? "all";
   const requested = options.maxRows ?? 50;
@@ -33,29 +35,34 @@ export async function findUsages(
   // consume the first pages before syntactic callers are offered.
   const paths = (await resolver.grepFiles(name.split(".").at(-1)!, options.pathGlob, source)).filter(path => scope === "all" || isRepositoryTestPath(path))
     .sort((a, b) => Number(!isSupportedSource(a)) - Number(!isSupportedSource(b)) || a.localeCompare(b));
+  checkAbort(options.signal);
   const start = cursor ? paths.indexOf(cursor.path) : 0;
   if (start < 0) throw new CodegenieError("invalid_args", "cursor path is not present in the selected tree and scope");
   let repositoryPaths: Set<string> | undefined;
   const rows: UsageRow[] = [];
   const textMatches: TextUsageRow[] = [];
+  const entries: UsageEntry[] = [];
   const omissions: string[] = [];
   let omittedDiagnostics = 0;
   const recordOmission = (value: string): void => { if (omissions.length < 3) omissions.push(value); else omittedDiagnostics++; };
   let filesScanned = 0;
   let filesParsed = 0;
   let coverageComplete = !cursor?.incomplete;
-  const page = (next?: Cursor): UsagePage => ({ revision: source.kind, scope, rows, textMatches, candidateFiles: paths.length, filesScanned, filesParsed,
+  const page = (next?: Cursor): UsagePage => ({ revision: source.kind, scope, ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {}), rows, textMatches, entries, candidateFiles: paths.length, filesScanned, filesParsed,
     scanComplete: next === undefined, coverageComplete: next === undefined && coverageComplete,
     ...(next ? { nextCursor: encodeCursor({ ...next, ...(!coverageComplete ? { incomplete: true } : {}) }) } : {}), omissions, omittedDiagnostics });
   for (const path of paths.slice(start)) {
+    checkAbort(options.signal);
     if (filesScanned >= MAX_FILES_PER_PAGE) return page({ version: 1, binding, path, line: 1, column: 1 });
     filesScanned++;
     const file = await resolver.readFile(path, source);
+    checkAbort(options.signal);
     if (!file) { coverageComplete = false; recordOmission(`${path}: pinned file unavailable`); continue; }
     const lines = file.content.split("\n");
     if (file.content.endsWith("\n")) lines.pop();
     const adapter = registry.forPath(path);
     const parsed = await adapter.parse({ path, language: registry.languageForPath(path), content: file.content, source, contentSha: file.contentSha });
+    checkAbort(options.signal);
     if (parsed.tree) filesParsed++;
     const syntax = classifyUsageSyntax(parsed, name);
     if (!syntax || parsed.hasErrors) coverageComplete = false;
@@ -69,18 +76,27 @@ export async function findUsages(
       const excerpt = lines[match.line - 1];
       const location = { revision: source.kind, path, line: match.line, column: match.column, fileLines: lines.length,
         ...(excerpt !== undefined && excerpt.length <= MAX_EXCERPT_CHARS ? { excerpt } : { excerptOmitted: true as const }) };
+      const entryCursor = encodeCursor({ version: 1, binding, path, line: match.line, column: match.column,
+        ...(!coverageComplete ? { incomplete: true } : {}) });
       if (match.occurrence) {
         const evidence = match.occurrence.bindingEvidence;
+        let row: UsageRow;
         if (evidence?.moduleSpecifier.startsWith(".")) {
           repositoryPaths ??= new Set(await resolver.listFiles(undefined, source));
           const target = resolveRelativeModule(path, evidence.moduleSpecifier, repositoryPaths);
-          rows.push({ ...match.occurrence, ...location, bindingEvidence: { ...evidence, ...(target ? { candidateModulePath: target } : {}) } });
-        } else rows.push({ ...match.occurrence, ...location });
+          row = { ...match.occurrence, ...location, bindingEvidence: { ...evidence, ...(target ? { candidateModulePath: target } : {}) } };
+        } else row = { ...match.occurrence, ...location };
+        rows.push(row);
+        entries.push({ kind: "syntactic", row, cursor: entryCursor });
       }
-      else textMatches.push(location);
+      else { textMatches.push(location); entries.push({ kind: "text", row: location, cursor: entryCursor }); }
     }
   }
   return page();
+}
+
+function checkAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new CodegenieError("llm_call_failed", "repository tool aborted");
 }
 
 function isSupportedSource(path: string): boolean { return /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|go)$/u.test(path); }

@@ -3,6 +3,7 @@ import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
+import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
@@ -916,8 +917,9 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               if (consumedCall) toolCallsUsed += 1;
               else rejectedToolCalls += 1;
               // Fixed budget-status messages are control information, not source content.
-              if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
-                outcome.result = outcome.result.packable ? packTextToolResult(outcome.result, remainingResultChars)
+              if (!budgetRejected && (outcome.result.usagePage || outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
+                outcome.result = outcome.result.usagePage ? packUsageToolResult(outcome.result, remainingResultChars)
+                  : outcome.result.packable ? packTextToolResult(outcome.result, remainingResultChars)
                   : outcome.result.outline ? packOutlineToolResult(outcome.result, remainingResultChars)
                   : outcome.result.filePaths ? packFileListToolResult(outcome.result, remainingResultChars)
                   : packSearchToolResult(outcome.result, remainingResultChars);
@@ -927,7 +929,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
-                      degraded: !(meta.searchDelivery || meta.pathListDelivery || toolCall.name === "read_diff_blocks"),
+                      degraded: !(meta.searchDelivery || meta.pathListDelivery || outcome.result.usagePage || toolCall.name === "read_diff_blocks"),
                       degradationReason: "tool_result_budget_exhausted" };
                   }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
@@ -4270,6 +4272,9 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
+    name: typeof args.name === "string" ? args.name.slice(0, 500) : undefined,
+    scope: typeof args.scope === "string" ? args.scope : undefined,
+    cursor: typeof args.cursor === "string" ? args.cursor.slice(0, 4096) : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,

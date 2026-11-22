@@ -46,6 +46,8 @@ export type ToolResultRecords = {
 };
 
 export type ToolExecutionResult = {
+  /** Six-tool usage results remain canonical until packed for the current caller. */
+  usagePage?: { name: string; page: import("../repo/usage-search.js").UsagePage };
   /** Canonical whole records for packing against each caller's result budget. */
   packable?: ToolResultRecords;
   /** Canonical bounded matches; packed after cache lookup for each consumer. */

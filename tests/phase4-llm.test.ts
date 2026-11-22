@@ -38,6 +38,8 @@ import {
   modelCallCacheEntryPath
 } from "../src/llm/model-call-cache.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
+import { buildFindUsagesTool } from "../src/llm/usage-tool.js";
+import { textRepository } from "./helpers/text-repository.js";
 import { createPackableToolResult } from "../src/llm/search-result-packing.js";
 import {
   SCHEMA_VERSIONS,
@@ -8193,4 +8195,24 @@ it.each([false, true])("uses the same cleaned attention patch for acceptance and
   })).resolves.toEqual({ ...original, attentionResolutions: [decision] });
   expect(adapter.complete).toHaveBeenCalledTimes(invalid ? 3 : 2);
   expect(telemetry.modelCalls.map(call => call.schemaValid)).toEqual(invalid ? [false, false, true] : [false, true]);
+});
+
+it("delivers positioned usage rows through the runner with a resumable caller-budget cut", async () => {
+  const fixture = await textRepository({ "src/worker.ts": `export function run() {}\n${Array.from({ length: 20 }, (_, i) => `export function caller${i}() { run(); }`).join("\n")}\n` });
+  try {
+    const tool = buildFindUsagesTool(fixture.tools);
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "usages-1", name: "find_usages", arguments: { name: "run", pathGlob: "src/worker.ts" } }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const telemetry = fakeTelemetry();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("usage-test"), tools: [tool],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 1_300, maxDiscoveryResultChars: 1_300 } });
+    expect(adapter.contexts[1]).toContain("find_usages");
+    expect(adapter.contexts[1]).toContain("Continue with cursor");
+    expect(telemetry.toolCalls[0]).toMatchObject({ tool: "find_usages", args: { name: "run", pathGlob: "src/worker.ts" }, truncated: true });
+  } finally { fixture.dispose(); }
 });

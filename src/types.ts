@@ -669,6 +669,10 @@ export type PlannerRecoveryTelemetry = {
 };
 
 export interface RepositoryTools {
+  /** Six-tool surface only; absent from legacy adapters until that surface is selected. */
+  findUsages?(name: string, options?: import("./repo/usage-search.js").UsageSearchOptions): Promise<{
+    page: import("./repo/usage-search.js").UsagePage; meta: ToolResultMeta
+  }>;
   readRange(
     path: string,
     startLine: number,
@@ -1792,6 +1796,9 @@ export type ToolCallRecord = {
   modelCallId?: string;
   tool: string;
   args: {
+    name?: string;
+    scope?: string;
+    cursor?: string;
     path?: string;
     packetId?: string;
     symbolName?: string;

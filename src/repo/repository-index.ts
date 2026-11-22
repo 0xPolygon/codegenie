@@ -43,6 +43,7 @@ import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
 import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
+import { findUsages as searchUsages, type UsagePage, type UsageSearchOptions } from "./usage-search.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
 import { TreeSitterService } from "./tree-sitter/tree-sitter-service.js";
@@ -62,6 +63,10 @@ type ToolMeasurement<T> = {
 };
 
 type ToolArgs = {
+  name?: string | undefined;
+  scope?: string | undefined;
+  cursor?: string | undefined;
+  pathGlob?: string | undefined;
   path?: string | undefined;
   packetId?: string | undefined;
   symbolName?: string | undefined;
@@ -76,6 +81,10 @@ type ToolArgs = {
 };
 
 type RecordedToolArgs = {
+  name?: string;
+  scope?: string;
+  cursor?: string;
+  pathGlob?: string;
   path?: string;
   packetId?: string;
   symbolName?: string;
@@ -702,6 +711,20 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         };
       }
     );
+  }
+
+  async findUsages(name: string, options: UsageSearchOptions = {}): Promise<{ page: UsagePage; meta: ToolResultMeta }> {
+    return this.measure("find_usages", { name, source: options.source?.kind, scope: options.scope, pathGlob: options.pathGlob, cursor: options.cursor }, 7, async () => {
+      const page = await searchUsages(this.opts.resolver, this.opts.registry, name, options);
+      const meta: ToolResultMeta = { backend: page.filesParsed > 0 ? "tree-sitter" : "text",
+        precision: page.textMatches.length ? "text" : "syntactic", degraded: page.omissions.length > 0,
+        ...(page.omissions.length ? { degradationReason: "some candidate files could not be fully inspected" } : {}),
+        sourceUsed: page.revision, requestedSource: page.revision,
+        lookupStatus: page.rows.length ? "found" : page.coverageComplete ? "not_found" : "unavailable",
+        deliveryStatus: page.nextCursor ? "truncated" : page.entries.length ? "full" : "empty",
+        ...(page.nextCursor ? { truncated: true, ...(page.omissions.length ? {} : { degradationReason: "usage_page_limit" }) } : {}) };
+      return { value: { page, meta }, meta, resultCount: page.entries.length, resultChars: JSON.stringify(page.entries).length };
+    });
   }
 
   async findLikelyTests(
