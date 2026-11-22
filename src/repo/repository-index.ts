@@ -275,16 +275,25 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       async () => {
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_file_outline"));
         const result = await this.limit(() => readOutline(this.opts.resolver, this.opts.registry, path, source));
+        const end = result.totalLines;
+        const next = result.nextLine ?? 1;
         const meta: ToolResultMeta = {
           backend: result.parsed?.tree === undefined ? "text" : "tree-sitter",
           precision: result.parsed?.tree === undefined ? "heuristic" : "syntactic",
           degraded: result.degraded,
           requestedSource: source.kind, sourceUsed: source.kind,
+          ...(end !== undefined ? { totalLines: end } : {}),
           ...(result.fileMissing ? { lookupStatus: "file_missing" as const, deliveryStatus: "empty" as const } : {}),
           ...(result.outline.sourceText && !result.truncated && (source.kind === "head" || source.kind === "base")
             ? { lookupStatus: "found" as const, deliveryStatus: "full" as const, sourceUsed: source.kind } : {}),
           ...(result.degradationReason !== undefined ? { degradationReason: result.degradationReason } : {}),
-          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
+          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0, deliveryStatus: "truncated" as const,
+            degradationReason: result.degradationReason ?? "outline_result_limit",
+            ...(end !== undefined && end >= next ? { recovery: {
+              tool: "read_range" as const, path, source: source.kind, startLine: next, endLine: Math.min(next + 79, end),
+              reason: "first source position affected by the outline limit"
+            } } : {})
+          } : {})
         };
         return {
           value: { outline: result.outline, meta },

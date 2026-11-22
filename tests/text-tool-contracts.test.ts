@@ -20,6 +20,8 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
       "src/shared.ts": `export function SharedCall() {\n${Array.from({ length: 25 }, (_, i) => `  const value${i} = ${i};`).join("\n")}\n}\n`,
       "pkg/shared.go": `package pkg\nfunc SharedCall() {\n${Array.from({ length: 20 }, (_, i) => `  value${i} := ${i}`).join("\n")}\n}\n`,
+      "src/git/git-client.ts": Array.from({ length: 35 }, (_, i) =>
+        `export function gitOperation${i}(ref: string) { return ref; }\n`).join(""),
       "src/long.ts": `export function LongDefinition() {\n${Array.from({ length: 300 }, (_, i) => `  const n${i} = ${i};`).join("\n")}\n}\n`,
       "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
       "src/whitespace.ts": "export function WhitespaceCase() {\n\n\treturn 1;\n}\n",
@@ -275,6 +277,25 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(packed.text).toContain("intended source revision");
     expect(packOutlineToolResult(cached.result, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
     expect((await cache.execute({ toolName: "read_file_outline", args, run })).result).toEqual(cached.result);
+  });
+
+  it("positions fallback source and keeps delivery cuts separate from parser degradation", async () => {
+    const fallback = await fixture.call("read_file_outline", { path: "schema/policy.ridl", source: { kind: "base" } });
+    expect(fallback.text).toContain("schema/policy.ridl@base lines 1-3 of 3\n1\tfirst\n2\tsecond\n3\tthird");
+    expect(fallback.meta?.totalLines).toBe(3);
+    const empty = await fixture.call("read_file_outline", { path: "empty.custom" });
+    expect(empty.text).toContain("empty.custom@head: 0 lines");
+    expect(empty.text).not.toContain("lines 1-1 of 0");
+
+    const result = await fixture.call("read_file_outline", { path: "src/git/git-client.ts" });
+    const packed = packOutlineToolResult(result, 2500);
+    const remaining = JSON.parse(packed.text).outline.topLevelSymbols;
+    const firstRemoved = result.outline!.topLevelSymbols[remaining.length]!.lineRange[0];
+    expect(packed.meta).toMatchObject({ backend: "tree-sitter", precision: "syntactic", degraded: false,
+      totalLines: 35, truncated: true, degradationReason: "tool_result_budget",
+      recovery: { path: "src/git/git-client.ts", source: "head", startLine: firstRemoved, endLine: 35 } });
+    expect(packed.text).toContain(`startLine=${firstRemoved}, endLine=35`);
+    expect(result.outline!.topLevelSymbols.length).toBeGreaterThan(remaining.length);
   });
 
   it("discloses line and character caps and permits a later bounded read", async () => {
