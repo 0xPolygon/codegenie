@@ -2047,9 +2047,9 @@ V1 fetches only codegenie's own prior comments (`listOwnComments`) for rerun dup
 
 Opt-in execution of configured test/typecheck commands (`tools.testCommands` plus a timeout, honored only with user-level opt-in, never from repo config), with command output becoming evidence for reviewers, never automatic findings.
 
-### Per-stage model and reasoning selection
+### Mixed-model review measurement
 
-The user-scoped `llm.stages` map supports optional model and reasoning overrides for plan, review, verify and compose. The GitHub Action stage mapping is deferred separately. Mixed-model quality requires measurement before recommending a particular mapping.
+The user-scoped `llm.stages` map and the GitHub Action's `stage-models` input support optional model and reasoning overrides for plan, review, verify and compose. Mixed-model quality requires measurement before recommending a particular mapping.
 
 ### Rich pre-attached packet context
 

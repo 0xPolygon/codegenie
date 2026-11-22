@@ -37,8 +37,11 @@ inputs:
   models:
     description: "Optional named models, one `alias: provider/model[:reasoning]` per line. A collaborator comment `<trigger-phrase> <alias>` reviews with that model; an unlisted alias gets a reply listing the configured ones. Model specs only — never put keys here."
     default: ""
+  stage-models:
+    description: "Optional YAML mapping for plan, review, verify, and compose. Each stage can set model (provider/model) and/or reasoning. Requires model. A comment that selects an alias overrides all stages."
+    default: ""
   llm-api-key:
-    description: "Generic LLM API key. When set it is the only model key: it overrides the provider's env vars, and `model` plus every alias in `models` must use that one provider. When unset, provider env vars (see models.md#credentials) are used."
+    description: "Generic LLM API key. When set it overrides the provider's env vars, and `model`, every alias in `models`, and every model in `stage-models` must read the same credential variable. When unset, provider credentials (see models.md#credentials) are used."
     default: ""
   max-time:
     description: "Override review.maxTime in minutes for this run."
@@ -86,6 +89,7 @@ runs:
         INPUT_LENSES: ${{ inputs.lenses }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_MODELS: ${{ inputs.models }}
+        INPUT_STAGE_MODELS: ${{ inputs.stage-models }}
         INPUT_BOT_LOGIN: ${{ inputs.bot-login }}
         INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight-only }}
         INPUT_MAX_TIME: ${{ inputs.max-time }}
@@ -103,6 +107,9 @@ runs:
         args+=(--post-inline-comments "$INPUT_POST_INLINE_COMMENTS")
         args+=(--model "$INPUT_MODEL")
         args+=(--models "$INPUT_MODELS")
+        if [ -n "$INPUT_STAGE_MODELS" ]; then
+          args+=(--stage-models "$INPUT_STAGE_MODELS")
+        fi
         args+=(--bot-login "$INPUT_BOT_LOGIN")
         args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")
         args+=(--max-time "$INPUT_MAX_TIME")

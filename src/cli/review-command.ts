@@ -20,7 +20,7 @@ type ParseReviewCommandOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   allowOutput?: boolean;
-};
+} & Pick<LoadConfigOptions, "actionStageModels">;
 
 type ExecuteReviewCommandResult = {
   runId: string;
@@ -42,6 +42,8 @@ type CommanderReviewOptions = {
   pr?: string;
   branch?: string;
   head?: string;
+  staged?: boolean;
+  uncommitted?: boolean;
   base?: string;
   budgetBoost?: string;
   maxTime?: string;
@@ -85,6 +87,8 @@ export function parseReviewCommand(
     .option("--pr <number>", "GitHub pull request number")
     .option("--branch <branch>", "branch to review")
     .option("--head <ref>", "head ref or commit to review with --base")
+    .option("--staged", "review HEAD against the Git index")
+    .option("--uncommitted", "review HEAD against the tracked working tree")
     .option("--base <branch>", "base branch/ref for branch/head/default review")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
@@ -163,6 +167,9 @@ export function parseReviewCommand(
   if (opts.env !== undefined) {
     loadOptions.env = opts.env;
   }
+  if (opts.actionStageModels !== undefined) {
+    loadOptions.actionStageModels = opts.actionStageModels;
+  }
   const loaded = loadConfig(loadOptions);
 
   const options = buildReviewOptions(commandOptions);
@@ -217,12 +224,12 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
   const hasBranch = options.branch !== undefined;
   const hasHead = options.head !== undefined;
   const hasCommits = commits.length > 0;
-  const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits].filter(Boolean).length;
+  const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits, options.staged, options.uncommitted].filter(Boolean).length;
 
   if (targetModeCount > 1) {
     throw new CodegenieError(
       "invalid_args",
-      "--pr, --branch, --head, and positional commits are mutually exclusive"
+      "--pr, --branch, --head, --staged, --uncommitted, and positional targets are mutually exclusive"
     );
   }
 
@@ -234,8 +241,12 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
     throw new CodegenieError("invalid_args", "--post-github-comments requires --pr");
   }
 
-  if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
+  if (options.base !== undefined && (hasPr || options.staged || options.uncommitted || (hasCommits && !isSingleRef(commits)))) {
     throw new CodegenieError("invalid_args", "--base is only valid for branch, head, or default review");
+  }
+
+  if (options.staged || options.uncommitted) {
+    return { mode: options.staged ? "staged" : "uncommitted" };
   }
 
   if (hasPr) {

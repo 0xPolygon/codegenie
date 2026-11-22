@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import { appendStatusCommentMarker, STATUS_COMMENT_MARKER } from "../src/github-
 import { createStatusCommentController } from "../src/github-action/status-comment.js";
 import {
   parseModelAliases,
+  parseStageModels,
   renderUnknownAliasReply,
   resolveModelConfig,
   selectModel
@@ -31,6 +32,7 @@ import {
 import { ISSUE_COMMENT_MAX_CHARS, TRUNCATION_DISCLOSURE } from "../src/github-action/render.js";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
+import * as reviewRunner from "../src/pipeline/review-runner.js";
 import type { ReviewResult } from "../src/types.js";
 import { CodegenieError } from "../src/util/errors.js";
 
@@ -1338,6 +1340,110 @@ describe("github-action entrypoint", () => {
   }
 
   const MODEL_ARGS = ["--model", "luna", "--models", MODELS];
+  const STAGE_YAML = "plan: {model: openrouter/z-ai/glm-5.3}\nverify: {reasoning: medium}\ncompose: {reasoning: low}";
+
+  it.each([
+    ["unknown stage", "verifier: {reasoning: low}", /unrecognized key.*verifier/iu],
+    ["duplicate key", "plan: {reasoning: low}\nplan: {reasoning: high}", /duplicate key at line 2/u],
+    ["missing model provider", "plan: {model: luna}", /plan\.model: must be provider\/model/u],
+    ["reasoning suffix", "plan: {model: openrouter/luna:low}", /put the reasoning level in reasoning/u],
+    ["unknown reasoning", "plan: {reasoning: extreme}", /plan\.reasoning/u],
+    ["non-mapping YAML", "- plan", /must be a mapping/u],
+    ["extra field", "plan: {provider: openrouter}", /unrecognized key.*provider/iu]
+  ])("rejects a stage map with %s", (_name, yaml, error) => {
+    expect(() => parseStageModels(yaml)).toThrow(error);
+  });
+
+  it("treats blank stage inputs as absent without requiring a model", async () => {
+    const absent = await runWithModels(issueCommentPayload(), "issue_comment", []);
+    for (const value of ["", "  \n", "{}", "plan: {}"]) {
+      const blank = await runWithModels(issueCommentPayload(), "issue_comment", ["--stage-models", value]);
+      expect(blank.argv).toEqual(absent.argv);
+      expect(blank.output).toBe(absent.output);
+    }
+  });
+
+  it("validates Action stages in preflight before touching GitHub and skips unrelated events", async () => {
+    const fake = createFakeComments();
+    const args = ["--preflight-only", "true", "--stage-models", STAGE_YAML];
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", args, { comments: fake }))
+      .rejects.toThrow(/--stage-models requires --model/u);
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", [
+      "--preflight-only", "true", "--stage-models", "plan: [", ...MODEL_ARGS
+    ], { comments: fake })).rejects.toThrow(/--stage-models invalid YAML/u);
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", [
+      "--preflight-only", "true", "--stage-models", "plan: {model: openroutre/planner}", ...MODEL_ARGS
+    ], { comments: fake })).rejects.toMatchObject({
+      code: "invalid_args",
+      message: "--stage-models plan.model names unknown provider openroutre"
+    });
+    const skip = await runWithModels(issueCommentPayload({ body: "LGTM" }), "issue_comment", args, { comments: fake });
+    expect(skip.argv).toBeUndefined();
+    expect(skip.output).toContain("skipped — comment does not match the trigger phrase");
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("uses workflow stages for automatic and bare reviews and bypasses them for explicit aliases", async () => {
+    const root = mkdtempSync(path.join(scratch, "stage-config-"));
+    const home = path.join(root, "home");
+    mkdirSync(home);
+    writeFileSync(path.join(home, "config.toml"), '[llm.stages.review]\nmodel = "openrouter/from-home"\nreasoning = "low"\n');
+    writeFileSync(path.join(root, "codegenie.toml"), '[llm.stages.review]\nmodel = "openrouter/from-repo"\n');
+    vi.stubEnv("CODEGENIE_HOME", home);
+    const run = vi.spyOn(reviewRunner, "runReview");
+    const expectedStages = {
+      plan: { model: "openrouter/z-ai/glm-5.3" },
+      verify: { reasoning: "medium" },
+      compose: { reasoning: "low" }
+    };
+    try {
+      for (const [name, payload, usesStages, model] of [
+        ["pull_request", pullRequestPayload(), true, "openai/gpt-6-luna"],
+        ["issue_comment", issueCommentPayload(), true, "openai/gpt-6-luna"],
+        ["issue_comment", issueCommentPayload({ body: "codegenie review opus" }), false, "claude-opus-5"],
+        ["issue_comment", issueCommentPayload({ body: "codegenie review luna" }), false, "openai/gpt-6-luna"]
+      ] as const) {
+        const comments = createFakeComments();
+        let output = "";
+        run.mockImplementationOnce(async (_target, config, overrides) => {
+          expect(config.llm.stages).toEqual(usesStages ? expectedStages : undefined);
+          expect(config.llm.model).toBe(model);
+          expect(overrides?.configWarnings).toContainEqual(expect.objectContaining({ key: "llm.stages", source: "repo-config" }));
+          return {
+            summary: "No findings.",
+            coverage: {
+              totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0,
+              coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+              degradedPlanning: false, budgetStopped: false, verificationIncompleteCount: 0, partial: false, reasons: []
+            },
+            findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true,
+            ...(usesStages ? { runStats: { stageModels: { plan: { provider: "openrouter", id: "z-ai/glm-5.3", reasoning: "xhigh" } } } } : {})
+          };
+        });
+        await executeGitHubActionCommand([...MODEL_ARGS, "--stage-models", STAGE_YAML], {
+          env: actionEnv(payload, name),
+          repoRoot: root,
+          issueComments: comments.client,
+          writeOutput: (text) => { output += text; }
+        });
+        const decision = JSON.parse(output.split("\n").find(line => line.startsWith("github-action: decision "))!
+          .slice("github-action: decision ".length));
+        const final = comments.calls.filter(call => call.kind === "update").at(-1);
+        expect(final).toMatchObject({ kind: "update", body: expect.stringContaining("No Findings") });
+        if (usesStages) {
+          expect(decision.stageModels).toEqual(expectedStages);
+          expect(final).toMatchObject({ body: expect.stringContaining("Stage models (base reasoning)") });
+          expect(output).not.toContain("Per-run model and reasoning overrides ignore matching stage settings");
+        } else {
+          expect(decision.stageModels).toBeUndefined();
+          expect(output.match(/Per-run model and reasoning overrides ignore matching stage settings/gu)).toHaveLength(1);
+        }
+      }
+    } finally {
+      run.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("reviews with the default on the PR lane and a bare comment, and with the alias when requested", async () => {
     const pr = await runWithModels(pullRequestPayload(), "pull_request", MODEL_ARGS);
@@ -1430,6 +1536,42 @@ describe("github-action entrypoint", () => {
       })
     ).rejects.toThrow(/llm-api-key is a single key, but models use providers openrouter, anthropic/u);
     expect(fake.calls.some((call) => call.kind === "create" || call.kind === "update")).toBe(false);
+  });
+
+  it("checks stage providers for generic-key conflicts before claiming the comment", async () => {
+    const fake = createFakeComments();
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", [
+      "--model", "openrouter/openai/gpt-6-luna",
+      "--stage-models", "plan: {model: anthropic/claude-opus-5}"
+    ], { comments: fake, env: { LLM_API_KEY: "explicit-key" } }))
+      .rejects.toThrow(/llm-api-key is a single key, but models use providers openrouter, anthropic/u);
+    expect(fake.calls).toEqual([{ kind: "permission", login: "alice" }]);
+
+    const native = await runWithModels(issueCommentPayload(), "issue_comment", [
+      "--model", "openrouter/openai/gpt-6-luna",
+      "--stage-models", "plan: {model: anthropic/claude-opus-5}"
+    ], { env: { OPENROUTER_API_KEY: "global-key", ANTHROPIC_API_KEY: "stage-key" } });
+    expect(native.env).toMatchObject({ OPENROUTER_API_KEY: "global-key", ANTHROPIC_API_KEY: "stage-key" });
+    expect(native.output).toContain('"stageModels":{"plan":{"model":"anthropic/claude-opus-5"}}');
+  });
+
+  it("rejects a stored login for a stage provider that reads the same generic-key variable", async () => {
+    const fake = createFakeComments();
+    await expect(executeGitHubActionCommand([
+      "--model", "moonshotai/kimi-k2.5",
+      "--stage-models", "plan: {reasoning: low}\ncompose: {model: moonshotai-cn/kimi-k2.5}"
+    ], {
+      env: actionEnv(issueCommentPayload(), "issue_comment", { LLM_API_KEY: "explicit-key" }),
+      issueComments: fake.client,
+      authStorage: {
+        get: (provider) => provider === "moonshotai-cn"
+          ? { type: "api_key", apiKey: "stored-key", createdAt: new Date(0).toISOString() }
+          : undefined
+      },
+      writeOutput: () => undefined,
+      runReview: async () => { throw new Error("review must not run"); }
+    })).rejects.toThrow(/stored codegenie login for moonshotai-cn/u);
+    expect(fake.calls).toEqual([{ kind: "permission", login: "alice" }]);
   });
 
   it("refuses llm-api-key when a stored login on the runner would override it", async () => {
@@ -1673,6 +1815,9 @@ describe("GitHub Action and workflow contracts", () => {
     expect(action.inputs.models).toBeDefined();
     expect(runStep?.env?.INPUT_MODELS).toBe("${{ inputs.models }}");
     expect(runStep?.run).toContain('args+=(--models "$INPUT_MODELS")');
+    expect(action.inputs["stage-models"]?.default).toBe("");
+    expect(runStep?.env?.INPUT_STAGE_MODELS).toBe("${{ inputs.stage-models }}");
+    expect(runStep?.run).toContain('if [ -n "$INPUT_STAGE_MODELS" ]; then\n  args+=(--stage-models "$INPUT_STAGE_MODELS")\nfi');
     expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
     const failurePath = runStep?.env?.CODEGENIE_FAILURE_PATH;
     expect(failurePath).toBe("${{ runner.temp }}/codegenie-failure.json");

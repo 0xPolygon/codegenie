@@ -35,9 +35,13 @@ codegenie review --branch feature-branch [--base main]
 codegenie review --head <head-ref> --base <base-ref>
 codegenie review <base-ref>...<head-ref>
 codegenie review <commit> [end-commit]
+codegenie review --staged
+codegenie review --uncommitted
 ```
 
-With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target. Reviewing uncommitted working-tree changes is out of scope for v1.
+With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target.
+
+`--staged` compares HEAD to the index. `--uncommitted` compares HEAD to a tracked working-tree snapshot, including staged and unstaged changes. Each flag is a standalone target without GitHub posting. On an unborn branch both use an empty base. The working-tree mode reports the number of omitted nonignored untracked files. `git add -N <path>` makes a new file eligible for this mode.
 
 Common review options:
 
@@ -135,7 +139,8 @@ Behavior:
 - Comment-author identity resolves as `bot-login` input → `/user` lookup → `github-actions[bot]`; status-comment reclaim requires an exact case-insensitive author match against it.
 - A non-triggering event is a skip: exit `0`, one-line stdout reason, nothing posted. Review and posting failures keep their existing nonzero exit semantics.
 - Inline posting maps to the existing `--post-github-comments` flag; the status comment is enabled only by this entrypoint. Repo-resident config can enable neither.
-- Model selection is a single spec input, `provider/model[:reasoning]` (reasoning defaults to `high` in action context; a `:suffix` that is not a reasoning level stays part of the model id). A generic `LLM_API_KEY` env var/input is routed to the env variable the named provider reads (via the provider registry's env-var map); provider-native env vars keep working and are never overwritten.
+- The workflow can supply `stage-models` alongside `model`. It is a map of `plan`, `review`, `verify`, and `compose` to optional `model` and `reasoning` fields. Missing fields inherit the global selection. An authorized comment that selects an alias applies that alias's selection to every stage and logs that the stage map was skipped. The generic key check includes explicit stage models alongside the global default and all aliases.
+- The global `model` is a workflow alias or a `provider/model[:reasoning]` spec. Reasoning defaults to `high`, and a suffix outside the reasoning vocabulary stays in the model ID. `llm-api-key` or `LLM_API_KEY` takes precedence over the credential env var it targets. With no generic key, provider-native credentials apply.
 - Telemetry remains disabled by default. Gate decisions and bounded terminal lifecycle/status counters are logged in CI. Terminal pre/post-cap body sizes are UTF-8 byte counts over the complete attempted payload including the status marker. The same terminal lifecycle object is persisted as `github-action.json` only when telemetry is enabled and the review exposes a run directory; preflight/skips are log-only because no review run exists.
 
 ## Provider And Model CLI
@@ -1043,7 +1048,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Spec/doc discovery and spec alignment. Deterministic discovery of repo-resident specs through configured `specs.paths` globs (path proximity to changed package roots, then filename/title keyword overlap; top 5 docs as capped snippets), plus `relevantSpecs` and `specAlignmentQuestions` on the planner's diff understanding, with spec-alignment findings citing both the spec evidence and the changed-code behavior. V1 compares declared intent against inferred behavior only. Build when evals show intent-only alignment missing real spec violations.
 - Human-thread awareness. Fetching existing PR review comments and threads, passing deterministically extracted and truncated summaries to the planner as hints (never findings), and composer acknowledgment of overlap with existing threads — without dropping verified findings or adopting an existing comment without codegenie's own evidence and verification. V1 lists only codegenie's own prior comments, for rerun duplicate avoidance. Build when codegenie is observed re-raising points humans already made on the thread.
 - Configured command execution. Opt-in `tools.testCommands` for test/typecheck/build commands run with timeouts, results treated as evidence rather than automatic findings, enabled only through user-level trust. V1 never executes repository commands. Build when evals show findings that only execution evidence could confirm or reject.
-- GitHub Action inputs for per-stage model and reasoning settings. User-scoped `llm.stages` selections exist; Action-specific stage mappings are deferred separately.
 - Rich pre-attached packet context. Sibling symbol names, AST summaries, nearby imports, and small examples of nearby established patterns assembled into packets at construction time. V1 packets carry enclosing-symbol source, a file outline, and likely tests; reviewers fetch the rest on demand with read-only tools. Build when tool-call telemetry shows reviewers repeatedly refetching the same local context.
 - Per-language static-signal packs. Language-specific deterministic signal rules — ignored errors, concurrency primitives, migration files, resource cleanup, lifecycle-sensitive code — beyond the two v1 cross-language rules. Build when evals show planner risk-targeting misses attributable to absent signals.
 - Cost-based run budgets. A maximum-cost budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and the token budget covers the need. Build when Pi-reported pricing is reliable.
@@ -1052,7 +1056,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 ## Out Of Scope For V1
 
 - GitLab support.
-- Reviewing uncommitted working-tree changes.
 - Approving or requesting changes through GitHub reviews.
 - Auto-fixing or editing code.
 - Executable TypeScript skill packages from users.

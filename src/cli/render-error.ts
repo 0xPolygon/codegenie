@@ -17,6 +17,8 @@ export function renderCodegenieError(error: RenderableError): string {
       "  codegenie review <branch>",
       "  codegenie review origin/main...HEAD",
       "  codegenie review --pr N",
+      "  codegenie review --staged",
+      "  codegenie review --uncommitted",
       ""
     ].join("\n");
   }

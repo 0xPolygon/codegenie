@@ -17,6 +17,7 @@ export type ConfigSource =
   | "repo-config"
   | "environment"
   | "eval-case"
+  | "github-action"
   | "cli";
 
 export type ClassificationPathRule = {
@@ -112,7 +113,10 @@ export type ReviewCommandTarget =
   | { mode: "branch"; branchName: string; baseBranch?: string }
   | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "single_ref"; ref: string; baseBranch?: string }
-  | { mode: "commit_range"; startCommit: string; endCommit?: string };
+  | { mode: "commit_range"; startCommit: string; endCommit?: string }
+  | LocalReviewTarget;
+
+export type LocalReviewTarget = { mode: "staged" } | { mode: "uncommitted" };
 
 export type ReviewCommandOptions = {
   format: OutputFormat;
@@ -131,7 +135,7 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
-export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
+export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range" | LocalReviewTarget["mode"];
 
 export type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
@@ -202,6 +206,7 @@ export type ResolvedReviewInput = {
   endCommit?: string;
   mergeBase?: string;
   headSha?: string;
+  untrackedFiles?: number;
   pr?: PullRequestMetadata;
   commits: CommitInfo[];
   rawDiff: string;

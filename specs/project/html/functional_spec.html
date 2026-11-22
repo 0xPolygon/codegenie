@@ -228,14 +228,22 @@ their codebase, language, or domain more precisely.</p>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--branch</span> feature-branch [--base main]</span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--head</span> <span class="op">&lt;</span>head-ref<span class="op">&gt;</span> --base <span class="op">&lt;</span>base-ref<span class="op">&gt;</span></span>
 <span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>base-ref<span class="op">&gt;</span>...<span class="op">&lt;</span>head-ref<span class="op">&gt;</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span></code></pre></div>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--staged</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--uncommitted</span></span></code></pre></div>
 <p>With no target arguments, <code>codegenie review</code> reviews the
 current branch against the resolved base branch, equivalent to
 <code>--branch &lt;current-branch&gt;</code> with the same
 base-resolution and merge-base semantics. If the current branch is the
 resolved base itself, or no base branch can be resolved, codegenie
-should fail with a clear error asking for an explicit review target.
-Reviewing uncommitted working-tree changes is out of scope for v1.</p>
+should fail with a clear error asking for an explicit review target.</p>
+<p><code>--staged</code> compares HEAD to the index.
+<code>--uncommitted</code> compares HEAD to a tracked working-tree
+snapshot, including staged and unstaged changes. Each flag is a standalone
+target without GitHub posting. On an unborn branch both use an empty base.
+The working-tree mode reports the number of omitted nonignored untracked
+files. <code>git add -N &lt;path&gt;</code> makes a new file eligible for
+this mode.</p>
 <p>Common review options:</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
@@ -440,13 +448,20 @@ existing nonzero exit semantics.</li>
 <li>Inline posting maps to the existing
 <code>--post-github-comments</code> flag; the status comment is enabled
 only by this entrypoint. Repo-resident config can enable neither.</li>
-<li>Model selection is a single spec input,
-<code>provider/model[:reasoning]</code> (reasoning defaults to
-<code>high</code> in action context; a <code>:suffix</code> that is not
-a reasoning level stays part of the model id). A generic
-<code>LLM_API_KEY</code> env var/input is routed to the env variable the
-named provider reads (via the provider registry’s env-var map);
-provider-native env vars keep working and are never overwritten.</li>
+<li>The workflow can supply <code>stage-models</code> alongside
+<code>model</code>. It is a map of <code>plan</code>, <code>review</code>,
+<code>verify</code>, and <code>compose</code> to optional <code>model</code>
+and <code>reasoning</code> fields. Missing fields inherit the global
+selection. An authorized comment that selects an alias applies that
+alias’s selection to every stage and logs that the stage map was
+skipped. The generic key check includes explicit stage models alongside
+the global default and all aliases.</li>
+<li>The global <code>model</code> is a workflow alias or a
+<code>provider/model[:reasoning]</code> spec. Reasoning defaults to
+<code>high</code>, and a suffix outside the reasoning vocabulary stays
+in the model ID. <code>llm-api-key</code> or <code>LLM_API_KEY</code>
+takes precedence over the credential env var it targets. With no
+generic key, provider-native credentials apply.</li>
 <li>Telemetry remains disabled by default. Gate decisions and bounded
 terminal lifecycle/status counters are logged in CI. Terminal
 pre/post-cap body sizes are UTF-8 byte counts over the complete
@@ -1971,9 +1986,6 @@ for test/typecheck/build commands run with timeouts, results treated as
 evidence rather than automatic findings, enabled only through user-level
 trust. V1 never executes repository commands. Build when evals show
 findings that only execution evidence could confirm or reject.</li>
-<li>GitHub Action inputs for per-stage model and reasoning settings.
-User-scoped <code>llm.stages</code> selections exist; Action-specific
-stage mappings are deferred separately.</li>
 <li>Rich pre-attached packet context. Sibling symbol names, AST
 summaries, nearby imports, and small examples of nearby established
 patterns assembled into packets at construction time. V1 packets carry
@@ -2002,7 +2014,6 @@ are insufficient to localize a regression.</li>
 <h2 id="out-of-scope-for-v1">Out Of Scope For V1</h2>
 <ul>
 <li>GitLab support.</li>
-<li>Reviewing uncommitted working-tree changes.</li>
 <li>Approving or requesting changes through GitHub reviews.</li>
 <li>Auto-fixing or editing code.</li>
 <li>Executable TypeScript skill packages from users.</li>

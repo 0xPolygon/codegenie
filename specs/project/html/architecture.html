@@ -2941,11 +2941,10 @@ humans already made on the PR.</p>
 (<code>tools.testCommands</code> plus a timeout, honored only with
 user-level opt-in, never from repo config), with command output becoming
 evidence for reviewers, never automatic findings.</p>
-<h3 id="per-stage-model-and-reasoning-selection">Per-stage model and
-reasoning selection</h3>
-<p>The user-scoped <code>llm.stages</code> map supports optional model
-and reasoning overrides for plan, review, verify and compose. The GitHub
-Action stage mapping is deferred separately. Mixed-model quality
+<h3 id="mixed-model-review-measurement">Mixed-model review measurement</h3>
+<p>The user-scoped <code>llm.stages</code> map and the GitHub Action's
+<code>stage-models</code> input support optional model and reasoning
+overrides for plan, review, verify and compose. Mixed-model quality
 requires measurement before recommending a particular mapping.</p>
 <h3 id="rich-pre-attached-packet-context">Rich pre-attached packet
 context</h3>

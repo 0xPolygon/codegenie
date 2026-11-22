@@ -340,6 +340,12 @@ The resolver must never checkout, reset, stash, or otherwise mutate the working 
 
 All resolver telemetry events use stage `1` (`input_resolved`, `pr_refs_fetched`, `base_resolved`, `shallow_deepened`, ...), with `gh`/`git` preflight failures reported at stage `0`.
 
+#### Local snapshot modes
+
+`--staged` and `--uncommitted` both use the HEAD tree as base, or the empty tree on an unborn branch. Stage 1 copies the worktree's active index into a private temporary directory, respecting `GIT_INDEX_FILE`. For `--uncommitted`, Git updates tracked entries in the copy, then produces the head tree. For `--staged`, Git writes the head tree directly from the copy. An unmerged index is a usage error.
+
+The scratch object store uses the original Git object store as an alternate. Classification, repository tools, and anchor validation work against the captured trees. The cache keys retain the base/head tree IDs and target mode. Scope the alternate to each Git subprocess and discard the scratch directory at run finalization. The resolver uses no commits or refs for the new snapshot objects and creates no GitHub client for these targets. Reports label each side and omit a commit SHA for the local head.
+
 #### Bare Command Default
 
 With no target arguments, the CLI passes `{ mode: "branch", branchName: <current branch> }` semantics through the resolver:
@@ -659,6 +665,8 @@ GitHub returns 422 when any inline comment is invalid for its diff; the review-c
 Every attempt, demotion, and the final status is recorded in `RunPostingRecord` and stage-11 telemetry events (`github_review_posted`, `github_422_recovery`, `github_posting_failed`).
 
 ### GitHub Action Adapter (Plan 97)
+
+The Action validates the workflow's `stage-models` input after the trigger gate, including in preflight. A nonempty map requires a global `model`. The adapter passes it to the config loader as a trusted replacement for `llm.stages` after CLI and environment shadowing. An explicit comment alias skips the map and emits a warning. Explicit stage model providers participate in generic-key routing and stored-login checks before the status comment is claimed. The decision and lifecycle records include the applied map, and the review footer reports the runner's resolved stage models.
 
 `src/github-action/` is a self-contained adapter around the review path — the GitHub Actions trigger surface (`codegenie github-action`), authoritative preflight/event gating, and the status comment. It composes public seams only (synthesized `review --pr` argv, run-start/telemetry observers, the returned report); nothing in this component or the pipeline imports from it. Its bounded shared seams are the CLI dispatch, viewer-identity fallback, provider API-key env-name lookup, and run-attachment observer. Functional behavior (lanes, trigger phrase, authorization) is specified in `functional_spec.md` GitHub Action Mode.
 
