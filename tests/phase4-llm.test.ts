@@ -5381,6 +5381,43 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "tool_budget_extension_granted")).toHaveLength(0);
   });
 
+  it("carries packet-first marks into debug requests and preserves its finish condition after a tool call", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: { path: "src/a.ts" } }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const softTargetNotice = "Finish when every removed line and every added line is accounted for.";
+    await runner.runStructured({
+      ...submitReviewRequest("packet-first"),
+      templateVersion: "p7.e1",
+      promptMarks: ["E7.close-nudges"],
+      tools: [{
+        name: "read_range",
+        description: "Read source",
+        parameters: Type.Object({ path: Type.String() }),
+        execute: async () => ({ text: "line 1" })
+      }],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 3, maxResultChars: 1000 },
+      finalization: { softTargetNotice }
+    });
+
+    expect(adapter.contexts[1]).toContain(softTargetNotice);
+    expect(adapter.contexts[1]).not.toContain("Finish with the evidence collected where possible");
+    expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "post_tool_close_nudge" }));
+    expect(debugRecord(telemetry, "mc-000002.request")).toMatchObject({
+      request: { promptTemplateVersion: "p7.e1", promptMarks: ["E7.close-nudges"] }
+    });
+  });
+
   it("bounds invalid requests separately without consuming source-call slots", async () => {
     const telemetry = fakeTelemetry();
     const read = vi.fn(async () => ({ text: "source" }));

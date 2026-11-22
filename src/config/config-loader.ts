@@ -68,6 +68,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.perPassTimeoutMs",
   "review.budgetBoost",
   "review.maxBudgetTokens",
+  "review.stage7Prompt",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
@@ -285,6 +286,10 @@ function applyRawConfig(
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;
     sources["review.toolSurface"] = source;
+  }
+  if (raw.review?.stage7Prompt !== undefined) {
+    config.review.stage7Prompt = raw.review.stage7Prompt;
+    sources["review.stage7Prompt"] = source;
   }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {

@@ -473,6 +473,7 @@ async function runPacket(
     schema: SubmitPacketReviewSchema,
     signal,
     templateVersion: prompt.templateVersion,
+    ...(prompt.marks ? { promptMarks: prompt.marks } : {}),
     tools: repositoryTools,
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
@@ -485,8 +486,12 @@ async function runPacket(
       recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id })
     },
     finalization: {
-      noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
-      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input)
+      noResultInstruction: config.review.stage7Prompt === "packet-first"
+        ? STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION.replace("followUpHints or uncertainties", "followUpHints")
+        : STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
+      ...(config.review.stage7Prompt === "packet-first"
+        ? { softTargetNotice: "The local investigation target has been reached. Continue only while a removed or added line is still unaccounted for; then submit." }
+        : { buildPostToolNudge: (input: LlmPostToolNudgeInput) => buildPostToolCloseNudge(packet, input) })
     }
   });
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));

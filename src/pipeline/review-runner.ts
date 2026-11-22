@@ -810,7 +810,10 @@ async function createPipelineServices(
     telemetry: run.telemetry
   });
   const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry, skillsResult.failures);
-  const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry });
+  const promptBuilder = createPromptBuilder(lensRegistry, {
+    telemetry: run.telemetry,
+    stage7Prompt: config.review.stage7Prompt ?? "current"
+  });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
@@ -883,7 +886,8 @@ export function reviewCacheFingerprint(
   // the base-branch setting and skill paths. The model-call key also hashes
   // the actual prompts and tools, including changes caused by runtime limits.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
-  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, ...review } = config.review;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout,
+    toolSurface, stage7Prompt, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,
@@ -897,7 +901,7 @@ export function reviewCacheFingerprint(
     diffHash: sha256Hex(resolved.rawDiff),
     reviewConfigHash: buildModelCallCacheKey({
       lenses,
-      review: toolSurface === "six" ? { ...review, toolSurface } : review,
+      review: { ...review, ...(toolSurface === "six" ? { toolSurface } : {}), ...(stage7Prompt === "packet-first" ? { stage7Prompt } : {}) },
       classification: config.classification,
       llm
     }),

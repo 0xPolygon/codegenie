@@ -462,6 +462,11 @@ async function buildPacket(
     surroundingContextHints: hintContext.workerHints,
     labels: first.facts.labels,
     attentionNotes,
+    ...(config.review.stage7Prompt === "packet-first" ? {
+      relationshipAttentionNotes: attentionNoteSelection.keptRelationshipNotes
+        .filter(note => note.relationshipSource !== "planner_hint")
+        .map(note => note.note)
+    } : {}),
     relatedChangedContext,
     toolBudget: scaleToolBudget(toolBudget(coverage, reviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),

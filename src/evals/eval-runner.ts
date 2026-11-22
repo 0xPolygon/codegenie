@@ -144,6 +144,7 @@ const caseSchema = z
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         adaptiveSecondPass: z.boolean().optional(),
+        stage7Prompt: z.enum(["current", "packet-first"]).optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
         verify: z.boolean().optional(),
@@ -878,6 +879,9 @@ function applyCaseReviewConfig(
   }
   if (review?.toolSurface !== undefined) {
     config.review.toolSurface = review.toolSurface;
+  }
+  if (review?.stage7Prompt !== undefined) {
+    config.review.stage7Prompt = review.stage7Prompt;
   }
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;

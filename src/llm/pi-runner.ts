@@ -981,7 +981,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
             const feedback = remainingToolBudgetFeedback(toolBudgetState({
               toolCallsUsed, investigationRounds, resultCharsUsed, sourceResultCharsUsed, budget, softBudget,
               toolName: "read_range"
-            }), rejectedToolCalls, resultPoolExhausted);
+            }), rejectedToolCalls, resultPoolExhausted, request.finalization?.softTargetNotice);
             messages.push({ role: "user", content: feedback.text, timestamp: 0 });
             opts.telemetry.event(definedRecord({
               stage: request.stage, level: "debug", message: "tool_budget_remaining",
@@ -2422,7 +2422,7 @@ function spentResultBudgetNotice(remaining: number): string {
   return `The result budget is used up; further calls will be refused. Hard result characters remaining: ${remaining}.`;
 }
 
-function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls = 0, resultPoolExhausted = false) {
+function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls = 0, resultPoolExhausted = false, softTargetNotice?: string) {
   const target = state.softLimits;
   const softTargetReached = state.toolCallsUsed >= target.maxToolCalls
     || state.investigationRoundsUsed >= target.maxInvestigationRounds || state.resultCharsUsed >= target.maxResultChars;
@@ -2452,7 +2452,7 @@ function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls 
   const text = [
     `Local investigation target remaining: ${remaining.ordinaryCalls} tool calls; ${remaining.investigationRounds} investigation rounds; ${remaining.resultChars} result characters (${remaining.discoveryResultChars} within the discovery target).`,
     ...(softTargetReached ? [`Hard result characters remaining: ${remaining.hardRemaining.resultChars}.`] : []),
-    ...(softTargetReached && !exhausted ? ["The local investigation target has been reached. Finish with the evidence collected where possible; use bounded continuation only for concrete unresolved questions, then submit."] : []),
+    ...(softTargetReached && !exhausted ? [softTargetNotice ?? "The local investigation target has been reached. Finish with the evidence collected where possible; use bounded continuation only for concrete unresolved questions, then submit."] : []),
     ...(remaining.maxSingleToolResultChars !== undefined ? [`Per-result cap: ${remaining.maxSingleToolResultChars} characters.`] : []),
     ...(remaining.maxDiscoveryResultChars !== undefined ? [`Discovery per-result cap: ${remaining.maxDiscoveryResultChars} characters. Prefer scoped searches and decisive source reads.`] : []),
     "Each executed tool request or cached result consumes a call. Invalid or refused requests do not consume the executed-call allowance, but repeated invalid requests end investigation. Source reads satisfy the source target. Global limits may stop work sooner.",
@@ -3206,6 +3206,7 @@ function writeModelCallRequestDebug(
       runnerMessageVersion: RUNNER_MESSAGE_VERSION,
       promptTemplateVersion: request.templateVersion,
       toolSurface: request.telemetryContext?.toolSurface,
+      ...(request.promptMarks ? { promptMarks: request.promptMarks } : {}),
       schemaName,
       schemaVersion: SCHEMA_VERSIONS[schemaName],
       toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,

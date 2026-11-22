@@ -370,6 +370,22 @@ describe("codegenie paths and provider settings", () => {
   });
 });
 
+describe("Stage 7 prompt selection (#250)", () => {
+  it("allows user selection and rejects a repository override", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), '[review]\nstage7Prompt = "packet-first"\n');
+    const untrusted = loadConfig({ repoRoot, homeOverride: home, env: {} });
+    expect(untrusted.config.review.stage7Prompt).toBeUndefined();
+    expect(untrusted.warnings.some(warning => warning.message.includes("review.stage7Prompt"))).toBe(true);
+    writeFileSync(path.join(home, "config.toml"), '[review]\nstage7Prompt = "packet-first"\n');
+    const selected = loadConfig({ repoRoot, homeOverride: home, env: {} });
+    expect(selected.config.review.stage7Prompt).toBe("packet-first");
+    expect(selected.sources["review.stage7Prompt"]).toBe("user-config");
+    expect(rawConfigSchema.safeParse({ review: { stage7Prompt: "unknown" } }).success).toBe(false);
+  });
+});
+
 describe("removed review depth inputs (#183)", () => {
   it.each(["user", "repository"])("rejects review.depth in %s TOML", (layer) => {
     const repoRoot = tempDir();

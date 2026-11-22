@@ -141,6 +141,7 @@ export type LlmStructuredRequest<T> = {
   prompt: string;
   schema: TSchema;
   templateVersion: string;
+  promptMarks?: string[];
   tools?: ToolDefinition[];
   toolBudget?: ToolBudget;
   timeoutMs: number;
@@ -167,6 +168,7 @@ export type LlmStructuredRequest<T> = {
   };
   finalization?: {
     noResultInstruction?: string;
+    softTargetNotice?: string;
     buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
   };
 };

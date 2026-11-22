@@ -57,7 +57,8 @@ export const rawConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        adaptiveSecondPass: z.boolean().optional()
+        adaptiveSecondPass: z.boolean().optional(),
+        stage7Prompt: z.enum(["current", "packet-first"]).optional()
       })
       .strict()
       .optional(),
@@ -146,7 +147,8 @@ export const codegenieConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        adaptiveSecondPass: z.boolean().optional()
+        adaptiveSecondPass: z.boolean().optional(),
+        stage7Prompt: z.enum(["current", "packet-first"]).optional()
       })
       .strict(),
     github: z

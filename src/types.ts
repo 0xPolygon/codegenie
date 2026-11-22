@@ -56,6 +56,7 @@ export type CodegenieConfig = {
     // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
     // only) earn one additional independent review pass. Off by default.
     adaptiveSecondPass?: boolean;
+    stage7Prompt?: Stage7PromptMode;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -609,6 +610,8 @@ export type TestCoverageDelta = {
   summary: string;
 };
 
+export type Stage7PromptMode = "current" | "packet-first";
+
 export type ReviewPacket = {
   id: string;
   dispatchRank: [number, number];
@@ -638,6 +641,7 @@ export type ReviewPacket = {
   surroundingContextHints: SurroundingContextHint[];
   labels: string[];
   attentionNotes: string[];
+  relationshipAttentionNotes?: string[];
   relatedChangedContext: RelatedChangedContext[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
@@ -1217,6 +1221,7 @@ export type EvalCase = {
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
     adaptiveSecondPass?: boolean;
+    stage7Prompt?: Stage7PromptMode;
     verify?: boolean;
     compositionReasoningStepDown?: boolean;
     skipSvgReview?: boolean;

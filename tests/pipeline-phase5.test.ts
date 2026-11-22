@@ -8010,6 +8010,50 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
   });
 
+  it("puts numbered packet evidence before rules and labels author claims after rules", () => {
+    const packet = {
+      ...fakePacket({ attentionNotes: ["PLANNER_REASON_SENTINEL", "Mechanical relationship note"] }),
+      prSummary: "PR_SUMMARY_SENTINEL",
+      intentText: "DECLARED_INTENT_SENTINEL",
+      contextText: "Pinned surrounding source",
+      relationshipAttentionNotes: ["Mechanical relationship note"],
+      surroundingContextHints: [{ kind: "enclosing_symbol" as const, path: "other.ts", symbol: "specificSymbol",
+        reason: "PLANNER_LOOKUP_SENTINEL", expectedUse: "tool_lookup" as const }],
+      relatedChangedContext: [{ path: "related.ts", reason: "PLANNER_RELATED_SENTINEL",
+        relationshipSource: "planner_hint" as const, patchExcerpt: "numbered related change" }]
+    };
+    const skill = { ...fakeTestsSkill(), sections: {
+      checks: "CHECK_SENTINEL", falsePositives: "FALSE_POSITIVE_SENTINEL", examples: "EXAMPLE_SENTINEL"
+    } };
+    const request = { packet, skills: [skill] };
+    const legacy = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt(request);
+    expect(createPromptBuilder(fakeLensRegistry(), { stage7Prompt: "current" }).buildPacketReviewPrompt(request)).toEqual(legacy);
+    expect(legacy.prompt).toContain("FALSE_POSITIVE_SENTINEL");
+    const result = createPromptBuilder(fakeLensRegistry(), { stage7Prompt: "packet-first" }).buildPacketReviewPrompt(request);
+    expect(result.templateVersion).toBe("p7.e1");
+    expect(result.marks).toContain("E5.planner-text-withheld");
+    expect(result.prompt.indexOf("changed-code")).toBeLessThan(result.prompt.indexOf("Review the changed code"));
+    expect(result.prompt.indexOf("author-claims")).toBeGreaterThan(result.prompt.indexOf("CHECK_SENTINEL"));
+    expect(result.prompt.split(packet.hunks[0]!.contentWithLineNumbers)).toHaveLength(2);
+    expect(result.prompt).toContain("hunk h1 base 1-1 head 1-1");
+    expect(result.prompt).toContain("PR_SUMMARY_SENTINEL");
+    expect(result.prompt).toContain("DECLARED_INTENT_SENTINEL");
+    expect(result.prompt).toContain("look up enclosing_symbol specificSymbol in other.ts");
+    expect(result.prompt).toContain("Mechanical relationship note");
+    expect(result.prompt).not.toMatch(/PLANNER_[A-Z_]*SENTINEL|FALSE_POSITIVE_SENTINEL|"lines": \[|contentWithLineNumbers/u);
+    expect(result.prompt).not.toMatch(/real defects only|For documentation findings|Validate raw external|do not report it as a bug/u);
+    expect(result.prompt.match(/every removed line and every added line/gu)).toHaveLength(1);
+    expect(result.marks).toContain("E6.one-question-channel");
+    expect(result.prompt.split("Finish by calling submit_review", 1)[0]).not.toMatch(/uncertaint/u);
+    expect(result.prompt).toContain("must be emitted as a followUpHint with file or symbol scope");
+    const simple = createPromptBuilder(fakeLensRegistry(), { stage7Prompt: "packet-first" }).buildPacketReviewPrompt({
+      packet: { ...fakePacket(), reviewProfile: "simple", hunks: [] }, skills: []
+    });
+    expect(simple.marks).not.toContain("E5.planner-text-withheld");
+    expect(simple.prompt).toContain("This packet has no repository tools");
+    expect(simple.prompt).toContain("no changed lines in this packet");
+  });
+
   it("detects generic test rewrites that replace boundary coverage with helper-level tests", () => {
     const file = genericTestRewriteFile();
     const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
