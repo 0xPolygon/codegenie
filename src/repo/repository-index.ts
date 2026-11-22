@@ -587,7 +587,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     } else if (verifiedCount === 0 && cappedDefinitions.definitions.length > 0) {
       lookupNotes.push("Text declarations are unverified leads; inspect their source.");
     }
-    if (cappedDefinitions.omittedCount > 0 && omittedSymbol === undefined && omittedMatch !== undefined) {
+    if (cappedDefinitions.definitions.length > 0 && cappedDefinitions.omittedCount > 0 && omittedSymbol === undefined && omittedMatch !== undefined) {
       lookupNotes.push(`Candidate scan was bounded; first unexamined text occurrence: ${omittedMatch.path}:${omittedMatch.line}. Narrow pathGlob; this occurrence is not a verified definition.`);
     }
     const meta: ToolResultMeta = {
