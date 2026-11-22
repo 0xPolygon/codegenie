@@ -43,6 +43,7 @@ import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
 import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
+import { readSourceFileMap } from "./source-file-map.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
 import { TreeSitterService } from "./tree-sitter/tree-sitter-service.js";
@@ -256,6 +257,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         return { value: { text, meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: text.length };
       }
     );
+  }
+
+  readSourceFileMap(path: string, source?: SourceSelector, cursor?: string): ReturnType<typeof readSourceFileMap> {
+    return this.limit(() => readSourceFileMap(this.opts.resolver, this.opts.registry, path, source, cursor));
   }
 
   async readFileOutline(filePath: string, source: SourceSelector = { kind: "head" }): Promise<{ outline: FileOutline; meta: ToolResultMeta }> {

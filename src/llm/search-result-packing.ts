@@ -12,10 +12,11 @@ function renderRecordOpening(open: string, meta: ToolResultMeta): string {
 
 /** Derive the canonical text and its packable representation together. */
 export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
-  const { open, records, separator, close, diffGroups, labels } = packable;
+  const { open, records, separator, close, diffGroups, labels, nextPage } = packable;
   const notes = diffGroups && meta.truncated
     ? [`truncation: ${meta.degradationReason ?? "diff_result_limit"}`, ...diffDeliveryNotes(diffGroups, meta.omittedCount ?? 0, records.length, labels?.at(-1))]
     : [];
+  if (nextPage) notes.push(`next: ${nextPage}`);
   return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta, notes), packable, meta };
 }
 
@@ -54,6 +55,7 @@ function diffGroupsAfterCut(groups: DiffRecordGroups, count: number, next: strin
 /** Keep the longest prefix of whole records that fits with its closing text and status. */
 export function packTextToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
+  if (input.budgetFallback) return packTextToolResult(input.budgetFallback, allowance);
 
   const { packable, sourceLineRange, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;

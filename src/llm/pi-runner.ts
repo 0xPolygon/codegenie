@@ -1246,6 +1246,7 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
     }
   }
   if (meta.lookupStatus !== "found" || !["read_range", "read_symbol", "find_definition", "read_file_outline"].includes(toolCall.name)) return;
+  if (toolCall.name === "read_range" && meta.precision !== "exact") return;
   return [{ id: toolCall.id, tool: toolCall.name,
     ...(typeof toolCall.arguments.symbolName === "string" ? { symbols: [toolCall.arguments.symbolName] } : {}),
     ...(typeof toolCall.arguments.path === "string" ? { path: toolCall.arguments.path } : {}),
