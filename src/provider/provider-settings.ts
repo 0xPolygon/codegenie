@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
-import { deprecatedReviewDepthSchema, reasoningLevelSchema } from "../config/schema.js";
+import { reasoningLevelSchema } from "../config/schema.js";
 import type { CodegeniePaths, ProviderSettings } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 
@@ -10,8 +10,6 @@ const providerSettingsSchema = z
   .object({
     defaultProvider: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
-    // #129: still parsed so an old settings.json loads; the loader warns.
-    defaultDepth: deprecatedReviewDepthSchema.optional(),
     defaultReasoning: reasoningLevelSchema.optional()
   })
   .strict();
@@ -31,6 +29,10 @@ export function loadProviderSettings(paths: CodegeniePaths = getCodegeniePaths()
     });
   }
 
+  // Older settings files may still contain this removed default.
+  if (typeof parsed === "object" && parsed !== null && "defaultDepth" in parsed) {
+    delete parsed.defaultDepth;
+  }
   const result = providerSettingsSchema.safeParse(parsed);
   if (!result.success) {
     throw new CodegenieError("config_error", `invalid provider settings at ${paths.settingsPath}`, {
@@ -44,9 +46,6 @@ export function loadProviderSettings(paths: CodegeniePaths = getCodegeniePaths()
   if (result.data.defaultModel !== undefined) {
     settings.defaultModel = result.data.defaultModel;
   }
-  if (result.data.defaultDepth !== undefined) {
-    settings.defaultDepth = result.data.defaultDepth;
-  }
   if (result.data.defaultReasoning !== undefined) {
     settings.defaultReasoning = result.data.defaultReasoning;
   }
@@ -58,9 +57,7 @@ export function saveProviderSettings(
   paths: CodegeniePaths = getCodegeniePaths()
 ): void {
   ensureCodegenieHome(paths);
-  // The removed depth default is never written back (#129).
-  const { defaultDepth: _ignored, ...current } = settings;
-  const result = providerSettingsSchema.safeParse(current);
+  const result = providerSettingsSchema.safeParse(settings);
   if (!result.success) {
     throw new CodegenieError("config_error", "invalid provider settings", {
       context: { issues: result.error.issues }

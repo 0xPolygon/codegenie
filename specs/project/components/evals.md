@@ -477,7 +477,6 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 
 | Case field | Engine setting | Notes |
 | --- | --- | --- |
-| `depth` | none: deprecated (#129), accepted and ignored with a warning for one release | |
 | `lenses` | run lens set | Same semantics as repeated `--lens`: restricts the run to the named lenses and may enable default-disabled lenses; the planner still routes lenses per hunk. |
 | `maxFindings` | `review.maxFindings` | Engine report cap, distinct from the `expect.maxFindings` assertion. |
 | `concurrency` | `review.concurrency` | |

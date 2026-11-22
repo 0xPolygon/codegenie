@@ -1,9 +1,6 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
-// #129 removed the review depth setting. These values are still accepted on
-// every input for one release, then ignored with a config warning.
-export type DeprecatedReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -20,6 +17,7 @@ export type ConfigSource =
   | "repo-config"
   | "environment"
   | "eval-case"
+  | "github-action"
   | "cli";
 
 export type ClassificationPathRule = {
@@ -106,8 +104,6 @@ export type CodegeniePaths = {
 export type ProviderSettings = {
   defaultProvider?: string;
   defaultModel?: string;
-  /** Deprecated (#129): loaded only to warn; never saved again. */
-  defaultDepth?: DeprecatedReviewDepth;
   defaultReasoning?: ReasoningLevel;
 };
 
@@ -117,7 +113,10 @@ export type ReviewCommandTarget =
   | { mode: "branch"; branchName: string; baseBranch?: string }
   | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "single_ref"; ref: string; baseBranch?: string }
-  | { mode: "commit_range"; startCommit: string; endCommit?: string };
+  | { mode: "commit_range"; startCommit: string; endCommit?: string }
+  | LocalReviewTarget;
+
+export type LocalReviewTarget = { mode: "staged" } | { mode: "uncommitted" };
 
 export type ReviewCommandOptions = {
   format: OutputFormat;
@@ -136,7 +135,7 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
-export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
+export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range" | LocalReviewTarget["mode"];
 
 export type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
@@ -207,6 +206,7 @@ export type ResolvedReviewInput = {
   endCommit?: string;
   mergeBase?: string;
   headSha?: string;
+  untrackedFiles?: number;
   pr?: PullRequestMetadata;
   commits: CommitInfo[];
   rawDiff: string;
@@ -1129,8 +1129,6 @@ export type EvalCase = {
     target?: string;
   };
   review?: {
-    /** Deprecated (#129): accepted and ignored with a warning. */
-    depth?: DeprecatedReviewDepth;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;

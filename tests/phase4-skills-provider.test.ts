@@ -1078,9 +1078,6 @@ describe("Phase 4 provider commands", () => {
     writeFileSync(
       services.paths.configTomlPath,
       `
-[review]
-depth = "deep"
-
 [llm]
 provider = "fake"
 model = "fake-large"
@@ -1110,9 +1107,6 @@ reasoning = "medium"
     writeFileSync(
       services.paths.configTomlPath,
       `
-[review]
-depth = "deep"
-
 [llm]
 provider = "fake"
 model = "fake-large"

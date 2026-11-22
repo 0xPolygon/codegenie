@@ -6,7 +6,8 @@ import { createRunTelemetry, provisionCodegenieGitignore } from "../telemetry/ru
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
-import { createGitClient } from "../git/git-client.js";
+import { createGitClient, type InternalGitClient } from "../git/git-client.js";
+import { captureLocalReview } from "../git/local-review.js";
 import { SourceResolver } from "../repo/source-resolver.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
@@ -49,7 +50,7 @@ import type {
   RunOutcome,
   TelemetryEvent
 } from "../types.js";
-import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
+import { CodegenieError, ReviewTargetUsageError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
@@ -74,6 +75,7 @@ type RunReviewOverrides = {
   format?: OutputFormat;
   postGithubComments?: boolean;
   configWarnings?: ConfigWarning[];
+  conciseTargetErrors?: boolean;
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
@@ -91,6 +93,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
+  setReviewRefs(baseRef: string, headRef: string): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
 
@@ -128,8 +131,16 @@ export async function runReview(
       message: "stage_started",
       data: { name: "input_resolution" }
     });
-    const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
+    const { resolved, git } = await resolveInput(input, config, run, repoRoot, overrides);
+    const gitOptions = git !== undefined ? { git } : {};
     throwIfHardAborted(run);
+    const untrackedNotice = localUntrackedNotice(resolved);
+    if (untrackedNotice !== undefined) {
+      run.logger.warn({
+        runId: run.runId, stage: 1, event: "local_review_untracked_files",
+        message: untrackedNotice, data: { count: resolved.untrackedFiles }
+      });
+    }
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
     run.telemetry.event({
       stage: 1,
@@ -159,7 +170,7 @@ export async function runReview(
       }
     });
 
-    const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-filter-decisions.json", decisions);
     run.telemetry.event({
@@ -188,7 +199,7 @@ export async function runReview(
       message: "stage_started",
       data: { name: "file_classification", keptFiles: kept.length }
     });
-    const fileFacts = await classifyChangedFiles(resolved, kept, decisions, config, run.telemetry);
+    const fileFacts = await classifyChangedFiles(resolved, kept, decisions, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-facts.json", fileFacts);
     run.telemetry.event({
@@ -203,7 +214,7 @@ export async function runReview(
           .length
       }
     });
-    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry);
+    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
     if (services.runner.stageModels) {
@@ -286,6 +297,7 @@ export async function runReview(
       budgetStopped,
       ...(budgetStopped && budgetStop !== undefined ? { budgetStop } : {})
     });
+    if (untrackedNotice !== undefined) coverage.reasons.push(untrackedNotice);
     run.telemetry.event({
       stage: 9,
       level: "info",
@@ -304,7 +316,7 @@ export async function runReview(
       }
     });
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
-    const repositoryPaths = await (await SourceResolver.create(resolved)).listFiles();
+    const repositoryPaths = await (await SourceResolver.create(resolved, git)).listFiles();
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
@@ -377,17 +389,22 @@ export async function runReview(
     const failure = reviewFailureRecord(error);
     const failureStage = run.currentStage;
     const diagnostic = reviewDiagnostic(failureStage, error);
-    run.logger.error({
-      runId: run.runId,
-      stage: failureStage,
-      event: "review_pipeline_failed",
-      // Carry the code and message inline so run.log states the cause without
-      // a reader having to open the failure record beside it.
-      message: isCodegenieError(error)
-        ? `review pipeline failed: ${error.code}: ${error.message}`
-        : "review pipeline failed",
-      data: failure
-    });
+    const usageError = overrides.conciseTargetErrors === true && failureStage === 1 && isTargetUsageFailure(error)
+      ? new ReviewTargetUsageError(error)
+      : undefined;
+    if (usageError === undefined) {
+      run.logger.error({
+        runId: run.runId,
+        stage: failureStage,
+        event: "review_pipeline_failed",
+        // Carry the code and message inline so run.log states the cause without
+        // a reader having to open the failure record beside it.
+        message: isCodegenieError(error)
+          ? `review pipeline failed: ${error.code}: ${error.message}`
+          : "review pipeline failed",
+        data: failure
+      });
+    }
     run.telemetry.event({
       stage: failureStage,
       level: "error",
@@ -396,19 +413,21 @@ export async function runReview(
     });
     try {
       await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
-      const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
-        coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
-        verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
-      const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
-      const failureReport: ReviewResult = retained
-        ? { ...retained, coverage: { ...retained.coverage, partial: true,
-            diagnostics: [...(retained.coverage.diagnostics ?? []), diagnostic] } }
-        : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
-            health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
-      refreshReviewHealth(failureReport);
-      await renderOutputs(failureReport, overrides, run.telemetry);
+      if (usageError === undefined) {
+        const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
+          coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
+          verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
+        const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
+        const failureReport: ReviewResult = retained
+          ? { ...retained, coverage: { ...retained.coverage, partial: true,
+              diagnostics: [...(retained.coverage.diagnostics ?? []), diagnostic] } }
+          : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
+              health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
+        refreshReviewHealth(failureReport);
+        await renderOutputs(failureReport, overrides, run.telemetry);
+      }
     } catch (diagnosticError) {
-      run.logger.error({ runId: run.runId, stage: 0, event: "failure_artifact_write_failed", message: "Could not write failure report; original error retained", data: { diagnosticError: String(diagnosticError) } });
+      run.logger.error({ runId: run.runId, stage: 0, event: "failure_artifact_write_failed", message: "Could not write failure artifacts; original error retained", data: { diagnosticError: String(diagnosticError) } });
     }
     const budgetStop = run.budget.stopSnapshot();
     emitBudgetStop(run, budgetStop);
@@ -419,8 +438,15 @@ export async function runReview(
     } catch (diagnosticError) {
       run.logger.error({ runId: run.runId, stage: 0, event: "failure_finalize_failed", message: "Could not finalize diagnostics; original error retained", data: { diagnosticError: String(diagnosticError) } });
     }
-    throw error;
+    throw usageError ?? error;
   }
+}
+
+function isTargetUsageFailure(error: unknown): error is CodegenieError {
+  return isCodegenieError(error) && (
+    error.code === "invalid_args" || error.code === "git_ref_missing" ||
+    error.code === "git_base_branch_unresolved" || error.code === "not_git_worktree"
+  );
 }
 
 async function startRun(
@@ -485,6 +511,7 @@ async function startRun(
     addCleanupTask: (task) => {
       cleanupTasks.push(task);
     },
+    setReviewRefs: run.setReviewRefs,
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
@@ -785,7 +812,7 @@ async function createPipelineServices(
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
-  const runner = overrides.runner ?? await createRunner(config, run, cache, overrides.piAdapter);
+  const runner = overrides.runner ?? await createRunner(config, run, cache, overrides);
   return {
     runner,
     skills: skillsResult.skills,
@@ -876,7 +903,12 @@ export function reviewCacheFingerprint(
   });
 }
 
-function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner | Promise<LlmRunner> {
+function createRunner(
+  config: CodegenieConfig,
+  run: RunContext,
+  cache: ModelCallCache | undefined,
+  { piAdapter, codegenieHome }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome">
+): LlmRunner | Promise<LlmRunner> {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
   }
@@ -890,7 +922,8 @@ function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCal
     ...(cache !== undefined ? { cache } : {}),
     toolResultCache,
     runSignal: run.abort.signal,
-    ...(adapter !== undefined ? { adapter } : {}),
+    ...(piAdapter !== undefined ? { adapter: piAdapter } : {}),
+    ...(codegenieHome !== undefined ? { codegenieHome } : {}),
     hooks: {
       checkpoint: (stage) => run.budget.checkpoint(stage),
       reserve: (stage, estimatedTokens) => run.budget.reserve(stage, estimatedTokens),
@@ -914,11 +947,32 @@ function throwIfHardAborted(run: RunContext): void {
 async function resolveInput(
   input: ReviewInput | ReviewCommandTarget,
   config: CodegenieConfig,
-  telemetry: TelemetryRecorder,
+  run: RunContext,
   repoRoot: string,
   overrides: RunReviewOverrides
-): Promise<ResolvedReviewInput> {
-  return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
+): Promise<{ resolved: ResolvedReviewInput; git?: InternalGitClient }> {
+  if (input.mode === "staged" || input.mode === "uncommitted") {
+    if (overrides.postGithubComments === true) {
+      throw new CodegenieError("invalid_args", "local review targets do not support GitHub posting");
+    }
+    const runsRoot = overrides.runArtifactDir !== undefined
+      ? path.dirname(path.resolve(overrides.runArtifactDir))
+      : path.resolve(repoRoot, config.telemetry.runDir);
+    const captured = await captureLocalReview(input, { repoRoot, runsRoot, onCleanup: run.addCleanupTask });
+    const { baseRefName, headRefName } = captured.resolved;
+    run.setReviewRefs(baseRefName, headRefName);
+    return captured;
+  }
+  const resolved = await resolveReviewCommandTarget(input, config, run.telemetry, {
+    repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {})
+  });
+  return { resolved };
+}
+
+function localUntrackedNotice(resolved: ResolvedReviewInput): string | undefined {
+  const count = resolved.untrackedFiles ?? 0;
+  if (count === 0) return undefined;
+  return `Omitted ${count} untracked file${count === 1 ? "" : "s"}. Run \`git add -N <path>\` to include a new file in an uncommitted review.`;
 }
 
 async function maybeZeroWork(
@@ -935,6 +989,8 @@ async function maybeZeroWork(
   }
   const totalHunks = allFiles.reduce((sum, file) => sum + file.hunks.length, 0);
   const reasons = zeroWorkReasons(allFiles, decisions);
+  const untrackedNotice = localUntrackedNotice(resolved);
+  if (untrackedNotice !== undefined) reasons.push(untrackedNotice);
   const coverage: RunCoverageStatus = {
     totalHunks,
     reviewedHunks: 0,
@@ -1365,6 +1421,7 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
     ...(resolved.endCommit !== undefined ? { endCommit: resolved.endCommit } : {}),
     ...(resolved.mergeBase !== undefined ? { mergeBase: resolved.mergeBase } : {}),
     ...(resolved.headSha !== undefined ? { headSha: resolved.headSha } : {}),
+    ...(resolved.untrackedFiles !== undefined ? { untrackedFiles: resolved.untrackedFiles } : {}),
     ...(resolved.pr !== undefined ? { pr: resolved.pr } : {}),
     commits: resolved.commits,
     rawDiffChars: resolved.rawDiff.length

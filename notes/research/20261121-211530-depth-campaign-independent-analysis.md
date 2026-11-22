@@ -64,7 +64,7 @@ Expected findings are mapped by topic from the frozen case files. I did not re-v
   | Luna | 26% | 19% | 23% |
   | Opus | 19% | 24% | 18% |
 
-- Assignments did differ between arms. Hunks the plans named at deep coverage, summed over the five larger Luna reviews: 128 under normal, 78 under deep and 92 under light.
+- The saved plans differ between arms, but mostly through recovery and not through the planner's own choices. Hunks at deep coverage in the saved plans, summed over the five larger Luna reviews: 128 under normal, 78 under deep and 92 under light. Of those, 60, 20 and 20 are safety upgrades added after a recovered first submission. The planner itself chose deep for 68, 58 and 72 hunks, which is 68%, 73% and 72% of the entries it wrote; the deep arm's figure comes from four plans, because the fifth is the full default after a repair timeout. Five reviews per arm still cannot show the label is inert.
 - Luna never assigned light coverage (0 of 1,965 hunk instances). Opus used it for 4%.
 - Every eligible hunk was dispatched: 1,964 of 1,965 on Luna and 1,179 of 1,179 on Opus were reviewed.
 

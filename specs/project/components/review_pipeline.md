@@ -55,6 +55,7 @@ async function runReview(
 - Throws `CodegenieError` only for fatal conditions: propagated resolution/parsing failures (`not_git_worktree`, `invalid_args`, `git_ref_missing`, `git_base_branch_unresolved`, `git_fetch_failed`, `pr_not_found`, `gh_missing`, `gh_auth_failed`, `diff_parse_failed`, `config_error`), authentication or provider-wide LLM failures at any stage (`llm_call_failed` with `recoverable: false`), the hard kill at 2x the runtime budget (`timeout`), and `github_post_failed` when `--post-github-comments` was requested.
 - `budget_exhausted` is recoverable and never escapes `runReview`; it drives the budget degradation ladder and a disclosed partial review.
 - Before exiting on any fatal error after the run directory exists, `runReview` should attempt to flush telemetry artifacts.
+- For standalone CLI reviews, Stage 1 target errors (`invalid_args`, `git_ref_missing`, `git_base_branch_unresolved`, and `not_git_worktree`) exit 2 with a concise reason and target examples on stderr. The run keeps its diagnostic artifacts and failure events, without rendering a review report for an unresolved input.
 
 ### Run Context
 
@@ -65,7 +66,7 @@ async function runReview(
 async function startRun(config: CodegenieConfig): Promise<RunContext>
 
 // RunContext fields (internal):
-//   runId: string                      — "<yyyyMMdd-HHmmss>-<shortid>", also the run directory name
+//   runId: string                      — "<yyyyMMdd-HHmmss>-<8-hex-digits>" in UTC; default directory name
 //   telemetry: TelemetryRecorder       — recording owned by components/skills_llm_telemetry.md
 //   logger: Logger
 //   budget: BudgetLedger               — internal; see Failure And Budget Semantics

@@ -1,3 +1,6 @@
+import { ReviewTargetUsageError } from "../util/errors.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
+
 type RenderableError = {
   code: string;
   message: string;
@@ -5,6 +8,20 @@ type RenderableError = {
 };
 
 export function renderCodegenieError(error: RenderableError): string {
+  if (error instanceof ReviewTargetUsageError) {
+    return [
+      `${error.code}: ${safeDiagnosticLine(error.message)}`,
+      "",
+      "Review target examples",
+      "  codegenie review HEAD",
+      "  codegenie review <branch>",
+      "  codegenie review origin/main...HEAD",
+      "  codegenie review --pr N",
+      "  codegenie review --staged",
+      "  codegenie review --uncommitted",
+      ""
+    ].join("\n");
+  }
   const helpText = typeof error.context?.helpText === "string" ? error.context.helpText.trimEnd() : undefined;
   const hint = typeof error.context?.hint === "string" ? error.context.hint : undefined;
   if (helpText !== undefined) {

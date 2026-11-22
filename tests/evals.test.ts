@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
@@ -423,6 +424,21 @@ describe("eval scoring", () => {
     expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
     artifacts.metricsSources = {};
     expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+  });
+
+  it("does not credit stale returned output as the go-04 resident-KV defect", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/goinfer/go-04/eval.yml", "utf8")) as EvalCase;
+    const expectation = evalCase.should_find![0]!;
+    const finding = candidate("go-04-probe", "decoder/blockspec.go", 435, {
+      failureMode: "The final seed token is stale in the returned output, but the resident KV cache contains the complete generated prefix."
+    });
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final seed token is stale in the returned output, while the KV cache is complete and no positions are missing.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The trailing token is stale in output, but the cache contains every written row and has no missing KV entries.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final token is recorded as resident even though its KV state is stale, so reuse produces incorrect output.";
+    expect(matchExpectation(expectation, finding).matched).toBe(true);
   });
 
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
@@ -2340,42 +2356,18 @@ describe("eval command fixture suite", () => {
     expect(result.info.score.metrics.reportedFindings).toBe(0);
   });
 
-  it("accepts an old eval-case depth, ignores it, and passes one warning to the review (#129)", async () => {
+  it("rejects the retired review.depth field in eval cases", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-suite-"));
-    const logsDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-logs-"));
-    const repo = initRepo();
-    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
-    commitAll(repo, "base");
-    git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 1;\n");
-    commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "depth.yml"), [
       "name: depth",
-      "repo:",
-      `  external: ${JSON.stringify(repo)}`,
-      "command:",
-      "  branch: feature",
-      "  base: main",
+      "artifacts:",
+      "  path: logs/1",
       "review:",
-      "  depth: normal",
-      "logs:",
-      `  dir: ${JSON.stringify(logsDir)}`
+      "  depth: normal"
     ].join("\n"));
-    const suite = await loadEvalSuite(suiteDir);
-    expect(suite.cases[0]!.evalCase.review?.depth).toBe("normal");
-    // The user layer's warning reaches the review through codegenie eval too.
-    const home = mkdtempSync(path.join(tmpdir(), "codegenie-depth-home-"));
-    writeFileSync(path.join(home, "config.toml"), "[review]\ndepth = \"deep\"\n\n[llm]\nprovider = \"fake\"\nmodel = \"fake-model\"\n");
-    let output = "";
-    const exitCode = await executeEvalCommand(["eval", "--eval-dir", suiteDir, "--no-cache"], {
-      repoRoot: repo, homeOverride: home, writeOutput: (text) => { output += text; }
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining("depth")] }
     });
-    expect(exitCode).toBe(0);
-    expect(output).toContain("depth run 1: pass");
-    const events = readFileSync(path.join(logsDir, "1", "telemetry", "events.jsonl"), "utf8").trim().split("\n")
-      .map(line => JSON.parse(line) as { message: string; data?: { key?: string; source?: string } });
-    expect(events.filter(event => event.message === "config_warning" && event.data?.key === "review.depth")
-      .map(event => event.data?.source)).toEqual(["user-config", "eval-case"]);
   });
 
   it("counts a designed symbol slice as sliced, not as degraded context (#175)", async () => {

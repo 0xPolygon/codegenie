@@ -1,10 +1,12 @@
 import type { CandidateFinding, SuggestionAssessment } from "../types.js";
 import { codeBlock, fenceLanguageForPath, inlineCode } from "../util/markdown.js";
+import { isRepositoryTestPath } from "../util/path-roles.js";
 import { conflictingSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 
 export type CompositionSource = {
   id: string; findingId: string; kind: "impact" | "verification" | "fix" | "test" | "evidence";
   text: string; path?: string; explanation?: string; suggestionAssessment?: SuggestionAssessment; provenanceOnly?: boolean;
+  testFileFix?: true;
 };
 export type CompositionSection = { kind: "impact" | "verification" | "fix" | "test"; text: string; sourceRefs: string[] };
 export type Reconciliation = { sourceRefs: string[]; supportingRefs: string[]; disposition: "superseded" | "unresolved"; rationale: string };
@@ -37,8 +39,15 @@ export function compositionSources(findings: CandidateFinding[], assessmentFindi
       const effective = assessment?.status === "supported" && conflicts.has(field + "\0" + text)
         ? { ...assessment, status: "unverified" as const, rationale: "Conflicting compatibility assessments for this exact proposal remain unresolved. " + assessment.rationale }
         : assessment;
-      if (text) sources.push({ id: finding.id + "/" + field, findingId: finding.id, kind, text,
-        ...(effective ? { suggestionAssessment: effective } : {}) });
+      if (text) {
+        const source: CompositionSource = { id: finding.id + "/" + field, findingId: finding.id, kind, text,
+          ...(effective ? { suggestionAssessment: effective } : {}) };
+        // Host-only placement metadata must not alter the model's source inventory.
+        if (field === "suggestedFix" && finding.category === "testing" && isRepositoryTestPath(finding.path)) {
+          Object.defineProperty(source, "testFileFix", { value: true });
+        }
+        sources.push(source);
+      }
     }
     for (const [field, kind] of [["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
       const original = finding.originalSuggestions?.[field];
@@ -66,6 +75,17 @@ export function eligibleCompositionSource(source: CompositionSource, kind?: stri
   if (kind === undefined) return true;
   return source.kind === kind && !source.provenanceOnly
     && ((kind !== "fix" && kind !== "test") || source.suggestionAssessment?.status === "supported");
+}
+
+// Placement is broader than source selection only for supported test-file fixes.
+export function compatibleCompositionPlacement(source: CompositionSource, kind?: string): boolean {
+  return kind === undefined || source.kind === kind || (kind === "test" && source.kind === "fix" && source.testFileFix === true);
+}
+
+export function eligibleCompositionPlacement(source: CompositionSource, kind?: string): boolean {
+  if (!compatibleCompositionPlacement(source, kind)) return false;
+  return kind === "test" && source.kind === "fix"
+    ? eligibleCompositionSource(source, "fix") : eligibleCompositionSource(source, kind);
 }
 
 // Model prose never owns HTML containers. Close unbalanced Markdown fences so
@@ -111,7 +131,7 @@ export function compositionAttributionDiagnostics(sources: CompositionSource[], 
   // can name the correct, retained occurrence in the diagnostic.
   for (const list of lists) list.refs.forEach((ref, index) => {
     const source = byId.get(ref);
-    if (source && eligibleCompositionSource(source, list.kind) && !accounted.has(ref)) accounted.set(ref, `${list.path}.${index}`);
+    if (source && eligibleCompositionPlacement(source, list.kind) && !accounted.has(ref)) accounted.set(ref, `${list.path}.${index}`);
   });
   const diagnostics: AttributionDiagnostic[] = [];
   for (const list of lists) list.refs.forEach((ref, index) => {
@@ -119,17 +139,17 @@ export function compositionAttributionDiagnostics(sources: CompositionSource[], 
     const source = byId.get(ref);
     const common = { path, ...(source ? { reference: ref } : {}), expectedKind: list.kind, actualKind: source?.kind, accountedAt: accounted.get(ref) };
     if (!source) diagnostics.push({ ...common, code: "unknown_source", correction: "This ID is not in this finding's source inventory. Use only supplied IDs; do not invent a replacement." });
-    else if (list.kind && source.kind !== list.kind) diagnostics.push({ ...common, code: "wrong_section", correction: accounted.has(ref)
+    else if (!compatibleCompositionPlacement(source, list.kind)) diagnostics.push({ ...common, code: "wrong_section", correction: accounted.has(ref)
       ? "Remove this extra occurrence; preserve the correctly accounted occurrence."
       : "Move this reference to a matching-kind section or retainedSourceRefs; preserve its source." });
-    else if (!eligibleCompositionSource(source, list.kind)) diagnostics.push({ ...common, code: "unsupported_suggestion",
+    else if (!eligibleCompositionPlacement(source, list.kind)) diagnostics.push({ ...common, code: "unsupported_suggestion",
       allowedPaths: [prefix + "retainedSourceRefs"],
       correction: "Only supported current suggestions may appear in fix/test sections. Retain this source in provenance and rewrite or omit the unsupported advice section; changing attribution alone cannot endorse its prose." });
     else if (accounted.get(ref) !== path) diagnostics.push({ ...common, code: "duplicate_reference", correction: "Remove the extra occurrence; preserve the correctly accounted occurrence." });
   });
   for (const source of sources) if (!accounted.has(source.id)) diagnostics.push({
     code: "missing_source", path: prefix + "retainedSourceRefs", reference: source.id, actualKind: source.kind,
-    allowedPaths: lists.filter(list => eligibleCompositionSource(source, list.kind)).map(list => list.path),
+    allowedPaths: lists.filter(list => eligibleCompositionPlacement(source, list.kind)).map(list => list.path),
     correction: "Account for this source exactly once in a matching-kind section, evidenceRefs for evidence, or retainedSourceRefs. Visible proof and primary-evidence requirements still apply."
   });
   return diagnostics;

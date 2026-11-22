@@ -4,7 +4,7 @@ import type { FieldRepair } from "../llm/field-repair.js";
 import { focusedRepairDiagnostics, submissionIssues } from "../llm/submit-preservation.js";
 import type { CandidateFinding } from "../types.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
-import { eligibleCompositionSource, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
+import { compatibleCompositionPlacement, eligibleCompositionPlacement, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
 
 type Group = CompositionPresentation & { findingIds: string[]; sections: CompositionSection[]; evidenceRefs: string[] };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -51,8 +51,8 @@ export function normalizeCompositionReferences(value: unknown, findings: Candida
           return false;
         }
         if (!source) return true;
-        const redundant = seen.has(ref) || (list.kind !== undefined && source.kind !== list.kind
-          && lists.some(other => other !== list && (other.kind === source.kind || other.kind === undefined) && other.refs.includes(ref)));
+        const redundant = seen.has(ref) || (list.kind !== undefined && !compatibleCompositionPlacement(source, list.kind)
+          && lists.some(other => other !== list && compatibleCompositionPlacement(source, other.kind) && other.refs.includes(ref)));
         seen.add(ref);
         if (redundant) removedFields.push(`${list.path}.${item}`);
         return !redundant;
@@ -91,7 +91,7 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
     const sources = compositionSources(findings.filter(finding => group.findingIds.includes(finding.id)), findings);
     const prefix = `composedFindings.${index}.`;
     const needsAdviceRepair = group.sections.some(section => (section.kind === "fix" || section.kind === "test")
-      && !sources.some(source => eligibleCompositionSource(source, section.kind)));
+      && !sources.some(source => eligibleCompositionPlacement(source, section.kind)));
     return { group, sources, needsAdviceRepair, lists: compositionReferenceLists(group.sections, group.evidenceRefs, group, prefix),
       diagnostics: [...compositionAttributionDiagnostics(sources, group.sections, group.evidenceRefs, group, prefix),
         ...proofVisibilityDiagnostics(findings.filter(finding => group.findingIds.includes(finding.id)), group.sections, group.evidenceRefs, group, prefix)] };
@@ -116,7 +116,7 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
     for (const list of lists.filter(list => paths.has(list.path))) {
       // Whole-section replacement and index-based edits must not coexist.
       if ([...adviceGroups.keys()].some(path => list.path.startsWith(path + "."))) continue;
-      const ids = sources.filter(source => eligibleCompositionSource(source, list.kind)).map(source => source.id);
+      const ids = sources.filter(source => eligibleCompositionPlacement(source, list.kind)).map(source => source.id);
       properties[list.path] = Type.Optional(Type.Array(Type.String(ids.length ? { enum: ids } : {}), {
         ...(ids.length ? {} : { maxItems: 0 }), uniqueItems: true,
         description: "Complete replacement reference list. Remove incorrect entries; keep all correct entries. Omit this property to retain its current list."

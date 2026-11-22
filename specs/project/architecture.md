@@ -201,7 +201,7 @@ Naming convention: type-name prefixes mark the scope a record describes. `Diff*`
 Pipeline stages are identified by the numeric stage ids from the functional spec:
 
 ```ts
-// 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,
+// 1 input resolution, 2 diff parsing and filtering, 3 classification, 4 symbol extraction,
 // 5 planning, 6 packet construction, 7 lens review,
 // 8 unused (targeted system follow-up, deleted in #114),
 // 9 verification, 10 composition, 11 publishing
@@ -756,7 +756,7 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, the deprecated and ignored `--depth` (#129), repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codegenie.toml`.
@@ -779,7 +779,7 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
 
-Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as `normal`. For one release `--depth`, `review.depth` in either TOML file, a stored `defaultDepth` and an eval case's `depth` still accept `light`, `normal` or `deep`, and each such input is ignored with a config warning. The release after that rejects them.
+Codegenie runs one review mode using the budgets, close nudge and planner input that plan 128 measured as `normal`. The CLI rejects `--depth`, strict validation rejects `review.depth` in TOML and eval cases, and the GitHub Action has no `depth` input. Before validating provider `settings.json`, the loader silently strips a legacy `defaultDepth` field.
 
 Per-key config sources (normative; Trust Boundaries defers to this table):
 
@@ -841,6 +841,7 @@ type CodegenieConfig = {
     provider?: string
     model?: string
     reasoning?: ReasoningLevel
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>
     maxConcurrentCalls: number
   }
   cache: {
@@ -1554,33 +1555,34 @@ Responsibilities:
 Run directory:
 
 ```text
-.codegenie/runs/<yyyyMMdd-HHmmss>-<shortid>/
+.codegenie/runs/<yyyyMMdd-HHmmss>-<8-hex-digits>/
   run.json
   run.log
   telemetry.json
   events.jsonl
   model-calls.jsonl
-  model-calls-summary.json
   tool-calls.jsonl
-  tool-calls-summary.json
-  planner-dossier.json
-  review-plan.json
-  coverage.json
-  packets/
-    <packet-id>.json
-  candidate-findings.json
-  verification.json
-  final-selection.json
-  final-findings.json
-  cost-profile.json
+  artifact-manifest.json
+  stages/
+    00-run/            # cost and model/tool summaries, errors
+    01-input/          # resolved input
+    02-diff/           # parsed diff and filter decisions
+    03-classify/       # file facts
+    05-planner/        # dossier, intent and plan
+    06-packets/        # hunk relationships and packets/<packet-id>.json
+    09-verification/   # candidates, promotions and verdicts
+    10-composition/    # coverage, selection, findings and budget summary
+    11-github-posting/ # posting artifact when applicable
   final-review.md
-  github-posting.json
+  final-review.json
   debug/
     llm-calls/
       <call-id>.json
     tool-calls/
       <tool-call-id>.json
 ```
+
+The generated run ID uses the UTC timestamp and eight random hexadecimal digits. By default it is also the directory name; evals may supply a different artifact directory while retaining the independently generated run ID.
 
 `debug/` is written only when `telemetry.debugTrace` is enabled. Debug artifacts may contain source snippets, prompts, and model outputs.
 
@@ -1720,7 +1722,6 @@ type EvalCase = {
     target?: string
   }
   review?: {
-    depth?: "light" | "normal" | "deep"   // deprecated (#129): accepted, ignored with a warning
     lenses?: string[]
     maxFindings?: number
     concurrency?: number
@@ -2046,9 +2047,9 @@ V1 fetches only codegenie's own prior comments (`listOwnComments`) for rerun dup
 
 Opt-in execution of configured test/typecheck commands (`tools.testCommands` plus a timeout, honored only with user-level opt-in, never from repo config), with command output becoming evidence for reviewers, never automatic findings.
 
-### Per-stage model and reasoning selection
+### Mixed-model review measurement
 
-The user-scoped `llm.stages` map supports optional model and reasoning overrides for plan, review, verify and compose. The GitHub Action stage mapping is deferred separately. Mixed-model quality requires measurement before recommending a particular mapping.
+The user-scoped `llm.stages` map and the GitHub Action's `stage-models` input support optional model and reasoning overrides for plan, review, verify and compose. Mixed-model quality requires measurement before recommending a particular mapping.
 
 ### Rich pre-attached packet context
 

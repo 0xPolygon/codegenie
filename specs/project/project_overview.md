@@ -32,8 +32,7 @@ The preferred review design is a staged pipeline:
 
 1. Whole-PR planning pass: understand intent, changed files, changed symbols, risk areas, architecture boundaries, and tests touched or missing. This pass chooses the review order and selects relevant lenses based on risk tags, language, changed symbols, and touched subsystems; codegenie should not run every lens on every hunk by default.
 2. Parallel hunk/file review passes: generate precise inline candidate findings anchored to changed lines.
-3. Optional cross-file/system follow-up: resolve repeated scoped follow-up questions from packet reviewers. The broad system pass that proactively inspects interactions across changed files, call sites, interfaces, migrations, tests, and architecture is deferred; the shipped stage only runs when repeated hints justify it.
-4. Verifier/deduper pass: reject speculative comments using the exact skill guidance recorded by the producing review item, merge duplicates, and publish only high-signal findings.
+3. Verifier/deduper pass: reject speculative comments using the exact skill guidance recorded by the producing review item, merge duplicates, and publish only high-signal findings. The former targeted system follow-up was removed; a broader system pass remains deferred.
 
 The unit of review should be the changed hunk, but the unit of understanding should be the affected system. The review flow should look like:
 
@@ -46,7 +45,6 @@ PR diff
   -> selected lenses + targeted repo tools
   -> candidate findings
   -> cross-file follow-up hints recorded
-  -> optional repeated-hint system follow-up
   -> independent verifier
   -> deduped staff-level review
 ```

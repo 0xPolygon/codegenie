@@ -3,9 +3,8 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer, clearStageOverridesForRun, ignoredReviewDepthWarning } from "../config/config-loader.js";
+import { applyRepoConfigLayer, clearStageOverridesForRun } from "../config/config-loader.js";
 import {
-  deprecatedReviewDepthSchema,
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   severitySchema
@@ -53,6 +52,7 @@ export type EvalRunOptions = {
   judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
+  codegenieHome?: string;
   /** Warnings from loading the user layers, reported with each review (#129). */
   configWarnings?: ConfigWarning[];
 };
@@ -135,7 +135,6 @@ const caseSchema = z
       .optional(),
     review: z
       .object({
-        depth: deprecatedReviewDepthSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -335,7 +334,7 @@ export async function replayFromArtifacts(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -420,7 +419,7 @@ async function runArtifactCase(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -486,6 +485,7 @@ async function runLiveCase(
     let reviewOutput = "";
     await runReview(target, caseConfig.config, {
       repoRoot: actualRepoRoot,
+      ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
@@ -503,7 +503,7 @@ async function runLiveCase(
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -576,6 +576,7 @@ async function runRepeatedLiveCase(
         let reviewOutput = "";
         await runReview(target, caseConfig.config, {
           repoRoot: actualRepoRoot,
+          ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
@@ -589,7 +590,7 @@ async function runRepeatedLiveCase(
         }
         const artifacts = await loadEvalArtifacts(telemetryDir);
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-        await addRecommendationJudgment(entry.evalCase, score, execDir, true);
+        await addRecommendationJudgment(entry.evalCase, score, execDir, true, options);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
@@ -854,7 +855,7 @@ function applyCaseReviewConfig(
   const config = structuredClone(loaded) as CodegenieConfig;
   const review = evalCase.review;
   const llm = evalCase.llm;
-  const warnings = review?.depth !== undefined ? [ignoredReviewDepthWarning("eval-case", review.depth)] : [];
+  const warnings: ConfigWarning[] = [];
   if (review?.maxFindings !== undefined) {
     config.review.maxFindings = review.maxFindings;
   }

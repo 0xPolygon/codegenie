@@ -1,11 +1,11 @@
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
-import type { CodegenieConfig, ConfigWarning, EvalCaseResult, EvalLossLabel } from "../types.js";
+import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { safeDiagnosticLine } from "../util/review-health.js";
 import { CliDisplayExit } from "../cli/review-command.js";
-import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "./eval-runner.js";
+import { loadEvalSuite, replayFromArtifacts, runEvalCase, type EvalRunOptions } from "./eval-runner.js";
 
 export type EvalCommandOptions = {
   evalDir?: string;
@@ -39,6 +39,7 @@ export async function executeEvalCommand(argv: string[], opts: ExecuteEvalComman
   });
   return runEvalCommand(parsed, loaded.config, {
     configWarnings: loaded.warnings,
+    codegenieHome: loaded.paths.home,
     ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
 }
@@ -46,16 +47,19 @@ export async function executeEvalCommand(argv: string[], opts: ExecuteEvalComman
 export async function runEvalCommand(
   options: EvalCommandOptions,
   config: CodegenieConfig,
-  runtime: { writeOutput?: (text: string) => void; configWarnings?: ConfigWarning[] } = {}
+  runtime: { writeOutput?: (text: string) => void } & Pick<EvalRunOptions, "configWarnings" | "codegenieHome"> = {}
 ): Promise<0 | 1 | 2> {
   validateEvalOptions(options, config);
   const write = runtime.writeOutput ?? (() => undefined);
+  const runOptions: EvalRunOptions = {
+    config,
+    judgeReplay: options.judge === true,
+    ...(runtime.configWarnings !== undefined ? { configWarnings: runtime.configWarnings } : {}),
+    ...(runtime.codegenieHome !== undefined ? { codegenieHome: runtime.codegenieHome } : {}),
+    ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
+  };
   if (options.fromArtifacts !== undefined) {
-    const result = await replayFromArtifacts(options.fromArtifacts, {
-      config,
-      judgeReplay: options.judge === true,
-      ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
-    });
+    const result = await replayFromArtifacts(options.fromArtifacts, runOptions);
     write(renderCaseResult(result));
     write(renderSuiteTotals([result]));
     return result.status === "pass" ? 0 : 1;
@@ -68,12 +72,7 @@ export async function runEvalCommand(
   const suite = await loadEvalSuite(evalDir);
   const results: EvalCaseResult[] = [];
   for (const entry of suite.cases) {
-    const result = await runEvalCase(suite, entry, {
-      config,
-      judgeReplay: options.judge === true,
-      ...(runtime.configWarnings !== undefined ? { configWarnings: runtime.configWarnings } : {}),
-      ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
-    });
+    const result = await runEvalCase(suite, entry, runOptions);
     results.push(result);
     write(renderCaseResult(result));
   }

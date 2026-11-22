@@ -34,6 +34,19 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ llm: { stages: { wrong: { model: "provider/model" } } } }).success).toBe(false);
   });
 
+  it("replaces user stages with Action stages after per-run global overrides", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    writeFileSync(path.join(homeOverride, "config.toml"), '[llm.stages.review]\nmodel = "provider/standing"\nreasoning = "low"\n');
+    const loaded = loadConfig({
+      repoRoot, homeOverride, env: {},
+      cli: { provider: "provider", model: "default", reasoning: "auto" },
+      actionStageModels: { plan: { model: "provider/planner" }, compose: { reasoning: "medium" } }
+    });
+    expect(loaded.config.llm.stages).toEqual({ plan: { model: "provider/planner" }, compose: { reasoning: "medium" } });
+    expect(loaded.sources["llm.stages"]).toBe("github-action");
+  });
+
   it("layers composition step-down as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
@@ -117,7 +130,6 @@ describe("config loader", () => {
       path.join(home, "config.toml"),
       `
 [review]
-depth = "light"
 verify = false
 concurrency = 2
 
@@ -139,7 +151,6 @@ extraSkillPaths = ["/trusted/skills"]
       JSON.stringify({
         defaultProvider: "settings-provider",
         defaultModel: "settings-model",
-        defaultDepth: "normal",
         defaultReasoning: "medium"
       })
     );
@@ -147,7 +158,6 @@ extraSkillPaths = ["/trusted/skills"]
       path.join(repoRoot, "codegenie.toml"),
       `
 [review]
-depth = "deep"
 verify = true
 maxFindings = 10
 budgetBoost = 1.5
@@ -181,17 +191,11 @@ reason = "critical lib"
         CODEGENIE_REASONING: "xhigh"
       },
       cli: {
-        depth: "light",
         model: "cli-model",
         cacheEnabled: true
       }
     });
 
-    // #129: every layer's depth is ignored with one warning per layer.
-    expect(loaded.config.review).not.toHaveProperty("depth");
-    expect(loaded.sources).not.toHaveProperty(["review.depth"]);
-    expect(loaded.warnings.filter((warning) => warning.key === "review.depth").map((warning) => warning.source))
-      .toEqual(["user-config", "provider-settings", "repo-config", "cli"]);
     expect(loaded.config.review.verify).toBe(false);
     expect(loaded.sources["review.verify"]).toBe("user-config");
     expect(loaded.config.review.maxFindings).toBe(10);
@@ -274,17 +278,10 @@ reasoning = "low"
       JSON.stringify({
         defaultProvider: "settings-provider",
         defaultModel: "settings-model",
-        defaultDepth: "light",
         defaultReasoning: "medium"
       })
     );
-    writeFileSync(
-      path.join(repoRoot, "codegenie.toml"),
-      `
-[review]
-depth = "deep"
-`
-    );
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nmaxFindings = 10\n");
 
     const loaded = loadConfig({
       repoRoot,
@@ -298,6 +295,7 @@ depth = "deep"
     expect(loaded.sources["llm.model"]).toBe("provider-settings");
     expect(loaded.config.llm.reasoning).toBe("medium");
     expect(loaded.sources["llm.reasoning"]).toBe("provider-settings");
+    expect(loaded.config.review.maxFindings).toBe(10);
   });
 
   it("allows repo telemetry opt-in but ignores repo-scoped telemetry and cache directories", () => {
@@ -347,13 +345,11 @@ describe("codegenie paths and provider settings", () => {
       {
         defaultProvider: "openai",
         defaultModel: "gpt-5",
-        defaultDepth: "deep",
         defaultReasoning: "high"
       },
       paths
     );
 
-    // #129: a stored depth default is never written back.
     expect(loadProviderSettings(paths)).toEqual({
       defaultProvider: "openai",
       defaultModel: "gpt-5",
@@ -364,45 +360,49 @@ describe("codegenie paths and provider settings", () => {
   });
 });
 
-describe("removed review depth setting (#129)", () => {
-  it("accepts and ignores each old depth value on every config layer, with one warning naming the layer", () => {
-    for (const value of ["light", "normal", "deep"] as const) {
-      const repoRoot = tempDir();
-      const home = tempDir();
-      writeFileSync(path.join(home, "config.toml"), `[review]\ndepth = "${value}"\n`);
-      writeFileSync(path.join(home, "settings.json"), JSON.stringify({ defaultDepth: value }));
-      writeFileSync(path.join(repoRoot, "codegenie.toml"), `[review]\ndepth = "${value}"\n`);
-      const loaded = loadConfig({ repoRoot, homeOverride: home, cli: { depth: value } });
-      const warnings = loaded.warnings.filter((warning) => warning.key === "review.depth");
-      expect(warnings.map((warning) => warning.source)).toEqual(["user-config", "provider-settings", "repo-config", "cli"]);
-      for (const warning of warnings) {
-        expect(warning.message).toContain(`"${value}"`);
-        expect(warning.message).toContain("codegenie has one review mode");
-      }
-      expect(warnings[1]!.message).toContain("drops it the next time it saves provider settings");
-      expect(loaded.config.review).not.toHaveProperty("depth");
-      expect(loaded.config.review).toEqual(loadConfig({ repoRoot: tempDir(), homeOverride: tempDir() }).config.review);
-    }
-  });
-
-  it("still rejects values that were never depths, and the resolved schema has no depth", () => {
+describe("removed review depth inputs (#183)", () => {
+  it.each(["user", "repository"])("rejects review.depth in %s TOML", (layer) => {
     const repoRoot = tempDir();
     const home = tempDir();
-    writeFileSync(path.join(home, "config.toml"), `[review]\ndepth = "fast"\n`);
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
-    expect(rawConfigSchema.safeParse({ review: { depth: "normal" } }).success).toBe(true);
-    expect(codegenieConfigSchema.safeParse({ ...defaultConfig, review: { ...defaultConfig.review, depth: "normal" } }).success).toBe(false);
+    const configPath = layer === "user" ? path.join(home, "config.toml") : path.join(repoRoot, "codegenie.toml");
+    writeFileSync(configPath, '[review]\ndepth = "normal"\n');
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(expect.objectContaining({
+      code: "config_error",
+      context: expect.objectContaining({
+        path: configPath,
+        issues: expect.arrayContaining([expect.objectContaining({ code: "unrecognized_keys", path: ["review"], keys: ["depth"] })])
+      })
+    }));
   });
 
-  it("keeps loading a stored depth default but drops it on the next save", () => {
+  it("drops the obsolete stored depth default silently and keeps other settings", () => {
+    const repoRoot = tempDir();
     const home = tempDir();
     const paths = getCodegeniePaths(undefined, { CODEGENIE_HOME: home });
     ensureCodegenieHome(paths);
-    writeFileSync(paths.settingsPath, JSON.stringify({ defaultProvider: "openai", defaultDepth: "normal" }));
+    const legacySettings = { defaultProvider: "openai", defaultDepth: "normal", defaultReasoning: "low" };
+    writeFileSync(paths.settingsPath, JSON.stringify(legacySettings));
     const settings = loadProviderSettings(paths);
-    expect(settings).toEqual({ defaultProvider: "openai", defaultDepth: "normal" });
+    expect(settings).toEqual({ defaultProvider: "openai", defaultReasoning: "low" });
+    const loaded = loadConfig({ repoRoot, homeOverride: home, env: {} });
+    expect(loaded.warnings).toEqual([]);
+    expect(loaded.config.llm).toMatchObject({ provider: "openai", reasoning: "low" });
+    expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual(legacySettings);
     saveProviderSettings({ ...settings, defaultModel: "gpt-5" }, paths);
-    expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual({ defaultProvider: "openai", defaultModel: "gpt-5" });
+    expect(JSON.parse(readFileSync(paths.settingsPath, "utf8"))).toEqual({
+      defaultProvider: "openai", defaultModel: "gpt-5", defaultReasoning: "low"
+    });
+  });
+
+  it("still rejects unknown provider settings alongside a legacy depth default", () => {
+    const paths = getCodegeniePaths(tempDir());
+    writeFileSync(paths.settingsPath, JSON.stringify({ defaultDepth: "deep", defaultMode: "extra" }));
+    expect(() => loadProviderSettings(paths)).toThrow(expect.objectContaining({
+      code: "config_error",
+      context: expect.objectContaining({
+        issues: expect.arrayContaining([expect.objectContaining({ code: "unrecognized_keys", keys: ["defaultMode"] })])
+      })
+    }));
   });
 });
 
