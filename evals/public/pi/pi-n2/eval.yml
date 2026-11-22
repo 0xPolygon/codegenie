@@ -9,7 +9,3 @@ review:
   verify: true
   debug: true
   cache: false
-should_not_find:
-- id: material-finding-in-clean-change
-  path: "packages/tui/src/utils.ts"
-  severityAtLeast: medium

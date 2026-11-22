@@ -121,7 +121,12 @@ describe("evidence-backed attention reconciliation", () => {
     expect(submissionIssues(schema, { ...original, attentionResolutions: [f.proposal, unresolved] })).toEqual([]);
     expect(reconcileAttention(input, [f.proposal, unresolved], true).notes[0]!.question).toBe("Is this endpoint deployed?");
     expect(attentionResolutionErrors(input, [{ ...f.proposal, supportingRefs: [] }, unresolved])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
-    expect(attentionResolutionErrors(input, [f.proposal, { ...unresolved, remainingQuestion: "Silently rewritten" }])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    const extraQuestion = { ...unresolved, remainingQuestion: "Silently rewritten" };
+    expect(attentionResolutionErrors(input, [f.proposal, extraQuestion])).toEqual([]);
+    const reconciled = reconcileAttention(input, [f.proposal, extraQuestion], true);
+    expect(reconciled.notes[0]!.question).toBe("Is this endpoint deployed?");
+    expect(reconciled.canonicalizedConcernIds).not.toContain(unresolved.concernId);
+    expect(reconciled.discardedRewordedConcernIds).toEqual([unresolved.concernId]);
     expect(reconcileAttention(input, [f.proposal, unresolved], false).notes).toEqual([f.concern.unresolvedConcern]);
   });
 
@@ -316,6 +321,8 @@ describe("evidence-backed attention reconciliation", () => {
     expect(reconcileAttention(input, [{ ...unchanged, remainingQuestion: first!.question + "?" }], true).decisions[0]).toMatchObject({ disposition: "narrowed", accepted: true });
     expect(attentionResolutionErrors(input, [{ ...unchanged, supportingRefs: ["invented/source"] }, repeated])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
     expect(attentionResolutionErrors(input, [{ ...f.proposal, remainingQuestion: first!.question }, repeated])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    expect(attentionResolutionErrors(input, [{ ...repeated, concernId: "unknown", remainingQuestion: "Different" }])).toContainEqual(expect.stringContaining("unknown_or_ineligible_concern"));
+    expect(attentionResolutionErrors(input, [{ ...repeated, supportingRefs: ["invented/source"], remainingQuestion: "Different" }])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
     const { remainingQuestion: _repeated, ...plain } = repeated;
     expect(reconcileAttention(input, [f.proposal, plain], true).canonicalizedConcernIds).toEqual([]);
   });

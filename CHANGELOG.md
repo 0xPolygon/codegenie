@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+- **Breaking:** Remove `--depth` from CLI commands, `review.depth` from user and repository TOML and eval cases, and `depth` from GitHub Action inputs. Legacy provider `settings.json` files still load. Codegenie silently ignores `defaultDepth` and drops it on the next save. The `run.json` depth field still records `null`.
+- Review local changes with `codegenie review --staged` (HEAD to index) or `codegenie review --uncommitted` (HEAD to tracked working tree). Both use local snapshots and disallow GitHub posting. Use `git add -N <path>` to include a new file in an uncommitted review.
+- The GitHub Action accepts `stage-models` alongside `model` to set model and reasoning for plan, review, verify, and compose. Missing fields inherit the global selection. An authorized comment that selects a configured alias applies that alias to every stage.
+- Public eval cases `go-11`, `pi-n2`, and `pi-n3` remain available for exploratory reviews and are excluded from clean-control and required-detection scoring in future comparisons.
+
 ## 0.9.0
 
 - Reviews use one mode. The removed `--depth` and `review.depth` settings (`light`, `normal`, and `deep`) are accepted and ignored with a warning for one release; reviews use the former normal behavior and `run.json` records depth as null.

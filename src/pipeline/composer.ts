@@ -278,6 +278,8 @@ export async function dedupeRankAndComposeReview(
     compositionMode === "llm", { publishedCandidateIds });
   if (reconciledAttention.canonicalizedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unchanged_question_canonicalized",
     data: { concernIds: reconciledAttention.canonicalizedConcernIds, disposition: "unresolved" } });
+  if (reconciledAttention.discardedRewordedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unresolved_rewording_discarded",
+    data: { count: reconciledAttention.discardedRewordedConcernIds.length, concernIds: reconciledAttention.discardedRewordedConcernIds } });
   const decisionsByHint = new Map(reconciledAttention.decisions.filter(decision => decision.accepted).map(decision => [decision.concernId, decision]));
   const suppressedEvidenceConcernIds = new Set(
     reconciledAttention.decisions

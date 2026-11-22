@@ -327,13 +327,16 @@ export function reconcileAttention(
 ) {
   const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
   const concerns = new Map(input.groups.flatMap(group => group.concerns).filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern]));
-  // A remaining question identical to the concern answers nothing: the decision
-  // is unresolved, and the original question is retained either way.
+  // An unresolved decision retains the original concern. A narrowing identical
+  // to that concern also answers nothing and is therefore unresolved.
   const canonicalizedConcernIds: string[] = [];
+  const discardedRewordedConcernIds: string[] = [];
   const submitted = (proposals ?? []).map(proposal => {
     const concern = concerns.get(proposal.concernId);
-    if (!concern || proposal.disposition === "resolved" || proposal.remainingQuestion?.trim() !== concern.question.trim()) return proposal;
-    canonicalizedConcernIds.push(proposal.concernId);
+    if (!concern || proposal.remainingQuestion === undefined ||
+      (proposal.disposition !== "unresolved" && !(proposal.disposition === "narrowed" && proposal.remainingQuestion.trim() === concern.question.trim()))) return proposal;
+    if (proposal.remainingQuestion.trim() === concern.question.trim()) canonicalizedConcernIds.push(proposal.concernId);
+    else discardedRewordedConcernIds.push(proposal.concernId);
     const { remainingQuestion: _unchanged, ...decision } = proposal;
     return { ...decision, disposition: "unresolved" as const };
   });
@@ -393,7 +396,7 @@ export function reconcileAttention(
     return { candidateId: group.candidateId, original: group.original, remainingQuestion: remaining,
       concernIds: group.concerns.map(concern => concern.id), ...(group.ineligibleReason ? { ineligibleReason: group.ineligibleReason } : {}) };
   });
-  return { notes, decisions, outcomes, canonicalizedConcernIds, restoredForSuppressedFindingCount, restoredWithSurvivingRefCount };
+  return { notes, decisions, outcomes, canonicalizedConcernIds, discardedRewordedConcernIds, restoredForSuppressedFindingCount, restoredWithSurvivingRefCount };
 }
 
 /** Require coverage only for concerns actually delivered within the inventory cap. */
