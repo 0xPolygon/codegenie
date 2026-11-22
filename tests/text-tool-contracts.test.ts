@@ -422,6 +422,25 @@ describe("search delivery accounting over committed source", () => {
     expect(JSON.parse(empty.text).results).toEqual([]);
   });
 
+  it("distinguishes an empty path scope from no matches and still validates its ERE", async () => {
+    const fixed = packSearchToolResult(await fixture.call("search_files", {
+      query: "needle", pathGlob: "test/**", source: { kind: "base" }
+    }), 4000);
+    expect(JSON.parse(fixed.text)).toMatchObject({
+      results: [], notice: "No tracked files match pathGlob at the pinned base revision."
+    });
+    expect(fixed.meta?.searchDelivery).toMatchObject({ emptyScope: true, deliveredCount: 0 });
+    const noMatch = packSearchToolResult(await fixture.call("search_files", {
+      query: "unlikely-search-needle", pathGlob: "src/**"
+    }), 4000);
+    expect(noMatch.meta?.deliveryStatus).toBe("empty");
+    expect(noMatch.text).not.toContain("No tracked files match");
+    const malformed = await fixture.call("search_files", { query: "finalize(", pathGlob: "test/**" });
+    expect(malformed).toMatchObject({ errorCode: "invalid_args", isError: true });
+    expect(malformed.text).toContain("name\\(");
+    expect(malformed.text).toContain("return \\{");
+  });
+
   it("repackages cached results per allowance and counts context or rows separately", async () => {
     const args = { query: "proofVisibilityDiagnostics|regMu", contextMode: "lines" };
     const cache = createToolResultCache();

@@ -14,6 +14,7 @@ function pageDeliveryNotes(meta: ToolResultMeta): string[] {
   const search = meta.searchDelivery;
   if (search) {
     const notes = [`delivered matches: ${search.deliveredCount}`];
+    if (search.emptyScope) notes.push(`No tracked files match pathGlob at the pinned ${search.source} revision.`);
     if (search.backendOmittedCount) {
       const next = search.nextRead;
       notes.push(`matching lines omitted by the Git output cap: ${search.backendOmittedCount}${next ? `; inspect ${JSON.stringify(next.path)}@${search.source}:${next.line} with read_range` : ""}`);
@@ -242,7 +243,8 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
         notice: searchCutNotice(delivery)
       });
     }
-    if (delivery) return JSON.stringify({ results, meta });
+    if (delivery) return JSON.stringify({ results, meta,
+      ...(delivery.emptyScope ? { notice: `No tracked files match pathGlob at the pinned ${delivery.source} revision.` } : {}) });
     return JSON.stringify({
       results,
       meta: { ...meta, ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) },

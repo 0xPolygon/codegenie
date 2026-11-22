@@ -201,7 +201,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "search_files",
-      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]; no lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence.",
+      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]. Escape literal punctuation, for example name\\( or return \\{. No lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence.",
       parameters: Type.Object(
         {
           query: Type.String({ minLength: 1, maxLength: 500 }),
