@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-11. The oracle stays outside the reviewed checkout.
+name: public-cg-11
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-11
+command:
+  base: 7bdea4f70a38c567ed9a7a109100357cca78bc58
+  head: 83e9770f92eb663a4d79cf1e9be59648d33b8d59
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: run-retention-removes-unowned-directories
+  path: src/telemetry/run-artifacts.ts
+  lineRange: [921, 939]
+  severityAtLeast: low

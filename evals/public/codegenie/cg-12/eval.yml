@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-12. The oracle stays outside the reviewed checkout.
+name: public-cg-12
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-12
+command:
+  base: deb7190dec0b85ee811c748e87e3f38a17cdb791
+  head: 68069b68047c9a8af1ed7253e7b0e74978044c9d
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: git-tree-paths-return-quoted-names
+  path: src/git/git-client.ts
+  lineRange: [100, 108]
+  severityAtLeast: low
