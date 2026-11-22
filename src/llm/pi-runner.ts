@@ -1976,8 +1976,12 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit =
       // honored for real. llm.forceSubmitToolChoice=false restores the old
       // downgrade-to-auto behavior as an escape hatch.
       return forceSubmit ? { type: "tool", name: choice.name } : "auto";
-    case "bedrock-converse-stream":
-      return { type: "tool", name: choice.name };
+    case "bedrock-converse-stream": {
+      // Like Pi's Bedrock adapter, recognize Claude in the display name for
+      // application inference profiles whose ARN omits the model family.
+      const isClaude = /anthropic[./]claude/iu.test(model.id) || /claude/iu.test(model.name);
+      return !forceSubmit || isClaude ? "auto" : { type: "tool", name: choice.name };
+    }
     case "google-generative-ai":
     case "google-vertex":
       return "any";

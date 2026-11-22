@@ -237,7 +237,7 @@ codegenie's normalized interface maps the submit tool choice onto vendor dialect
 | API family | Forced submit tool choice | Reasoning on forced submits | Notes |
 | --- | --- | --- | --- |
 | `anthropic-messages` | Models whose Pi catalog can turn thinking off (e.g. `claude-opus-5`, `claude-haiku-5-5`): named `{type:"tool",name}`. Always-on-thinking models (`thinkingLevelMap.off === null`, e.g. `claude-opus-5-5`, `claude-fable-5-2`): downgraded to `auto` (#46). | Named choice: reasoning omitted, so Pi sends thinking disabled (plan 86 step 3). `auto`: reasoning kept and mapped natively by Pi (adaptive effort). | `llm.forceSubmitToolChoice = false` downgrades every Anthropic model to `auto` |
-| `bedrock-converse-stream` | `{type:"tool",name}` | Pi's native mapping | |
+| `bedrock-converse-stream` | Claude uses `auto`. Other models use named `{type:"tool",name}` by default. | Pi's native mapping | `llm.forceSubmitToolChoice = false` uses `auto` for every Bedrock model. |
 | `google-generative-ai` / `google-vertex` | `"any"` | Pi's native mapping (e.g. Gemini 2.5 thinking budget) | |
 | `mistral-conversations` / `openai-completions` | `{type:"function",function:{name}}` | Pi's native mapping (reasoning effort only for reasoning models) | |
 | `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | Pi's native mapping | |
