@@ -696,6 +696,9 @@ export interface RepositoryTools {
     meta: ToolResultMeta;
     packable?: import("./llm/llm-runner.js").ToolResultRecords;
   }>;
+  readChange?(input: import("./repo/read-change.js").ReadChangeInput, currentHunks?: readonly string[]):
+    Promise<import("./repo/read-change.js").ReadChangeResult>;
+  readChangePromptDirectory?(currentHunks: readonly string[], canContinue: boolean): string;
   findDefinition(
     symbolName: string,
     options?: { pathGlob?: string; exactPath?: string; source?: SymbolLookupSourceSelector }
@@ -1842,6 +1845,8 @@ export type ToolCallRecord = {
     scope?: string;
     path?: string;
     packetId?: string;
+    hunkId?: string;
+    context?: "function";
     symbolName?: string;
     line?: number;
     startLine?: number;

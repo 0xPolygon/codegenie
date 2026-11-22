@@ -5,7 +5,7 @@ import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
-import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
+import { exactSourceToolNames, projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   AdaptiveReviewOutcome,
@@ -458,12 +458,16 @@ async function runPacket(
     packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId)),
     packet.language
   );
-  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
-  const passSkillIds = projectedSkillIds(prompt.projection);
   const toolSurface = config.review.toolSurface ?? "current";
-  const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
+  const hasTools = packet.reviewProfile !== "simple" && packet.toolBudget.maxToolCalls > 0;
+  const currentHunks = toolSurface === "six" ? packet.hunks.map(hunk => hunk.hunkId) : undefined;
+  const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
+  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
+  const passSkillIds = projectedSkillIds(prompt.projection);
+  const repositoryTools = !hasTools
     ? []
-    : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
+    : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
+      ...(currentHunks ? { currentHunks } : {}) });
   let toolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
@@ -486,7 +490,7 @@ async function runPacket(
     },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
-      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input)
+      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface])
     }
   });
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
@@ -820,12 +824,12 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
   "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
 
-function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput): string | undefined {
+function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput, toolNames: string): string | undefined {
   const threshold = closeNudgeThreshold(packet);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
-  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
+  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as ${toolNames}. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
 }
 
 export function closeNudgeThreshold(packet: Pick<ReviewPacket, "coverage" | "reviewProfile">): number {

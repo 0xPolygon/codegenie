@@ -888,13 +888,15 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
             let resultPoolExhausted = false;
             for (const toolCall of toolCalls) {
               const tool = repositoryTools.find((candidate) => candidate.name === toolCall.name);
+              const sourceRead = isSourceReadTool(toolCall.name, toolCall.arguments);
               const budgetState = toolBudgetState({
                 toolCallsUsed,
                 investigationRounds,
                 resultCharsUsed,
                 sourceResultCharsUsed,
                 budget, softBudget,
-                toolName: toolCall.name
+                toolName: toolCall.name,
+                sourceRead
               });
               const baseResultCharLimit = budgetState.toolResultCharLimit ?? budgetState.remainingResultChars;
               const localBudgetReason = resultPoolExhausted ? "tool_result_budget_exhausted" : localBudgetRejectionReason({
@@ -932,7 +934,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   const usageScanLimited: boolean = Boolean(canonical.usagePage && canonical.usagePage.page.entries.length === 0
                     && canonical.usagePage.page.nextCursor);
                   outcome.rejectionReason = usageScanLimited ? "usage_scan_limit" : "tool_result_budget_exhausted";
-                  const initialLimit = toolResultCharLimit(toolCall.name, budget, budget.maxResultChars);
+                  const initialLimit = toolResultCharLimit(sourceRead, budget, budget.maxResultChars);
                   // Scan limits are distinct from spending the result pool.
                   resultPoolExhausted = !usageScanLimited && packedResultExhaustedPool(canonical, remainingResultChars,
                     budgetState.remainingResultChars, initialLimit);
@@ -949,21 +951,35 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
               }
-              const deliveryBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
-              const resultText = !consumedCall || budgetRejected || deliveryBudgetRejected
-                ? outcome.result.text
-                : fitToolResultText(outcome.result.text, remainingResultChars);
-              if (resultText.length < outcome.result.text.length) {
-                outcome.result = {
-                  ...outcome.result,
-                  text: resultText,
-                  meta: markTruncated(outcome.result.meta)
-                };
+              let deliveryBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
+              let resultText = outcome.result.text;
+              if (consumedCall && !budgetRejected && !deliveryBudgetRejected) {
+                const fitted = fitToolResultText(resultText, remainingResultChars);
+                if (fitted === undefined) {
+                  const originalLength = resultText.length;
+                  const initialLimit = toolResultCharLimit(sourceRead, budget, budget.maxResultChars);
+                  resultPoolExhausted ||= remainingResultChars === budgetState.remainingResultChars
+                    && initialLimit > remainingResultChars && originalLength <= initialLimit;
+                  const reason = resultPoolExhausted ? spentResultBudgetNotice(budgetState.remainingResultChars)
+                    : `This tool result does not fit its ${remainingResultChars}-character delivery limit. Hard result characters remaining: ${budgetState.remainingResultChars}.`;
+                  resultText = `${reason} No result was delivered; this is not a zero-match result.`;
+                  // A backend continuation can point beyond source that this
+                  // caller never received; do not expose it as a recovery.
+                  const { recovery: _recovery, deliveredLineRange: _range, truncated: _truncated,
+                    omittedCount: _omittedCount, omittedCountIsLowerBound: _omittedCountIsLowerBound, ...meta } = outcome.result.meta ?? defaultToolMeta();
+                  outcome.result = { text: resultText, isError: true, errorCode: "budget_exhausted",
+                    meta: { ...meta, deliveryStatus: "budget_rejected",
+                      degradationReason: (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" } };
+                  outcome.status = "rejected";
+                  outcome.errorCode = "budget_exhausted";
+                  outcome.rejectionReason = "tool_result_budget_exhausted";
+                  deliveryBudgetRejected = true;
+                } else resultText = fitted;
               }
               if (consumedCall && !budgetRejected && !deliveryBudgetRejected) {
                 resultCharsUsed += resultText.length;
                 // Credit delivered source content toward the soft source target.
-                if (isSourceReadTool(toolCall.name)
+                if (sourceRead
                   && outcome.status === "ok" && !outcome.result.isError
                   && outcome.result.meta?.deliveryStatus !== "empty"
                   && !["not_found", "ambiguous", "file_missing", "unavailable"].includes(outcome.result.meta?.lookupStatus ?? "")) {
@@ -2271,6 +2287,7 @@ async function executeToolCall(
       assertRepositoryToolArguments(tool, toolCall.arguments);
       const args = adapter.validateToolCall(tools.map(toolSpec), toolCall) as Record<string, unknown>;
       try {
+        const requestScope = tool.resultCacheScope?.(args);
         const cacheLookup = toolResultCache === undefined
           ? {
               result: await awaitProviderCall(() => tool.execute(args, taskSignal), taskSignal, taskTimedOut),
@@ -2279,7 +2296,7 @@ async function executeToolCall(
             }
           : await awaitProviderCall(() => toolResultCache.execute({
               toolName: tool.name,
-              args,
+              args: requestScope ? { ...args, requestScope } : args,
               signal: taskSignal,
               run: () => tool.execute(args, taskSignal)
             }), taskSignal, taskTimedOut);
@@ -2481,6 +2498,7 @@ function toolBudgetState(input: {
   budget: ToolBudget;
   softBudget: ToolBudget;
   toolName: string;
+  sourceRead?: boolean;
 }): LocalToolBudgetState {
   const remainingResultChars = Math.max(0, input.budget.maxResultChars - input.resultCharsUsed);
   const remainingSourceReserveChars = Math.max(0, (input.softBudget.reservedSourceResultChars ?? 0) - (input.sourceResultCharsUsed ?? 0));
@@ -2501,13 +2519,13 @@ function toolBudgetState(input: {
     ...(input.budget.maxSingleToolResultChars !== undefined ? { maxSingleToolResultChars: input.budget.maxSingleToolResultChars } : {}),
     ...(input.budget.maxDiscoveryResultChars !== undefined ? { maxDiscoveryResultChars: input.budget.maxDiscoveryResultChars } : {}),
     ...(input.softBudget.reservedSourceResultChars !== undefined ? { reservedSourceResultChars: input.softBudget.reservedSourceResultChars } : {}),
-    toolResultCharLimit: toolResultCharLimit(input.toolName, input.budget, remainingResultChars)
+    toolResultCharLimit: toolResultCharLimit(input.sourceRead ?? isSourceReadTool(input.toolName), input.budget, remainingResultChars)
   };
 }
 
-function toolResultCharLimit(toolName: string, budget: ToolBudget, remainingChars: number): number {
+function toolResultCharLimit(sourceRead: boolean, budget: ToolBudget, remainingChars: number): number {
   const singleLimit = Math.min(remainingChars, budget.maxSingleToolResultChars ?? remainingChars);
-  return isSourceReadTool(toolName) ? singleLimit : Math.min(singleLimit, budget.maxDiscoveryResultChars ?? singleLimit);
+  return sourceRead ? singleLimit : Math.min(singleLimit, budget.maxDiscoveryResultChars ?? singleLimit);
 }
 
 function packRepositoryToolResult(result: ToolExecutionResult, allowance: number): ToolExecutionResult {
@@ -2524,22 +2542,16 @@ function packedResultExhaustedPool(result: ToolExecutionResult, allowance: numbe
     !packRepositoryToolResult(result, initialLimit).isError;
 }
 
-function isSourceReadTool(toolName: string): boolean {
+function isSourceReadTool(toolName: string, args?: Record<string, unknown>): boolean {
+  if (toolName === "read_change") return typeof args?.path === "string" || typeof args?.hunkId === "string";
   return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition" || toolName === "read_definition" || toolName === "read_diff_blocks";
 }
 
-function fitToolResultText(text: string, remainingChars: number): string {
+function fitToolResultText(text: string, remainingChars: number): string | undefined {
   if (text.length <= remainingChars) {
     return text;
   }
-  if (remainingChars <= 0) {
-    return "";
-  }
-  const marker = "\n[tool result truncated by codegenie tool budget]";
-  if (remainingChars <= marker.length) {
-    return marker.slice(0, remainingChars);
-  }
-  return `${text.slice(0, remainingChars - marker.length).trimEnd()}${marker}`;
+  return undefined;
 }
 
 function recordToolCall(
@@ -4328,6 +4340,8 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
     scope: typeof args.scope === "string" ? args.scope : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
+    hunkId: typeof args.hunkId === "string" ? args.hunkId : undefined,
+    context: args.context === "function" ? args.context : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,
     line: typeof args.line === "number" ? args.line : undefined,
     startLine: typeof args.startLine === "number" ? args.startLine : undefined,
@@ -4348,16 +4362,6 @@ function sourceForRecord(source: unknown): string | undefined {
     return (source as { kind: string }).kind;
   }
   return undefined;
-}
-
-function markTruncated(meta: ToolResultMeta | undefined): ToolResultMeta {
-  return {
-    ...(meta ?? defaultToolMeta()),
-    degraded: true,
-    truncated: true,
-    deliveryStatus: "truncated",
-    degradationReason: meta?.degradationReason ?? "tool_result_budget"
-  };
 }
 
 function defaultToolMeta(): ToolResultMeta {

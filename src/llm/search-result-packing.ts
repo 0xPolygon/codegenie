@@ -63,25 +63,30 @@ function diffDeliveryNotes(groups: DiffRecordGroups, omittedCount: number, count
     notes.push(`last delivered: ${last}`,
       `last hunk delivered: base ${base === undefined ? "none" : `${hunk.baseStart}-${base}`}, head ${head === undefined ? "none" : `${hunk.headStart}-${head}`}`);
   }
-  if (groups.next) notes.push(`next: ${groups.next}; ${count ? "use read_range at the stated revision" : "use read_range or narrow search_files at the stated revision"}`);
+  if (groups.next) notes.push(groups.nextCursor
+    ? `next: ${groups.next}, cursor=${groups.nextCursor}; continue with read_change and the same selector and context`
+    : `next: ${groups.next}; ${count ? "use read_range at the stated revision" : "use read_range or narrow search_files at the stated revision"}`);
   if (omittedCount) {
     const other = omittedCount - groups.omittedLabels.length;
-    notes.push(`omitted hunks: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);
+    notes.push(`omitted ${groups.groupedHunks ? "change blocks" : "hunks"}: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);
   }
   return notes;
 }
 
-function diffGroupsAfterCut(groups: DiffRecordGroups, count: number, next: string | undefined) {
+function diffGroupsAfterCut(groups: DiffRecordGroups, count: number, next: string | undefined, cursor?: string) {
   const rendered = groups.rendered.filter(hunk => hunk.firstRecord < count);
   const omitted = groups.rendered.slice(rendered.length);
   const nextPosition = next ?? groups.next;
+  const nextCursor = cursor ?? groups.nextCursor;
   return {
     omittedCount: omitted.length,
     groups: {
       rendered,
       lineEnds: groups.lineEnds,
       omittedLabels: [...omitted.map(hunk => hunk.label), ...groups.omittedLabels].slice(0, MAX_OMITTED_DIFF_LABELS),
-      ...(nextPosition ? { next: nextPosition } : {})
+      ...(groups.groupedHunks ? { groupedHunks: true } : {}),
+      ...(nextPosition ? { next: nextPosition } : {}),
+      ...(nextCursor ? { nextCursor } : {})
     }
   };
 }
@@ -111,7 +116,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     recordChars -= records[count]!.length;
     if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
-    const diffCut = diffGroups ? diffGroupsAfterCut(diffGroups, count, labels?.[count]) : undefined;
+    const diffCut = diffGroups ? diffGroupsAfterCut(diffGroups, count, labels?.[count], packable.cursors?.[count]) : undefined;
     const meta = updatePageDelivery({
       ...originalMeta,
       truncated: true,
@@ -162,7 +167,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
     + (firstUnread && !diffGroups ? ` First unread source: ${firstUnread}.` : "");
   return {
-    text: diffGroups ? withMeta(refusal, refusalMeta, diffDeliveryNotes(diffGroupsAfterCut(diffGroups, 0, firstUnread).groups,
+    text: diffGroups ? withMeta(refusal, refusalMeta, diffDeliveryNotes(diffGroupsAfterCut(diffGroups, 0, labels?.[0], packable.cursors?.[0]).groups,
       refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange || packable.searchExcerptFlags || originalMeta.pathListDelivery
       ? withMeta(refusal, refusalMeta, pageDeliveryNotes(refusalMeta)) : refusal,
     isError: true,
