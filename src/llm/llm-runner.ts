@@ -43,11 +43,14 @@ export type ToolResultRecords = {
   /** True for an index or block header that cannot be the last delivered record. */
   keepWithNext?: boolean[];
   diffGroups?: DiffRecordGroups;
+  nextPage?: string;
 };
 
 export type ToolExecutionResult = {
   /** Canonical whole records for packing against each caller's result budget. */
   packable?: ToolResultRecords;
+  /** Use this result when the preferred complete representation cannot fit. */
+  budgetFallback?: ToolExecutionResult;
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
   definitions?: import("../types.js").DefinitionHit[];
