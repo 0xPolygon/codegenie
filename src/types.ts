@@ -364,6 +364,7 @@ export type ToolResultMeta = {
   lookupNote?: string;
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
+  candidateScans?: Partial<Record<"head" | "base", { unparsedCandidatePaths: string[]; incompleteCandidatePaths: string[] }>>;
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   totalLines?: number;
   /** Inclusive source lines when each packable record is one consecutive line. */
@@ -1791,6 +1792,7 @@ export type ToolCallRecord = {
   lookupNote?: ToolResultMeta["lookupNote"];
   unparsedCandidatePaths?: ToolResultMeta["unparsedCandidatePaths"];
   incompleteCandidatePaths?: ToolResultMeta["incompleteCandidatePaths"];
+  candidateScans?: ToolResultMeta["candidateScans"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   totalLines?: number;
   deliveredLineRange?: ToolResultMeta["deliveredLineRange"];

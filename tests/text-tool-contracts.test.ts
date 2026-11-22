@@ -102,6 +102,13 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(result.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
     expect(hit.nextLine).toBe((hit.deliveredLineRange?.[1] ?? 0) + 1);
     expect(result.text).toContain(`source continues at src/long.ts@head:${hit.nextLine}`);
+    const callerCut = packTextToolResult(result, 700);
+    expect(callerCut.isError).not.toBe(true);
+    const firstUnread = Number(callerCut.text.match(/next: src\/long\.ts@head:(\d+)/u)?.[1]);
+    expect(firstUnread).toBeGreaterThan(1);
+    expect(firstUnread).toBeLessThan(hit.nextLine!);
+    expect(callerCut.text).not.toContain(`startLine=${hit.nextLine}`);
+    expect(callerCut.meta?.recovery).toBeUndefined();
     const rest = await fixture.tools.readRange("src/long.ts", hit.nextLine!, hit.symbol.lineRange[1], { kind: "head" });
     const source = (await fixture.tools.readRange("src/long.ts", 1, hit.symbol.lineRange[1], { kind: "head" })).text;
     expect(`${hit.text}\n${rest.text}`).toBe(source);

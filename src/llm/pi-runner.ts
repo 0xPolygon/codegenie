@@ -2518,6 +2518,7 @@ function recordToolCall(
     lookupNote: meta.lookupNote,
     unparsedCandidatePaths: meta.unparsedCandidatePaths,
     incompleteCandidatePaths: meta.incompleteCandidatePaths,
+    candidateScans: meta.candidateScans,
     deliveryStatus: meta.deliveryStatus,
     totalLines: meta.totalLines,
     deliveredLineRange: meta.deliveredLineRange,

@@ -449,11 +449,19 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           return withSourceMeta(head, "auto", "head", false, false);
         }
         const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto");
+        const candidateScans = {
+          head: { unparsedCandidatePaths: head.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: head.meta.incompleteCandidatePaths ?? [] },
+          base: { unparsedCandidatePaths: base.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: base.meta.incompleteCandidatePaths ?? [] }
+        };
+        const withScans = <T extends { meta: ToolResultMeta }>(measurement: ToolMeasurement<T>): ToolMeasurement<T> => {
+          const meta = { ...measurement.meta, candidateScans };
+          return { ...measurement, meta, value: { ...measurement.value, meta } };
+        };
         if (base.resultCount && base.resultCount > 0 && base.meta.lookupStatus !== "unavailable") {
-          return withSourceMeta(base, "auto", "base", true, head.meta.lookupStatus === "not_found");
+          return withScans(withSourceMeta(base, "auto", "base", true, head.meta.lookupStatus === "not_found"));
         }
-        if (head.meta.lookupStatus === "unavailable") return withSourceMeta(head, "auto", "head", false, false);
-        return withSourceMeta(base, "auto", "base", true, false);
+        if (head.meta.lookupStatus === "unavailable") return withScans(withSourceMeta(head, "auto", "head", false, false));
+        return withScans(withSourceMeta(base, "auto", "base", true, false));
       }
     );
   }
@@ -783,6 +791,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.lookupNote !== undefined ? { lookupNote: measurement.meta.lookupNote } : {}),
           ...(measurement.meta.unparsedCandidatePaths !== undefined ? { unparsedCandidatePaths: measurement.meta.unparsedCandidatePaths } : {}),
           ...(measurement.meta.incompleteCandidatePaths !== undefined ? { incompleteCandidatePaths: measurement.meta.incompleteCandidatePaths } : {}),
+          ...(measurement.meta.candidateScans !== undefined ? { candidateScans: measurement.meta.candidateScans } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
           ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),

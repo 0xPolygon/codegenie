@@ -8138,7 +8138,7 @@ it.each(["full", "cached", "mixed-degraded", "truncated", "error", "unknown-revi
   const tool: ToolDefinition = { name: "find_definition", description: "Find candidates", parameters: Type.Object({ symbolName: Type.String(), source: Type.Object({ kind: Type.String() }) }),
     execute: async () => ({ text: JSON.stringify(definitions), definitions,
       ...(mode === "error" ? { isError: true } : {}), meta: { backend: "text", precision: "text", degraded: mode === "mixed-degraded",
-        ...(mode === "mixed-degraded" ? { degradationReason: "1 definition candidate(s) used text fallback", unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"] } : {}),
+        ...(mode === "mixed-degraded" ? { degradationReason: "1 definition candidate(s) used text fallback", unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"], candidateScans: { head: { unparsedCandidatePaths: ["docs/head.md"], incompleteCandidatePaths: [] }, base: { unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"] } } } : {}),
         lookupStatus: "ambiguous", deliveryStatus: mode === "truncated" ? "truncated" : "full",
         ...(mode !== "unknown-revision" ? { sourceUsed: "base" as const } : {}) } }) };
   const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "lookup", name: tool.name, arguments: { symbolName: "ReadForUser", source: { kind: "auto" } } }]), assistant([validSubmitReviewCall("done")])]);
@@ -8157,7 +8157,8 @@ it.each(["full", "cached", "mixed-degraded", "truncated", "error", "unknown-revi
     toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 2000 } });
   expect(captured[0]!.lookupStatus).toBe("ambiguous");
   if (mode === "mixed-degraded") expect(telemetry.toolCalls[0]).toMatchObject({
-    unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"]
+    unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"],
+    candidateScans: { head: { unparsedCandidatePaths: ["docs/head.md"], incompleteCandidatePaths: [] }, base: { unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"] } }
   });
   if (mode === "full" || mode === "cached" || mode === "mixed-degraded") {
     expect(captured[0]!.repositoryEvidence).toEqual(definitions.slice(0, 1).map((hit, i) => ({ id: `lookup/hit-${i}`, tool: "find_definition",

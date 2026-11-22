@@ -100,11 +100,17 @@ describe("repository intelligence", () => {
     const rawDiff = git(repo, ["diff", base, head]);
     const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head,
       mergeBase: base, headSha: head, commits: [], rawDiff });
-    const tools = new RepositoryToolsFacade({ diff: parseDiff(rawDiff), resolver, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: recordingTelemetry() });
+    const telemetry = recordingTelemetry();
+    const tools = new RepositoryToolsFacade({ diff: parseDiff(rawDiff), resolver, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry });
     const result = await tools.findDefinition("DeletedHelper", { source: { kind: "auto" } });
     expect(result.definitions[0]?.symbol).toMatchObject({ path: "decoder/registry.go", name: "DeletedHelper" });
     expect(result.meta).toMatchObject({ lookupStatus: "found", sourceUsed: "base", sourceFallback: true });
     expect(result.meta.baseOnly).toBeUndefined();
+    expect(result.meta.candidateScans).toEqual({
+      head: { unparsedCandidatePaths: ["docs/plan.md"], incompleteCandidatePaths: [] },
+      base: { unparsedCandidatePaths: [], incompleteCandidatePaths: [] }
+    });
+    expect(telemetry.toolCalls.at(-1)?.candidateScans).toEqual(result.meta.candidateScans);
   });
 
   it("directs large unsupported files to bounded source reads at the requested revision", async () => {
