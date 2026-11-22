@@ -36,7 +36,6 @@ import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "
 import {
   buildHumanAttentionNotes,
   humanAttentionArtifact,
-  selectHumanAttentionForOutput,
   selectHumanAttentionGroups,
   MAX_HUMAN_ATTENTION_NOTES
 } from "./human-attention.js";
@@ -297,15 +296,9 @@ export async function dedupeRankAndComposeReview(
         ...regroupedAttention.groups.filter(group => !isSuppressedEvidencePacketGroup(group))
       ]
     : regroupedAttention.groups;
-  const humanAttention = selectHumanAttentionForOutput(
-    prioritizedPacketGroups,
-    [], // Finding overlap alone does not establish that every question was answered.
-    packetsById,
-    [], // Packet questions require explicit evidence-backed reconciliation, not verdict/word similarity.
-    telemetry
-  );
+  const humanAttention = selectHumanAttentionGroups(prioritizedPacketGroups);
   const prioritizedPacketNotes = new Set(
-    humanAttention.selectedGroups.filter(isSuppressedEvidencePacketGroup).map(group => group.representative.question)
+    humanAttention.groups.filter(isSuppressedEvidencePacketGroup).map(group => group.representative.question)
   );
   const verifierOutcomes = reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:") && outcome.remainingQuestion.length > 0);
   const verifierQuestions = new Set(verifierOutcomes.map(outcome => outcome.remainingQuestion));
