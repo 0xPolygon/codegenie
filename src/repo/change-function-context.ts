@@ -12,19 +12,19 @@ export type FunctionContext = {
   head: SymbolInfo;
   aligned: boolean;
 };
+export type FunctionPair = Pick<FunctionContext, "base" | "head">;
 
-/** Locate both declarations syntactically, then verify any shared rows against both blobs. */
-export async function changeFunctionContext(
-  file: DiffFile, hunk: DiffHunk, base: ChangeSource | undefined, head: ChangeSource | undefined, registry: LanguageAdapterRegistry
-): Promise<FunctionContext | string> {
-  if (!base || !head) return "Function context unavailable: a pinned file side is absent.";
-  const parseFunctions = async (source: ChangeSource) => {
-    const adapter = registry.forPath(source.content.path);
-    const parsed = await adapter.parse({ ...source.content, language: adapter.id });
-    if (!parsed.tree || parsed.hasErrors) return undefined;
-    return adapter.listSymbols(parsed).filter(symbol => symbol.kind === "function" || symbol.kind === "method");
-  };
-  const [baseFunctions, headFunctions] = await Promise.all([parseFunctions(base), parseFunctions(head)]);
+export async function parseChangeFunctions(source: ChangeSource, registry: LanguageAdapterRegistry): Promise<SymbolInfo[] | undefined> {
+  const adapter = registry.forPath(source.content.path);
+  const parsed = await adapter.parse({ ...source.content, language: adapter.id });
+  if (!parsed.tree || parsed.hasErrors) return undefined;
+  return adapter.listSymbols(parsed).filter(symbol => symbol.kind === "function" || symbol.kind === "method");
+}
+
+/** Locate both declarations syntactically, without rendering their bodies per hunk. */
+export function selectChangeFunctions(
+  hunk: DiffHunk, base: ChangeSource, head: ChangeSource, baseFunctions: SymbolInfo[] | undefined, headFunctions: SymbolInfo[] | undefined
+): FunctionPair | string {
   if (!baseFunctions || !headFunctions) return "Function context unavailable: the base or head syntax could not be verified.";
 
   const removed = hunk.lines.flatMap(line => line.kind === "delete" && line.oldLineNumber !== undefined ? [line.oldLineNumber] : []);
@@ -46,13 +46,20 @@ export async function changeFunctionContext(
   if (baseRange[1] > base.lines.length || headRange[1] > head.lines.length) {
     return "Function context unavailable: a declaration extends beyond the pinned source.";
   }
+  return { base: baseFunction, head: headFunction };
+}
+
+/** A shared row is presented once only after verifying it against both Git blobs. */
+export function changeFunctionContext(file: DiffFile, base: ChangeSource, head: ChangeSource, pair: FunctionPair): FunctionContext {
+  const baseRange = pair.base.lineRange;
+  const headRange = pair.head.lineRange;
   const aligned = alignFunctions(file.hunks, base.lines, head.lines, baseRange, headRange);
-  if (aligned) return { rows: aligned, base: baseFunction, head: headFunction, aligned: true };
+  if (aligned) return { ...pair, rows: aligned, aligned: true };
   const baseRows = base.lines.slice(baseRange[0] - 1, baseRange[1]).map((content, i): PacketLine =>
-    ({ kind: "delete", oldLine: baseRange[0] + i, content }));
+    ({ kind: "context", oldLine: baseRange[0] + i, content }));
   const headRows = head.lines.slice(headRange[0] - 1, headRange[1]).map((content, i): PacketLine =>
-    ({ kind: "add", newLine: headRange[0] + i, content }));
-  return { rows: [...baseRows, ...headRows], base: baseFunction, head: headFunction, aligned: false };
+    ({ kind: "context", newLine: headRange[0] + i, content }));
+  return { ...pair, rows: [...baseRows, ...headRows], aligned: false };
 }
 
 function within(line: number | undefined, [first, last]: Range): boolean {

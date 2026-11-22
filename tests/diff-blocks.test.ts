@@ -195,6 +195,12 @@ describe("read_change", () => {
       const resumed = await fixture.change({ ...args, cursor });
       expect(resumed.packable?.records[1]).toBe(result.packable?.records[cut.packable!.records.length]);
       expect(packTextToolResult(result, 80)).toMatchObject({ isError: true, meta: { deliveryStatus: "budget_rejected" } });
+      const grouped = await fixture.change({ path, context: "function" });
+      const hunks = fixture.diff.files[0]!.hunks;
+      expect(hunks.length).toBeGreaterThan(1);
+      for (const hunk of hunks) expect(grouped.text).toContain(`hunk ${hunk.id} |`);
+      expect(grouped.packable?.keepWithNext?.filter(Boolean)).toHaveLength(1);
+      for (const row of writes.trimEnd().split("\n")) expect(grouped.text.split(row)).toHaveLength(2);
     } finally {
       fixture.dispose();
     }
@@ -235,8 +241,9 @@ describe("read_change", () => {
     try {
       const result = await fixture.change({ path, context: "function" });
       expect(result.text).toContain("Alignment unavailable; base and head are shown independently.");
-      expect(result.text).toContain("   1      -export function existing()");
-      expect(result.text).toContain("        1 +export function replacement()");
+      expect(result.text).toContain("   1       export function existing()");
+      expect(result.text).toContain("        1  export function replacement()");
+      expect(result.text).not.toMatch(/[+-]export function/u);
     } finally {
       fixture.dispose();
     }

@@ -68,7 +68,7 @@ function diffDeliveryNotes(groups: DiffRecordGroups, omittedCount: number, count
     : `next: ${groups.next}; ${count ? "use read_range at the stated revision" : "use read_range or narrow search_files at the stated revision"}`);
   if (omittedCount) {
     const other = omittedCount - groups.omittedLabels.length;
-    notes.push(`omitted hunks: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);
+    notes.push(`omitted ${groups.groupedHunks ? "change blocks" : "hunks"}: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);
   }
   return notes;
 }
@@ -84,6 +84,7 @@ function diffGroupsAfterCut(groups: DiffRecordGroups, count: number, next: strin
       rendered,
       lineEnds: groups.lineEnds,
       omittedLabels: [...omitted.map(hunk => hunk.label), ...groups.omittedLabels].slice(0, MAX_OMITTED_DIFF_LABELS),
+      ...(groups.groupedHunks ? { groupedHunks: true } : {}),
       ...(nextPosition ? { next: nextPosition } : {}),
       ...(nextCursor ? { nextCursor } : {})
     }

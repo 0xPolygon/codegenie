@@ -1,7 +1,8 @@
 import type { DiffRecordGroups, ToolResultRecords } from "../llm/llm-runner.js";
 import type { DiffFile, DiffHunk, PacketLine, ToolResultMeta, UnifiedDiff } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
-import { changeFunctionContext, type ChangeSource, type FunctionContext } from "./change-function-context.js";
+import { changeFunctionContext, parseChangeFunctions, selectChangeFunctions,
+  type ChangeSource, type FunctionContext, type FunctionPair } from "./change-function-context.js";
 import { MAX_OMITTED_DIFF_LABELS } from "./diff-blocks.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { packetDiffLine, renderNumberedDiffLine } from "./numbered-diff.js";
@@ -17,6 +18,7 @@ const EXACT = { backend: "text", precision: "exact", degraded: false } as const;
 export type ReadChangeInput = { path?: string; hunkId?: string; context?: "function"; cursor?: string };
 export type ReadChangeResult = { meta: ToolResultMeta; packable?: ToolResultRecords; text?: string };
 type Target = { file: DiffFile; hunk: DiffHunk };
+type SourceTarget = { file: DiffFile; hunks: [DiffHunk, ...DiffHunk[]]; comparison?: FunctionPair | string };
 type Position = { block: number; row: number };
 type Sides = { base: ChangeSource | undefined; head: ChangeSource | undefined };
 type DirectoryRow = { text: string; label: string; hunkId?: string };
@@ -24,6 +26,7 @@ type SourceBlock = { title: string; rows: PacketLine[] };
 
 export class ReadChangeService {
   private readonly fileSides = new Map<DiffFile, Promise<Sides>>();
+  private readonly functionSymbols = new WeakMap<ChangeSource, ReturnType<typeof parseChangeFunctions>>();
   private targets?: Target[];
   private directory?: DirectoryRow[];
 
@@ -63,7 +66,7 @@ export class ReadChangeService {
       return empty(knownPath ? "The changed path has no textual hunks. Call read_change without a selector for its status."
         : "No changed hunk matched the path or hunk ID. Call read_change without a selector for the pinned changes.");
     }
-    return this.readSourcePage(targets, binding, input);
+    return this.readSourcePage(await this.sourceTargets(targets, input.context), binding, input);
   }
 
   private directoryRows(): DirectoryRow[] {
@@ -113,22 +116,68 @@ export class ReadChangeService {
     };
   }
 
-  private async readSourcePage(targets: Target[], binding: string, input: ReadChangeInput): Promise<ReadChangeResult> {
+  private async sourceTargets(targets: Target[], context: ReadChangeInput["context"]): Promise<SourceTarget[]> {
+    if (!context) return targets.map(({file, hunk}) => ({ file, hunks: [hunk] }));
+
+    const groups: SourceTarget[] = [];
+    const functionGroups = new Map<DiffFile, Map<string, SourceTarget>>();
+    for (const {file, hunk} of targets) {
+      const {base, head} = await this.readSides(file);
+      if (!base || !head) {
+        groups.push({ file, hunks: [hunk], comparison: "Function context unavailable: a pinned file side is absent." });
+        continue;
+      }
+      const [baseFunctions, headFunctions] = await Promise.all([this.readFunctions(base), this.readFunctions(head)]);
+      const comparison = selectChangeFunctions(hunk, base, head, baseFunctions, headFunctions);
+      if (typeof comparison === "string") {
+        groups.push({ file, hunks: [hunk], comparison });
+        continue;
+      }
+      let fileGroups = functionGroups.get(file);
+      if (!fileGroups) {
+        fileGroups = new Map();
+        functionGroups.set(file, fileGroups);
+      }
+      const key = JSON.stringify([comparison.base.lineRange, comparison.head.lineRange]);
+      const existing = fileGroups.get(key);
+      if (existing) {
+        existing.hunks.push(hunk);
+      } else {
+        const group: SourceTarget = { file, hunks: [hunk], comparison };
+        fileGroups.set(key, group);
+        groups.push(group);
+      }
+    }
+    return groups;
+  }
+
+  private readFunctions(source: ChangeSource): ReturnType<typeof parseChangeFunctions> {
+    let pending = this.functionSymbols.get(source);
+    if (!pending) {
+      pending = parseChangeFunctions(source, this.registry);
+      this.functionSymbols.set(source, pending);
+    }
+    return pending;
+  }
+
+  private async readSourcePage(targets: SourceTarget[], binding: string, input: ReadChangeInput): Promise<ReadChangeResult> {
     const start = input.cursor === undefined ? { block: 0, row: 0 } : readPosition(decodeToolCursor(input.cursor, binding), targets.length);
     const packable: ToolResultRecords = { open: "", records: [], labels: [], cursors: [], keepWithNext: [], separator: "\n", close: "" };
-    const groups: DiffRecordGroups = { rendered: [], lineEnds: [], omittedLabels: [] };
+    const groups: DiffRecordGroups = { rendered: [], lineEnds: [], omittedLabels: [],
+      ...(targets.some(target => target.hunks.length > 1) ? { groupedHunks: true } : {}) };
     packable.diffGroups = groups;
     const deliveredFiles = new Set<DiffFile>();
     let next: Position | undefined;
     let remaining = MAX_SOURCE_CHARS;
     for (let block = start.block; block < targets.length; block++) {
-      const { file, hunk } = targets[block]!;
+      const target = targets[block]!;
+      const { file, hunks: [hunk] } = target;
       const rowOffset = block === start.block ? start.row : 0;
       const sides = await this.readSides(file);
-      const source = await this.sourceBlock({ file, hunk }, sides, input.context);
+      const source = this.sourceBlock(target, sides);
       if (rowOffset >= source.rows.length) throw new CodegenieError("invalid_args", "Cursor does not identify a diff row.");
       const available = source.rows.slice(rowOffset);
-      const hunkName = hunkLabel(file, hunk);
+      const hunkName = targetLabel(target);
       const lengths = deliveredFiles.has(file) ? "" : "\n" + fileLengths(file, sides);
       const firstRecord = packable.records.length;
       const baseStart = available.find(line => line.oldLine !== undefined)?.oldLine ?? 0;
@@ -169,19 +218,20 @@ export class ReadChangeService {
     }
     if (next) {
       groups.nextCursor = encodeToolCursor(binding, next);
-      const firstOmitted = next.block + Number(groups.rendered.at(-1)?.label === hunkLabel(targets[next.block]!.file, targets[next.block]!.hunk));
-      groups.omittedLabels = targets.slice(firstOmitted, firstOmitted + MAX_OMITTED_DIFF_LABELS).map(({file, hunk}) => hunkLabel(file, hunk));
-      if (!packable.records.length) packable.open = "No whole diff line fits the result limit. Narrow the selection or use search_files at the stated source location.";
+      const firstOmitted = next.block + Number(groups.rendered.at(-1)?.label === targetLabel(targets[next.block]!));
+      groups.omittedLabels = targets.slice(firstOmitted, firstOmitted + MAX_OMITTED_DIFF_LABELS).map(targetLabel);
+      if (!packable.records.length) packable.open = "No whole diff line fits the result limit. Narrow the selection or use read_range at the stated source location.";
       return { meta: deliveryMeta(packable.records.length, true, targets.length - firstOmitted), packable };
     }
     return { meta: deliveryMeta(packable.records.length, false, 0), packable };
   }
 
-  private async sourceBlock({file, hunk}: Target, sides: Sides, context: ReadChangeInput["context"]): Promise<SourceBlock> {
-    if (!context) return { title: "", rows: hunk.lines.map(packetDiffLine) };
-    const comparison = await changeFunctionContext(file, hunk, sides.base, sides.head, this.registry);
-    if (typeof comparison === "string") return { title: comparison, rows: hunk.lines.map(packetDiffLine) };
-    return { title: functionHeading(comparison), rows: comparison.rows };
+  private sourceBlock({file, hunks: [hunk], comparison}: SourceTarget, {base, head}: Sides): SourceBlock {
+    if (typeof comparison !== "object" || !base || !head) {
+      return { title: typeof comparison === "string" ? comparison : "", rows: hunk.lines.map(packetDiffLine) };
+    }
+    const context = changeFunctionContext(file, base, head, comparison);
+    return { title: functionHeading(context), rows: context.rows };
   }
 
   private readSides(file: DiffFile): Promise<Sides> {
@@ -238,11 +288,13 @@ function fileLengths(file: DiffFile, sides: Sides): string {
 
 function functionHeading({base, head, aligned}: FunctionContext): string {
   const names = `Function intervals: base ${base.name} ${base.lineRange.join("-")} | head ${head.name} ${head.lineRange.join("-")}.`;
-  return aligned ? names : names + " Alignment unavailable; base and head are shown independently. Side-only rows here are not a list of edits.";
+  return aligned ? names : names + " Alignment unavailable; base and head are shown independently. These rows do not identify edits.";
 }
 
-function hunkLabel(file: DiffFile, hunk: DiffHunk): string {
-  return `${JSON.stringify(file.path)} hunk ${hunk.id} | base ${interval(hunk.oldStart, hunk.oldLines)} | head ${interval(hunk.newStart, hunk.newLines)}`;
+function targetLabel({file, hunks}: SourceTarget): string {
+  return hunks.map(hunk =>
+    `${JSON.stringify(file.path)} hunk ${hunk.id} | base ${interval(hunk.oldStart, hunk.oldLines)} | head ${interval(hunk.newStart, hunk.newLines)}`
+  ).join("\n");
 }
 
 function rowLabel(file: DiffFile, hunk: DiffHunk, line: PacketLine): string {
