@@ -5837,6 +5837,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(telemetry.toolCalls[1]).toMatchObject({ tool: toolName, status: "rejected", errorCode: "budget_exhausted",
         backendExecuted: true, degraded: false, lookupStatus: "unavailable", deliveryStatus: "budget_rejected",
         budgetState: { remainingResultChars: 9 } });
+      expect(telemetry.toolCalls[1]).not.toHaveProperty("truncated");
       expect(telemetry.toolCalls[2]).toMatchObject({ tool: toolName, status: "rejected", backendExecuted: false,
         errorCode: "budget_exhausted", budgetState: { remainingResultChars: 9 } });
     });
@@ -6519,7 +6520,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls[0]).toMatchObject({
       tool: "read_symbol",
       status: "rejected",
-      truncated: true,
       errorCode: "budget_exhausted",
       budgetState: expect.objectContaining({
         maxSingleToolResultChars: 300,

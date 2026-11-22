@@ -964,9 +964,10 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   resultText = `${reason} No result was delivered; this is not a zero-match result.`;
                   // A backend continuation can point beyond source that this
                   // caller never received; do not expose it as a recovery.
-                  const { recovery: _recovery, deliveredLineRange: _range, ...meta } = outcome.result.meta ?? defaultToolMeta();
+                  const { recovery: _recovery, deliveredLineRange: _range, truncated: _truncated,
+                    omittedCount: _omittedCount, omittedCountIsLowerBound: _omittedCountIsLowerBound, ...meta } = outcome.result.meta ?? defaultToolMeta();
                   outcome.result = { text: resultText, isError: true, errorCode: "budget_exhausted",
-                    meta: { ...meta, truncated: true, deliveryStatus: "budget_rejected",
+                    meta: { ...meta, deliveryStatus: "budget_rejected",
                       degradationReason: (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" } };
                   outcome.status = "rejected";
                   outcome.errorCode = "budget_exhausted";
