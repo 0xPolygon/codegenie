@@ -7,6 +7,7 @@ import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { SearchBudgetError } from "../repo/search.js";
+import { buildFindUsagesTool } from "./usage-tool.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -34,7 +35,9 @@ export type RepositoryToolDefinitionOptions = {
 };
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
-const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {};
+const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
+  find_usages: buildFindUsagesTool
+};
 
 export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
   if (surface === "six" && SIX_TOOL_NAMES.some(name => !sixToolFactories[name])) {

@@ -26,8 +26,10 @@ export function buildFindUsagesTool(tools: RepositoryTools): ToolDefinition {
         const run = withRepositoryToolCallContext(tools, { stage: 7, initiator: "model", record: false },
           () => tools.findUsages!(name, { ...options, signal }));
         const result = await raceAbort(run, signal);
-        return { text: packUsagePage(result.page, name, Number.MAX_SAFE_INTEGER).text,
-          usagePage: { name, page: result.page }, meta: result.meta };
+        const canonical = packUsagePage(result.page, name, Number.MAX_SAFE_INTEGER);
+        return { text: canonical.text, usagePage: { name, page: result.page },
+          meta: canonical.isError ? { ...result.meta, deliveryStatus: "budget_rejected", degradationReason: "usage_scan_limit" } : result.meta,
+          ...(canonical.isError ? { isError: true, errorCode: "budget_exhausted" as const } : {}) };
       } catch (error) {
         if (isCodegenieError(error) && error.code === "llm_call_failed") throw error;
         if (isCodegenieError(error)) return { text: `tool error: ${error.code}: ${error.message}`, isError: true,

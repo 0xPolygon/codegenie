@@ -10,6 +10,7 @@ export function packUsageToolResult(input: ToolExecutionResult, allowance: numbe
   const originalMeta = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
   const meta = { ...originalMeta, deliveryStatus: delivery.isError ? "budget_rejected" as const
     : delivery.nextCursor ? "truncated" as const : delivery.deliveredCount ? "full" as const : "empty" as const,
+    ...(originalMeta.usageDelivery ? { usageDelivery: { ...originalMeta.usageDelivery, deliveredRows: delivery.deliveredCount } } : {}),
     ...(delivery.nextCursor ? { truncated: true, ...(!originalMeta.degraded && delivery.deliveredCount < input.usagePage.page.entries.length
       ? { degradationReason: "tool_result_budget" } : {}) } : {}) };
   return { ...canonical, text: delivery.text, meta, ...(delivery.isError ? { isError: true as const, errorCode: "budget_exhausted" as const } : {}) };
@@ -21,21 +22,30 @@ export function packUsagePage(page: UsagePage, name: string, allowance: number):
     const entries = page.entries.slice(0, count);
     const nextCursor = count < page.entries.length ? page.entries[count]!.cursor : page.nextCursor;
     const result: string[] = [
-      `find_usages ${JSON.stringify(name)} @${page.revision}; scope ${page.scope}${page.pathGlob ? `; pathGlob ${JSON.stringify(page.pathGlob)}` : ""}; delivered ${count} of ${page.entries.length} discovered rows; candidate files ${page.candidateFiles}; scanned ${page.filesScanned}; parsed ${page.filesParsed}.`,
-      "Bindings are not resolved; aliases and re-exports are lexical evidence. Renamed re-exports in other files may be missed."
+      `find_usages ${JSON.stringify(name)} @${page.revision}; scope ${page.scope}${page.pathGlob ? `; pathGlob ${JSON.stringify(page.pathGlob)}` : ""}; delivered ${count} of ${page.entries.length} discovered rows; visited through candidate file ${page.candidateProgress} of ${page.candidateFiles} (last may be partial); parsed ${page.filesParsed} on this page.`,
+      "Bindings are not resolved; aliases and re-exports are lexical evidence. Renamed re-exports in other files may be missed. Binary files are excluded."
     ];
     let previousPath: string | undefined;
+    let previousGroup: string | undefined;
     for (const [index, entry] of entries.entries()) {
       const { row } = entry;
       if (row.path !== previousPath) {
         const lineNumbers = [...new Set(entries.slice(index).filter(next => next.row.path === row.path).map(next => next.row.line))];
         result.push(`${JSON.stringify(row.path)}@${row.revision}: ${row.fileLines} lines; delivered hit lines ${lineNumbers.join(", ")}.`);
         previousPath = row.path;
+        previousGroup = undefined;
       }
+      const group = entry.kind === "syntactic" ? JSON.stringify(entry.row.enclosing) : "text-only";
+      if (group !== previousGroup) { result.push(`Occurrences in ${group}:`); previousGroup = group; }
       result.push(renderEntry(entry));
     }
     if (page.omissions.length) result.push(`Incomplete evidence: ${page.omissions.join("; ")}${page.omittedDiagnostics ? `; ${page.omittedDiagnostics} additional files` : ""}.`);
-    if (nextCursor) result.push(`Scan or delivery incomplete. Continue with cursor ${nextCursor}.`);
+    if (nextCursor) {
+      const reason = count < page.entries.length ? "Result budget stopped delivery"
+        : page.stopReason === "file_scan_limit" ? `Scan incomplete after visiting ${page.candidateProgress} of ${page.candidateFiles} candidate files`
+          : "Page row limit reached";
+      result.push(`${reason}. Continue with cursor ${nextCursor}.`);
+    }
     else if (!page.coverageComplete) result.push("Scan ended with unverified text or incomplete files; absence of a syntax row does not prove absence of a use.");
     else result.push("Scan complete for the selected scope; binding and dynamic dispatch remain unresolved.");
     return { text: result.join("\n"), deliveredCount: count, ...(nextCursor ? { nextCursor } : {}) };
@@ -62,7 +72,9 @@ function renderEntry(entry: UsageEntry): string {
   const details = entry.kind === "text" ? "text-only mention" : [entry.row.role,
     `spelling=${JSON.stringify(entry.row.spelling)}`,
     ...(entry.row.receiver ? [`receiver=${JSON.stringify(entry.row.receiver)}`] : []),
+    ...(entry.row.packageName ? [`package=${JSON.stringify(entry.row.packageName)}`] : []),
     `enclosing=${JSON.stringify(entry.row.enclosing)}`,
     ...(entry.row.bindingEvidence ? [`import=${JSON.stringify(entry.row.bindingEvidence)}`] : [])].join("; ");
-  return `${location} ${details}\n${row.line}\t${row.excerpt === undefined ? "[source line omitted: too long to deliver]" : row.excerpt}`;
+  return `${location} ${details}\n${row.line}\t${row.excerpt === undefined
+    ? `[source line omitted: too long to deliver; inspect ${JSON.stringify(row.path)}@${row.revision} line ${row.line}]` : row.excerpt}`;
 }

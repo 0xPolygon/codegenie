@@ -9,12 +9,35 @@ import { packUsagePage } from "../src/llm/usage-result-packing.js";
 import { packUsageToolResult } from "../src/llm/usage-result-packing.js";
 import { buildFindUsagesTool } from "../src/llm/usage-tool.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
+import type { RepositoryTools } from "../src/types.js";
 
 describe("pinned usage search", () => {
+  it("reports an empty bounded scan as incomplete with a continuation", async () => {
+    const paths = Array.from({ length: 501 }, (_, index) => `src/${String(index).padStart(3, "0")}.ts`);
+    const source = { kind: "head" as const };
+    const parsed = await new TreeSitterService().parse({ path: paths[0]!, language: "typescript", content: "// run\n", source });
+    const resolver = { resolveSource: () => "pinned", grepFiles: async () => paths,
+      readFile: async (file: string) => ({ path: file, source, content: "// run\n", contentSha: "same", commit: "pinned" }) } as unknown as SourceResolver;
+    const registry = { forPath: () => ({ parse: async () => parsed }), languageForPath: () => "typescript" } as unknown as LanguageAdapterRegistry;
+    const page = await findUsages(resolver, registry, "run");
+    expect(page).toMatchObject({ filesScanned: 500, candidateFiles: 501, scanComplete: false, coverageComplete: false });
+    expect(page.entries).toHaveLength(0);
+    await expect(findUsages(resolver, registry, "run", { source: { kind: "base" }, cursor: page.nextCursor! }))
+      .rejects.toMatchObject({ code: "invalid_args" });
+    const delivery = packUsagePage(page, "run", 4_000);
+    expect(delivery).toMatchObject({ isError: true, errorCode: "budget_exhausted", nextCursor: page.nextCursor });
+    expect(delivery.text).toContain("file-scan limit");
+    const mockTools = { findUsages: async () => ({ page, meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false } }) } as unknown as RepositoryTools;
+    const outcome = await buildFindUsagesTool(mockTools).execute({ name: "run" }, new AbortController().signal);
+    expect(outcome).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected", degradationReason: "usage_scan_limit" } });
+  });
+
   it("pages source-backed calls and text leads without gaps, and binds cursors to the lookup", async () => {
     const fixture = await textRepository({
       "src/caller.ts": 'import { run as invoke } from "./worker";\nexport function caller() { invoke(); invoke(); }\n',
       "src/worker.ts": 'export function run() {}\n',
+      "src/esm.ts": 'import { run } from "./worker.js";\nexport function call() { run(); }\n',
+      "src/nested.ts": 'function outer() {\n  run();\n  consume(() => run());\n  run();\n}\n',
       "src/worker.test.ts": 'import { run } from "./worker";\ntest("run", () => run());\n',
       "docs/guide.md": 'run appears here\n'
     }, { "src/worker.ts": 'export function run() { return 1; }\n' });
@@ -25,16 +48,21 @@ describe("pinned usage search", () => {
         mergeBase: base, headSha: head, commits: [], rawDiff: "" });
       const registry = new LanguageAdapterRegistry(new TreeSitterService());
       let cursor: string | undefined;
+      let finalCoverage = true;
       const positions: string[] = [];
       do {
         const page = await findUsages(resolver, registry, "run", { source: { kind: "head" }, maxRows: 1, ...(cursor ? { cursor } : {}) });
         for (const row of [...page.rows, ...page.textMatches]) positions.push(`${row.path}:${row.line}:${row.column}`);
         if (page.nextCursor) await expect(findUsages(resolver, registry, "other", { cursor: page.nextCursor })).rejects.toMatchObject({ code: "invalid_args" });
+        finalCoverage = page.coverageComplete;
         cursor = page.nextCursor;
       } while (cursor);
       expect(new Set(positions).size).toBe(positions.length);
       expect(positions.filter(x => x.startsWith("src/caller.ts:2:"))).toHaveLength(2);
       expect(positions.some(x => x.startsWith("docs/guide.md:1:"))).toBe(true);
+      expect(finalCoverage).toBe(false);
+      const nested = positions.filter(x => x.startsWith("src/nested.ts:"));
+      expect(nested).toEqual(["src/nested.ts:2:3", "src/nested.ts:4:3", "src/nested.ts:3:17"]);
       const tests = await findUsages(resolver, registry, "run", { scope: "tests" });
       expect(tests.rows.length).toBeGreaterThan(0);
       expect(tests.rows.every(row => row.path === "src/worker.test.ts")).toBe(true);
@@ -45,6 +73,10 @@ describe("pinned usage search", () => {
       expect(viaFacade.meta).toMatchObject({ lookupStatus: "found", sourceUsed: "head" });
       expect(caller.rows.find(row => row.role === "call")?.bindingEvidence).toMatchObject({
         candidateModulePath: "src/worker.ts", binding: "unresolved"
+      });
+      const esm = await findUsages(resolver, registry, "run", { pathGlob: "src/esm.ts" });
+      expect(esm.rows.find(row => row.role === "call")?.bindingEvidence).toMatchObject({
+        moduleSpecifier: "./worker.js", candidateModulePath: "src/worker.ts", binding: "unresolved"
       });
       const fullText = packUsagePage(caller, "run", 100_000);
       expect(fullText.text.match(/src\/caller\.ts"@head: 2 lines/gu)).toHaveLength(1);
@@ -68,6 +100,12 @@ describe("pinned usage search", () => {
       expect(first.result.isError).toBeUndefined();
       const old = await findUsages(resolver, registry, "run", { source: { kind: "base" }, pathGlob: "src/worker.ts" });
       expect(old.rows[0]).toMatchObject({ revision: "base", excerpt: "export function run() {}" });
+      const noMatch = await findUsages(resolver, registry, "neverAppearsHere");
+      expect(noMatch).toMatchObject({ entries: [], scanComplete: true, coverageComplete: true, candidateFiles: 0 });
+      expect(packUsagePage(noMatch, "neverAppearsHere", 4_000).isError).toBeUndefined();
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(tool.execute(args, aborted.signal)).rejects.toMatchObject({ code: "llm_call_failed" });
     } finally { fixture.dispose(); }
   });
 });

@@ -10,14 +10,17 @@ export type UsageOccurrence = {
   spelling: string;
   role: UsageRole;
   receiver?: string;
+  packageName?: string;
   bindingEvidence?: { kind: "import_spelling" | "re_export_spelling"; importedName: string; localName: string; moduleSpecifier: string; line: number; binding: "unresolved";
     candidateModulePath?: string };
-  enclosing: { name?: string; searchName?: string; lineRange: [number, number]; kind: "declaration" | "anonymous" | "module";
+  enclosing: { name?: string; searchName?: string; lineRange: [number, number]; startColumn?: number; endColumnExclusive?: number; kind: "declaration" | "anonymous" | "module";
     nearestNamed?: { name: string; lineRange: [number, number] } };
 };
 
 const IDENTIFIERS = new Set(["identifier", "property_identifier", "field_identifier", "type_identifier"]);
 const DECLARATIONS = new Set(["function_declaration", "function_expression", "method_definition", "method_declaration", "func_literal", "arrow_function", "generator_function_declaration"]);
+const NAMED_BINDINGS = new Set(["variable_declarator", "class_declaration", "interface_declaration", "type_alias_declaration",
+  "type_spec", "const_spec", "var_spec", "method_elem", "parameter_declaration", "required_parameter", "optional_parameter"]);
 
 /** Classify lexical syntax only. This deliberately does not claim a runtime binding. */
 export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurrence[] | undefined {
@@ -26,6 +29,8 @@ export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurr
   const dotted = name.includes(".");
   const lastName = name.split(".").at(-1);
   const imports = importSpellings(tree.rootNode, lastName ?? "");
+  const packageName = file.language === "go" ? tree.rootNode.namedChildren.find(child => child.type === "package_clause")
+    ?.namedChildren.find(child => child.type === "package_identifier")?.text : undefined;
   const spellings = new Set([lastName, ...imports.filter(entry => entry.importedName === lastName).map(entry => entry.localName)]);
   const rows: UsageOccurrence[] = [];
   const visit = (node: Node): void => {
@@ -38,9 +43,10 @@ export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurr
         const role = syntaxRole(node, member);
         const receiver = member?.childForFieldName("object")?.text ?? member?.childForFieldName("operand")?.text;
         const bindingEvidence = (role === "re_export" ? reExportEvidence(node) : undefined)
-          ?? imports.find(entry => entry.localName === (receiver ?? node.text));
+          ?? imports.find(entry => entry.localName === (receiver ?? node.text)
+            || (role === "import" && entry.importedName === node.text && entry.line === node.startPosition.row + 1));
         rows.push({ path: file.path, line: node.startPosition.row + 1, column: node.startPosition.column + 1,
-          spelling, role, ...(receiver ? { receiver } : {}), ...(bindingEvidence ? { bindingEvidence } : {}),
+          spelling, role, ...(receiver ? { receiver } : {}), ...(packageName ? { packageName } : {}), ...(bindingEvidence ? { bindingEvidence } : {}),
           enclosing: enclosingDeclaration(node, tree.rootNode) });
       }
     }
@@ -75,6 +81,13 @@ function importSpellings(root: Node, sought: string): NonNullable<UsageOccurrenc
       const source = statement?.childForFieldName("source")?.text;
       if (importedName === sought && localName && source) entries.push({ kind: "import_spelling", importedName, localName,
         moduleSpecifier: source.slice(1, -1), line: node.startPosition.row + 1, binding: "unresolved" });
+    } else if (node.type === "namespace_import") {
+      const localName = node.namedChildren.find(child => child.type === "identifier")?.text;
+      let statement = node.parent;
+      while (statement && statement.type !== "import_statement") statement = statement.parent;
+      const source = statement?.childForFieldName("source")?.text;
+      if (localName && source) entries.push({ kind: "import_spelling", importedName: "*", localName,
+        moduleSpecifier: source.slice(1, -1), line: node.startPosition.row + 1, binding: "unresolved" });
     } else if (node.type === "import_spec") {
       const rawPath = node.childForFieldName("path")?.text;
       const moduleSpecifier = rawPath?.slice(1, -1);
@@ -98,14 +111,22 @@ function syntaxRole(node: Node, member?: Node): UsageRole {
     if (["export_specifier", "export_clause"].includes(p.type)) return "re_export";
     if (p.type === "call_expression") {
       const target = p.childForFieldName("function");
-      if (sameNode(target, member ?? node)) return member ? "member_call" : "call";
+      if (sameCallable(target, member ?? node)) return member ? "member_call" : "call";
       break;
     }
     if (DECLARATIONS.has(p.type) && sameNode(p.childForFieldName("name"), node)) return "declaration";
-    if (p.type === "variable_declarator" && sameNode(p.childForFieldName("name"), node)) return "declaration";
+    if (NAMED_BINDINGS.has(p.type) && (sameNode(p.childForFieldName("name"), node) || sameNode(p.childForFieldName("pattern"), node))) return "declaration";
     if (["expression_statement", "statement_block", "block", "source_file", "program"].includes(p.type)) break;
   }
   return "reference";
+}
+
+function sameCallable(target: Node | null, occurrence: Node): boolean {
+  let current = target;
+  while (current && ["instantiation_expression", "parenthesized_expression", "non_null_expression"].includes(current.type)) {
+    current = current.namedChildren[0] ?? null;
+  }
+  return sameNode(current, occurrence);
 }
 
 function enclosingDeclaration(node: Node, root: Node): UsageOccurrence["enclosing"] {
@@ -113,14 +134,15 @@ function enclosingDeclaration(node: Node, root: Node): UsageOccurrence["enclosin
     if (!DECLARATIONS.has(p.type)) continue;
     const display = declarationName(p);
     if (display) return { name: display, searchName: p.childForFieldName("name")?.text ?? display,
-      lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], kind: "declaration" };
+      lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], startColumn: p.startPosition.column + 1, endColumnExclusive: p.endPosition.column + 1, kind: "declaration" };
     let nearestNamed: { name: string; lineRange: [number, number] } | undefined;
     for (let outer = p.parent; outer; outer = outer.parent) {
       if (!DECLARATIONS.has(outer.type)) continue;
       const name = declarationName(outer);
       if (name) { nearestNamed = { name, lineRange: [outer.startPosition.row + 1, outer.endPosition.row + 1] }; break; }
     }
-    return { lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], kind: "anonymous", ...(nearestNamed ? { nearestNamed } : {}) };
+    return { lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], startColumn: p.startPosition.column + 1, endColumnExclusive: p.endPosition.column + 1,
+      kind: "anonymous", ...(nearestNamed ? { nearestNamed } : {}) };
   }
   return { kind: "module", lineRange: [1, Math.max(1, root.endPosition.row + (root.endPosition.column > 0 ? 1 : 0))] };
 }

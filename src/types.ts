@@ -388,6 +388,8 @@ export type ToolResultMeta = {
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
   candidateScans?: Partial<Record<"head" | "base", { unparsedCandidatePaths: string[]; incompleteCandidatePaths: string[] }>>;
+  usageDelivery?: { candidateFiles: number; filesScanned: number; filesParsed: number; discoveredRows: number; deliveredRows: number;
+    scanComplete: boolean; coverageComplete: boolean; stopReason?: "row_limit" | "file_scan_limit" };
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   totalLines?: number;
   /** Inclusive source lines when each packable record is one consecutive line. */
@@ -1831,6 +1833,7 @@ export type ToolCallRecord = {
   unparsedCandidatePaths?: ToolResultMeta["unparsedCandidatePaths"];
   incompleteCandidatePaths?: ToolResultMeta["incompleteCandidatePaths"];
   candidateScans?: ToolResultMeta["candidateScans"];
+  usageDelivery?: ToolResultMeta["usageDelivery"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   totalLines?: number;
   deliveredLineRange?: ToolResultMeta["deliveredLineRange"];

@@ -720,10 +720,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         precision: page.textMatches.length ? "text" : "syntactic", degraded: page.omissions.length > 0,
         ...(page.omissions.length ? { degradationReason: "some candidate files could not be fully inspected" } : {}),
         sourceUsed: page.revision, requestedSource: page.revision,
+        usageDelivery: { candidateFiles: page.candidateFiles, filesScanned: page.filesScanned, filesParsed: page.filesParsed,
+          discoveredRows: page.entries.length, deliveredRows: page.entries.length, scanComplete: page.scanComplete, coverageComplete: page.coverageComplete,
+          ...(page.stopReason ? { stopReason: page.stopReason } : {}) },
         lookupStatus: page.rows.length ? "found" : page.coverageComplete ? "not_found" : "unavailable",
         deliveryStatus: page.nextCursor ? "truncated" : page.entries.length ? "full" : "empty",
         ...(page.nextCursor ? { truncated: true, ...(page.omissions.length ? {} : { degradationReason: "usage_page_limit" }) } : {}) };
-      return { value: { page, meta }, meta, resultCount: page.entries.length, resultChars: JSON.stringify(page.entries).length };
+      return { value: { page, meta }, meta, engine: "git-grep", resultCount: page.entries.length, resultChars: JSON.stringify(page.entries).length };
     });
   }
 
@@ -821,6 +824,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.unparsedCandidatePaths !== undefined ? { unparsedCandidatePaths: measurement.meta.unparsedCandidatePaths } : {}),
           ...(measurement.meta.incompleteCandidatePaths !== undefined ? { incompleteCandidatePaths: measurement.meta.incompleteCandidatePaths } : {}),
           ...(measurement.meta.candidateScans !== undefined ? { candidateScans: measurement.meta.candidateScans } : {}),
+          ...(measurement.meta.usageDelivery !== undefined ? { usageDelivery: measurement.meta.usageDelivery } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
           ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),

@@ -146,6 +146,7 @@ type ToolRunOutcome = {
 
 type ToolRejectionReason =
   | "tool_result_budget_exhausted"
+  | "usage_scan_limit"
   | "tool_call_budget_exhausted"
   | "investigation_round_budget_exhausted"
   | "unknown_tool";
@@ -925,12 +926,14 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   : packSearchToolResult(outcome.result, remainingResultChars);
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
-                  outcome.rejectionReason = "tool_result_budget_exhausted";
+                  const usageScanLimited = Boolean(outcome.result.usagePage && outcome.result.usagePage.page.entries.length === 0
+                    && outcome.result.usagePage.page.nextCursor);
+                  outcome.rejectionReason = usageScanLimited ? "usage_scan_limit" : "tool_result_budget_exhausted";
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
                       degraded: !(meta.searchDelivery || meta.pathListDelivery || outcome.result.usagePage || toolCall.name === "read_diff_blocks"),
-                      degradationReason: "tool_result_budget_exhausted" };
+                      degradationReason: usageScanLimited ? "usage_scan_limit" : "tool_result_budget_exhausted" };
                   }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
@@ -2389,6 +2392,8 @@ function localBudgetRejectionReason(input: {
 function toolRejectionMessage(reason: Exclude<ToolRejectionReason, "unknown_tool">): string {
   let message: string;
   switch (reason) {
+    case "usage_scan_limit":
+      return "Usage search reached its scan limit; continue with the supplied cursor. This is not a zero-match result.";
     case "tool_result_budget_exhausted":
       message = "tool result character budget exhausted";
       break;
@@ -2529,6 +2534,7 @@ function recordToolCall(
     unparsedCandidatePaths: meta.unparsedCandidatePaths,
     incompleteCandidatePaths: meta.incompleteCandidatePaths,
     candidateScans: meta.candidateScans,
+    usageDelivery: meta.usageDelivery,
     deliveryStatus: searchOrListBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
     totalLines: meta.totalLines,
     deliveredLineRange: meta.deliveredLineRange,
@@ -2538,7 +2544,7 @@ function recordToolCall(
     backendExecuted: outcome.backendExecuted,
     cacheHitKind: outcome.cacheHitKind,
     cacheEvictedEntries: outcome.cacheEvictedEntries,
-    resultCount: meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
+    resultCount: meta.usageDelivery?.deliveredRows ?? meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,
