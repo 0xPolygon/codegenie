@@ -1,5 +1,6 @@
-import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
+import type { DiffRecordGroups, ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
+import { MAX_OMITTED_DIFF_LABELS } from "../repo/diff-blocks.js";
 import { earlierSearchPosition, hasSearchContext, searchContextPosition, searchCutNotice, searchDeliveryMeta } from "../repo/search.js";
 import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
@@ -11,8 +12,43 @@ function renderRecordOpening(open: string, meta: ToolResultMeta): string {
 
 /** Derive the canonical text and its packable representation together. */
 export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
-  const { open, records, separator, close } = packable;
-  return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta), packable, meta };
+  const { open, records, separator, close, diffGroups, labels } = packable;
+  const notes = diffGroups && meta.truncated
+    ? [`truncation: ${meta.degradationReason ?? "diff_result_limit"}`, ...diffDeliveryNotes(diffGroups, meta.omittedCount ?? 0, records.length, labels?.at(-1))]
+    : [];
+  return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta, notes), packable, meta };
+}
+
+function diffDeliveryNotes(groups: DiffRecordGroups, omittedCount: number, count: number, last?: string): string[] {
+  const notes: string[] = [];
+  const hunk = groups.rendered.at(-1);
+  const ends = groups.lineEnds[count - 1];
+  if (last && hunk && ends) {
+    const [base, head] = ends;
+    notes.push(`last delivered: ${last}`,
+      `last hunk delivered: base ${base === undefined ? "none" : `${hunk.baseStart}-${base}`}, head ${head === undefined ? "none" : `${hunk.headStart}-${head}`}`);
+  }
+  if (groups.next) notes.push(`next: ${groups.next}; ${count ? "use read_range at the stated revision" : "use read_range or narrow search_files at the stated revision"}`);
+  if (omittedCount) {
+    const other = omittedCount - groups.omittedLabels.length;
+    notes.push(`omitted hunks: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);
+  }
+  return notes;
+}
+
+function diffGroupsAfterCut(groups: DiffRecordGroups, count: number, next: string | undefined) {
+  const rendered = groups.rendered.filter(hunk => hunk.firstRecord < count);
+  const omitted = groups.rendered.slice(rendered.length);
+  const nextPosition = next ?? groups.next;
+  return {
+    omittedCount: omitted.length,
+    groups: {
+      rendered,
+      lineEnds: groups.lineEnds,
+      omittedLabels: [...omitted.map(hunk => hunk.label), ...groups.omittedLabels].slice(0, MAX_OMITTED_DIFF_LABELS),
+      ...(nextPosition ? { next: nextPosition } : {})
+    }
+  };
 }
 
 /** Keep the longest prefix of whole records that fits with its closing text and status. */
@@ -20,7 +56,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
 
   const { packable, sourceLineRange, ...result } = input;
-  const { open, records, separator, close, labels, keepWithNext } = packable;
+  const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;
   // A backend continuation may be beyond the first line omitted by this cut.
   // The range/record locator below is the authoritative caller continuation.
   const { deliveredLineRange, recovery: _backendRecovery, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
@@ -34,16 +70,19 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     recordChars -= records[count]!.length;
     if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
+    const diffCut = diffGroups ? diffGroupsAfterCut(diffGroups, count, labels?.[count]) : undefined;
     const meta: ToolResultMeta = {
       ...originalMeta,
       truncated: true,
       deliveryStatus: "truncated",
       degradationReason,
-      omittedCount: (originalMeta.omittedCount ?? 0) + records.length - count,
+      omittedCount: (originalMeta.omittedCount ?? 0) + (diffCut?.omittedCount ?? records.length - count),
       ...(range ? { deliveredLineRange: range } : {})
     };
     const notes = ["truncation: tool_result_budget"];
-    if (!range) {
+    if (diffCut) {
+      notes.push(...diffDeliveryNotes(diffCut.groups, meta.omittedCount ?? 0, count, labels?.[count - 1]));
+    } else if (!range) {
       const last = labels?.[count - 1];
       const next = labels?.[count];
       if (last) notes.push(`last delivered: ${last}`);
@@ -55,7 +94,8 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     if (bodyLength + footer.length <= allowance) {
       const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
         ...(labels ? { labels: labels.slice(0, count) } : {}),
-        ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}) };
+        ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}),
+        ...(diffCut ? { diffGroups: { ...diffCut.groups, lineEnds: diffCut.groups.lineEnds.slice(0, count) } } : {}) };
       return {
         ...result,
         text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
@@ -71,13 +111,14 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     truncated: true,
     deliveryStatus: "budget_rejected",
     degradationReason,
-    omittedCount: (originalMeta.omittedCount ?? 0) + records.length
+    omittedCount: (originalMeta.omittedCount ?? 0) + (diffGroups?.rendered.length ?? records.length)
   };
   const firstUnread = labels?.[0];
   const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
-    + (firstUnread ? ` First unread source: ${firstUnread}.` : "");
+    + (firstUnread && !diffGroups ? ` First unread source: ${firstUnread}.` : "");
   return {
-    text: originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
+    text: diffGroups ? withMeta(refusal, refusalMeta, diffDeliveryNotes(diffGroupsAfterCut(diffGroups, 0, firstUnread).groups,
+      refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
     isError: true,
     errorCode: "budget_exhausted",
     meta: refusalMeta
