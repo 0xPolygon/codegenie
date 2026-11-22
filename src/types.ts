@@ -513,6 +513,8 @@ export type PacketHunk = {
   truncated?: boolean;
   omittedLineCount?: number;
   plannerFallbackReason?: string;
+  /** Arm E discloses omitted side intervals without changing the selected diff window. */
+  omittedSource?: { above?: string; below?: string };
 };
 
 // Plan 92 layer 2: a deterministic structural escalator raised this packet's
@@ -585,6 +587,7 @@ export type RelatedChangedContext = {
   sourceKind?: "source" | "test" | "docs" | "unknown" | undefined;
   sourceSnippet?: string | undefined;
   patchExcerpt?: string | undefined;
+  stage7Source?: { patch: string; snippet?: string };
 };
 
 export type TestCoverageDeltaSymbol = {
@@ -633,6 +636,12 @@ export type ReviewPacket = {
   symbolFacts: HunkSymbolFacts[];
   context: PacketContext;
   contextText: string;
+  /** Position-aware Stage 7 projection. Downstream stages retain the original context. */
+  stage7Source?: {
+    fileLines: { base?: number | undefined; head?: number | undefined };
+    contextText: string;
+    withheldPlannerProse?: boolean;
+  };
   contextQuality?: PacketContextQuality;
   contextDegradationReasons?: string[];
   testCoverageDelta?: TestCoverageDelta;

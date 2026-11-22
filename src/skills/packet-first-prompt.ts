@@ -11,29 +11,34 @@ export function packetFirstBlocks(packet: ReviewPacket): {
   const symbolsByHunk = new Map(packet.symbolFacts.filter(fact => fact.enclosingSymbol).map(fact => [fact.hunkId, fact]));
   const file = `File ${packet.path} (${packet.fileStatus}, ${packet.language}), packet ${packet.id.slice(0, 12)}`
     + (packet.oldPath ? `; renamed from ${packet.oldPath}` : "");
+  const fileLengths = packet.stage7Source?.fileLines;
+  const lengths = fileLengths === undefined ? "" : [
+    packet.fileStatus === "added" ? "base absent" : describeFile(packet.oldPath ?? packet.path, "base", fileLengths.base),
+    packet.fileStatus === "deleted" ? "head absent" : describeFile(packet.path, "head", fileLengths.head)
+  ].join(" | ");
   const hunks = packet.hunks.map(hunk => {
     const fact = symbolsByHunk.get(hunk.hunkId);
     const symbol = fact?.enclosingSymbol ? `in ${fact.enclosingSymbol}${fact.symbolRange ? ` (lines ${fact.symbolRange.join("-")})` : ""}` : "";
     const header = `hunk ${hunk.hunkId} base ${hunkSpan(hunk.oldStart, hunk.oldLines)} head ${hunkSpan(hunk.newStart, hunk.newLines)}`;
     return [
       [header, hunk.header && `in ${hunk.header}`, symbol].filter(Boolean).join(" "),
-      hunk.contentWithLineNumbers,
+      describeOmittedSource(hunk),
       ...(hunk.staticSignals ?? []).map(signal => `signal ${signal.ruleId}${signal.line !== undefined
         ? ` at ${signal.side === "LEFT" ? "base " : signal.side === "RIGHT" ? "head " : ""}line ${signal.line}` : ""}: ${signal.explanation}`),
       hunk.omittedSignalCount ? `${hunk.omittedSignalCount} more signals omitted` : ""
     ].filter(Boolean).join("\n");
   });
   const evidence = [
-    { label: "changed-code", content: [file, ...(hunks.length ? hunks : ["no changed lines in this packet"])].join("\n\n") },
-    { label: "surrounding-code", content: [packet.contextText, packet.packetSymbols?.length
+    { label: "changed-code", content: [file, lengths, ...(hunks.length ? hunks : ["no changed lines in this packet"])].filter(Boolean).join("\n\n") },
+    { label: "surrounding-code", content: [packet.stage7Source?.contextText ?? packet.contextText, packet.packetSymbols?.length
       ? `Symbols touched: ${packet.packetSymbols.map(item => `${item.name} (${item.lineRange.join("-")})`).join(", ")}` : ""].filter(Boolean).join("\n") },
     { label: "related-changes", content: packet.relatedChangedContext.map(related => [
       [related.path, related.hunkId && `hunk ${related.hunkId}`, related.symbol,
         related.lineRange && `lines ${related.lineRange.join("-")}`,
         [related.relationshipSource, related.relationshipStrength].filter(Boolean).join("/")].filter(Boolean).join(" "),
       related.relationshipSource === "planner_hint" ? "" : related.reason,
-      related.patchExcerpt,
-      related.sourceSnippet
+      related.stage7Source?.patch ?? related.patchExcerpt,
+      related.stage7Source?.snippet ?? related.sourceSnippet
     ].filter(Boolean).join("\n")).join("\n\n") },
     { label: "tests", content: renderTests(packet) }
   ];
@@ -60,12 +65,28 @@ export function packetFirstBlocks(packet: ReviewPacket): {
     evidence,
     author,
     harness,
-    withheldPlannerProse: packet.attentionNotes.some(note => !relationshipNotes.includes(note))
+    withheldPlannerProse: packet.stage7Source?.withheldPlannerProse === true
+      || packet.attentionNotes.some(note => !relationshipNotes.includes(note))
       || packet.hunks.some(hunk => Boolean(hunk.plannerFallbackReason))
       || packet.surroundingContextHints.some(hint => Boolean(hint.reason))
       || packet.relatedChangedContext.some(related => related.relationshipSource === "planner_hint" && Boolean(related.reason))
       || reasons.some((reason, index) => reason !== packet.contextDegradationReasons?.[index])
   };
+}
+
+function describeFile(path: string, side: "base" | "head", length?: number): string {
+  return `${path}@${side}: ${length === undefined ? "file length unavailable" : `${length} lines`}`;
+}
+
+function describeOmittedSource(hunk: ReviewPacket["hunks"][number]): string {
+  let text = hunk.contentWithLineNumbers;
+  if (hunk.omittedSource?.above) {
+    text = text.replace(/^\[\.\.\. \d+ lines omitted above \.\.\.\]/u, () => `[... omitted above: ${hunk.omittedSource?.above} ...]`);
+  }
+  if (hunk.omittedSource?.below) {
+    text = text.replace(/\[\.\.\. \d+ lines omitted below \.\.\.\]$/u, () => `[... omitted below: ${hunk.omittedSource?.below} ...]`);
+  }
+  return text;
 }
 
 function hunkSpan(start: number, count: number): string {

@@ -3283,6 +3283,59 @@ describe("phase 5 pipeline regressions", () => {
         fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
       expect(packets[0]?.contextText).toContain(`Planner packet context (enclosing_symbol) for ${target}:${symbol}`);
       expect(packets[0]?.contextText).toContain(symbol);
+      const treatmentConfig = { ...config(), review: { ...config().review, stage7Prompt: "packet-first" as const } };
+      const [positioned] = await buildReviewPackets(plan, [fakeDiffFile(caller)], [fakeFacts(caller, "per-hunk")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: treatmentConfig, enabledLenses: ["core/code-review"] });
+      expect(positioned?.contextText).toBe(packets[0]?.contextText);
+      expect(positioned?.attentionNotes).toEqual(packets[0]?.attentionNotes);
+      expect(positioned?.toolBudget).toEqual(packets[0]?.toolBudget);
+      const hint = positioned?.stage7Source?.contextText;
+      expect(hint).not.toContain("inspect the definition");
+      expect(hint).toContain(`${target}@head lines`);
+      const targetLines = targetText.trimEnd().split("\n");
+      for (const row of hint?.matchAll(/^(\d+)\t(.*)$/gmu) ?? []) {
+        expect(row[2]).toBe(targetLines[Number(row[1]) - 1]);
+      }
+      expect(positioned?.stage7Source?.withheldPlannerProse).toBe(true);
+    } finally { fixture.dispose(); }
+  });
+
+  it("discloses added-file positions without changing raw packet and hunk evidence", async () => {
+    const pathName = "packages/agent/src/test-helper.ts";
+    const content = "export function changed() {\n\n\treturn true;\n}\n";
+    const fixture = await textRepository({ "README.md": "# fixture\n" }, { [pathName]: content });
+    try {
+      const file = { ...fakeDiffFile(pathName), status: "added" as const };
+      const fixtureConfig = config();
+      const build = (selected = fixtureConfig) => buildReviewPackets(fakePlan(pathName), [file], [fakeFacts(pathName, "whole-file")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: selected, enabledLenses: ["core/code-review"] });
+      const [current] = await build();
+      const [positioned] = await build({ ...fixtureConfig, review: { ...fixtureConfig.review, stage7Prompt: "packet-first" } });
+      expect(positioned?.contextText).toBe(current?.contextText);
+      expect(positioned?.hunks).toEqual(current?.hunks);
+      expect(positioned?.stage7Source?.contextText).toContain(`${pathName}@head lines 1-4 of 4\n1\texport function changed() {\n2\t\n3\t\treturn true;\n4\t}`);
+      const prompt = createPromptBuilder(fakeLensRegistry(), { stage7Prompt: "packet-first" })
+        .buildPacketReviewPrompt({ packet: positioned!, skills: [] });
+      expect(prompt.prompt).toContain(`base absent | ${pathName}@head: 4 lines`);
+      expect(prompt.marks).toContain("E8.positions");
+    } finally { fixture.dispose(); }
+  });
+
+  it("keeps the first unread line when a planner source excerpt ends mid-line at the raw cap", async () => {
+    const pathName = "src/dispatch.ts";
+    const fixture = await textRepository({ [pathName]: "const first = 1;\n" + "x".repeat(3_000) + "\nconst last = 3;\n" });
+    try {
+      const plan = fakePlan(pathName);
+      plan.coverage[0]!.surroundingContextHints = [{ kind: "line_range", path: pathName, lineRange: [1, 3],
+        reason: "planner prose sentinel", expectedUse: "packet_context" }];
+      const cfg = { ...config(), review: { ...config().review, stage7Prompt: "packet-first" as const } };
+      const [packet] = await buildReviewPackets(plan, [fakeDiffFile(pathName)], [fakeFacts(pathName, "per-hunk")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: cfg, enabledLenses: ["core/code-review"] });
+      expect(packet?.contextText).toContain("x".repeat(200));
+      expect(packet?.stage7Source?.contextText).toContain(`${pathName}@head lines 1-1 of 3\n1\tconst first = 1;`);
+      expect(packet?.stage7Source?.contextText).toContain(`read_range ${pathName}@head startLine=2 endLine=3`);
+      expect(packet?.stage7Source?.contextText).not.toContain("x".repeat(200));
+      expect(packet?.stage7Source?.contextText).not.toContain("planner prose sentinel");
     } finally { fixture.dispose(); }
   });
 

@@ -349,7 +349,8 @@ export function createPromptBuilder(
       return { ...built, templateVersion: PACKET_FIRST_TEMPLATE_VERSION, marks: [
         "E1.packet-text", "E2.claims-last", "E3.discovery-standard", "E4.finish-condition",
         ...(rendered.withheldPlannerProse ? ["E5.planner-text-withheld"] : []),
-        "E6.one-question-channel", "E7.close-nudges"
+        "E6.one-question-channel", "E7.close-nudges",
+        ...(packet.stage7Source ? ["E8.positions"] : [])
       ] };
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
