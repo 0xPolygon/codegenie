@@ -45,6 +45,7 @@ export type GitTreeEntry = {
 };
 
 export interface InternalGitClient extends GitClient {
+  grepFiles?(ref: string, literal: string): Promise<string[]>;
   currentBranch(): Promise<string | undefined>;
   isInsideWorktree(): Promise<boolean>;
   repoRoot(): Promise<string>;
@@ -95,6 +96,17 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     runGitCapped(repoRoot, args, { ...options, ...environment });
 
   return {
+    async grepFiles(ref: string, literal: string): Promise<string[]> {
+      assertSafeRef(ref);
+      const stdout = await run(["grep", "-I", "-l", "-z", "-F", "-e", literal, ref, "--"], {
+        allowedExitCodes: [0, 1], stripFinalNewline: false, errorCode: "git_ref_missing", maxBuffer: 8 * 1024 * 1024
+      });
+      const prefix = `${ref}:`;
+      return splitNul(stdout).map(entry => {
+        if (!entry.startsWith(prefix)) throw new CodegenieError("git_ref_missing", "unexpected git grep filename output");
+        return entry.slice(prefix.length);
+      });
+    },
     async revParse(ref: string): Promise<string> {
       assertSafeRef(ref);
       return trimSha(
