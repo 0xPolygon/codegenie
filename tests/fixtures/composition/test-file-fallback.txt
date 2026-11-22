@@ -1,0 +1,24 @@
+Source-based presentation because synthesis was unavailable.
+
+**Open conditions:**
+
+- Secondary assumption: How long is a cached membership retained?
+
+**Impact:** The read path accepts a cached membership after revocation.
+
+A revoked member can retrieve a private document.
+
+**Verification and uncertainty:** The active-membership check is absent from the complete read handler; the write handler still checks it.
+
+Retained proof status (not synthesized): established.
+
+**Suggested fix:** Check active membership before returning the document.
+
+**Suggested test:** Create a session, revoke membership, and assert the subsequent read is denied.
+
+**Evidence:**
+
+`documents_test.go`
+```go
+return documents.get(id)
+```

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { validateToolCall } from "./helpers/pi-validation.js";
+import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import type { Tool } from "@earendil-works/pi-ai";
 function validateWithSchema(schema: Tool["parameters"], value: unknown) {
   return validateToolCall([{ name: "submit", description: "fixture", parameters: schema }], { type: "toolCall", id: "fixture", name: "submit", arguments: value as Record<string, unknown> });
 }
 import { contractReview, contractComposition as proposal } from "./fixtures/composition/contract-review.js";
-import { composePresentation, compositionSources, renderRetainedComposition, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { composePresentation, compositionAttributionDiagnostics, compositionSources, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { SubmitCompositionSchema, SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
@@ -16,6 +19,68 @@ import type { RunCoverageStatus } from "../src/types.js";
 
 
 describe("contract-aware concise composition", () => {
+  it("accepts a supported test-file fix in Test without changing its source kind", () => {
+    const finding = contractReview()[1]!;
+    finding.path = "internal/example_test.go";
+    const sources = compositionSources([finding]);
+    const fix = sources.find(source => source.id === finding.id + "/suggestedFix")!;
+    const sections: CompositionSection[] = [
+      { kind: "impact", text: finding.failureMode, sourceRefs: sources.filter(source => source.kind === "impact").map(source => source.id) },
+      { kind: "verification", text: finding.verification, sourceRefs: sources.filter(source => source.kind === "verification").map(source => source.id) },
+      { kind: "test", text: finding.suggestedFix!, sourceRefs: [fix.id] }
+    ];
+    const evidence = sources.filter(source => source.kind === "evidence").map(source => source.id);
+    const presentation = { retainedSourceRefs: sources.filter(source => source.kind === "test").map(source => source.id) };
+    expect(fix.kind).toBe("fix");
+    expect(JSON.stringify(fix)).not.toContain("testFileFix");
+    expect(() => validateCompositionSubmission({ composedFindings: [{ findingIds: [finding.id], sections, evidenceRefs: evidence, ...presentation }] }, [finding])).not.toThrow();
+    expect(composePresentation([finding], sections, evidence, undefined, presentation).body).toContain("**Suggested test:** " + finding.suggestedFix);
+
+    for (const [category, path] of [["correctness", "internal/example_test.go"], ["testing", "docs/gate.py"]] as const) {
+      const other = { ...finding, category, path };
+      expect(() => validateCompositionSubmission({ composedFindings: [{ findingIds: [other.id], sections, evidenceRefs: evidence, ...presentation }] }, [other])).toThrow(/wrong_section/);
+    }
+    const inverted = structuredClone(sections);
+    inverted[2] = { kind: "fix", text: finding.suggestedTest!, sourceRefs: [finding.id + "/suggestedTest"] };
+    expect(compositionAttributionDiagnostics(sources, inverted, evidence, { retainedSourceRefs: [fix.id] }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: "wrong_section", reference: finding.id + "/suggestedTest" })]));
+    finding.suggestionAssessments!.suggestedFix!.status = "unverified";
+    const diagnostics = compositionAttributionDiagnostics(compositionSources([finding]), sections, evidence, presentation);
+    expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "unsupported_suggestion", reference: fix.id })]));
+    expect(diagnostics).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: "wrong_section", reference: fix.id })]));
+  });
+
+  it("preserves the pre-change fallback bytes for a testing finding in a test file", () => {
+    const finding = authorizationComposition().findings[0]!;
+    finding.category = "testing";
+    finding.path = "documents_test.go";
+    const before = readFileSync(new URL("./fixtures/composition/test-file-fallback.txt", import.meta.url), "utf8");
+    expect(renderRetainedComposition([finding])).toBe(before);
+  });
+
+  it("preserves the pre-change composer prompt bytes for a test-file finding", () => {
+    const finding = authorizationComposition().findings[0]!;
+    finding.category = "testing";
+    finding.path = "documents_test.go";
+    const { id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence } = finding;
+    const groupedFindingsJson = JSON.stringify([{ fingerprint: "test", representativeId: id,
+      findings: [{ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }],
+      sourceComponents: compositionSources([finding]) }], null, 2);
+    const coverage = { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0, partial: false, reasons: [] } as unknown as RunCoverageStatus;
+    const prompt = createPromptBuilder({} as LensRegistry).buildComposerPrompt({ groupedFindingsJson, intent: "Review", coverage });
+    expect(prompt.templateVersion).toBe("p10.25");
+    expect(createHash("sha256").update(prompt.prompt).digest("hex")).toBe("04a101d5e89784bdeda6a8ae2261b27b3e8e79ead6e368d475f0dc73a83b1d1b");
+  });
+
+  it("uses each source owner's category and path in a mixed finding group", () => {
+    const findings = contractReview();
+    findings[1]!.path = "tests/example.test.ts";
+    const sources = compositionSources(findings);
+    const sections: CompositionSection[] = [{ kind: "test", text: "Exercise the condition.", sourceRefs: ["rounding/suggestedFix", "boundary-tests/suggestedFix"] }];
+    const diagnostics = compositionAttributionDiagnostics(sources, sections, [], {});
+    expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "wrong_section", reference: "rounding/suggestedFix" })]));
+    expect(diagnostics).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: "wrong_section", reference: "boundary-tests/suggestedFix" })]));
+  });
   it("publishes the corrected conclusion and supported remedy without the original assessments appendix", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     findings[1]!.severity = "medium";

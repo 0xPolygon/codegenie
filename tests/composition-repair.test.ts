@@ -44,6 +44,52 @@ describe("absent provenance components", () => {
 });
 
 describe("composition attribution repair", () => {
+  it("keeps supported test-file fixes visible and offers Test as a repair path", () => {
+    const { findings, original, group } = fixture(authorizationComposition);
+    const finding = findings[0]!;
+    finding.category = "testing";
+    finding.path = "documents_test.go";
+    const fixRef = finding.id + "/suggestedFix";
+    group.sections = group.sections.filter(section => section.kind !== "fix");
+    const testIndex = group.sections.findIndex(section => section.kind === "test");
+    group.sections[testIndex]!.sourceRefs.push(fixRef);
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: finding, findings }]);
+    expect(normalizeCompositionReferences(original, findings)).toBeUndefined();
+    expect(() => validateCompositionSubmission(original, findings)).not.toThrow();
+    expect(createCompositionAttributionRepair(schema, original, findings)).toBeUndefined();
+    group.sections[testIndex]!.sourceRefs.pop();
+    const repair = createCompositionAttributionRepair(schema, original, findings)!;
+    const path = `composedFindings.0.sections.${testIndex}.sourceRefs`;
+    expect(repair.paths).toContain(path);
+    const patchSchema = repair.schema as unknown as { properties: Record<string, { items: { enum: string[] } }> };
+    expect(patchSchema.properties[path]!.items.enum).toContain(fixRef);
+  });
+
+  it("keeps duplicate normalization and diagnostics consistent across allowed placements", () => {
+    const { findings, original, group } = fixture(authorizationComposition);
+    const finding = findings[0]!;
+    const fix = group.sections.find(section => section.kind === "fix")!;
+    const test = group.sections.find(section => section.kind === "test")!;
+    const fixRef = finding.id + "/suggestedFix";
+    finding.category = "testing";
+    finding.path = "documents_test.go";
+    fix.sourceRefs = [];
+    test.sourceRefs.push(fixRef);
+    group.retainedSourceRefs = [fixRef];
+    const ordinary = structuredClone(original);
+    const ordinaryGroup = ordinary.composedFindings[0]!;
+    ordinaryGroup.sections.find(section => section.kind === "fix")!.sourceRefs = [fixRef];
+    ordinaryGroup.sections.find(section => section.kind === "test")!.sourceRefs = ordinaryGroup.sections.find(section => section.kind === "test")!.sourceRefs.filter(ref => ref !== fixRef);
+    expect(normalizeCompositionReferences(original, findings)).toEqual(normalizeCompositionReferences(ordinary, findings));
+    // Ignore the intentionally empty Fix section when comparing duplicate errors.
+    const duplicateCodes = (value: typeof original) => compositionAttributionDiagnostics(compositionSources(findings), value.composedFindings[0]!.sections, value.composedFindings[0]!.evidenceRefs, value.composedFindings[0]!)
+      .filter(issue => issue.reference === fixRef).map(issue => issue.code);
+    expect(duplicateCodes(original)).toEqual(duplicateCodes(ordinary));
+    group.retainedSourceRefs = [];
+    fix.sourceRefs = [fixRef];
+    expect(normalizeCompositionReferences(original, findings)).toBeUndefined();
+    expect(duplicateCodes(original)).toEqual(["duplicate_reference"]);
+  });
   it.each(["wrong-kind", "empty", "unsupported"])("can remove %s advice and restore visible proof without changing diagnosis", kind => {
     const { findings, original, group } = fixture(authorizationComposition);
     const test = group.sections.find(section => section.kind === "test")!;
