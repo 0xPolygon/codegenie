@@ -697,7 +697,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         };
         return {
           value: { paths: visible, meta },
-          meta,
+          meta: { ...meta, deliveryStatus: truncated ? "truncated" : visible.length ? "full" : "empty",
+            pathListDelivery: { deliveredCount: visible.length, backendOmittedCount: paths.length - visible.length, budgetOmittedCount: 0 },
+            ...(truncated ? { degradationReason: "list_path_limit" } : {}) },
           args: { glob: contained },
           resultCount: visible.length,
           resultChars: visible.join("\n").length
@@ -729,6 +731,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
           ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
           ...(measurement.meta.discoveryLimited ? { discoveryLimited: true } : {}),
+          ...(measurement.meta.pathListDelivery ? { pathListDelivery: measurement.meta.pathListDelivery } : {}),
           ...(measurement.meta.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
           ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
