@@ -1,14 +1,17 @@
 import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
-import { MISSING_FILE_GUIDANCE, withMeta } from "./repository-tool-guidance.js";
+import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
-function renderRecords({ open, records, separator, close }: ToolResultRecords): string {
-  return open + records.join(separator) + close;
+function renderRecordOpening(open: string, meta: ToolResultMeta): string {
+  const { requestedRange, sourceUsed, deliveredLineRange, totalLines } = meta;
+  if (!requestedRange || !sourceUsed || !deliveredLineRange || totalLines === undefined) return open;
+  return open + renderSourceBlockHeader(requestedRange.path, sourceUsed, deliveredLineRange, totalLines) + "\n";
 }
 
 /** Derive the canonical text and its packable representation together. */
 export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
-  return { text: withMeta(renderRecords(packable), meta), packable, meta };
+  const { open, records, separator, close } = packable;
+  return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta), packable, meta };
 }
 
 /** Keep the longest prefix of whole records that fits with its closing text and status. */
@@ -16,40 +19,45 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
 
   const { packable, sourceLineRange, ...result } = input;
-  const { open, records, separator, close, labels } = packable;
-  const { deliveredLineRange, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
+  const { open, records, separator, close, labels, keepWithNext } = packable;
+  // A backend continuation may be beyond the first line omitted by this cut.
+  // The range/record locator below is the authoritative caller continuation.
+  const { deliveredLineRange, recovery: _backendRecovery, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
+  const degradationReason = (originalMeta.degraded ? originalMeta.degradationReason : undefined) ?? "tool_result_budget";
   const lineRange = deliveredLineRange ?? sourceLineRange;
   const firstLine = lineRange && lineRange[1] - lineRange[0] + 1 === records.length ? lineRange[0] : undefined;
+  // A range clipped before EOF does not carry the original file's terminal newline.
+  const deliveredClosing = originalMeta.requestedRange ? "" : close;
   let recordChars = records.reduce((total, record) => total + record.length, 0);
   for (let count = records.length - 1; count > 0; count--) {
     recordChars -= records[count]!.length;
+    if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
     const meta: ToolResultMeta = {
       ...originalMeta,
       truncated: true,
       deliveryStatus: "truncated",
-      degradationReason: originalMeta.degradationReason ?? "tool_result_budget",
+      degradationReason,
       omittedCount: (originalMeta.omittedCount ?? 0) + records.length - count,
       ...(range ? { deliveredLineRange: range } : {})
     };
     const notes = ["truncation: tool_result_budget"];
-    if (range) {
-      const total = meta.totalLines === undefined ? "" : ` of ${meta.totalLines}`;
-      notes.push(`delivered lines ${range[0]}-${range[1]}${total}`, `continue with startLine=${range[1] + 1}`);
-    } else {
+    if (!range) {
       const last = labels?.[count - 1];
       const next = labels?.[count];
       if (last) notes.push(`last delivered: ${last}`);
       if (next) notes.push(`next: ${next}`);
     }
     const footer = withMeta("", meta, notes);
-    const bodyLength = open.length + recordChars + (count - 1) * separator.length + close.length;
+    const deliveredOpening = renderRecordOpening(open, meta);
+    const bodyLength = deliveredOpening.length + recordChars + (count - 1) * separator.length + deliveredClosing.length;
     if (bodyLength + footer.length <= allowance) {
-      const kept = { open, records: records.slice(0, count), separator, close,
-        ...(labels ? { labels: labels.slice(0, count) } : {}) };
+      const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
+        ...(labels ? { labels: labels.slice(0, count) } : {}),
+        ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}) };
       return {
         ...result,
-        text: renderRecords(kept) + footer,
+        text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
         packable: kept,
         meta,
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})
@@ -57,17 +65,21 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     }
   }
 
+  const refusalMeta: ToolResultMeta = {
+    ...originalMeta,
+    truncated: true,
+    deliveryStatus: "budget_rejected",
+    degradationReason,
+    omittedCount: (originalMeta.omittedCount ?? 0) + records.length
+  };
+  const firstUnread = labels?.[0];
+  const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
+    + (firstUnread ? ` First unread source: ${firstUnread}.` : "");
   return {
-    text: "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source.",
+    text: originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
     isError: true,
     errorCode: "budget_exhausted",
-    meta: {
-      ...originalMeta,
-      truncated: true,
-      deliveryStatus: "budget_rejected",
-      degradationReason: originalMeta.degradationReason ?? "tool_result_budget",
-      omittedCount: (originalMeta.omittedCount ?? 0) + records.length
-    }
+    meta: refusalMeta
   };
 }
 

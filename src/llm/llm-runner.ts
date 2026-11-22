@@ -32,6 +32,8 @@ export type ToolResultRecords = {
   close: string;
   /** Optional short locators, indexed by record, for non-consecutive source. */
   labels?: string[];
+  /** True for an index or block header that cannot be the last delivered record. */
+  keepWithNext?: boolean[];
 };
 
 export type ToolExecutionResult = {
@@ -39,7 +41,7 @@ export type ToolExecutionResult = {
   packable?: ToolResultRecords;
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
-  definitions?: Array<{ symbol: import("../types.js").SymbolInfo; text?: string }>;
+  definitions?: import("../types.js").DefinitionHit[];
   /** Actual inclusive lines delivered by read_range, after EOF clipping. */
   sourceLineRange?: [number, number];
   filePaths?: string[];

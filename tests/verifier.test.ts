@@ -2061,6 +2061,7 @@ describe("plan 76 anchor reconstruction", () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
     expect(inferAnchorFromChangedCode(packet, "   2    2  return route(provider);")?.line).toBe(2);
+    expect(inferAnchorFromChangedCode(packet, "2\treturn route(provider);")?.line).toBe(2);
   });
 
   it("tier 1: refuses ambiguous snippets that match multiple changed lines", () => {
@@ -2140,6 +2141,7 @@ describe("plan 76 anchor reconstruction", () => {
       expect(inferAnchorFromChangedCode(diff, format(`${prefix}${prefix}charge(amount);`))).toMatchObject({ line: 2, side: prefix === "+" ? "RIGHT" : "LEFT" });
     }
     expect(inferAnchorFromChangedCode(diff, `${prefix}charge(amount);`)).toMatchObject({ line: 2, side: prefix === "+" ? "RIGHT" : "LEFT" });
+    expect(inferAnchorFromChangedCode(diff, `2\t${prefix}charge(amount);`)).toMatchObject({ line: 2, side: prefix === "+" ? "RIGHT" : "LEFT" });
   });
 
   it("tier 2: representative anchor prefers the first RIGHT changed line", () => {

@@ -1,4 +1,5 @@
-import { withMeta } from "./repository-tool-guidance.js";
+import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
+import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
@@ -47,7 +48,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",
-      description: "Read committed text at head (default) or base; works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns at most 400 lines / 16,000 characters before local budget limits, with truncation metadata. An end beyond EOF is clipped; a start beyond EOF returns empty text, never the last line. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Read committed text at head (default) or base. Works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns numbered source with file length and delivered range. Reads up to 400 lines / 16,000 source characters before local budget limits. A cut gives the next line. An end beyond EOF is clipped. A start beyond EOF returns no source and gives the file length. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -59,10 +60,34 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; startLine: number; endLine: number; source?: SourceSelector };
-        const result = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
-        return { text: withMeta(result.text, result.meta), meta: result.meta,
-          ...(result.meta.deliveryStatus === "full" && result.text.length > 0
-            ? { sourceLineRange: [input.startLine, Math.min(input.endLine, input.startLine + result.text.split("\n").length - 1)] as [number, number] } : {}) };
+        const { text, meta } = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
+        if (meta.deliveryStatus === "budget_rejected") {
+          return {
+            text: withMeta(`Source line ${input.startLine} exceeds the source character limit. Use search_files scoped to this file to locate a match.`, meta),
+            meta,
+            isError: true,
+            errorCode: "budget_exhausted"
+          };
+        }
+        const range = meta.deliveredLineRange;
+        const records = text.split("\n");
+        const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full"
+          ? range ?? (text ? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)] : undefined)
+          : undefined;
+        const placement = sourceLineRange ? { sourceLineRange } : {};
+        if (!range) {
+          if (meta.requestedRange && meta.deliveryStatus === "empty") {
+            return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
+          }
+          return { text: withMeta(text, meta), meta, ...placement };
+        }
+        const terminalNewline = records.length > range[1] - range[0] + 1;
+        if (terminalNewline) records.pop();
+        const numbered = records.map((line, index) => numberSourceLine(line, range[0] + index));
+        return {
+          ...createPackableToolResult({ open: "", records: numbered, separator: "\n", close: terminalNewline ? "\n" : "" }, meta),
+          ...placement
+        };
       })
     },
     {
@@ -133,7 +158,44 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { symbolName: string; pathGlob?: string; source?: SymbolLookupSourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.findDefinition(input.symbolName, optionalOptions({ pathGlob: input.pathGlob, source: input.source })));
-        return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), definitions: result.definitions, meta: result.meta };
+        if (result.definitions.length === 0) return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), definitions: result.definitions, meta: result.meta };
+        const revision = result.meta.sourceUsed ?? (input.source?.kind === "base" ? "base" : "head");
+        const records: string[] = [];
+        const labels: string[] = [];
+        const keepWithNext: boolean[] = [];
+        const index: string[] = [];
+        for (const hit of result.definitions) {
+          const { symbol, text, totalLines, deliveredLineRange, nextLine } = hit;
+          if (text === undefined || totalLines === undefined || deliveredLineRange === undefined) {
+            index.push(`${symbol.path}@${revision} ${symbol.name}: declaration lines ${symbol.lineRange[0]}-${symbol.lineRange[1]}${totalLines !== undefined ? ` of ${totalLines}` : ""}; body unavailable; use read_range`);
+            continue;
+          }
+          const header = renderSourceBlockHeader(symbol.path, revision, symbol.lineRange, totalLines, "declaration")
+            .replace(" declaration lines ", symbol.nativeKind === "text declaration" ? " unverified text window lines " : " declaration lines ");
+          index.push(`${header} (${symbol.nativeKind ?? symbol.kind})`);
+          const lines = text.split("\n");
+          records.push(header);
+          labels.push(`${symbol.path}@${revision}:${deliveredLineRange[0]}`);
+          keepWithNext.push(true);
+          for (let i = 0; i < lines.length; i++) {
+            const line = deliveredLineRange[0] + i;
+            const last = i === lines.length - 1 && (nextLine !== undefined || deliveredLineRange[0] !== symbol.lineRange[0] || deliveredLineRange[1] !== symbol.lineRange[1])
+              ? `\n[Delivered lines ${deliveredLineRange[0]}-${deliveredLineRange[1]} of ${totalLines}${nextLine !== undefined ? `; source continues at ${symbol.path}@${revision}:${nextLine}` : ""}]` : "";
+            records.push(`${numberSourceLine(lines[i]!, line)}${last}`);
+            labels.push(`${symbol.path}@${revision}:${line}`);
+            keepWithNext.push(false);
+          }
+        }
+        if (records.length === 0) {
+          const meta = { ...result.meta, deliveryStatus: "budget_rejected" as const, truncated: true };
+          return { text: withMeta(`Definition source could not be delivered as whole positioned lines; use a narrower read_range. ${index.join("; ")}`, meta), isError: true,
+            errorCode: "budget_exhausted", meta };
+        }
+        const open = index.length > 1 ? `Definition locations:\n${index.join("\n")}\n\n` : "";
+        const only = result.definitions.length === 1 ? result.definitions[0] : undefined;
+        const meta = only?.deliveredLineRange && only.totalLines !== undefined
+          ? { ...result.meta, deliveredLineRange: only.deliveredLineRange, totalLines: only.totalLines } : result.meta;
+        return { ...createPackableToolResult({ open, records, separator: "\n", close: "", labels, keepWithNext }, meta), definitions: result.definitions };
       })
     },
     {

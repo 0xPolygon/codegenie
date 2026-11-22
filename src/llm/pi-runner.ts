@@ -1,4 +1,6 @@
 import { assertRepositoryToolArguments } from "./tool-definitions.js";
+import { withMeta } from "./repository-tool-guidance.js";
+import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
@@ -1221,15 +1223,23 @@ function submitCallHasFindings(toolCall: PiSubmitCall): boolean {
 function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, text: string,
   source: "head" | "base" | undefined): RepositoryEvidence[] | undefined {
   const meta = outcome.result.meta;
-  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || meta?.degraded
-    || meta?.deliveryStatus !== "full" || !text.trim() || text.length > 8_000) return;
+  const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
+    && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
+  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
+    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && text.length > 8_000)) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
-    if (hits) return hits.flatMap((hit, index) => hit.text?.trim() ? [{
-      id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
-      symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
-      lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
-    }] : []);
+    if (hits) {
+      // Keep the pre-numbering evidence-size boundary; display prefixes should not
+      // change which otherwise complete source bodies can become evidence.
+      const legacyBodies = hits.map(({ symbol, text }) => ({ symbol, ...(text !== undefined ? { text } : {}) }));
+      if (withMeta(JSON.stringify(legacyBodies, null, 2), meta).length > 8_000) return;
+      return hits.flatMap((hit, index) => hit.text?.trim() && !isTextFallbackHit(hit) ? [{
+        id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
+        symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
+        lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
+      }] : []);
+    }
   }
   if (meta.lookupStatus !== "found" || !["read_range", "read_symbol", "find_definition", "read_file_outline"].includes(toolCall.name)) return;
   return [{ id: toolCall.id, tool: toolCall.name,
@@ -2486,6 +2496,7 @@ function recordToolCall(
   outcome: ToolRunOutcome
 ): void {
   const meta = outcome.result.meta ?? defaultToolMeta();
+  const preExecutionBudgetRefusal = outcome.errorCode === "budget_exhausted" && outcome.backendExecuted === false && outcome.cacheStatus === "disabled";
   const record = definedRecord({
     stage: request.stage,
     initiator: "model" as const,
@@ -2495,8 +2506,8 @@ function recordToolCall(
     modelCallId,
     tool: toolCall.name,
     args: toolArgsForRecord(outcome.args),
-    backend: meta.backend,
-    precision: meta.precision,
+    backend: preExecutionBudgetRefusal ? undefined : meta.backend,
+    precision: preExecutionBudgetRefusal ? undefined : meta.precision,
     degraded: meta.degraded,
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
@@ -2504,7 +2515,13 @@ function recordToolCall(
     omittedCountIsLowerBound: meta.omittedCountIsLowerBound,
     discoveryLimited: meta.discoveryLimited,
     lookupStatus: meta.lookupStatus,
+    lookupNote: meta.lookupNote,
+    unparsedCandidatePaths: meta.unparsedCandidatePaths,
+    incompleteCandidatePaths: meta.incompleteCandidatePaths,
+    candidateScans: meta.candidateScans,
     deliveryStatus: meta.deliveryStatus,
+    totalLines: meta.totalLines,
+    deliveredLineRange: meta.deliveredLineRange,
     recovery: meta.recovery,
     budgetState: outcome.budgetState,
     cacheStatus: outcome.cacheStatus,
