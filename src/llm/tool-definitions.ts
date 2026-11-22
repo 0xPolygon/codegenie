@@ -49,6 +49,11 @@ export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface 
 
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
+  const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
+  if (properties?.source && args && typeof args === "object" && "source" in args && typeof args.source === "string") {
+    const auto = tool.name === "read_symbol" || tool.name === "find_definition" ? ', or {"kind":"auto"}' : "";
+    throw new CodegenieError("invalid_args", `source must be an object: {"kind":"head"} or {"kind":"base"}${auto}; not a string`);
+  }
   const issues = submissionIssues(tool.parameters, args);
   if (issues.length) throw new CodegenieError("invalid_args", `Invalid arguments for ${tool.name}: ${issues.slice(0, 5)
     .map(issue => `${issue.path || "arguments"}: ${issue.kind}`).join("; ")}`);

@@ -2302,8 +2302,10 @@ async function executeToolCall(
       // This boundary validates arguments before executing the tool. Pi throws
       // plain Errors here; they are caller mistakes, not provider failures.
       const detail = cause instanceof Error ? cause.message : String(cause);
+      const prefix = `Invalid arguments for ${tool.name}: `;
+      const cleaned = detail.startsWith(prefix) ? detail.slice(prefix.length) : detail;
       return toolExecutionErrorOutcome(new CodegenieError("invalid_args",
-        `Invalid arguments for ${tool.name}: ${withoutRejectedArguments(detail).slice(0, 1500)}. Correct the arguments and retry; no source was read.`),
+        `${prefix}${withoutRejectedArguments(cleaned).slice(0, 1500)}. Correct the arguments and retry; no source was read.`),
       toolCall.arguments, Date.now() - startedAt, false, "disabled");
     }
   } catch (cause) {

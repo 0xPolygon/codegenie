@@ -3,6 +3,7 @@ import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
 import { withMeta } from "../src/llm/repository-tool-guidance.js";
+import { assertRepositoryToolArguments, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
 import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
@@ -32,6 +33,18 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     writeRepoFile(fixture.repo, "untracked.custom", "untracked-only");
   });
   afterAll(() => fixture?.dispose());
+
+  it("explains the source object required by every source-bearing repository tool", () => {
+    const tools = [...fixture.definitions, buildSixReadRangeTool(fixture.tools), buildSixSearchTool(fixture.tools)]
+      .filter(tool => Boolean((tool.parameters as { properties?: Record<string, unknown> }).properties?.source));
+    expect(tools.length).toBeGreaterThanOrEqual(7);
+    for (const tool of tools) {
+      expect(() => assertRepositoryToolArguments(tool, { source: "head" })).toThrow('source must be an object: {"kind":"head"} or {"kind":"base"}');
+      try { assertRepositoryToolArguments(tool, { source: "head" }); } catch (error) {
+        expect(String(error)).not.toContain(`Invalid arguments for ${tool.name}: Invalid arguments for`);
+      }
+    }
+  });
 
   it("numbers definition bodies, keeps raw evidence, and resumes whole lines on a caller-budget cut", async () => {
     const result = await fixture.call("find_definition", { symbolName: "SharedCall", pathGlob: "src/shared.ts" });
