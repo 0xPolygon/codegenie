@@ -11,6 +11,31 @@ function nextCursor(text: string): string {
 }
 
 describe("six-tool discovery on pinned Git snapshots", () => {
+  it("positions current search context and binds the cursor to the existing options", async () => {
+    const fixture = await textRepository({
+      "src/cli/review-command.ts": "// before\nTRACK(1);\n// between\nTRACK(2);\n// end\n",
+      "src/git/git-client.ts": "TRACK(3);\n"
+    }, { "src/cli/review-command.ts": "// unchanged header\n" });
+    try {
+      const args = { query: "track\\(", caseSensitive: false, maxResults: 1, contextMode: "lines",
+        source: { kind: "base" }, pathGlob: "src/cli/**" };
+      const first = await fixture.call("search_files", args);
+      expect(first.text).toContain('"src/cli/review-command.ts"@base: 5 lines');
+      expect(first.text).toContain("1\t// before\n2:1\tTRACK(1);\n3\t// between");
+      expect(first.text).toContain('next: "src/cli/review-command.ts"@base:4, cursor=');
+      expect(first.searchResults?.map(hit => hit.line)).toEqual([2]);
+      const cursor = nextCursor(first.text);
+      const second = await fixture.call("search_files", { ...args, cursor });
+      expect(second.text).toContain("4:1\tTRACK(2);");
+      expect(second.searchResults?.map(hit => hit.line)).toEqual([4]);
+      for (const changed of [{ maxResults: 2 }, { caseSensitive: true }]) {
+        expect(await fixture.call("search_files", { ...args, ...changed, cursor })).toMatchObject({ errorCode: "invalid_args" });
+      }
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("separates literal and regex modes and renders each context line at its pinned position", async () => {
     const fixture = await textRepository({
       "src/example.ts": "const before = 1;\n\ttrack(before);\n// after\ntrack(2);\n"

@@ -15,6 +15,7 @@ function pageDeliveryNotes(meta: ToolResultMeta): string[] {
   if (search) {
     const notes = [`delivered matches: ${search.deliveredCount}`];
     if (search.emptyScope) notes.push(`No tracked files match pathGlob at the pinned ${search.source} revision.`);
+    if (search.shortenedExcerpts) notes.push("Some matching lines are excerpts. Use read_range at the numbered match to inspect the line.");
     if (search.backendOmittedCount) {
       const next = search.nextRead;
       notes.push(`matching lines omitted by the Git output cap: ${search.backendOmittedCount}${next ? `; inspect ${JSON.stringify(next.path)}@${search.source}:${next.line} with read_range` : ""}`);
@@ -144,6 +145,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
         text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
         packable: kept,
         meta,
+        ...(input.searchResults && packable.searchExcerptFlags ? { searchResults: input.searchResults.slice(0, count) } : {}),
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})
       };
     }
@@ -208,6 +210,7 @@ export function packFileListToolResult(input: ToolExecutionResult, allowance: nu
 
 /** Pack whole entries after cache lookup, never mutate the shared canonical result. */
 export function packSearchToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
+  if (input.packable) return packTextToolResult(input, allowance);
   if (!input.searchResults) return input;
   const { searchDelivery, ...meta } = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
   const canonical = input.searchResults;
