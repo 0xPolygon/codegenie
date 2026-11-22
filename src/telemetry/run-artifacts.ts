@@ -31,6 +31,7 @@ import { sealAndPruneRuns, type PruneResult } from "./run-retention.js";
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodegenieConfig["telemetry"];
   maxTimeMs?: number;
+  codegenieHome?: string;
   runMetadata?: RunArtifactMetadata;
   clock?: () => Date;
   idFactory?: () => string;
@@ -378,6 +379,7 @@ class RunTelemetryImpl {
   private readonly directoryName: string;
   private readonly managesRunRetention: boolean;
   private readonly maxTimeMs: number;
+  private readonly codegenieHome: string | undefined;
   private readonly startedAt: string;
   private readonly clock: () => Date;
   private readonly config: CodegenieConfig["telemetry"];
@@ -472,6 +474,7 @@ class RunTelemetryImpl {
     this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
     this.managesRunRetention = opts.directoryNameFactory === undefined;
     this.maxTimeMs = opts.maxTimeMs ?? defaultConfig.review.maxTimeMs;
+    this.codegenieHome = opts.codegenieHome;
     this.startedAt = this.clock().toISOString();
     const thisImpl = this;
     this.recorder = {
@@ -526,6 +529,7 @@ class RunTelemetryImpl {
         retainRuns: this.config.retainRuns,
         startedAtMs: Date.parse(this.startedAt),
         maxTimeMs: this.maxTimeMs,
+        ...(this.codegenieHome !== undefined ? { codegenieHome: this.codegenieHome } : {}),
         nowMs: this.clock().getTime()
       }));
     }

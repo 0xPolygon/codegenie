@@ -13,7 +13,8 @@ describe("review command pipeline", () => {
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
     const home = mkdtempSync(path.join(tmpdir(), "codegenie-home-"));
-    vi.stubEnv("CODEGENIE_HOME", home);
+    const ambientHome = mkdtempSync(path.join(tmpdir(), "codegenie-ambient-home-"));
+    vi.stubEnv("CODEGENIE_HOME", ambientHome);
     try {
       const parsed = parseReviewCommand(["review", "--branch", "feature", "--max-time", maxTime], {
         repoRoot: repo, homeOverride: home, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
@@ -23,6 +24,8 @@ describe("review command pipeline", () => {
       const seal = JSON.parse(readFileSync(path.join(runDir, ".codegenie-run"), "utf8"));
       const expected = Date.parse(startedAt) + Number(leaseMinutes) * 60_000;
       expect(seal).toMatchObject({ runId, liveUntil: expected });
+      expect(readFileSync(path.join(home, "retention.key"))).toHaveLength(32);
+      expect(existsSync(path.join(ambientHome, "retention.key"))).toBe(false);
       expect(parsed.config.review.maxTimeMs).toBe(Number(maxTime) * 60_000);
     } finally {
       vi.unstubAllEnvs();

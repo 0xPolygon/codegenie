@@ -40,6 +40,7 @@ export function sealAndPruneRuns(options: {
   startedAtMs: number;
   maxTimeMs: number;
   nowMs: number;
+  codegenieHome?: string;
 }): PruneResult {
   const result: PruneResult = { deleted: [], failures: [] };
   const { runId, startedAtMs, maxTimeMs, nowMs } = options;
@@ -52,7 +53,7 @@ export function sealAndPruneRuns(options: {
   let names: string[];
   try {
     root = realpathSync(options.runsRoot);
-    key = loadRetentionKey();
+    key = loadRetentionKey(options.codegenieHome);
     const runDir = path.join(root, runId);
     const stats = lstatSync(runDir, { bigint: true });
     if (!stats.isDirectory() || stats.ino === 0n) {
@@ -108,8 +109,8 @@ export function sealAndPruneRuns(options: {
   return result;
 }
 
-function loadRetentionKey(): Buffer {
-  const { home } = getCodegeniePaths();
+function loadRetentionKey(codegenieHome?: string): Buffer {
+  const { home } = getCodegeniePaths(codegenieHome);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const realHome = realpathSync(home);
   for (let dir = realHome; ; dir = path.dirname(dir)) {
@@ -130,6 +131,7 @@ function loadRetentionKey(): Buffer {
       throw error;
     }
   }
+  // A concurrent first run can still be writing this key. A short read skips retention safely.
   const key = readRegularFile(keyPath, KEY_BYTES, process.platform === "win32" ? 0 : 0o077);
   if (key?.length !== KEY_BYTES) {
     throw new Error("the retention key must be a regular 32-byte file");

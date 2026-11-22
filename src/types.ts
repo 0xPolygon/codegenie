@@ -131,6 +131,7 @@ export type ParsedReviewCommand = {
   config: CodegenieConfig;
   options: ReviewCommandOptions;
   repoRoot: string;
+  codegenieHome: string;
   warnings: ConfigWarning[];
   configSources: Record<string, ConfigSource>;
 };
