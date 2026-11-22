@@ -173,6 +173,7 @@ export function parseReviewCommand(
     config: loaded.config,
     options,
     repoRoot,
+    codegenieHome: loaded.paths.home,
     warnings: loaded.warnings,
     configSources: loaded.sources
   };
@@ -186,6 +187,7 @@ export async function executeReviewCommand(
   let inventory = { filesChanged: 0, keptFiles: 0 };
   const overrides = {
     repoRoot: parsed.repoRoot,
+    codegenieHome: parsed.codegenieHome,
     format: parsed.options.format,
     postGithubComments: parsed.options.postGithubComments,
     onRunStart: (run: { runId: string; runDir: string }) => {

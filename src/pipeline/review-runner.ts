@@ -69,6 +69,7 @@ import { isReviewStage, STAGE_LABELS } from "../review-stages.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
+  codegenieHome?: string;
   runArtifactDir?: string;
   format?: OutputFormat;
   postGithubComments?: boolean;
@@ -438,6 +439,8 @@ async function startRun(
     : config.telemetry;
   const run = createRunTelemetry({
     telemetryConfig,
+    maxTimeMs: config.review.maxTimeMs,
+    ...(overrides.codegenieHome !== undefined ? { codegenieHome: overrides.codegenieHome } : {}),
     ...(runArtifactDir ? { directoryNameFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
     runMetadata: {
       argv: process.argv,

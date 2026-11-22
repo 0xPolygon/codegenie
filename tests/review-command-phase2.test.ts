@@ -1,12 +1,37 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { executeReviewCommand, parseReviewCommand } from "../src/cli/review-command.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("review command pipeline", () => {
+  it.each([["0.01", 90], ["40", 120]])("seals the run for %s effective max-time minutes with a floor", async (maxTime, leaseMinutes) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-home-"));
+    const ambientHome = mkdtempSync(path.join(tmpdir(), "codegenie-ambient-home-"));
+    vi.stubEnv("CODEGENIE_HOME", ambientHome);
+    try {
+      const parsed = parseReviewCommand(["review", "--branch", "feature", "--max-time", maxTime], {
+        repoRoot: repo, homeOverride: home, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+      });
+      const { runId, runDir } = await executeReviewCommand(enableTelemetry(parsed));
+      const { startedAt } = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+      const seal = JSON.parse(readFileSync(path.join(runDir, ".codegenie-run"), "utf8"));
+      const expected = Date.parse(startedAt) + Number(leaseMinutes) * 60_000;
+      expect(seal).toMatchObject({ runId, liveUntil: expected });
+      expect(readFileSync(path.join(home, "retention.key"))).toHaveLength(32);
+      expect(existsSync(path.join(ambientHome, "retention.key"))).toBe(false);
+      expect(parsed.config.review.maxTimeMs).toBe(Number(maxTime) * 60_000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("runs the fake pipeline end to end and writes stage artifacts", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
