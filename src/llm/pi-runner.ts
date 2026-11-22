@@ -1230,7 +1230,7 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
   const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
     && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
   if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
-    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && text.length > 8_000)) return;
+    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && (outcome.result.rawSource ?? text).length > 8_000)) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
     if (hits) {
@@ -1250,9 +1250,9 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
   return [{ id: toolCall.id, tool: toolCall.name,
     ...(typeof toolCall.arguments.symbolName === "string" ? { symbols: [toolCall.arguments.symbolName] } : {}),
     ...(typeof toolCall.arguments.path === "string" ? { path: toolCall.arguments.path } : {}),
-    ...(toolCall.name === "read_range" && outcome.result.sourceLineRange
+    ...((toolCall.name === "read_range" || toolCall.name === "read_symbol") && outcome.result.sourceLineRange
       ? { lineRange: outcome.result.sourceLineRange } : {}),
-    lookupStatus: "found", source, text }];
+    lookupStatus: "found", source, text: outcome.result.rawSource === undefined ? text : stripCredentials(outcome.result.rawSource) }];
 }
 
 function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string): LlmToolResultSummary {

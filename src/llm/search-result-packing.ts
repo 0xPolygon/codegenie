@@ -89,7 +89,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
   if (input.budgetFallback) return packTextToolResult(input.budgetFallback, allowance);
 
-  const { packable, sourceLineRange, ...result } = input;
+  const { packable, sourceLineRange, rawSource: _rawSource, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;
   const unreadAt = (index: number): string | undefined => {
     const label = labels?.[index];
