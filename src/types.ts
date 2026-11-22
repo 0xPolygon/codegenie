@@ -683,6 +683,7 @@ export interface RepositoryTools {
     endLine: number,
     source?: SourceSelector
   ): Promise<{ text: string; meta: ToolResultMeta }>;
+  readSourceFileMap?(path: string, source?: SourceSelector, cursor?: string): Promise<SourceFileMap>;
   readFileOutline(path: string, source?: SourceSelector): Promise<{ outline: FileOutline; meta: ToolResultMeta }>;
   readSymbol(
     path: string,
@@ -708,6 +709,16 @@ export interface RepositoryTools {
   ): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>;
   listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }>;
 }
+
+export type SourceFileMap = {
+  path: string;
+  meta: ToolResultMeta;
+  offset: number;
+  totalDeclarations: number;
+  declarations: Array<{ symbol: SymbolRef; cursor: string }>;
+  next?: string;
+  smallSource?: string;
+};
 
 export interface RepositoryToolsHost extends RepositoryTools {
   bindPackets(packets: ReviewPacket[]): void;
@@ -1803,7 +1814,6 @@ export type ToolCallRecord = {
   args: {
     name?: string;
     scope?: string;
-    cursor?: string;
     path?: string;
     packetId?: string;
     symbolName?: string;
@@ -1816,6 +1826,7 @@ export type ToolCallRecord = {
     glob?: string;
     source?: string;
     contextMode?: string;
+    cursor?: string;
   };
   backend?: ToolBackend;
   precision?: ToolPrecision;

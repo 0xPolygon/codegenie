@@ -1251,6 +1251,7 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
     }
   }
   if (meta.lookupStatus !== "found" || !["read_range", "read_symbol", "find_definition", "read_file_outline"].includes(toolCall.name)) return;
+  if (toolCall.name === "read_range" && meta.precision !== "exact") return;
   return [{ id: toolCall.id, tool: toolCall.name,
     ...(typeof toolCall.arguments.symbolName === "string" ? { symbols: [toolCall.arguments.symbolName] } : {}),
     ...(typeof toolCall.arguments.path === "string" ? { path: toolCall.arguments.path } : {}),
@@ -4283,7 +4284,6 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
   return definedRecord({
     name: typeof args.name === "string" ? args.name.slice(0, 500) : undefined,
     scope: typeof args.scope === "string" ? args.scope : undefined,
-    cursor: typeof args.cursor === "string" ? args.cursor.slice(0, 4096) : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,
@@ -4295,7 +4295,8 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
     maxResults: typeof args.maxResults === "number" ? args.maxResults : undefined,
     glob: typeof args.glob === "string" ? args.glob : undefined,
     source: sourceForRecord(args.source),
-    contextMode: typeof args.contextMode === "string" ? args.contextMode : undefined
+    contextMode: typeof args.contextMode === "string" ? args.contextMode : undefined,
+    cursor: typeof args.cursor === "string" ? args.cursor : undefined
   }) as ToolCallRecord["args"];
 }
 
