@@ -215,6 +215,10 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           throw new CodegenieError("invalid_args", "read_diff_blocks requires exactly one of packetId or path");
         }
         const result = await runWithoutFacadeRecording(tools, () => tools.readDiffBlocks(input));
+        if (result.packable) {
+          const packed = createPackableToolResult(result.packable, result.meta);
+          return result.meta.deliveryStatus === "budget_rejected" ? { ...packed, isError: true, errorCode: "budget_exhausted" } : packed;
+        }
         return { text: withMeta(result.blocks.join("\n\n"), result.meta), meta: result.meta };
       })
     },

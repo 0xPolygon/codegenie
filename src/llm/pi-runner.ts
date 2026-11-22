@@ -4270,6 +4270,7 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
     path: typeof args.path === "string" ? args.path : undefined,
+    packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,
     line: typeof args.line === "number" ? args.line : undefined,
     startLine: typeof args.startLine === "number" ? args.startLine : undefined,

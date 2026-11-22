@@ -681,7 +681,11 @@ export interface RepositoryTools {
     selector: { symbolName?: string; line?: number },
     source?: SymbolLookupSourceSelector
   ): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>;
-  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>;
+  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{
+    blocks: string[];
+    meta: ToolResultMeta;
+    packable?: import("./llm/llm-runner.js").ToolResultRecords;
+  }>;
   findDefinition(
     symbolName: string,
     options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
@@ -1789,6 +1793,7 @@ export type ToolCallRecord = {
   tool: string;
   args: {
     path?: string;
+    packetId?: string;
     symbolName?: string;
     line?: number;
     startLine?: number;
