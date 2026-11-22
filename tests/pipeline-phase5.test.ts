@@ -8063,7 +8063,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
   });
 
-  it("puts numbered packet evidence before rules and labels author claims after rules", () => {
+  it("puts numbered packet evidence before rules and author claims after harness notes", () => {
     const packet = {
       ...fakePacket({ attentionNotes: ["PLANNER_REASON_SENTINEL", "Mechanical relationship note"] }),
       prSummary: "PR_SUMMARY_SENTINEL",
@@ -8086,7 +8086,14 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.templateVersion).toBe("p7.e1");
     expect(result.marks).toContain("E5.planner-text-withheld");
     expect(result.prompt.indexOf("changed-code")).toBeLessThan(result.prompt.indexOf("Review the changed code"));
-    expect(result.prompt.indexOf("author-claims")).toBeGreaterThan(result.prompt.indexOf("CHECK_SENTINEL"));
+    const evidence = result.prompt.indexOf("Pinned surrounding source");
+    const skillRules = result.prompt.indexOf("CHECK_SENTINEL");
+    const harness = result.prompt.indexOf("harness-notes");
+    const claims = result.prompt.indexOf("author-claims");
+    expect(evidence).toBeGreaterThan(result.prompt.indexOf("changed-code"));
+    expect(skillRules).toBeGreaterThan(evidence);
+    expect(harness).toBeGreaterThan(skillRules);
+    expect(claims).toBeGreaterThan(harness);
     expect(result.prompt.split(packet.hunks[0]!.contentWithLineNumbers)).toHaveLength(2);
     expect(result.prompt).toContain("hunk h1 base 1-1 head 1-1");
     expect(result.prompt).toContain("PR_SUMMARY_SENTINEL");

@@ -291,7 +291,7 @@ export function createPromptBuilder(
       const projection = projectSkills(skills, 7, options, packetFirst ? ["checks", "examples"] : undefined);
       const evidenceBlocks = rendered?.evidence.filter(block => block.content.trim())
         .map(block => fenceUntrusted(block.content, block.label)) ?? [];
-      const closingBlocks = rendered ? [rendered.author, rendered.harness].filter(block => block.content.trim())
+      const closingBlocks = rendered ? [rendered.harness, rendered.author].filter(block => block.content.trim())
         .map(block => fenceUntrusted(block.content, block.label)) : [
         fenceUntrusted(packet.prSummary, "pr-summary"),
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
