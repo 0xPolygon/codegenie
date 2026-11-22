@@ -44,6 +44,9 @@ export type ToolResultRecords = {
   keepWithNext?: boolean[];
   diffGroups?: DiffRecordGroups;
   nextPage?: string;
+  /** A cursor for each record, used only for the first unread row. */
+  cursors?: string[];
+  searchExcerptFlags?: boolean[];
 };
 
 export type ToolExecutionResult = {

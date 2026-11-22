@@ -1,8 +1,10 @@
-import type { SearchDelivery, SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
+import type { SearchDelivery, SearchOptions, SearchPage, SearchPageOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
+import type { GrepPosition } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
-import { containGlob } from "./path-guard.js";
+import { containGlob, containPath } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
+import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 
 export type SearchEngine = "git-grep";
 
@@ -96,6 +98,66 @@ export class SearchService {
     private readonly registry: LanguageAdapterRegistry,
     private readonly limit: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn()
   ) {}
+
+  async searchPage(query: string, options: SearchPageOptions = {}): Promise<SearchPage> {
+    validateQuery(query);
+    const source = options.source ?? { kind: "head" };
+    const mode = options.mode ?? "regex";
+    const contextMode = options.contextMode ?? "none";
+    const pathGlob = options.pathGlob === undefined ? undefined : containGlob(this.resolver.repoRoot, options.pathGlob);
+    const revision = this.resolver.resolveSource(source);
+    const binding = toolCursorBinding(["search_files", revision, source.kind, query, mode, pathGlob ?? null, contextMode]);
+    const startAt = options.cursor === undefined ? undefined : this.searchPosition(decodeToolCursor(options.cursor, binding));
+    const raw = await this.limit(() => this.resolver.grep(query, {
+      source, positioned: true, fixedString: mode === "literal", maxResults: DEFAULT_MAX_RESULTS + 1,
+      ...(pathGlob === undefined ? {} : { glob: pathGlob }),
+      ...(startAt ? { startAt } : {})
+    })).catch(error => {
+      if (error instanceof CodegenieError && error.code === "invalid_args" && mode === "regex") {
+        throw new CodegenieError("invalid_args", error.message + " Escape a literal parenthesis as \\(, for example track\\(, or use mode=literal.", { cause: error });
+      }
+      throw error;
+    });
+
+    const hits = capMatchTexts(raw.slice(0, DEFAULT_MAX_RESULTS)).results;
+    const nextHit = raw[DEFAULT_MAX_RESULTS];
+    const skipped = raw.omittedLines ?? 0;
+    const delivery: SearchDelivery = {
+      source: source.kind, deliveredCount: hits.length, scanIncomplete: nextHit !== undefined,
+      discoveryOmittedCount: Number(nextHit !== undefined), backendOmittedCount: skipped, budgetOmittedCount: 0,
+      shortenedExcerpts: hits.filter(hit => hit.excerpt).length, backendContextStripped: false, budgetContextStripped: false,
+      ...(raw.firstOmitted ? { nextRead: raw.firstOmitted } : {})
+    };
+    if (!hits.length && skipped) throw new SearchBudgetError("No matching line fits the search output allowance.", delivery);
+    await this.enrich(hits, source, contextMode);
+    const fileLengths = new Map<string, number>();
+    for (const path of groupByPath(hits).keys()) {
+      const file = await this.resolver.readFile(path, source);
+      if (!file) throw new CodegenieError("git_ref_missing", "A search result could not be positioned in the pinned source.");
+      const text = file.content;
+      fileLengths.set(path, text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
+    }
+    const cursorFor = ({ path, line }: GrepPosition) => encodeToolCursor(binding, { path, line });
+    return {
+      revision,
+      ...(pathGlob === undefined ? {} : { pathGlob }),
+      rows: hits.map(hit => ({ hit, totalLines: fileLengths.get(hit.path)!, cursor: cursorFor(hit) })),
+      meta: searchDeliveryMeta({
+        backend: "text", precision: "text", degraded: false, requestedSource: source.kind, sourceUsed: source.kind,
+        lookupStatus: hits.length ? "found" : "not_found",
+        ...(nextHit ? { discoveryLimited: true } : {})
+      }, delivery),
+      ...(nextHit ? { next: { path: nextHit.path, line: nextHit.line, cursor: cursorFor(nextHit) } } : {})
+    };
+  }
+
+  private searchPosition(value: unknown): GrepPosition {
+    if (value && typeof value === "object" && "path" in value && typeof value.path === "string" && "line" in value &&
+        typeof value.line === "number" && Number.isSafeInteger(value.line) && value.line > 0) {
+      return { path: containPath(this.resolver.repoRoot, value.path), line: value.line };
+    }
+    throw new CodegenieError("invalid_args", "Search cursor has an invalid match position.");
+  }
 
   async search(query: string, options: RawSearchOptions = {}): Promise<SearchExecution> {
     validateQuery(query);

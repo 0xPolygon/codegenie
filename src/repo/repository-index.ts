@@ -18,6 +18,9 @@ import type {
   ReviewPacket,
   ReviewStage,
   SearchOptions,
+  SearchPage,
+  SearchPageOptions,
+  PathListPage,
   SearchResult,
   SourceSelector,
   SymbolMentionOptions,
@@ -44,6 +47,7 @@ import { assemblePacketContext, readOutline } from "./packet-context.js";
 import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
 import { readSourceFileMap } from "./source-file-map.js";
+import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
 import { TreeSitterService } from "./tree-sitter/tree-sitter-service.js";
@@ -646,6 +650,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     };
   }
 
+  async searchFilesPage(query: string, options?: SearchPageOptions): Promise<SearchPage> {
+    return this.search.searchPage(query, options);
+  }
+
   async searchFiles(query: string, options: SearchOptions = {}): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
     return this.measure(
       "search_files",
@@ -741,6 +749,31 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         };
       }
     );
+  }
+
+  async listFilesPage(glob: string, cursor?: string): Promise<PathListPage> {
+    const contained = containGlob(this.opts.resolver.repoRoot, glob, this.guardTelemetry("list_files"));
+    const tree = this.opts.resolver.resolveSource();
+    const binding = toolCursorBinding(["list_files", tree, contained]);
+    const offset = cursor === undefined ? 0 : decodeToolCursor(cursor, binding);
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new CodegenieError("invalid_args", "File listing cursor has an invalid path position.");
+    }
+    const paths = await this.opts.resolver.listFiles(contained);
+    if (cursor !== undefined && offset >= paths.length) {
+      throw new CodegenieError("invalid_args", "File listing cursor is outside the pinned listing.");
+    }
+    const end = Math.min(offset + LIST_FILES_MAX, paths.length);
+    const rows = paths.slice(offset, end).map((path, index) => ({ path, cursor: encodeToolCursor(binding, offset + index) }));
+    const omittedCount = paths.length - end;
+    const meta: ToolResultMeta = {
+      backend: "text", precision: "exact", degraded: false, sourceUsed: "head",
+      deliveryStatus: omittedCount ? "truncated" : rows.length ? "full" : "empty",
+      pathListDelivery: { deliveredCount: rows.length, backendOmittedCount: omittedCount, budgetOmittedCount: 0 },
+      ...(omittedCount ? { truncated: true, omittedCount, degradationReason: "list_path_limit" } : {})
+    };
+    return { glob: contained, tree, totalPaths: paths.length, rows, meta,
+      ...(omittedCount ? { next: { path: paths[end]!, cursor: encodeToolCursor(binding, end) } } : {}) };
   }
 
   async listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }> {
