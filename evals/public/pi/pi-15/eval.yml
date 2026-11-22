@@ -1,0 +1,16 @@
+# Public eval case pi/pi-15. The oracle stays outside the reviewed checkout.
+name: public-pi-15
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-15
+command:
+  base: 7c05885bc401d24f6ac0f250f5aa5a07a419899a
+  head: e4f50d76db4fc62ef16cf24f74ce6744f3e05da9
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: unstarted-tui-captures-suspend
+  path: packages/tui/src/tui.ts
+  lineRange: [1094, 1104]
+  severityAtLeast: low

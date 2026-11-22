@@ -1,0 +1,20 @@
+# Public eval case pi/pi-n4. The oracle stays outside the reviewed checkout.
+name: public-pi-n4
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-n4
+command:
+  base: 7edcfe25e43a53dcd976468e8025f5c95b5b052c
+  head: a2fd9783f5ecdeaac694d7a8f791f6510164acf7
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: unexpected-memory-key-change
+  path: packages/agent/src/harness/session/memory.ts
+  lineRange: [4, 4]
+  severityAtLeast: medium
+- id: unexpected-storage-key-change
+  path: packages/agent/src/harness/session/storage-state.ts
+  lineRange: [35, 37]
+  severityAtLeast: medium
