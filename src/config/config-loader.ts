@@ -128,6 +128,10 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
   applyEnvironment(config, env, sources);
   applyCliOverrides(config, opts.cli ?? {}, sources, warnings);
+  clearStageOverridesForRun(config, {
+    model: Boolean(env.CODEGENIE_PROVIDER || env.CODEGENIE_MODEL || opts.cli?.provider !== undefined || opts.cli?.model !== undefined),
+    reasoning: Boolean(env.CODEGENIE_REASONING || (opts.cli?.reasoning !== undefined && opts.cli.reasoning !== "auto"))
+  }, warnings, opts.cli?.provider !== undefined || opts.cli?.model !== undefined || opts.cli?.reasoning !== undefined ? "cli" : "environment");
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
@@ -306,6 +310,10 @@ function applyRawConfig(
     config.llm.reasoning = raw.llm.reasoning;
     sources["llm.reasoning"] = source;
   }
+  if (raw.llm?.stages !== undefined) {
+    config.llm.stages = structuredClone(raw.llm.stages) as NonNullable<CodegenieConfig["llm"]["stages"]>;
+    sources["llm.stages"] = source;
+  }
   if (raw.llm?.maxConcurrentCalls !== undefined) {
     config.llm.maxConcurrentCalls = raw.llm.maxConcurrentCalls;
     sources["llm.maxConcurrentCalls"] = source;
@@ -463,6 +471,19 @@ function warnIgnoredRepoKey(warnings: ConfigWarning[], key: string): void {
     key,
     message: `repo codegenie.toml cannot set user-scoped key ${key}; value ignored`
   });
+}
+
+export function clearStageOverridesForRun(config: CodegenieConfig, fields: { model: boolean; reasoning: boolean },
+  warnings: ConfigWarning[], source: ConfigSource): void {
+  if (!config.llm.stages) return;
+  const ignored = new Set<string>();
+  for (const [name, selection] of Object.entries(config.llm.stages)) {
+    if (fields.model && selection.model !== undefined) { delete selection.model; ignored.add("model"); }
+    if (fields.reasoning && selection.reasoning !== undefined) { delete selection.reasoning; ignored.add("reasoning"); }
+    if (Object.keys(selection).length === 0) delete config.llm.stages[name as keyof typeof config.llm.stages];
+  }
+  if (Object.keys(config.llm.stages).length === 0) delete config.llm.stages;
+  if (ignored.size) warnings.push({ source, key: "llm.stages", message: `Per-run ${[...ignored].join(" and ")} overrides ignore matching stage settings.` });
 }
 
 function applyEnvironment(

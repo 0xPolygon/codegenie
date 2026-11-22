@@ -40,7 +40,13 @@ async function main(): Promise<void> {
       stream: process.stderr
     });
     const completed = await executeReviewCommand(parsed, {
-      ...(progress !== undefined ? { onTelemetryEvent: progress.onTelemetryEvent } : {}),
+      onTelemetryEvent: (event) => {
+        if (event.message === "stage_models" && event.data?.models && typeof event.data.models === "object") {
+          const models = event.data.models as Record<string, { provider: string; id: string; reasoning: string }>;
+          process.stderr.write(stripCredentials(`Stage models (base reasoning): ${Object.entries(models).map(([stage, model]) => `${stage} ${model.provider}/${model.id} ${model.reasoning}`).join(", ")}\n`));
+        }
+        progress?.onTelemetryEvent(event);
+      },
       writeOutput: (text) => {
         progress?.stop();
         progress = undefined;

@@ -2157,12 +2157,15 @@ describe("eval command fixture suite", () => {
     const suite = await loadEvalSuite(suiteDir);
     const config = {
       ...defaultConfig,
-      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1 },
+      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1,
+        stages: { review: { model: "bad/override", reasoning: "low" as const } } },
       review: { ...defaultConfig.review, concurrency: 1 }
     };
     const result = await runEvalCase(suite, suite.cases[0]!, { config });
 
     expect(result.status).toBe("pass");
+    const evalEvents = readFileSync(path.join(result.runDir, "telemetry", "events.jsonl"), "utf8");
+    expect(evalEvents).toContain("Per-run model and reasoning overrides ignore matching stage settings.");
     expect(result.info.effectiveConfig).toMatchObject({
       review: { concurrency: 3 },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }

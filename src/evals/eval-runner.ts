@@ -3,7 +3,7 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer, ignoredReviewDepthWarning } from "../config/config-loader.js";
+import { applyRepoConfigLayer, clearStageOverridesForRun, ignoredReviewDepthWarning } from "../config/config-loader.js";
 import {
   deprecatedReviewDepthSchema,
   reasoningLevelSchema,
@@ -894,6 +894,7 @@ function applyCaseReviewConfig(
   const provider = llm?.provider ?? review?.provider;
   const model = llm?.model ?? review?.model;
   const reasoning = llm?.reasoning ?? review?.reasoning;
+  clearStageOverridesForRun(config, { model: provider !== undefined || model !== undefined, reasoning: reasoning !== undefined }, warnings, "eval-case");
   if (provider !== undefined) {
     config.llm.provider = provider;
   }

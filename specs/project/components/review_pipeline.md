@@ -33,7 +33,7 @@ Explicitly not this component's responsibility (one-line pointers only):
 
 All data contracts referenced here (`ReviewInput`, `ResolvedReviewInput`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `FileFacts`, `FileFilterDecision`, `HunkSymbolFacts`, `StaticSignal`, `ReviewPlan`, `HunkCoverageDecision`, `SurroundingContextHint`, `ReviewPacket`, `PacketHunk`, `PacketLine`, `PacketContext`, `ToolBudget`, `PacketReviewResult`, `FollowUpHint`, `CandidateFinding`, `DiffAnchor`, `FindingProducer`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `CodegenieConfig`, `RepositoryIndex`, `LlmRunner`) are defined in `architecture.md` and the functional spec and are not redefined here. The only type this document defines is the planner dossier (`PlannerDossier` and its `Dossier*` member records), which `architecture.md` explicitly delegates to this document.
 
-Anything listed under Future Considerations in the parent specs — hierarchical planning and the meta-planner, the broad cross-file system review, the cross-packet `ReviewSignal` index, planner scheduling groups, the changed-symbol graph, diff-file input mode, spec-doc discovery, existing-PR-thread hints, per-role model/reasoning tiering, and rich pre-attached packet context — is deferred and not designed here.
+Anything listed under Future Considerations in the parent specs — hierarchical planning and the meta-planner, the broad cross-file system review, the cross-packet `ReviewSignal` index, planner scheduling groups, the changed-symbol graph, diff-file input mode, spec-doc discovery, existing-PR-thread hints, and rich pre-attached packet context — is deferred and not designed here.
 
 ## Public Interface
 

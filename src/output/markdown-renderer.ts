@@ -116,7 +116,10 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   const lines: string[] = [];
   const model = renderModel(stats.model);
   if (model !== undefined) {
-    lines.push(`- 🤖 **Model:** ${model}`);
+    lines.push(`- 🤖 **${stats.stageModels ? "Default model" : "Model"}:** ${model}`);
+  }
+  if (stats.stageModels !== undefined) {
+    lines.push(`- **Stage models (base reasoning):** ${Object.entries(stats.stageModels).map(([stage, selected]) => `${stage}: ${renderModel(selected)}`).join(" · ")}`);
   }
   if (stats.codegenie !== undefined) {
     lines.push(`- 🧞 **Codegenie:** v${stats.codegenie.version}${stats.codegenie.commit !== undefined ? ` (${inlineCode(stats.codegenie.commit.slice(0, 10))})` : ""}`);

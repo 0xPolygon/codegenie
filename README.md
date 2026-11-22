@@ -185,6 +185,16 @@ The full list of supported models — every provider, model id, context window, 
 
 ## Configuration
 
+Model and reasoning overrides for individual stages are user-scoped. For example, put the following in `~/.codegenie/config.toml`:
+
+```toml
+[llm.stages.plan] # also review, verify and compose
+model = "provider/model-id"
+reasoning = "low"
+```
+
+Each field is optional and inherits the global setting when omitted. A stage model must include the provider and cannot include a reasoning suffix. Repo configuration cannot set these fields. A per-run CLI, environment or eval-case model or reasoning overrides that field for every stage, with a warning when stage settings are ignored; stored provider defaults remain fallbacks. Explicit composition reasoning is used as written; inherited composition reasoning steps down by default. Repairs and location clarification use the stage model's lowest supported reasoning. The selected model must support the effective level; invalid selections fail before model calls. Smaller models may lack the context window for large prompts, and mixed-model review quality has not been measured.
+
 Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a typical config is small:
 
 ```toml
