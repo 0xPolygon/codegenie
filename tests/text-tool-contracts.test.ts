@@ -24,6 +24,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
         `export function gitOperation${i}(ref: string) { return ref; }\n`).join(""),
       "src/long.ts": `export function LongDefinition() {\n${Array.from({ length: 300 }, (_, i) => `  const n${i} = ${i};`).join("\n")}\n}\n`,
       "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
+      "src/duplicates.ts": "function Duplicate() { return 1; }\nfunction Duplicate() { return 2; }\n",
       "src/whitespace.ts": "export function WhitespaceCase() {\n\n\treturn 1;\n}\n",
       "schema/fallback.custom": "function UnverifiedLead() {\n  return 1;\n}\n",
       "terminated.custom": "one\r\n\tsecond\r\n" + "    rest of source\r\n".repeat(40),
@@ -34,6 +35,40 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     writeRepoFile(fixture.repo, "untracked.custom", "untracked-only");
   });
   afterAll(() => fixture?.dispose());
+
+  it("delivers numbered symbol lines, preserves raw evidence and resumes at the first unread line", async () => {
+    const full = await fixture.call("read_symbol", { path: "src/shared.ts", symbolName: "SharedCall" });
+    expect(full.text).toContain("src/shared.ts@head lines 1-27 of 27\n1\texport function SharedCall() {");
+    expect(full.rawSource).toContain("  const value0 = 0;");
+    expect(full.sourceLineRange).toEqual([1, 27]);
+    const cut = packTextToolResult(full, 550);
+    expect(cut.meta?.deliveryStatus).toBe("truncated");
+    expect(cut.rawSource).toBeUndefined();
+    const last = cut.meta!.deliveredLineRange![1];
+    expect(cut.text).toContain(`continue with startLine=${last + 1}`);
+    expect(cut.text).not.toContain(`lines 1-27 of 27`);
+    const rawPrefix = cut.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
+    expect(rawPrefix).toEqual(full.rawSource!.split("\n").slice(0, rawPrefix.length));
+    const backendCut = await fixture.call("read_symbol", { path: "src/long.ts", symbolName: "LongDefinition" });
+    expect(backendCut.meta?.recovery?.startLine).toBe(backendCut.meta!.deliveredLineRange![1] + 1);
+    expect(backendCut.text).toContain(`continue with startLine=${backendCut.meta?.recovery?.startLine}`);
+    const nestedCut = packTextToolResult(backendCut, 600);
+    expect(nestedCut.meta?.recovery).toBeUndefined();
+    expect(nestedCut.meta!.deliveredLineRange![1]).toBeLessThan(backendCut.meta!.deliveredLineRange![1]);
+    expect(nestedCut.text).toContain(`continue with startLine=${nestedCut.meta!.deliveredLineRange![1] + 1}`);
+    const fallback = await fixture.call("read_symbol", { path: "schema/fallback.custom", symbolName: "UnverifiedLead" });
+    expect(fallback.text).toContain("Unverified text window");
+    expect(fallback.text).toContain("1\tfunction UnverifiedLead() {");
+    expect(fallback.rawSource).toBeUndefined();
+    const huge = await fixture.call("read_symbol", { path: "src/huge.ts", symbolName: "HugeDefinition" });
+    expect(huge).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    expect(huge.text).toContain("startLine=1");
+    const ambiguous = await fixture.call("read_symbol", { path: "src/duplicates.ts", symbolName: "Duplicate" });
+    expect(ambiguous.meta?.lookupStatus).toBe("ambiguous");
+    expect(ambiguous.text).toContain("More candidates: use find_definition");
+    expect(ambiguous.text).not.toContain("continue with startLine");
+    expect(ambiguous.meta?.recovery).toBeUndefined();
+  });
 
   it("numbers definition bodies, keeps raw evidence, and resumes whole lines on a caller-budget cut", async () => {
     const result = await fixture.call("find_definition", { symbolName: "SharedCall", pathGlob: "src/shared.ts" });

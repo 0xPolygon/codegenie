@@ -57,6 +57,8 @@ export type ToolExecutionResult = {
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
   definitions?: import("../types.js").DefinitionHit[];
+  /** Raw source for complete source evidence; never use after a delivery cut. */
+  rawSource?: string;
   /** Actual inclusive lines delivered by read_range, after EOF clipping. */
   sourceLineRange?: [number, number];
   filePaths?: string[];
