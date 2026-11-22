@@ -11,6 +11,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     fixture = await textRepository({
       "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
+      "character-cap.ts": ["const required = makeRequirements();", "x".repeat(15_000), "y".repeat(15_000), "return required;"].join("\n"),
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
     }, { "revision.custom": "head-only\nhead-tail" });
     writeRepoFile(fixture.repo, "revision.custom", "dirty-only");
@@ -91,6 +92,12 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(await fixture.tools.readRange("empty.custom", 1, 10)).toMatchObject({ text: "", meta: { lookupStatus: "found", deliveryStatus: "empty", degraded: false } });
     expect((await fixture.call("read_range", { path: "schema/policy.ridl", startLine: 100, endLine: 110 })).meta)
       .toMatchObject({ lookupStatus: "found", deliveryStatus: "empty", degraded: false });
+    const beyond = await fixture.call("read_range", { path: "crlf.custom", startLine: 4, endLine: 9, source: { kind: "base" } });
+    expect(beyond.text).toContain("crlf.custom@base has 3 lines; requested lines 4-9");
+    expect(beyond.meta).toMatchObject({ totalLines: 3, deliveryStatus: "empty" });
+    const throughEof = await fixture.call("read_range", { path: "crlf.custom", startLine: 2, endLine: 9 });
+    expect(throughEof.sourceLineRange).toEqual([2, 3]);
+    expect(throughEof.text).toBe("two\r\nthree\r\n\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]");
     expect((await fixture.call("read_diff_blocks", { path: "schema/policy.ridl" })).meta)
       .toMatchObject({ lookupStatus: "not_found", deliveryStatus: "empty" });
     const missing = await fixture.call("read_range", { path: "missing.custom", startLine: 1, endLine: 2 });
@@ -152,13 +159,36 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(lines.text.split("\n")).toHaveLength(400);
     expect(lines.text.endsWith("line 400")).toBe(true);
     expect(lines.meta).toMatchObject({ deliveryStatus: "truncated", truncated: true, omittedCount: 220 });
+    const bounded = await fixture.call("read_range", { path: "large.custom", startLine: 1, endLine: 800 });
+    expect(bounded.text).toContain("delivered lines 1-400 of 620; continue with startLine=401, endLine=800");
     const tail = await fixture.tools.readRange("large.custom", 401, 620);
     expect(tail.text.split("\n")).toHaveLength(220);
     expect(tail.meta.deliveryStatus).toBe("full");
     const wide = await fixture.call("read_range", { path: "wide.custom", startLine: 1, endLine: 1 });
-    expect(wide.meta).toMatchObject({ deliveryStatus: "truncated", truncated: true });
-    expect(wide.text).toContain("delivery: truncated");
-    expect((await fixture.tools.readRange("wide.custom", 1, 1)).text).toHaveLength(16_000);
+    expect(wide).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", truncated: true, omittedCount: 1 } });
+    expect(wide.text).toContain("Source line 1 exceeds the source character limit");
+
+    const characterCap = await fixture.call("read_range", { path: "character-cap.ts", startLine: 1, endLine: 8 });
+    expect(characterCap.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 2, deliveredLineRange: [1, 2] });
+    expect(characterCap.text).toContain("delivered lines 1-2 of 4; continue with startLine=3, endLine=8");
+    expect(characterCap.text).not.toContain("y".repeat(10));
+    const continuation = await fixture.tools.readRange("character-cap.ts", 3, 8);
+    expect(continuation.text).toBe("y".repeat(15_000) + "\nreturn required;");
+  });
+
+  it("repacks a real range at a smaller allowance and resumes on the first omitted line", async () => {
+    const args = { path: "large.custom", startLine: 39, endLine: 166, source: { kind: "base" as const } };
+    const canonical = await fixture.call("read_range", args);
+    expect(packTextToolResult(canonical, canonical.text.length)).toBe(canonical);
+    const packed = packTextToolResult(canonical, 448);
+    const range = packed.meta!.deliveredLineRange!;
+    expect(range[0]).toBe(39);
+    expect(range[1]).toBeLessThan(166);
+    const next = await fixture.tools.readRange(args.path, range[1] + 1, args.endLine, args.source);
+    const deliveredText = packed.text.split("\n\n[tool meta:")[0];
+    expect(deliveredText + "\n" + next.text).toBe(canonical.packable!.records.join("\n"));
+    expect(packed.text).toContain(`continue with startLine=${range[1] + 1}, endLine=166`);
   });
 
   it.each(["../outside", "/etc/passwd", ".git/config"])("rejects unsafe paths instead of empty reads: %s", async path => {

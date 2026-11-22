@@ -35,5 +35,20 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
     notes.push(`truncated${meta.omittedCount ? `: ${meta.omittedCountIsLowerBound ? "at least " : ""}${meta.omittedCount} omitted` : ""}`);
   }
   notes.push(...deliveryNotes);
+  const request = meta.requestedRange;
+  if (request && meta.totalLines !== undefined && (meta.truncated || (meta.deliveryStatus === "empty" && !meta.deliveredLineRange))) {
+    const target = `${request.path}@${meta.sourceUsed}`;
+    const span = `requested lines ${request.startLine}-${request.endLine}`;
+    notes.push(meta.deliveredLineRange ? `${target} ${span}` : `${target} has ${meta.totalLines} lines; ${span}`);
+    if (meta.truncated && meta.degradationReason && deliveryNotes.length === 0) {
+      notes.push(`truncation: ${meta.degradationReason}`);
+    }
+  }
+  if (meta.truncated && meta.deliveredLineRange) {
+    const [first, last] = meta.deliveredLineRange;
+    const total = meta.totalLines === undefined ? "" : ` of ${meta.totalLines}`;
+    const requestedEnd = request ? `, endLine=${request.endLine}` : "";
+    notes.push(`delivered lines ${first}-${last}${total}`, `continue with startLine=${last + 1}${requestedEnd}`);
+  }
   return notes.length > 0 ? `${text}\n\n[tool meta: ${notes.join("; ")}]` : text;
 }

@@ -1,4 +1,5 @@
 import { withMeta } from "./repository-tool-guidance.js";
+import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
@@ -59,10 +60,28 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; startLine: number; endLine: number; source?: SourceSelector };
-        const result = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
-        return { text: withMeta(result.text, result.meta), meta: result.meta,
-          ...(result.meta.deliveryStatus === "full" && result.text.length > 0
-            ? { sourceLineRange: [input.startLine, Math.min(input.endLine, input.startLine + result.text.split("\n").length - 1)] as [number, number] } : {}) };
+        const { text, meta } = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
+        if (meta.deliveryStatus === "budget_rejected") {
+          return {
+            text: withMeta(`Source line ${input.startLine} exceeds the source character limit. Use search_files scoped to this file to locate a match.`, meta),
+            meta,
+            isError: true,
+            errorCode: "budget_exhausted"
+          };
+        }
+        const records = text.split("\n");
+        const range = meta.deliveredLineRange;
+        const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full" && text.length > 0
+          ? range ?? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)]
+          : undefined;
+        const placement = sourceLineRange ? { sourceLineRange } : {};
+        if (!range) return { text: withMeta(text, meta), meta, ...placement };
+        const terminalNewline = records.length > range[1] - range[0] + 1;
+        if (terminalNewline) records.pop();
+        return {
+          ...createPackableToolResult({ open: "", records, separator: "\n", close: terminalNewline ? "\n" : "" }, meta),
+          ...placement
+        };
       })
     },
     {

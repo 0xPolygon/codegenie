@@ -33,10 +33,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       ...(range ? { deliveredLineRange: range } : {})
     };
     const notes = ["truncation: tool_result_budget"];
-    if (range) {
-      const total = meta.totalLines === undefined ? "" : ` of ${meta.totalLines}`;
-      notes.push(`delivered lines ${range[0]}-${range[1]}${total}`, `continue with startLine=${range[1] + 1}`);
-    } else {
+    if (!range) {
       const last = labels?.[count - 1];
       const next = labels?.[count];
       if (last) notes.push(`last delivered: ${last}`);
