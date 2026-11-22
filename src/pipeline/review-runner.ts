@@ -812,7 +812,7 @@ async function createPipelineServices(
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
-  const runner = overrides.runner ?? await createRunner(config, run, cache, overrides.piAdapter);
+  const runner = overrides.runner ?? await createRunner(config, run, cache, overrides);
   return {
     runner,
     skills: skillsResult.skills,
@@ -903,7 +903,12 @@ export function reviewCacheFingerprint(
   });
 }
 
-function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner | Promise<LlmRunner> {
+function createRunner(
+  config: CodegenieConfig,
+  run: RunContext,
+  cache: ModelCallCache | undefined,
+  { piAdapter, codegenieHome }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome">
+): LlmRunner | Promise<LlmRunner> {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
   }
@@ -917,7 +922,8 @@ function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCal
     ...(cache !== undefined ? { cache } : {}),
     toolResultCache,
     runSignal: run.abort.signal,
-    ...(adapter !== undefined ? { adapter } : {}),
+    ...(piAdapter !== undefined ? { adapter: piAdapter } : {}),
+    ...(codegenieHome !== undefined ? { codegenieHome } : {}),
     hooks: {
       checkpoint: (stage) => run.budget.checkpoint(stage),
       reserve: (stage, estimatedTokens) => run.budget.reserve(stage, estimatedTokens),

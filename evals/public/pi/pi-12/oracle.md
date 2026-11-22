@@ -2,9 +2,9 @@
 repo: pi
 case: pi-12
 role: positive
-intro: 4f81c3c28db28c089c5571aab68a8624ae99abd6
-base: 1a4d153d7af76a636d67567d30ba705b1320a06d
-introDate: 2026-03-14
+intro: a61eca5dee7f13a31c07fd20f7517aaa572b7ade
+base: 754e745b1fbd268f3c287fd0b5779992d900ee7a
+introDate: 2025-11-28
 fix: 612a172e6e398f6e514bf0c5d153677c94a53400
 kind: escaping
 severity: low
@@ -13,17 +13,17 @@ contaminationSplit: pre-2026-08-01
 
 # pi pi-12
 
-Review base `1a4d153d7af76a636d67567d30ba705b1320a06d` (the parent) against head `4f81c3c28db28c089c5571aab68a8624ae99abd6`.
+Review base `754e745b1fbd268f3c287fd0b5779992d900ee7a` (the parent) against head `a61eca5dee7f13a31c07fd20f7517aaa572b7ade`.
 
 ## Expectation `single-segment-fd-query-unescaped`
 
 ### Expected finding
 
-`buildFdPathQuery` escapes regex metacharacters in each segment of a query that contains `/`, but returns a query without `/` unchanged. The result is passed to fd as a regular expression (line 151), so a single-segment query containing characters such as `(`, `[`, `+` or `.` matches the wrong files or makes fd fail with a regex error.
+The base searches filenames by literal substring. On a system with fd available, the new autocomplete path passes the typed query as a raw regex. Typing `@notes[` for a file named `notes[.ts` now sends an invalid pattern. fd exits with an error and autocomplete returns no suggestions, even though the filename matches the literal query.
 
 ### Anchor
 
-packages/tui/src/autocomplete.ts:19-21 (the same raw return at 34-36). Do not credit findings about Windows path separators or about the trailing-separator branch.
+`packages/tui/src/autocomplete.ts:17` (`args.push(query)` in `walkDirectoryWithFd`). Lines 26–27 turn the fd error into an empty result.
 
 ### Severity floor
 
@@ -31,4 +31,4 @@ The matcher floor is low. Expected severity is low; record it as a calibration n
 
 ### Fixing evidence
 
-612a172e6 returns `escapeRegex(normalized)` for the single-segment case and adds tests.
+`612a172e6` makes the descendant fd query builder escape single-segment input and adds tests. The raw regex path was introduced into this parent/child pair when the literal Node walk was replaced.

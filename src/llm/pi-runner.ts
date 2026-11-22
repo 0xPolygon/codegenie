@@ -197,6 +197,7 @@ const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
+  codegenieHome?: string;
   models?: Pick<Models, "streamSimple" | "getAuth" | "checkAuth" | "getModel" | "getModels" | "getProviders" | "getProvider">;
   streamSimple?: PiStreamSimpleFunction;
   authStorage?: PiAuthStorage;
@@ -211,7 +212,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner | Promise<L
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner | Promise<LlmRunner> {
   const request = definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as ModelRequest;
   if (opts.adapter === undefined) {
-    const adapter = createRealPiAiAdapter();
+    const adapter = createRealPiAiAdapter(opts.codegenieHome !== undefined ? { codegenieHome: opts.codegenieHome } : {});
     return adapter.resolveModelWithReason(request, opts.runSignal).then(async (resolution) => {
       const stages = await resolveStageModels(opts, resolution, (stageRequest) => adapter.resolveModelWithReason(stageRequest, opts.runSignal));
       return buildPiRunner(opts, adapter, resolution, stages);
@@ -1055,7 +1056,7 @@ type RealPiAiAdapter = PiAiAdapter<Promise<PiModelRef | undefined>> & {
 };
 
 export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): RealPiAiAdapter {
-  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
+  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths(deps.codegenieHome));
   const models = deps.models ?? getCodegeniePiModels(createPiCredentialStore(authStorage));
   const resolveModelWithReason = (request: ModelRequest, signal?: AbortSignal) => resolveRealModelWithReason(request, models, signal);
   return {
