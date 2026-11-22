@@ -430,7 +430,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
         }
       }),
       findDefinition: async (_symbolName, options) => ({
-        definitions: [{ symbol: { path: "src/a.ts", name: "DeletedHelper", kind: "function", lineRange: [1, 1] }, text: "func DeletedHelper() {}" }],
+        definitions: [{ symbol: { path: "src/a.ts", name: "DeletedHelper", kind: "function", lineRange: [1, 1] }, text: "func DeletedHelper() {}", totalLines: 1, deliveredLineRange: [1, 1] }],
         meta: {
           backend: "tree-sitter",
           precision: "syntactic",

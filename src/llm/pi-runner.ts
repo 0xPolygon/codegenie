@@ -1,4 +1,5 @@
 import { assertRepositoryToolArguments } from "./tool-definitions.js";
+import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
@@ -1225,14 +1226,20 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
   const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
     && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
   if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
-    || meta?.deliveryStatus !== "full" || !text.trim() || text.length > 8_000) return;
+    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && text.length > 8_000)) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
-    if (hits) return hits.flatMap((hit, index) => hit.text?.trim() && !isTextFallbackHit(hit) ? [{
-      id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
-      symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
-      lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
-    }] : []);
+    if (hits) {
+      // Keep the pre-numbering evidence-size boundary; display prefixes should not
+      // change which otherwise complete source bodies can become evidence.
+      const legacyBodies = hits.map(({ symbol, text }) => ({ symbol, ...(text !== undefined ? { text } : {}) }));
+      if (withMeta(JSON.stringify(legacyBodies, null, 2), meta).length > 8_000) return;
+      return hits.flatMap((hit, index) => hit.text?.trim() && !isTextFallbackHit(hit) ? [{
+        id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
+        symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
+        lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
+      }] : []);
+    }
   }
   if (meta.lookupStatus !== "found" || !["read_range", "read_symbol", "find_definition", "read_file_outline"].includes(toolCall.name)) return;
   return [{ id: toolCall.id, tool: toolCall.name,

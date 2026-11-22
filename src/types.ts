@@ -306,6 +306,15 @@ export type SymbolInfo = SymbolRef & {
   signature?: string;
 };
 
+/** A definition body and its actual position in the selected file revision. */
+export type DefinitionHit = {
+  symbol: SymbolInfo;
+  text?: string;
+  totalLines?: number;
+  deliveredLineRange?: [number, number];
+  nextLine?: number;
+};
+
 export type ChangedSymbol = SymbolInfo & {
   changedLines: number[];
 };
@@ -653,7 +662,7 @@ export interface RepositoryTools {
   findDefinition(
     symbolName: string,
     options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
-  ): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>;
+  ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>;
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   findSymbolMentions(
     symbolName: string,

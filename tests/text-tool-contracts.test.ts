@@ -18,12 +18,101 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     fixture = await textRepository({
       "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
+      "src/shared.ts": `export function SharedCall() {\n${Array.from({ length: 25 }, (_, i) => `  const value${i} = ${i};`).join("\n")}\n}\n`,
+      "pkg/shared.go": `package pkg\nfunc SharedCall() {\n${Array.from({ length: 20 }, (_, i) => `  value${i} := ${i}`).join("\n")}\n}\n`,
+      "src/long.ts": `export function LongDefinition() {\n${Array.from({ length: 300 }, (_, i) => `  const n${i} = ${i};`).join("\n")}\n}\n`,
+      "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
+      "src/whitespace.ts": "export function WhitespaceCase() {\n\n\treturn 1;\n}\n",
+      "schema/fallback.custom": "function UnverifiedLead() {\n  return 1;\n}\n",
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
     }, { "revision.custom": "head-only\nhead-tail" });
     writeRepoFile(fixture.repo, "revision.custom", "dirty-only");
     writeRepoFile(fixture.repo, "untracked.custom", "untracked-only");
   });
   afterAll(() => fixture?.dispose());
+
+  it("numbers definition bodies, keeps raw evidence, and resumes whole lines on a caller-budget cut", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "SharedCall", pathGlob: "src/shared.ts" });
+    expect(result.definitions).toHaveLength(1);
+    const raw = result.definitions![0]!;
+    expect(raw.symbol.path).toBe("src/shared.ts");
+    expect(raw.totalLines).toBe(27);
+    expect(raw.deliveredLineRange).toEqual([1, 27]);
+    expect(result.text).toContain("src/shared.ts@head declaration lines 1-27 of 27");
+    expect(result.text).toContain("1\texport function SharedCall() {");
+    expect(result.text).toContain("2\t  const value0 = 0;");
+    expect(raw.text).toContain("  const value0 = 0;");
+    expect(raw.text).not.toContain("2\t  const");
+    const delivered = result.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, "")).join("\n");
+    expect(delivered).toBe(raw.text);
+    expect(packTextToolResult(result, result.text.length)).toBe(result);
+    const cut = packTextToolResult(result, 550);
+    expect(cut.isError).not.toBe(true);
+    expect(cut.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
+    expect(cut.text).toContain("continue with startLine=");
+    expect(cut.text).toContain("delivered lines 1-");
+    const cutLines = cut.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
+    expect(cutLines).toEqual(raw.text!.split("\n").slice(0, cutLines.length));
+    const rest = await fixture.tools.readRange("src/shared.ts", cutLines.length + 1, 27, { kind: "head" });
+    expect([...cutLines, ...rest.text.split("\n")].join("\n")).toBe(raw.text);
+    expect(packTextToolResult(result, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+  });
+
+  it("labels text-only definition leads as unverified windows", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "UnverifiedLead", pathGlob: "schema/fallback.custom" });
+    expect(result.meta?.lookupStatus).toBe("unavailable");
+    expect(result.text).toContain("schema/fallback.custom@head unverified text window lines 1-3 of 3");
+    expect(result.text).toContain("1\tfunction UnverifiedLead() {");
+  });
+
+  it("labels multiple definition blocks and the exact next source location on a cut", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "SharedCall", source: { kind: "base" } });
+    expect(result.definitions).toHaveLength(2);
+    expect(result.text).toContain("Definition locations:");
+    expect(result.text).toContain("pkg/shared.go@base declaration lines 2-23 of 23");
+    expect(result.text).toContain("src/shared.ts@base declaration lines 1-27 of 27");
+    const cut = packTextToolResult(result, 750);
+    expect(cut.isError).not.toBe(true);
+    expect(cut.meta).toMatchObject({ truncated: true });
+    expect(cut.text).toMatch(/last delivered: (?:pkg\/shared\.go|src\/shared\.ts)@base:\d+/u);
+    expect(cut.text).toMatch(/next: (?:pkg\/shared\.go|src\/shared\.ts)@base:\d+/u);
+    const atBoundary = Array.from({ length: result.text.length }, (_, allowance) => allowance)
+      .map(allowance => packTextToolResult(result, allowance))
+      .find(packed => !packed.isError && packed.text.includes("next: src/shared.ts@base:1"));
+    expect(atBoundary?.text).toContain("last delivered: pkg/shared.go@base:23");
+    const cache = createToolResultCache();
+    const args = { symbolName: "SharedCall", source: { kind: "base" } };
+    const first = await cache.execute({ toolName: "find_definition", args, run: async () => result });
+    const smaller = packTextToolResult(first.result, 750);
+    const again = await cache.execute({ toolName: "find_definition", args, run: async () => result });
+    expect(again.status).toBe("hit");
+    expect(packTextToolResult(again.result, result.text.length).text).toBe(result.text);
+    expect(smaller.meta?.truncated).toBe(true);
+  });
+
+  it("reports the first unread source line for a backend-truncated definition", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "LongDefinition", pathGlob: "src/long.ts" });
+    const hit = result.definitions![0]!;
+    expect(result.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
+    expect(hit.nextLine).toBe((hit.deliveredLineRange?.[1] ?? 0) + 1);
+    expect(result.text).toContain(`source continues at src/long.ts@head:${hit.nextLine}`);
+    const rest = await fixture.tools.readRange("src/long.ts", hit.nextLine!, hit.symbol.lineRange[1], { kind: "head" });
+    const source = (await fixture.tools.readRange("src/long.ts", 1, hit.symbol.lineRange[1], { kind: "head" })).text;
+    expect(`${hit.text}\n${rest.text}`).toBe(source);
+  });
+
+  it("refuses an oversized first definition line without claiming source delivery", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "HugeDefinition", pathGlob: "src/huge.ts" });
+    expect(result).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected" } });
+    expect(result.text).toContain("path=src/huge.ts startLine=1");
+  });
+
+  it("preserves blank lines and existing tabs after removing generated definition positions", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "WhitespaceCase", pathGlob: "src/whitespace.ts" });
+    const sourceLines = result.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
+    expect(sourceLines.join("\n")).toBe(result.definitions![0]!.text);
+    expect(sourceLines).toEqual(["export function WhitespaceCase() {", "", "\treturn 1;", "}"]);
+  });
 
   it.each([
     [1, 1, "first"], [2, 2, "second"], [1, 2, "first\nsecond"], [2, 3, "second\nthird"],

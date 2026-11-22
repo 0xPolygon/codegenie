@@ -3,6 +3,16 @@ import type { ToolResultMeta } from "../types.js";
 // Shared by normal tool delivery and bounded result packing.
 export const MISSING_FILE_GUIDANCE = "The requested file does not exist at the selected revision. Discover an existing path with list_files (head only), or search_files/find_definition with the intended source revision, then read that path. Do not infer that the implementation is absent or retry a guessed filename with different line bounds.";
 
+export function renderSourceBlockHeader(
+  path: string, source: string, range: readonly [number, number], totalLines: number, kind?: "declaration"
+): string {
+  return `${path}@${source} ${kind ? `${kind} ` : ""}lines ${range[0]}-${range[1]} of ${totalLines}`;
+}
+
+export function numberSourceLine(line: string, lineNumber: number): string {
+  return `${lineNumber}\t${line}`;
+}
+
 export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: string[] = []): string {
   const notes: string[] = [];
   if (meta.requestedSource !== undefined || meta.sourceUsed !== undefined) {
@@ -30,6 +40,7 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
     notes.push(
       `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${meta.recovery.source}`
     );
+    notes.push(`recovery reason: ${meta.recovery.reason}`);
   }
   if (meta.degraded) {
     notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);

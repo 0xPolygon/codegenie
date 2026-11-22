@@ -45,6 +45,7 @@ describe("repository intelligence", () => {
     const local = await tools.findDefinition("resolveModelWithReason");
     expect(local.definitions).toHaveLength(1);
     expect(local.definitions[0]).toMatchObject({ symbol: { path: "src/pi-runner.ts", name: "resolveModelWithReason", kind: "function" } });
+    expect(local.definitions[0]).toMatchObject({ totalLines: 7, deliveredLineRange: [5, 5] });
     expect(local.meta).toMatchObject({ lookupStatus: "found", precision: "syntactic" });
     expect(local.meta.lookupNote).toBeUndefined();
     expect(local.meta.incompleteCandidatePaths).toContain("src/broken.ts");
@@ -764,6 +765,8 @@ export { internal as Public }
       path: "long/long.go",
       source: "head"
     });
+    expect(longDefinition.definitions[0]?.nextLine).toBe((longDefinition.definitions[0]?.deliveredLineRange?.[1] ?? 0) + 1);
+    expect(longDefinition.meta.recovery?.startLine).toBe(longDefinition.definitions[0]?.nextLine);
     const longSymbol = await tools.readSymbol("long/long.go", { symbolName: "LongFunction" });
     expect(longSymbol.meta).toMatchObject({
       lookupStatus: "found",
@@ -996,7 +999,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
       path: "lib/quotes/fees.go",
       name: "CalculatePriceUSD",
       nativeKind: "text declaration",
-      lineRange: [3, 9]
+      lineRange: [3, 8]
     });
     expect(definition.definitions[0]?.text).toContain("amount must be positive");
     expect(definition.meta).toMatchObject({

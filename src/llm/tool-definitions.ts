@@ -1,4 +1,5 @@
-import { withMeta } from "./repository-tool-guidance.js";
+import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
+import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
@@ -133,7 +134,40 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { symbolName: string; pathGlob?: string; source?: SymbolLookupSourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.findDefinition(input.symbolName, optionalOptions({ pathGlob: input.pathGlob, source: input.source })));
-        return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), definitions: result.definitions, meta: result.meta };
+        if (result.definitions.length === 0) return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), definitions: result.definitions, meta: result.meta };
+        const revision = result.meta.sourceUsed ?? (input.source?.kind === "base" ? "base" : "head");
+        const records: string[] = [];
+        const labels: string[] = [];
+        const index: string[] = [];
+        for (const hit of result.definitions) {
+          const { symbol, text, totalLines, deliveredLineRange, nextLine } = hit;
+          if (text === undefined || totalLines === undefined || deliveredLineRange === undefined) {
+            index.push(`${symbol.path}@${revision} ${symbol.name}: declaration lines ${symbol.lineRange[0]}-${symbol.lineRange[1]}${totalLines !== undefined ? ` of ${totalLines}` : ""}; body unavailable; use read_range`);
+            continue;
+          }
+          const header = renderSourceBlockHeader(symbol.path, revision, symbol.lineRange, totalLines, "declaration")
+            .replace(" declaration lines ", symbol.nativeKind === "text declaration" ? " unverified text window lines " : " declaration lines ");
+          index.push(`${header} (${symbol.nativeKind ?? symbol.kind})`);
+          const lines = text.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            const line = deliveredLineRange[0] + i;
+            const first = i === 0 ? `${header}\n` : "";
+            const last = i === lines.length - 1 && (nextLine !== undefined || deliveredLineRange[0] !== symbol.lineRange[0] || deliveredLineRange[1] !== symbol.lineRange[1])
+              ? `\n[Delivered lines ${deliveredLineRange[0]}-${deliveredLineRange[1]} of ${totalLines}${nextLine !== undefined ? `; source continues at ${symbol.path}@${revision}:${nextLine}` : ""}]` : "";
+            records.push(`${first}${numberSourceLine(lines[i]!, line)}${last}`);
+            labels.push(`${symbol.path}@${revision}:${line}`);
+          }
+        }
+        if (records.length === 0) {
+          const meta = { ...result.meta, deliveryStatus: "budget_rejected" as const, truncated: true };
+          return { text: withMeta(`Definition source could not be delivered as whole positioned lines; use a narrower read_range. ${index.join("; ")}`, meta), isError: true,
+            errorCode: "budget_exhausted", meta };
+        }
+        const open = index.length > 1 ? `Definition locations:\n${index.join("\n")}\n\n` : "";
+        const only = result.definitions.length === 1 ? result.definitions[0] : undefined;
+        const meta = only?.deliveredLineRange && only.totalLines !== undefined
+          ? { ...result.meta, deliveredLineRange: only.deliveredLineRange, totalLines: only.totalLines } : result.meta;
+        return { ...createPackableToolResult({ open, records, separator: "\n", close: "", labels }, meta), definitions: result.definitions };
       })
     },
     {
