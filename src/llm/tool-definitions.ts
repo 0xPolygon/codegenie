@@ -33,8 +33,11 @@ export type RepositoryToolDefinitionOptions = {
   toolSurface?: ReviewToolSurface;
 };
 
+const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
+const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {};
+
 export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
-  if (surface === "six") {
+  if (surface === "six" && SIX_TOOL_NAMES.some(name => !sixToolFactories[name])) {
     throw new CodegenieError("config_error", 'review.toolSurface = "six" requires a build with all six repository tools. Select "current" for this build.');
   }
 }
@@ -54,6 +57,9 @@ export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" 
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
   assertRepositoryToolSurfaceAvailable(options.toolSurface);
+  if (options.toolSurface === "six") {
+    return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools));
+  }
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",
