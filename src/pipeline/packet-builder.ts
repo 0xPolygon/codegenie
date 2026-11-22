@@ -2449,7 +2449,10 @@ async function resolvePacketContextHint(
       { stage: 6, initiator: "harness" },
       () => repoIndex.tools.readSymbol(path, { symbolName: symbol }, { kind: "head" })
     );
-    if (result.text !== undefined && result.text.trim().length > 0 && !result.meta.degraded) {
+    if (result.text !== undefined && result.text.trim().length > 0 && !result.meta.degraded && result.meta.precision === "syntactic"
+      && (result.meta.lookupStatus === undefined || result.meta.lookupStatus === "found")) {
+      if (result.meta.truncated) telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: path,
+        data: { kind: hint.kind, reason: hint.reason, outcome: "symbol_truncated" } });
       return { text: renderHintContextBlock(hint, path, symbol, result.text), recovered: false };
     }
     const fallback = await withRepositoryToolCallContext(

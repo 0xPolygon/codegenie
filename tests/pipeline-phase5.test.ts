@@ -3286,6 +3286,45 @@ describe("phase 5 pipeline regressions", () => {
     } finally { fixture.dispose(); }
   });
 
+  it("does not treat a prose mention at the hinted path as a definition", async () => {
+    const fixture = await textRepository({
+      "app.ts": "export const value = 1;\n",
+      "docs/plan.md": "The helper parseRopeFlat is described here.\n",
+      "src/parser.ts": "export function parseRopeFlat() { return 1; }\n"
+    });
+    try {
+      const direct = await fixture.tools.readSymbol("docs/plan.md", { symbolName: "parseRopeFlat" }, { kind: "head" });
+      expect(direct.meta).toMatchObject({ precision: "text", degraded: false, lookupStatus: "found" });
+      expect(direct.text).toContain("The helper parseRopeFlat is described here.");
+      const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review",
+        surroundingContextHints: [{ kind: "enclosing_symbol", path: "docs/plan.md", symbol: "parseRopeFlat", reason: "inspect the definition", expectedUse: "packet_context" }] }] };
+      const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+      expect(packets[0]?.contextText).toContain("src/parser.ts@head lines 1-1 of 1\n1\texport function parseRopeFlat()");
+      expect(packets[0]?.contextText).not.toContain("The helper parseRopeFlat is described here.");
+    } finally { fixture.dispose(); }
+  });
+
+  it.each(["ambiguous", "truncated"] as const)("handles a %s direct symbol read without silently losing context", async mode => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const findDefinition = vi.fn(async () => ({ definitions: [], meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, deliveryStatus: "empty" as const } }));
+    const tools = { ...fakeTools(), findDefinition,
+      readSymbol: async () => ({ text: "function target() {}", meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false,
+        lookupStatus: mode === "ambiguous" ? "ambiguous" as const : "found" as const, truncated: true } }) };
+    const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review",
+      surroundingContextHints: [{ kind: "enclosing_symbol", path: "app.ts", symbol: "target", reason: "inspect target", expectedUse: "packet_context" }] }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], fakeRepositoryIndex(tools),
+      { ...nullTelemetry(), event: event => events.push(event) }, { config: config(), enabledLenses: ["core/code-review"] });
+    if (mode === "ambiguous") {
+      expect(findDefinition).toHaveBeenCalledOnce();
+      expect(packets[0]?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "target", expectedUse: "tool_lookup" })]);
+    } else {
+      expect(findDefinition).not.toHaveBeenCalled();
+      expect(packets[0]?.contextText).toContain("function target() {}");
+      expect(events).toContainEqual(expect.objectContaining({ message: "packet_context_hint_unresolved", data: expect.objectContaining({ outcome: "symbol_truncated" }) }));
+    }
+  });
+
   it("keeps a cross-file call-site hint as a tool lookup", async () => {
     const findSymbolMentions = vi.fn(async () => { throw new Error("unexpected call-site resolution"); });
     const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review",
