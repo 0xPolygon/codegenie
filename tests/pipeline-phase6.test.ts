@@ -100,7 +100,7 @@ describe("phase 6 live review path", () => {
     const opts = { repoRoot: repo, env: {} };
     const parsed = parseReviewCommand(args, {
       ...opts,
-      actionStageModels: parseStageModels("plan: {model: other/planner}\nverify: {reasoning: medium}\ncompose: {model: other/composer, reasoning: low}")!
+      actionStageModels: parseStageModels("plan: {model: openrouter/planner}\nverify: {reasoning: medium}\ncompose: {model: anthropic/composer, reasoning: low}")!
     });
     const config = { ...cfg, llm: parsed.config.llm };
     const resolved: ResolvedReviewInput = { mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head, commits: [], rawDiff: "" };
@@ -108,17 +108,17 @@ describe("phase 6 live review path", () => {
       .not.toBe(reviewCacheFingerprint({ ...cfg, llm: parseReviewCommand(args, opts).config.llm }, resolved, "registry"));
     const result = await runReview(parsed.target, config, { repoRoot: repo, runArtifactDir, piAdapter: adapter });
     expect(result.runStats?.stageModels).toEqual({
-      plan: { provider: "other", id: "planner", reasoning: "high" },
+      plan: { provider: "openrouter", id: "planner", reasoning: "high" },
       review: { provider: "scripted", id: "scripted-model", reasoning: "high" },
       verify: { provider: "scripted", id: "scripted-model", reasoning: "medium" },
-      compose: { provider: "other", id: "composer", reasoning: "low" }
+      compose: { provider: "anthropic", id: "composer", reasoning: "low" }
     });
     expect(renderMarkdownReview(result)).toContain("Stage models (base reasoning)");
     const calls = readJsonl<{ stage: number; provider: string; model: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
-    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "other", model: "planner" }),
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "openrouter", model: "planner" }),
       expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model" }),
       expect.objectContaining({ stage: 9, provider: "scripted", model: "scripted-model", reasoningConfigured: "medium" }),
-      expect.objectContaining({ stage: 10, provider: "other", model: "composer", reasoningConfigured: "low" })]));
+      expect.objectContaining({ stage: 10, provider: "anthropic", model: "composer", reasoningConfigured: "low" })]));
   });
 
   it("replays model calls across worktrees and operational settings, with a miss on a budget change", async () => {

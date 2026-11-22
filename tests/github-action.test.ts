@@ -1371,6 +1371,12 @@ describe("github-action entrypoint", () => {
     await expect(runWithModels(issueCommentPayload(), "issue_comment", [
       "--preflight-only", "true", "--stage-models", "plan: [", ...MODEL_ARGS
     ], { comments: fake })).rejects.toThrow(/--stage-models invalid YAML/u);
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", [
+      "--preflight-only", "true", "--stage-models", "plan: {model: openroutre/planner}", ...MODEL_ARGS
+    ], { comments: fake })).rejects.toMatchObject({
+      code: "invalid_args",
+      message: "--stage-models plan.model names unknown provider openroutre"
+    });
     const skip = await runWithModels(issueCommentPayload({ body: "LGTM" }), "issue_comment", args, { comments: fake });
     expect(skip.argv).toBeUndefined();
     expect(skip.output).toContain("skipped — comment does not match the trigger phrase");

@@ -59,6 +59,13 @@ export function parseStageModels(text: string): ActionStageModels | undefined {
     throw new CodegenieError("invalid_args", `--stage-models ${key ? `${key}: ` : ""}${detail}`);
   }
   const selections = Object.entries(parsed.data).filter(([, stage]) => stage?.model !== undefined || stage?.reasoning !== undefined);
+  for (const [name, stage] of selections) {
+    if (stage?.model === undefined) continue;
+    const provider = stage.model.slice(0, stage.model.indexOf("/"));
+    if (!providerKnown(provider)) {
+      throw new CodegenieError("invalid_args", `--stage-models ${name}.model names unknown provider ${provider}`);
+    }
+  }
   return selections.length > 0 ? Object.fromEntries(selections) : undefined;
 }
 
