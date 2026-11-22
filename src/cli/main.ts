@@ -40,6 +40,7 @@ async function main(): Promise<void> {
       stream: process.stderr
     });
     const completed = await executeReviewCommand(parsed, {
+      conciseTargetErrors: true,
       onTelemetryEvent: (event) => {
         if (event.message === "stage_models" && event.data?.models && typeof event.data.models === "object") {
           const models = event.data.models as Record<string, { provider: string; id: string; reasoning: string }>;

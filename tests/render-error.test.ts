@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
 
 import { renderCodegenieError } from "../src/cli/render-error.js";
+import { CodegenieError, ReviewTargetUsageError } from "../src/util/errors.js";
 
 describe("renderCodegenieError", () => {
+  it("prints one sanitized reason and the four current review target forms", () => {
+    const token = "sk-proj-AbCdEfGh1234567890AbCdEfGh1234567890";
+    const error = new ReviewTargetUsageError(new CodegenieError(
+      "git_ref_missing", `ref could not be resolved\r\n${token}\u0007`
+    ));
+    expect(renderCodegenieError(error)).toBe(
+      "git_ref_missing: ref could not be resolved [redacted:pattern]\n\n" +
+      "Review target examples\n" +
+      "  codegenie review HEAD\n" +
+      "  codegenie review <branch>\n" +
+      "  codegenie review origin/main...HEAD\n" +
+      "  codegenie review --pr N\n"
+    );
+  });
+
   it("prints the provider explanation under a usage-limit failure", () => {
     const providerMessage =
       "You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.";

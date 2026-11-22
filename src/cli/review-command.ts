@@ -33,6 +33,7 @@ type ExecuteReviewCommandResult = {
 };
 
 type ExecuteReviewCommandOptions = {
+  conciseTargetErrors?: boolean;
   writeOutput?: (text: string) => void;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onTelemetryEvent?: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => void;
@@ -200,6 +201,7 @@ export async function executeReviewCommand(
   const review = await runReview(parsed.target, parsed.config, {
     ...overrides,
     configWarnings: parsed.warnings,
+    ...(opts.conciseTargetErrors === true ? { conciseTargetErrors: true } : {}),
     ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
   return {

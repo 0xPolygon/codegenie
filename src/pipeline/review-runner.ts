@@ -49,7 +49,7 @@ import type {
   RunOutcome,
   TelemetryEvent
 } from "../types.js";
-import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
+import { CodegenieError, ReviewTargetUsageError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
@@ -73,6 +73,7 @@ type RunReviewOverrides = {
   format?: OutputFormat;
   postGithubComments?: boolean;
   configWarnings?: ConfigWarning[];
+  conciseTargetErrors?: boolean;
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
@@ -376,17 +377,22 @@ export async function runReview(
     const failure = reviewFailureRecord(error);
     const failureStage = run.currentStage;
     const diagnostic = reviewDiagnostic(failureStage, error);
-    run.logger.error({
-      runId: run.runId,
-      stage: failureStage,
-      event: "review_pipeline_failed",
-      // Carry the code and message inline so run.log states the cause without
-      // a reader having to open the failure record beside it.
-      message: isCodegenieError(error)
-        ? `review pipeline failed: ${error.code}: ${error.message}`
-        : "review pipeline failed",
-      data: failure
-    });
+    const usageError = overrides.conciseTargetErrors === true && failureStage === 1 && isTargetUsageFailure(error)
+      ? new ReviewTargetUsageError(error)
+      : undefined;
+    if (usageError === undefined) {
+      run.logger.error({
+        runId: run.runId,
+        stage: failureStage,
+        event: "review_pipeline_failed",
+        // Carry the code and message inline so run.log states the cause without
+        // a reader having to open the failure record beside it.
+        message: isCodegenieError(error)
+          ? `review pipeline failed: ${error.code}: ${error.message}`
+          : "review pipeline failed",
+        data: failure
+      });
+    }
     run.telemetry.event({
       stage: failureStage,
       level: "error",
@@ -395,19 +401,21 @@ export async function runReview(
     });
     try {
       await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
-      const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
-        coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
-        verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
-      const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
-      const failureReport: ReviewResult = retained
-        ? { ...retained, coverage: { ...retained.coverage, partial: true,
-            diagnostics: [...(retained.coverage.diagnostics ?? []), diagnostic] } }
-        : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
-            health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
-      refreshReviewHealth(failureReport);
-      await renderOutputs(failureReport, overrides, run.telemetry);
+      if (usageError === undefined) {
+        const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
+          coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
+          verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
+        const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
+        const failureReport: ReviewResult = retained
+          ? { ...retained, coverage: { ...retained.coverage, partial: true,
+              diagnostics: [...(retained.coverage.diagnostics ?? []), diagnostic] } }
+          : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
+              health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
+        refreshReviewHealth(failureReport);
+        await renderOutputs(failureReport, overrides, run.telemetry);
+      }
     } catch (diagnosticError) {
-      run.logger.error({ runId: run.runId, stage: 0, event: "failure_artifact_write_failed", message: "Could not write failure report; original error retained", data: { diagnosticError: String(diagnosticError) } });
+      run.logger.error({ runId: run.runId, stage: 0, event: "failure_artifact_write_failed", message: "Could not write failure artifacts; original error retained", data: { diagnosticError: String(diagnosticError) } });
     }
     const budgetStop = run.budget.stopSnapshot();
     emitBudgetStop(run, budgetStop);
@@ -418,8 +426,15 @@ export async function runReview(
     } catch (diagnosticError) {
       run.logger.error({ runId: run.runId, stage: 0, event: "failure_finalize_failed", message: "Could not finalize diagnostics; original error retained", data: { diagnosticError: String(diagnosticError) } });
     }
-    throw error;
+    throw usageError ?? error;
   }
+}
+
+function isTargetUsageFailure(error: unknown): error is CodegenieError {
+  return isCodegenieError(error) && (
+    error.code === "invalid_args" || error.code === "git_ref_missing" ||
+    error.code === "git_base_branch_unresolved" || error.code === "not_git_worktree"
+  );
 }
 
 async function startRun(

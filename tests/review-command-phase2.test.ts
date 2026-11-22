@@ -1,9 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { executeReviewCommand, parseReviewCommand } from "../src/cli/review-command.js";
+import { renderCodegenieError } from "../src/cli/render-error.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
+import { ReviewTargetUsageError, errorExitCode } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("review command pipeline", () => {
@@ -159,7 +161,8 @@ describe("review command pipeline", () => {
       env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
 
-    await expect(executeReviewCommand(enableTelemetry(parsed))).rejects.toMatchObject({
+    const writeOutput = vi.fn();
+    await expect(executeReviewCommand(enableTelemetry(parsed), { conciseTargetErrors: true, writeOutput })).rejects.toMatchObject({
       code: "invalid_args",
       context: expect.objectContaining({ unknown: ["typo/not-real"] })
     });
@@ -175,8 +178,11 @@ describe("review command pipeline", () => {
     const runJson = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
     expect(runJson.outcome).toMatchObject({
       status: "failed",
-      errorCode: "invalid_args"
+      errorCode: "invalid_args",
+      failure: { stage: 2 }
     });
+    expect(writeOutput).toHaveBeenCalledWith(expect.stringContaining("Review failed"));
+    expect(existsSync(runFilePath(runDir, "final-review.json"))).toBe(true);
   });
 
   it("finalizes failed runs after run directory creation", async () => {
@@ -198,6 +204,59 @@ describe("review command pipeline", () => {
       errorCode: "not_git_worktree",
       exitCode: 2
     });
+    expect(existsSync(runFilePath(path.join(runsRoot, runDirs[0] ?? ""), "final-review.md"))).toBe(true);
+  });
+
+  it.each([
+    { args: [], code: "invalid_args", reason: "current branch main is the base branch" },
+    { args: ["--branch", "bad?ref"], code: "invalid_args", reason: "invalid git ref characters" },
+    { args: ["--branch", "missing"], code: "git_ref_missing", reason: "review branch 'missing' could not be resolved" },
+    { args: ["missing...HEAD", "--format", "json"], code: "git_ref_missing", reason: "missing^{commit}" },
+    { args: ["--branch", "main", "--base", "missing"], code: "git_base_branch_unresolved", reason: "CLI --base 'missing' could not be resolved" },
+    { args: [], code: "not_git_worktree", reason: "must run inside a git worktree" }
+  ])("reports Stage 1 target errors as usage errors ($reason)", async ({ args, code, reason }) => {
+    const repoRoot = code === "not_git_worktree" ? mkdtempSync(path.join(tmpdir(), "codegenie-not-git-")) : initRepo();
+    if (code !== "not_git_worktree") {
+      writeRepoFile(repoRoot, "app.ts", "export const value = 1;\n");
+      commitAll(repoRoot, "base");
+    }
+    const parsed = parseReviewCommand(["review", ...args], {
+      repoRoot,
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const writeOutput = vi.fn();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let runDir = "";
+    try {
+      const error = await executeReviewCommand(enableTelemetry(parsed), {
+        conciseTargetErrors: true,
+        writeOutput,
+        onRunStart: (run) => { runDir = run.runDir; }
+      }).catch((error: unknown) => error);
+      if (!(error instanceof ReviewTargetUsageError)) {
+        throw new Error("expected a review target usage error", { cause: error });
+      }
+      expect(error).toMatchObject({ code, message: expect.stringContaining(reason) });
+      expect(errorExitCode(error)).toBe(2);
+      expect(renderCodegenieError(error)).toContain(reason);
+      expect(renderCodegenieError(error)).toContain("codegenie review --pr N");
+      expect(writeOutput).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
+
+    expect(existsSync(runFilePath(runDir, "final-review.md"))).toBe(false);
+    expect(existsSync(runFilePath(runDir, "final-review.json"))).toBe(false);
+    const errorJson = JSON.parse(readFileSync(runFilePath(runDir, "error.json"), "utf8"));
+    expect(errorJson).toMatchObject({ stage: 1, errorCode: code });
+    const runJson = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: code, exitCode: 2, failure: { stage: 1 } });
+    expect(readJsonl(path.join(runDir, "events.jsonl"))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 1, message: "review pipeline failed" }),
+      expect.objectContaining({ stage: 1, message: "review_health_failed" })
+    ]));
   });
 });
 
