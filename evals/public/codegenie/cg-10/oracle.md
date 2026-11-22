@@ -23,7 +23,7 @@ A fatal, non-recoverable composer rejection followed by a failure to write a fin
 
 ### Anchor
 
-src/pipeline/composer.ts:348-406: the artifact writes at 348-379 run before the deferred rethrow at 402-406. The review-runner failure path at src/pipeline/review-runner.ts:404-415, which looks up the retained review by the caught error, is an optional second anchor (`write-failure-loses-verified-output-runner`); a hit on either counts as the same detection after adjudication. The earlier #112 matcher used a lexical failure-mode pattern, which gave false credit and missed detections (#127).
+src/pipeline/composer.ts:348-406: the artifact writes at 348-379 run before the deferred rethrow at 402-406. The review-runner failure path at src/pipeline/review-runner.ts:404-415, which looks up the retained review by the caught error, is an optional second anchor (`write-failure-loses-verified-output-runner`); a hit on either counts as the same detection after adjudication. Match this defect only when the reported mechanism includes an artifact write failing. A primitive rejection or shared error object can lose findings on the same lines through a different mechanism.
 
 ### Severity floor
 

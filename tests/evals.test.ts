@@ -441,6 +441,78 @@ describe("eval scoring", () => {
     expect(matchExpectation(expectation, finding).matched).toBe(true);
   });
 
+  it("credits cg-10 primitive rejection separately from artifact-write failure", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/codegenie/cg-10/eval.yml", "utf8")) as EvalCase;
+    const composer = "src/pipeline/composer.ts";
+    const published = finalFinding("primitive", composer, 402, {
+      failureMode: "If runComposer rejects with undefined, the deferred rethrow skips it and the review appears to succeed."
+    });
+    const score = scoreEvalRun(evalCase, {
+      candidates: [], verification: [], finalSelection: [], finalFindings: [published], packets: [], hintEvents: [], metricsSources: {}
+    }, "replay");
+    expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
+      ["write-failure-loses-verified-output", "fail"],
+      ["write-failure-loses-verified-output-runner", "skipped"],
+      ["primitive-composer-rejection", "pass"]
+    ]);
+    const writeFailure = candidate("write", composer, 402, {
+      failureMode: "After a fatal composer rejection, an artifact write fails before the retained report is registered."
+    });
+    expect(matchExpectation(evalCase.should_find![0]!, writeFailure).matched).toBe(true);
+    expect(matchExpectation(evalCase.should_find![2]!, writeFailure).matched).toBe(false);
+  });
+
+  it("does not attribute the cg-05 credential leak to rejection of a diagnostics question", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/codegenie/cg-05/eval.yml", "utf8")) as EvalCase;
+    const file = "src/llm/model-call-cache.ts";
+    const diagnostic = candidate("diagnostic", file, 101, {
+      failureMode: "Refusing to write a replay-redacted signature returns a plain miss and emits no warning telemetry."
+    });
+    const expectation = evalCase.should_find![0]!;
+    expect(matchExpectation(expectation, diagnostic).matched).toBe(false);
+    const score = scoreEvalRun(evalCase, {
+      candidates: [diagnostic], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [], metricsSources: {}
+    }, "replay");
+    expect(score.expectationResults[0]!.loss?.label).toBe("partial-match");
+    const leak = candidate("leak", file, 102, {
+      failureMode: "A bare thinkingSignature containing a credential is written into the model-call cache unchanged."
+    });
+    expect(matchExpectation(expectation, leak).matched).toBe(true);
+  });
+
+  it("does not match the go-05 competing-slot bug to the last-token oracle", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/goinfer/go-05/eval.yml", "utf8")) as EvalCase;
+    const file = "internal/kvmgr/slots.go";
+    const expectation = evalCase.should_find![0]!;
+    expect(matchExpectation(expectation, candidate("competing-slot", file, 261, {
+      failureMode: "The higher score masks a lower-scoring eligible own rollback."
+    })).matched).toBe(false);
+    expect(matchExpectation(expectation, candidate("last-token", file, 226, {
+      failureMode: "A different conversation with a different last token gets the unlimited rollback allowance."
+    })).matched).toBe(true);
+  });
+
+  it("recognizes separate cg-07 cache and budget behaviors at the changed Stage 8 contract", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/codegenie/cg-07/eval.yml", "utf8")) as EvalCase;
+    const [reader, budget, validator] = evalCase.should_find!;
+    const budgetFinding = finalFinding("budget", "src/types.ts", 2, {
+      failureMode: "The eval runner accepts a maxPromptCharsByStage entry for Stage 8, but no model call consumes that budget."
+    });
+    expect(matchExpectation(budget!, budgetFinding).matched).toBe(true);
+    expect(matchExpectation(reader!, budgetFinding).matched).toBe(false);
+    expect(matchExpectation(validator!, candidate("validator", "src/evals/eval-runner.ts", 254, {
+      failureMode: budgetFinding.failureMode
+    })).matched).toBe(true);
+    const oldRecord = candidate("cache", "src/types.ts", 2, {
+      failureMode: "The model-call cache still accepts stored Stage 8 responses through its old numeric guard."
+    });
+    expect(matchExpectation(reader!, oldRecord).matched).toBe(true);
+    expect(matchExpectation(budget!, oldRecord).matched).toBe(false);
+    expect(matchExpectation(reader!, candidate("import", "src/pipeline/review-runner.ts", 55, {
+      failureMode: "Removing the Stage 8 import breaks compilation if a caller still references it."
+    })).matched).toBe(false);
+  });
+
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
     const finding = finalFinding("final-1", "src/app.ts", 12, {
       title: "Fake finding in src/app.ts",

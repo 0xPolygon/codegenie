@@ -18,6 +18,8 @@ severity: low
 
 `internal/kvmgr/slots.go:222-230` at [the introducing commit](https://github.com/townsendmerino/goinfer/commit/b6397eee5b7de893078eaba911c15828657491f4).
 
+The predicate at line 226 must grant the allowance to a different conversation whose last token differs. A report that line 261 ignores a lower-scoring eligible rollback describes a different selection bug. Reports about losing the first-prompt marker after reuse also describe a different mechanism.
+
 ## Severity floor
 
 Low.

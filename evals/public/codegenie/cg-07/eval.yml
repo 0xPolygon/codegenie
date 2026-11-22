@@ -11,9 +11,17 @@ review:
   cache: false
 should_find:
 - id: legacy-stage8-accepted-by-guards
-  path: "src/{evals/eval-scoring,llm/model-call-cache,pipeline/review-runner}.ts"
+  path: "src/{types,review-stages,evals/eval-scoring,llm/model-call-cache,pipeline/review-runner}.ts"
   severityAtLeast: low
+  failureModePattern: '^(?=[\s\S]*\bstage[ -]?8\b)(?=[\s\S]*\b(?:ledgers?|caches?|model[ -]call\s+records?|stored\s+(?:calls?|responses?))\b)'
 - id: eval-budget-key-8-accepted
-  path: src/evals/eval-runner.ts
-  lineRange: [250, 258]
+  path: src/types.ts
+  lineRange: [1, 2]
   severityAtLeast: low
+  failureModePattern: '^(?=[\s\S]*(?:\bstage[ -]?8\b|\bkey\s+["'']?8\b))(?=[\s\S]*\b(?:maxPromptCharsByStage|prompt[ -]budgets?)\b)'
+- id: eval-budget-key-8-accepted-validator
+  tier: optional
+  path: src/evals/eval-runner.ts
+  lineRange: [252, 256]
+  severityAtLeast: low
+  failureModePattern: '^(?=[\s\S]*(?:\bstage[ -]?8\b|\bkey\s+["'']?8\b))(?=[\s\S]*\b(?:maxPromptCharsByStage|prompt[ -]budgets?)\b)'
