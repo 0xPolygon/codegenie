@@ -487,9 +487,8 @@ describe("finding presentation order (#104)", () => {
       id: "d-high",
       title: "High demoted",
       severity: "high",
-      confidence: "low",
       path: "src/z.ts",
-      line: 2,
+      line: 99,
       hunkId: zHunk.id,
       fingerprint: "a".repeat(64)
     });
@@ -497,9 +496,8 @@ describe("finding presentation order (#104)", () => {
       id: "d-med",
       title: "Medium demoted",
       severity: "medium",
-      confidence: "low",
       path: "src/a.ts",
-      line: 1,
+      line: 99,
       hunkId: aHunk.id,
       fingerprint: "b".repeat(64)
     });
@@ -534,8 +532,8 @@ describe("finding presentation order (#104)", () => {
     expect(combinedBodies[0]!.split(FINDING_ORDER_NOTE)).toHaveLength(2);
 
     // 422 recovery demoting two inline comments together also includes the note once and preserves order.
-    const validFirst = { ...first, confidence: "high" as const };
-    const validSecond = { ...second, confidence: "high" as const };
+    const validFirst = { ...first, anchor: { ...first.anchor!, line: 2 } };
+    const validSecond = { ...second, anchor: { ...second.anchor!, line: 1 } };
     let calls = 0;
     const retryBodies: string[] = [];
     await maybePublishToGitHub(reviewResult([validFirst, validSecond], []), githubResolved(MULTI_FILE_DIFF), defaultConfig, nullTelemetry(), {

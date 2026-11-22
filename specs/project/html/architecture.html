@@ -2234,8 +2234,8 @@ codegenie runs as. Markers in other users’ comments are ignored for
 duplicate suppression.</p>
 <p>Publishing rules:</p>
 <ul>
-<li>Inline only verified medium/high-confidence findings with
-changed-line anchors.</li>
+<li>Inline findings require a changed-line anchor and confidence at or above
+<code>review.minInlineConfidence</code> (medium by default).</li>
 <li>Broader system concerns go into the review summary.</li>
 <li>If no findings remain, do not post a GitHub summary by default
 unless <code>github.summaryWhenNoFindings</code> is true.</li>

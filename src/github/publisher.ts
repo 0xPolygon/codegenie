@@ -91,16 +91,6 @@ export async function maybePublishToGitHub(
       continue;
     }
     const anchor = finding.anchor ?? planned.anchor;
-    if (belowInlineConfidence(finding.confidence, config.review.minInlineConfidence)) {
-      demoted.push(finding);
-      telemetry.event({
-        stage: 11,
-        level: "info",
-        message: "github_inline_demoted",
-        data: { findingId: finding.id, reason: "min-inline-confidence" }
-      });
-      continue;
-    }
     const normalizedAnchor = collapseSingleLineAnchor(anchor);
     const validation = validateDiffAnchor(normalizedAnchor, index);
     if (!validation.valid) {
@@ -412,14 +402,6 @@ function collapseSingleLineAnchor(anchor: DiffAnchor): DiffAnchor {
     return singleLine;
   }
   return anchor;
-}
-
-function belowInlineConfidence(confidence: FinalFinding["confidence"], min: CodegenieConfig["review"]["minInlineConfidence"]): boolean {
-  return confidenceRank(confidence) > confidenceRank(min);
-}
-
-function confidenceRank(confidence: FinalFinding["confidence"]): number {
-  return confidence === "high" ? 0 : confidence === "medium" ? 1 : 2;
 }
 
 function capBody(body: string, maxChars: number): string {

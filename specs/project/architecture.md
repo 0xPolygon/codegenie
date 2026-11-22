@@ -1534,7 +1534,7 @@ A fingerprint marker counts as codegenie-authored only when the comment's author
 
 Publishing rules:
 
-- Inline only verified medium/high-confidence findings with changed-line anchors.
+- Inline findings require a changed-line anchor and confidence at or above `review.minInlineConfidence` (medium by default).
 - Broader system concerns go into the review summary.
 - If no findings remain, do not post a GitHub summary by default unless `github.summaryWhenNoFindings` is true.
 - Posting failures are fatal only when `--post-github-comments` was explicitly requested.
