@@ -32,6 +32,8 @@ export type DiffRecordGroups = {
   omittedLabels: string[];
   next?: string;
   nextCursor?: string;
+  /** An omission unit is a declaration block, which may cover multiple hunks. */
+  groupedHunks?: boolean;
 };
 
 export type ToolResultRecords = {
