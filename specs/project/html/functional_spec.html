@@ -565,43 +565,29 @@ deduplication, and telemetry are required. Tree-sitter changed-symbol
 extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and
 Solidity should improve packet quality, but parser gaps should degrade
 gracefully rather than block review.</p>
-<h2 id="stage-1-diff-parsing-and-change-inventory">Stage 1: Diff Parsing
-And Change Inventory</h2>
-<p>Stage 1 resolves the requested review target into a deterministic
-local change inventory.</p>
+<h2 id="stage-1-input-resolution">Stage 1: Input Resolution</h2>
+<p>Stage 1 resolves the requested review target into base and head
+revisions, commit metadata and a raw diff.</p>
 <p>Inputs can come from <code>--pr</code>, <code>--branch</code>, or
-commit/range mode, but the output should be normalized into the same
-internal shape: changed files, hunks, absolute old/new line mappings,
-file statuses, and commit or PR metadata when available.</p>
+commit/range mode.</p>
 <p>Stage 1 should:</p>
 <ul>
 <li>Resolve the base and head revisions for the selected input
 mode.</li>
 <li>Collect commit titles and descriptions across the reviewed
 range.</li>
-<li>Parse the unified diff into files and hunks.</li>
-<li>Preserve old/new line numbers for every hunk line.</li>
-<li>Identify file status such as added, modified, renamed, copied,
-deleted, binary, or mode-only.</li>
-<li>Preserve diff side information for each changed line so added lines,
-removed lines, and context lines can be reviewed and anchored
-correctly.</li>
 <li>Record GitHub PR metadata when <code>--pr</code> is used.</li>
-<li>Fail clearly when the target cannot be resolved or the diff cannot
-be parsed.</li>
+<li>Fail clearly when the target cannot be resolved or its diff cannot
+be obtained.</li>
 </ul>
-<p>This stage must not call the LLM. Its output is the source of truth
-for later anchor validation, hunk ids, changed-line detection, and
-GitHub inline-comment mapping.</p>
-<p>Deleted files and deletion-only hunks are part of the review
-inventory. codegenie should not silently drop them merely because the
-file no longer exists in the head worktree. Stage 1 should retain their
-old-side line numbers and old path so later stages can review removed
-behavior, removed tests, removed exports, removed cleanup, and broken
-references caused by deletion.</p>
-<h2 id="stage-2-filtering-ignored-and-non-reviewable-files">Stage 2:
-Filtering Ignored And Non-Reviewable Files</h2>
-<p>Stage 2 removes files that should not enter the review pipeline and
+<p>This stage must not call the LLM.</p>
+<h2 id="stage-2-diff-parsing-and-filtering">Stage 2: Diff Parsing And
+Filtering</h2>
+<p>Stage 2 parses the unified diff into files and hunks, preserving file
+status, old/new line numbers and diff sides for later anchor validation
+and GitHub inline-comment mapping. It must fail clearly if the diff
+cannot be parsed.</p>
+<p>It also removes files that should not enter the review pipeline and
 records why they were filtered.</p>
 <p>Filtering should be deterministic and explainable. Stage 2 runs the
 shared deterministic detectors the skip policy needs — built-in
@@ -628,10 +614,11 @@ coverage summaries when they affect review completeness. Filtered files
 should not produce candidate findings, but their counts and paths may
 still be visible to the planner as review-scope facts.</p>
 <p>Deleted reviewable source, test, config, migration, or documentation
-files should remain in scope by default. If deleted-file context cannot
-be reconstructed from local git or the diff, codegenie should mark the
-file as degraded or partially reviewed rather than pretending it was
-reviewed normally.</p>
+files should remain in scope by default. Preserve their old paths and
+line numbers for reviewing removed behavior. If deleted-file context
+cannot be reconstructed from local git or the diff, codegenie should
+mark the file as degraded or partially reviewed rather than pretending
+it was reviewed normally.</p>
 <h2 id="stage-3-file-classification">Stage 3: File Classification</h2>
 <p>File classification should be deterministic, narrow, and auditable by
 default. It should not require an LLM. The classifier runs on kept files

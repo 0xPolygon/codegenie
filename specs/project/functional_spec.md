@@ -213,30 +213,26 @@ The planner should choose coverage and lenses based on language, changed symbols
 
 The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
-## Stage 1: Diff Parsing And Change Inventory
+## Stage 1: Input Resolution
 
-Stage 1 resolves the requested review target into a deterministic local change inventory.
+Stage 1 resolves the requested review target into base and head revisions, commit metadata and a raw diff.
 
-Inputs can come from `--pr`, `--branch`, or commit/range mode, but the output should be normalized into the same internal shape: changed files, hunks, absolute old/new line mappings, file statuses, and commit or PR metadata when available.
+Inputs can come from `--pr`, `--branch`, or commit/range mode.
 
 Stage 1 should:
 
 - Resolve the base and head revisions for the selected input mode.
 - Collect commit titles and descriptions across the reviewed range.
-- Parse the unified diff into files and hunks.
-- Preserve old/new line numbers for every hunk line.
-- Identify file status such as added, modified, renamed, copied, deleted, binary, or mode-only.
-- Preserve diff side information for each changed line so added lines, removed lines, and context lines can be reviewed and anchored correctly.
 - Record GitHub PR metadata when `--pr` is used.
-- Fail clearly when the target cannot be resolved or the diff cannot be parsed.
+- Fail clearly when the target cannot be resolved or its diff cannot be obtained.
 
-This stage must not call the LLM. Its output is the source of truth for later anchor validation, hunk ids, changed-line detection, and GitHub inline-comment mapping.
+This stage must not call the LLM.
 
-Deleted files and deletion-only hunks are part of the review inventory. codegenie should not silently drop them merely because the file no longer exists in the head worktree. Stage 1 should retain their old-side line numbers and old path so later stages can review removed behavior, removed tests, removed exports, removed cleanup, and broken references caused by deletion.
+## Stage 2: Diff Parsing And Filtering
 
-## Stage 2: Filtering Ignored And Non-Reviewable Files
+Stage 2 parses the unified diff into files and hunks, preserving file status, old/new line numbers and diff sides for later anchor validation and GitHub inline-comment mapping. It must fail clearly if the diff cannot be parsed.
 
-Stage 2 removes files that should not enter the review pipeline and records why they were filtered.
+It also removes files that should not enter the review pipeline and records why they were filtered.
 
 Filtering should be deterministic and explainable. Stage 2 runs the shared deterministic detectors the skip policy needs — built-in generated/vendor/binary/lockfile detection, repository ignore rules where appropriate, and explicit `codegenie.toml` skip rules — and applies policy over their results. Detection results are recorded with provenance on each filter decision and reused by Stage 3 classification for kept files: nothing is detected twice, and filtered files receive no further classification, parsing, or review work.
 
@@ -253,7 +249,7 @@ Stage 2 should filter or mark:
 
 Filtering decisions must be recorded in telemetry and surfaced in coverage summaries when they affect review completeness. Filtered files should not produce candidate findings, but their counts and paths may still be visible to the planner as review-scope facts.
 
-Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
+Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. Preserve their old paths and line numbers for reviewing removed behavior. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
 
 ## Stage 3: File Classification
 
