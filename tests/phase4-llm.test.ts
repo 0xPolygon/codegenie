@@ -8393,6 +8393,7 @@ it("records an empty usage scan frontier as a scan limit, not a result-character
     toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 4_000 } });
   expect(adapter.contexts[1]).toContain("file-scan limit");
   expect(adapter.contexts[1]).toContain("opaque-next");
+  expect(adapter.contexts[1]).not.toContain("the result budget is used up");
   expect(telemetry.toolCalls[0]).toMatchObject({ tool: "find_usages", status: "rejected", degradationReason: "usage_scan_limit" });
   expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "tool_call_rejected", data: expect.objectContaining({ reason: "usage_scan_limit" }) }));
 });

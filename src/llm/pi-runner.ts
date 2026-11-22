@@ -904,7 +904,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               });
               const remainingResultChars = baseResultCharLimit;
               const budgetRejected = localBudgetReason !== undefined;
-              const outcome =
+              const outcome: ToolRunOutcome =
                 budgetRejected
                   ? rejectedToolOutcome(toolCall, localBudgetReason, localBudgetReason === "tool_result_budget_exhausted" &&
                     (resultPoolExhausted || budgetState.remainingResultChars === 0)
@@ -928,7 +928,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 outcome.result = packRepositoryToolResult(canonical, remainingResultChars);
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
-                  const usageScanLimited = Boolean(canonical.usagePage && canonical.usagePage.page.entries.length === 0
+                  const usageScanLimited: boolean = Boolean(canonical.usagePage && canonical.usagePage.page.entries.length === 0
                     && canonical.usagePage.page.nextCursor);
                   outcome.rejectionReason = usageScanLimited ? "usage_scan_limit" : "tool_result_budget_exhausted";
                   const initialLimit = toolResultCharLimit(toolCall.name, budget, budget.maxResultChars);
