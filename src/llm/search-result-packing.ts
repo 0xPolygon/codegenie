@@ -28,7 +28,7 @@ function diffDeliveryNotes(groups: DiffRecordGroups, omittedCount: number, count
     notes.push(`last delivered: ${last}`,
       `last hunk delivered: base ${base === undefined ? "none" : `${hunk.baseStart}-${base}`}, head ${head === undefined ? "none" : `${hunk.headStart}-${head}`}`);
   }
-  if (groups.next) notes.push(`next: ${groups.next}; use read_range at the stated revision`);
+  if (groups.next) notes.push(`next: ${groups.next}; ${count ? "use read_range at the stated revision" : "use read_range or narrow search_files at the stated revision"}`);
   if (omittedCount) {
     const other = omittedCount - groups.omittedLabels.length;
     notes.push(`omitted hunks: ${groups.omittedLabels.join(" | ")}${other > 0 ? ` | ${other} more` : ""}`);

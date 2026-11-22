@@ -217,7 +217,8 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
         const result = await runWithoutFacadeRecording(tools, () => tools.readDiffBlocks(input));
         if (result.packable) {
           const packed = createPackableToolResult(result.packable, result.meta);
-          return result.meta.deliveryStatus === "budget_rejected" ? { ...packed, isError: true, errorCode: "budget_exhausted" } : packed;
+          return result.meta.deliveryStatus === "budget_rejected"
+            ? { text: packed.text, meta: result.meta, isError: true, errorCode: "budget_exhausted" } : packed;
         }
         return { text: withMeta(result.blocks.join("\n\n"), result.meta), meta: result.meta };
       })

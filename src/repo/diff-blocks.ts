@@ -100,7 +100,7 @@ export class DiffBlockRenderer {
       ...(omittedCount ? { omittedCount } : {})
     };
     return { blocks, meta, packable: {
-      open: refused ? "No whole diff line fits the result limit. Use a narrower read_range to retrieve source." : "",
+      open: refused ? "No whole diff line fits the result limit." : "",
       records, separator: "\n", close: "", labels, keepWithNext, diffGroups
     } };
   }
