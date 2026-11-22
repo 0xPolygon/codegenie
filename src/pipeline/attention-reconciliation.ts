@@ -306,10 +306,16 @@ function citableEvidence(input: AttentionReconciliation) {
     ...input.inventory.evidence].map(source => [source.id, source]));
 }
 
+export type ReconcileAttentionOptions = {
+  /** Candidate ids represented by a published (inline or summary-only) final finding. */
+  publishedCandidateIds?: ReadonlySet<string>;
+};
+
 export function reconcileAttention(
   input: AttentionReconciliation,
   proposals: Resolution[] | undefined,
-  enabled: boolean
+  enabled: boolean,
+  opts?: ReconcileAttentionOptions
 ) {
   const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
   const concerns = new Map(input.groups.flatMap(group => group.concerns).filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern]));
@@ -327,9 +333,22 @@ export function reconcileAttention(
   // published finding components. It remains usable when its duplicate registry
   // entry was omitted from the separate attention inventory's size cap.
   const evidence = citableEvidence(input);
+  const verdictByRef = new Map(input.allEvidence.map(source => [source.id, source.verdict]));
+  const verdictByCandidate = new Map(input.inventory.evidenceContexts.map(context => [context.candidateId, context.verdict]));
+  const publishedCandidateIds = opts?.publishedCandidateIds;
+  const isSuppressedFindingRef = (ref: string) => {
+    if (publishedCandidateIds === undefined) return false;
+    const entry = evidence.get(ref);
+    if (!entry) return false;
+    const verdict = verdictByRef.get(ref) ?? verdictByCandidate.get(entry.candidateId);
+    return (verdict === "keep" || verdict === "revise") && !publishedCandidateIds.has(entry.candidateId);
+  };
+  const citesSuppressedFinding = (refs: string[]) => refs.some(isSuppressedFindingRef);
   const counts = new Map<string, number>();
   for (const proposal of submitted) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);
   const accepted = new Map<string, Resolution>();
+  let restoredForSuppressedFindingCount = 0;
+  let restoredWithSurvivingRefCount = 0;
   const decisions = submitted.map(proposal => {
     const concern = concerns.get(proposal.concernId);
     const refs = proposal.supportingRefs;
@@ -342,8 +361,13 @@ export function reconcileAttention(
       : refs.some(ref => evidence.get(ref)!.candidateId === concern.candidateId) ? "self_support"
       : proposal.disposition === "narrowed" && (!proposal.remainingQuestion?.trim() || proposal.remainingQuestion.trim() === concern.question.trim()) ? "missing_or_unchanged_remaining_question"
       : proposal.disposition !== "narrowed" && proposal.remainingQuestion !== undefined ? "conflicting_remaining_question"
+      : proposal.disposition !== "unresolved" && citesSuppressedFinding(refs) ? "suppressed_finding_evidence"
       : undefined;
     if (!reason) accepted.set(proposal.concernId, proposal);
+    else if (reason === "suppressed_finding_evidence") {
+      restoredForSuppressedFindingCount += 1;
+      if (refs.some(ref => !isSuppressedFindingRef(ref))) restoredWithSurvivingRefCount += 1;
+    }
     return { ...proposal, accepted: !reason, ...(reason ? { rejectionReason: reason } : {}) };
   });
   const notes: NeedsHumanAttentionNote[] = [];
@@ -361,7 +385,7 @@ export function reconcileAttention(
     return { candidateId: group.candidateId, original: group.original, remainingQuestion: remaining,
       concernIds: group.concerns.map(concern => concern.id), ...(group.ineligibleReason ? { ineligibleReason: group.ineligibleReason } : {}) };
   });
-  return { notes, decisions, outcomes, canonicalizedConcernIds };
+  return { notes, decisions, outcomes, canonicalizedConcernIds, restoredForSuppressedFindingCount, restoredWithSurvivingRefCount };
 }
 
 /** Require coverage only for concerns actually delivered within the inventory cap. */
