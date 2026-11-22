@@ -2105,7 +2105,10 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
       rmSync(entry, { recursive: true });
       result.deleted.push(name);
     } catch (error) {
-      result.failures.push({ path: entry, error: errorMessage(error) });
+      // A concurrent review may have already pruned this run.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        result.failures.push({ path: entry, error: errorMessage(error) });
+      }
     }
   }
 

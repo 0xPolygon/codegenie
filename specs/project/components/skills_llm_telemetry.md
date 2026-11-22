@@ -970,7 +970,7 @@ Credential stripping:
 
 Run artifacts and lifecycle:
 
-- `artifacts_run_dir_layout_and_naming`: `attachRunDirectory` creates `<runDir>/<yyyyMMdd-HHmmss>-<shortid>/`; `runId` equals the directory name.
+- `artifacts_run_dir_layout_and_naming`: in a recorder-managed root, `attachRunDirectory` creates `<runDir>/<runId>/` with the `YYYYMMDD-HHMMSS-xxxxxxxx` format.
 - `artifacts_gitignore_provisioned_on_create_only`: creating `.codegenie/` writes `.gitignore` with `runs/` and `cache/`; a pre-existing `.codegenie/` without `.gitignore` is left untouched.
 - `artifacts_retain_runs_pruning`: keep the configured number of eligible prior runs plus the active run. Preserve foreign entries, symlinked candidates and markers, and siblings of a caller-selected run directory. The stage-0 prune event keeps the exact count and a bounded sample for large batches.
 - `artifacts_write_atomic_known_names_only`: `writeArtifact` accepts the architecture-named artifacts and `packets/<id>.json`, writes temp-then-rename, and rejects unknown names as a programming error.
