@@ -28,9 +28,6 @@ inputs:
   post-inline-comments:
     description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way."
     default: "true"
-  depth:
-    description: "Deprecated and ignored: codegenie has one review mode (#129). For one release light, normal or deep is still accepted and forwarded, and the CLI logs a warning."
-    default: ""
   lenses:
     description: "Comma-separated review lenses to enable."
     default: ""
@@ -86,7 +83,6 @@ runs:
         INPUT_ALLOWED_ASSOCIATIONS: ${{ inputs.allowed-associations }}
         INPUT_ALLOWED_USERS: ${{ inputs.allowed-users }}
         INPUT_POST_INLINE_COMMENTS: ${{ inputs.post-inline-comments }}
-        INPUT_DEPTH: ${{ inputs.depth }}
         INPUT_LENSES: ${{ inputs.lenses }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_MODELS: ${{ inputs.models }}
@@ -105,7 +101,6 @@ runs:
         args+=(--allowed-associations "$INPUT_ALLOWED_ASSOCIATIONS")
         args+=(--allowed-users "$INPUT_ALLOWED_USERS")
         args+=(--post-inline-comments "$INPUT_POST_INLINE_COMMENTS")
-        args+=(--depth "$INPUT_DEPTH")
         args+=(--model "$INPUT_MODEL")
         args+=(--models "$INPUT_MODELS")
         args+=(--bot-login "$INPUT_BOT_LOGIN")

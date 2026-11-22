@@ -1,9 +1,6 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
-// #129 removed the review depth setting. These values are still accepted on
-// every input for one release, then ignored with a config warning.
-export type DeprecatedReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -106,8 +103,6 @@ export type CodegeniePaths = {
 export type ProviderSettings = {
   defaultProvider?: string;
   defaultModel?: string;
-  /** Deprecated (#129): loaded only to warn; never saved again. */
-  defaultDepth?: DeprecatedReviewDepth;
   defaultReasoning?: ReasoningLevel;
 };
 
@@ -1129,8 +1124,6 @@ export type EvalCase = {
     target?: string;
   };
   review?: {
-    /** Deprecated (#129): accepted and ignored with a warning. */
-    depth?: DeprecatedReviewDepth;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;

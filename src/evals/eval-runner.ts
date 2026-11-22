@@ -3,9 +3,8 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer, clearStageOverridesForRun, ignoredReviewDepthWarning } from "../config/config-loader.js";
+import { applyRepoConfigLayer, clearStageOverridesForRun } from "../config/config-loader.js";
 import {
-  deprecatedReviewDepthSchema,
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   severitySchema
@@ -136,7 +135,6 @@ const caseSchema = z
       .optional(),
     review: z
       .object({
-        depth: deprecatedReviewDepthSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -857,7 +855,7 @@ function applyCaseReviewConfig(
   const config = structuredClone(loaded) as CodegenieConfig;
   const review = evalCase.review;
   const llm = evalCase.llm;
-  const warnings = review?.depth !== undefined ? [ignoredReviewDepthWarning("eval-case", review.depth)] : [];
+  const warnings: ConfigWarning[] = [];
   if (review?.maxFindings !== undefined) {
     config.review.maxFindings = review.maxFindings;
   }

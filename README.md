@@ -273,7 +273,9 @@ flowchart TB
 
 The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet plus tools to pull exactly what a concern depends on, within per-packet budgets.
 
-There is one review mode. The old `--depth` and `review.depth` inputs are accepted for one release and ignored with a warning. Published findings are grouped by severity, then listed by file and line within each severity. The inline confidence floor is applied before the inline comment cap.
+There is one review mode. When upgrading from 0.9.0, remove `--depth` from CLI invocations, `review.depth` from either TOML file and from eval cases, and `depth` from GitHub Action inputs. Existing provider `settings.json` files still load. Codegenie silently ignores a stored `defaultDepth` and drops it the next time it saves the file.
+
+Published findings are grouped by severity, then listed by file and line within each severity. The inline confidence floor is applied before the inline comment cap.
 
 ## Design and philosophy
 

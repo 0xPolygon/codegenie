@@ -262,14 +262,9 @@ describe("review command", () => {
     expect(parsed.config.review.maxFindings).toBe(3);
   });
 
-  it("accepts an old --depth value with a warning and ignores it (#129)", () => {
-    const ctx = testContext();
-    const parsed = parseReviewCommand(["review", "--branch", "feature", "--depth", "normal"], ctx);
-    expect(parsed.config.review).not.toHaveProperty("depth");
-    expect(parsed.config.review).toEqual(parseReviewCommand(["review", "--branch", "feature"], ctx).config.review);
-    expect(parsed.warnings).toEqual([expect.objectContaining({ source: "cli", key: "review.depth",
-      message: expect.stringContaining('--depth is "normal"') })]);
-    expect(() => parseReviewCommand(["review", "--branch", "feature", "--depth", "fast"], ctx)).toThrow(/--depth was removed/);
+  it("rejects the retired --depth flag", () => {
+    expect(() => parseReviewCommand(["review", "--branch", "feature", "--depth", "normal"], testContext()))
+      .toThrow(expect.objectContaining({ code: "invalid_args", message: expect.stringContaining("unknown option '--depth'") }));
   });
 
   it("lets --no-cache override a configured cache default", () => {

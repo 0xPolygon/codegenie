@@ -51,7 +51,7 @@ codegenie review --ci
 codegenie review --no-progress
 ```
 
-Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as `normal`. For one release `--depth`, `review.depth` in either TOML file, a stored `defaultDepth` and an eval case's `depth` still accept `light`, `normal` or `deep`, and each such input is ignored with a config warning. The release after that rejects them.
+Codegenie runs one review mode using the budgets, close nudge and planner input that plan 128 measured as `normal`. When upgrading from 0.9.0, remove `--depth` from CLI invocations, `review.depth` from TOML and eval cases, and `depth` from GitHub Action inputs. A legacy `defaultDepth` in provider `settings.json` is silently ignored and dropped on the next save.
 
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 

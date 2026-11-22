@@ -803,7 +803,7 @@ describe("github-action entrypoint", () => {
     let reviewArgv: string[] = [];
     let output = "";
 
-    await executeGitHubActionCommand(["--depth", "deep", "--lens", "security"], {
+    await executeGitHubActionCommand(["--lens", "security"], {
       env,
       issueComments: fake.client,
       minEditIntervalMs: 0,
@@ -824,7 +824,7 @@ describe("github-action entrypoint", () => {
     });
 
     expect(reviewArgv).toEqual([
-      "review", "--pr", "7", "--ci", "--post-github-comments", "--depth", "deep", "--lens", "security"
+      "review", "--pr", "7", "--ci", "--post-github-comments", "--lens", "security"
     ]);
     expect(env.CODEGENIE_GITHUB_LOGIN).toBe("codegenie[bot]");
     expect(fake.calls[0]).toMatchObject({ kind: "permission" });
@@ -1540,13 +1540,13 @@ describe("github-action entrypoint", () => {
 
   it("rejects unknown flags and invalid booleans", () => {
     expect(() => parseGitHubActionArgs(["--bogus", "x"])).toThrow(/unknown github-action flag/u);
+    expect(() => parseGitHubActionArgs(["--depth", "deep"])).toThrow("unknown github-action flag: --depth");
     expect(() => parseGitHubActionArgs(["--on-pull-request", "yes"])).toThrow(/must be/u);
     expect(() => parseGitHubActionArgs(["--trigger-phrase", " "])).toThrow(/must not be empty/u);
     const parsed = parseGitHubActionArgs([
       "--allowed-associations", "OWNER, MEMBER",
       "--allowed-users", "alice,bob",
-      "--preflight-only", "true",
-      "--depth", ""
+      "--preflight-only", "true"
     ]);
     expect(parsed.allowedAssociations).toEqual(["OWNER", "MEMBER"]);
     expect(parsed.allowedUsers).toEqual(["alice", "bob"]);
@@ -1662,10 +1662,13 @@ describe("GitHub Action and workflow contracts", () => {
     expect(action.inputs["on-pull-request"]?.description).toContain("ready_for_review");
     expect(action.inputs["bot-login"]).toBeDefined();
     expect(action.inputs["preflight-only"]).toBeDefined();
+    expect(action.inputs).not.toHaveProperty("depth");
     expect(action.outputs["should-run"]?.value).toContain("steps.run.outputs.should-run");
     expect(action.outputs["pr-number"]?.value).toContain("steps.run.outputs.pr-number");
 
     const runStep = action.runs.steps.find((step) => step.id === "run");
+    expect(runStep?.env).not.toHaveProperty("INPUT_DEPTH");
+    expect(runStep?.run).not.toContain("--depth");
     expect(runStep?.run).toContain('args+=(--bot-login "$INPUT_BOT_LOGIN")');
     expect(action.inputs.models).toBeDefined();
     expect(runStep?.env?.INPUT_MODELS).toBe("${{ inputs.models }}");

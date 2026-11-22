@@ -2356,42 +2356,18 @@ describe("eval command fixture suite", () => {
     expect(result.info.score.metrics.reportedFindings).toBe(0);
   });
 
-  it("accepts an old eval-case depth, ignores it, and passes one warning to the review (#129)", async () => {
+  it("rejects the retired review.depth field in eval cases", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-suite-"));
-    const logsDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-logs-"));
-    const repo = initRepo();
-    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
-    commitAll(repo, "base");
-    git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 1;\n");
-    commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "depth.yml"), [
       "name: depth",
-      "repo:",
-      `  external: ${JSON.stringify(repo)}`,
-      "command:",
-      "  branch: feature",
-      "  base: main",
+      "artifacts:",
+      "  path: logs/1",
       "review:",
-      "  depth: normal",
-      "logs:",
-      `  dir: ${JSON.stringify(logsDir)}`
+      "  depth: normal"
     ].join("\n"));
-    const suite = await loadEvalSuite(suiteDir);
-    expect(suite.cases[0]!.evalCase.review?.depth).toBe("normal");
-    // The user layer's warning reaches the review through codegenie eval too.
-    const home = mkdtempSync(path.join(tmpdir(), "codegenie-depth-home-"));
-    writeFileSync(path.join(home, "config.toml"), "[review]\ndepth = \"deep\"\n\n[llm]\nprovider = \"fake\"\nmodel = \"fake-model\"\n");
-    let output = "";
-    const exitCode = await executeEvalCommand(["eval", "--eval-dir", suiteDir, "--no-cache"], {
-      repoRoot: repo, homeOverride: home, writeOutput: (text) => { output += text; }
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining("depth")] }
     });
-    expect(exitCode).toBe(0);
-    expect(output).toContain("depth run 1: pass");
-    const events = readFileSync(path.join(logsDir, "1", "telemetry", "events.jsonl"), "utf8").trim().split("\n")
-      .map(line => JSON.parse(line) as { message: string; data?: { key?: string; source?: string } });
-    expect(events.filter(event => event.message === "config_warning" && event.data?.key === "review.depth")
-      .map(event => event.data?.source)).toEqual(["user-config", "eval-case"]);
   });
 
   it("counts a designed symbol slice as sliced, not as degraded context (#175)", async () => {

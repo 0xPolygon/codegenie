@@ -323,7 +323,7 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     modelsInput: "",
     reviewPassthrough: []
   };
-  const passthroughFlags = new Set(["--depth", "--lens", "--max-time", "--budget-boost"]);
+  const passthroughFlags = new Set(["--lens", "--max-time", "--budget-boost"]);
 
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index] ?? "";

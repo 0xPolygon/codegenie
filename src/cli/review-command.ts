@@ -7,7 +7,6 @@ import { REASONING_USAGE, parseReasoningLevel, splitReasoningSuffix } from "../p
 import type {
   OutputFormat,
   ParsedReviewCommand,
-  DeprecatedReviewDepth,
   ReviewCommandTarget,
   ReviewResult,
   TelemetryEvent
@@ -44,7 +43,6 @@ type CommanderReviewOptions = {
   branch?: string;
   head?: string;
   base?: string;
-  depth?: string;
   budgetBoost?: string;
   maxTime?: string;
   lens?: string[];
@@ -88,7 +86,6 @@ export function parseReviewCommand(
     .option("--branch <branch>", "branch to review")
     .option("--head <ref>", "head ref or commit to review with --base")
     .option("--base <branch>", "base branch/ref for branch/head/default review")
-    .option("--depth <depth>", "deprecated and ignored: codegenie has one review mode (accepts light, normal or deep for one release)")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
@@ -305,9 +302,6 @@ function parseBaseHeadShorthand(commits: string[]): ReviewCommandTarget | undefi
 
 function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides {
   const cli: CliConfigOverrides = {};
-  if (options.depth !== undefined) {
-    cli.depth = parseDepth(options.depth);
-  }
   if (options.budgetBoost !== undefined) {
     cli.budgetBoost = parseBudgetBoost(options.budgetBoost);
   }
@@ -382,14 +376,6 @@ function parsePrNumber(value: string | undefined): number {
     throw new CodegenieError("invalid_args", "--pr must be a positive integer");
   }
   return Number(raw);
-}
-
-// #129: the old values are accepted and ignored with a warning for one release.
-function parseDepth(value: string): DeprecatedReviewDepth {
-  if (value === "light" || value === "normal" || value === "deep") {
-    return value;
-  }
-  throw new CodegenieError("invalid_args", "--depth was removed: codegenie has one review mode. For one release only light, normal and deep are accepted, and they are ignored.");
 }
 
 function parseBudgetBoost(value: string): number {
