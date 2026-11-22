@@ -171,29 +171,31 @@ export class ReadChangeService {
     let remaining = MAX_SOURCE_CHARS;
     for (let block = start.block; block < targets.length; block++) {
       const target = targets[block]!;
-      const { file, hunks: [hunk] } = target;
+      const { file, hunks } = target;
       const rowOffset = block === start.block ? start.row : 0;
       const sides = await this.readSides(file);
       const source = this.sourceBlock(target, sides);
       if (rowOffset >= source.rows.length) throw new CodegenieError("invalid_args", "Cursor does not identify a diff row.");
       const available = source.rows.slice(rowOffset);
       const hunkName = targetLabel(target);
+      const scope = hunks.length === 1 ? `hunk ${hunks[0].id}` : `function comparison for hunks ${hunks.map(hunk => hunk.id).join(", ")}`;
+      const firstLocation = rowLabel(file, scope, available[0]!);
       const lengths = deliveredFiles.has(file) ? "" : "\n" + fileLengths(file, sides);
       const firstRecord = packable.records.length;
       const baseStart = available.find(line => line.oldLine !== undefined)?.oldLine ?? 0;
       const headStart = available.find(line => line.newLine !== undefined)?.newLine ?? 0;
-      const header = (firstRecord ? "\n" : "") + hunkName + lengths + (source.title ? "\n" + source.title : "") +
-        (rowOffset ? "\nContinued from " + rowLabel(file, hunk, available[0]!) : "");
+      const header = (firstRecord ? "\n" : "") + targetLabel(target, "\n") + lengths + (source.title ? "\n" + source.title : "") +
+        (rowOffset ? "\nContinued from " + firstLocation : "");
       const headerCost = header.length + 1;
       const firstLineCost = renderNumberedDiffLine(available[0]!).length + 1;
       if (groups.rendered.length >= MAX_BLOCKS || headerCost + firstLineCost > remaining) {
         next = { block, row: rowOffset };
-        groups.next = rowLabel(file, hunk, available[0]!);
+        groups.next = firstLocation;
         break;
       }
       deliveredFiles.add(file);
       groups.rendered.push({ firstRecord, label: hunkName, baseStart, headStart });
-      appendRecord(packable, header, rowLabel(file, hunk, available[0]!), encodeToolCursor(binding, { block, row: rowOffset }), true);
+      appendRecord(packable, header, firstLocation, encodeToolCursor(binding, { block, row: rowOffset }), true);
       groups.lineEnds.push([undefined, undefined]);
       remaining -= headerCost;
 
@@ -201,7 +203,7 @@ export class ReadChangeService {
       let headEnd: number | undefined;
       for (const [i, line] of available.entries()) {
         const rendered = renderNumberedDiffLine(line);
-        const locator = rowLabel(file, hunk, line);
+        const locator = rowLabel(file, scope, line);
         const position = { block, row: rowOffset + i };
         if (rendered.length + 1 > remaining) {
           next = position;
@@ -219,7 +221,7 @@ export class ReadChangeService {
     if (next) {
       groups.nextCursor = encodeToolCursor(binding, next);
       const firstOmitted = next.block + Number(groups.rendered.at(-1)?.label === targetLabel(targets[next.block]!));
-      groups.omittedLabels = targets.slice(firstOmitted, firstOmitted + MAX_OMITTED_DIFF_LABELS).map(targetLabel);
+      groups.omittedLabels = targets.slice(firstOmitted, firstOmitted + MAX_OMITTED_DIFF_LABELS).map(target => targetLabel(target));
       if (!packable.records.length) packable.open = "No whole diff line fits the result limit. Narrow the selection or use read_range at the stated source location.";
       return { meta: deliveryMeta(packable.records.length, true, targets.length - firstOmitted), packable };
     }
@@ -291,16 +293,16 @@ function functionHeading({base, head, aligned}: FunctionContext): string {
   return aligned ? names : names + " Alignment unavailable; base and head are shown independently. These rows do not identify edits.";
 }
 
-function targetLabel({file, hunks}: SourceTarget): string {
+function targetLabel({file, hunks}: SourceTarget, separator = "; "): string {
   return hunks.map(hunk =>
     `${JSON.stringify(file.path)} hunk ${hunk.id} | base ${interval(hunk.oldStart, hunk.oldLines)} | head ${interval(hunk.newStart, hunk.newLines)}`
-  ).join("\n");
+  ).join(separator);
 }
 
-function rowLabel(file: DiffFile, hunk: DiffHunk, line: PacketLine): string {
+function rowLabel(file: DiffFile, scope: string, line: PacketLine): string {
   const base = line.oldLine === undefined ? "" : `${JSON.stringify(file.oldPath ?? file.path)}@base:${line.oldLine}`;
   const head = line.newLine === undefined ? "" : `${JSON.stringify(file.path)}@head:${line.newLine}`;
-  return `${[base, head].filter(Boolean).join(" / ")} (hunk ${hunk.id})`;
+  return `${[base, head].filter(Boolean).join(" / ")} (${scope})`;
 }
 
 function appendRecord(packable: ToolResultRecords, text: string, label: string, cursor: string, keepWithNext: boolean): void {

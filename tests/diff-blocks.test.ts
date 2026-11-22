@@ -234,6 +234,43 @@ describe("read_change", () => {
     }
   });
 
+  it("identifies the comparison group when a caller cut reaches the second hunk", async () => {
+    const path = "src/pipeline/composer.ts";
+    const body = Array.from({ length: 80 }, (_, i) => `  await writeArtifact("step-${i}.json");`);
+    const base = ["export async function compose() {", ...body, "}"].join("\n") + "\n";
+    body[3] = '  await writeArtifact("first-change.json");';
+    body[35] = '  await writeArtifact("second-change.json");';
+    const head = ["export async function compose() {", ...body, "}"].join("\n") + "\n";
+    const fixture = await diffFixture({ [path]: base }, repo => writeRepoFile(repo, path, head));
+    try {
+      const [first, second] = fixture.diff.files[0]!.hunks;
+      expect(fixture.diff.files[0]!.hunks).toHaveLength(2);
+      const args = { path, context: "function" as const };
+      const result = await fixture.change(args);
+      const secondEdit = second!.lines.find(line => line.kind === "add")!;
+      const target = result.packable!.records.indexOf(renderNumberedDiffLine(packetDiffLine(secondEdit)));
+      expect(target).toBeGreaterThan(0);
+      let lower = 0;
+      let upper = result.text.length;
+      while (lower < upper) {
+        const cap = Math.floor((lower + upper) / 2);
+        const count = packTextToolResult(result, cap).packable?.records.length ?? 0;
+        if (count < target) lower = cap + 1;
+        else upper = cap;
+      }
+      const cut = packTextToolResult(result, lower);
+      expect(cut.packable?.records.length).toBe(target);
+      const group = `(function comparison for hunks ${first!.id}, ${second!.id})`;
+      expect(cut.text).toContain(`last delivered: "${path}"@base:${secondEdit.newLineNumber} ${group}`);
+      expect(cut.text).toContain(`next: "${path}"@head:${secondEdit.newLineNumber} ${group}, cursor=`);
+      const resumed = await fixture.change({ ...args, cursor: continuation(cut.text) });
+      expect(resumed.text).toContain(`Continued from "${path}"@head:${secondEdit.newLineNumber} ${group}`);
+      expect(resumed.packable?.records[1]).toBe(result.packable?.records[target]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("keeps disjoint function bodies independent when no source row aligns", async () => {
     const path = "src/provider/adapter.ts";
     const fixture = await diffFixture({ [path]: "export function existing() { return acquire(); }\n" }, repo =>
