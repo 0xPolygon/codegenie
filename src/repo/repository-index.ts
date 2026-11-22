@@ -749,11 +749,17 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         }
         const normalizedInput = this.normalizeLikelyTestsInput(input);
         const result = await findLikelyTestsForInput(this.opts.resolver, this.opts.registry, normalizedInput);
+        const firstOmitted = result.firstOmitted;
         const meta: ToolResultMeta = {
           backend: result.backend,
           precision: "heuristic",
           degraded: false,
-          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
+          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0,
+            deliveryStatus: "truncated" as const, degradationReason: "test_result_limit" } : {}),
+          ...(firstOmitted ? { recovery: {
+            tool: "read_range" as const, path: firstOmitted.path, source: normalizedInput.source?.kind ?? "head",
+            startLine: firstOmitted.lineRange[0], endLine: firstOmitted.lineRange[1], reason: "first omitted test reference"
+          } } : {})
         };
         return {
           value: { tests: result.tests, meta },

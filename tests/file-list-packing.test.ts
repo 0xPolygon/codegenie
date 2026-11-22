@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { packFileListToolResult } from "../src/llm/search-result-packing.js";
+import { packFileListToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
 import { textRepository } from "./helpers/text-repository.js";
 import { writeRepoFile } from "./helpers/git.js";
 
@@ -34,22 +34,22 @@ describe("bounded file lists", () => {
       const canonical = await fixture.call("list_files", args);
       expect(canonical.filePaths).toHaveLength(500);
       expect(canonical.meta?.omittedCount).toBe(6);
-      const cap = packFileListToolResult(canonical, 60_000);
+      const cap = packTextToolResult(canonical, 60_000);
       expect(cap.meta).toMatchObject({ deliveryStatus: "truncated", degradationReason: "list_path_limit", omittedCount: 6,
         pathListDelivery: { deliveredCount: 500, backendOmittedCount: 6, budgetOmittedCount: 0 } });
-      const tight = packFileListToolResult(canonical, 370);
-      const { paths } = JSON.parse(tight.text);
+      const tight = packTextToolResult(canonical, 650);
+      const paths = tight.packable!.records.map(record => JSON.parse(record));
       expect(paths.length).toBeGreaterThan(0);
       expect(tight.meta).toMatchObject({ deliveryStatus: "truncated", degradationReason: "tool_result_budget", omittedCount: 506 - paths.length,
         pathListDelivery: { deliveredCount: paths.length, backendOmittedCount: 6, budgetOmittedCount: 500 - paths.length } });
-      expect(packFileListToolResult(canonical, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      expect(packTextToolResult(canonical, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted",
         meta: { deliveryStatus: "budget_rejected", omittedCount: 506, pathListDelivery: { deliveredCount: 0 } } });
 
-      const complete = packFileListToolResult(await fixture.call("list_files", { glob: realPath }), 4000);
-      expect(complete.text).toBe(JSON.stringify({ paths: [realPath], meta: { backend: "text", precision: "exact", degraded: false } }));
+      const complete = packTextToolResult(await fixture.call("list_files", { glob: realPath }), 4000);
+      expect(complete.packable?.records).toEqual([JSON.stringify(realPath)]);
       expect(complete.meta).toMatchObject({ deliveryStatus: "full", pathListDelivery: { deliveredCount: 1 } });
       const untracked = await fixture.call("list_files", { glob: `${testRoot}/untracked.test.ts` });
-      expect(packFileListToolResult(untracked, 4000).meta).toMatchObject({ deliveryStatus: "empty", pathListDelivery: { deliveredCount: 0 } });
+      expect(packTextToolResult(untracked, 4000).meta).toMatchObject({ deliveryStatus: "empty", pathListDelivery: { deliveredCount: 0 } });
     } finally {
       fixture.dispose();
     }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { packFileListToolResult, packOutlineToolResult, packSearchToolResult } from "../../src/llm/search-result-packing.js";
+import { packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../../src/llm/search-result-packing.js";
 import { textRepository } from "../../tests/helpers/text-repository.js";
 import { writeRepoFile } from "../../tests/helpers/git.js";
 
@@ -184,9 +184,10 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     expect((await fixture.call("read_range", { path: hit.path, startLine: hit.line, endLine: hit.line })).text).toContain("AccessRule");
     expect(JSON.parse(packSearchToolResult(canonical, 16000).text).results).toHaveLength(50);
     const listing = await fixture.call("list_files", { glob: "many/**" });
-    const packed = packFileListToolResult(listing, 600);
-    expect(JSON.parse(packed.text).meta.truncated).toBe(true);
-    expect(JSON.parse(packed.text).paths.every((path: string) => listing.filePaths!.includes(path))).toBe(true);
+    const packed = packTextToolResult(listing, 600);
+    expect(packed.meta?.truncated).toBe(true);
+    expect(packed.packable?.records.every(record => listing.filePaths!.includes(JSON.parse(record)))).toBe(true);
+    expect(packed.text).toMatch(/cursor=[\w-]+/u);
     expect(packSearchToolResult(canonical, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
     expect((await fixture.call("search_files", { query: "absent", pathGlob: "many/**" })).searchResults).toEqual([]);
   });
