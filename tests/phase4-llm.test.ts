@@ -517,6 +517,34 @@ describe("Phase 4 schemas and repository tool definitions", () => {
 });
 
 describe("Phase 4 Pi runner and model-call cache", () => {
+  it("keeps local draw identity out of token reservations while separating cache entries", async () => {
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({ dir: path.join(repoRoot, ".codegenie", "cache"), repoRoot,
+      runFingerprint: "draw-reservation", logger: fakeLogger(), telemetry: telemetry.recorder });
+    const response = () => assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+    const adapter = scriptedAdapter([response(), response()]);
+    const reservations: number[] = [];
+    let available: number | undefined;
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", reserve: (_stage, tokens) => {
+        reservations.push(tokens);
+        return available !== undefined && tokens > available ? "exhausted" : "ok";
+      }, onUsage() {} } });
+    const request = submitReviewRequest("same-packet");
+    await runner.runStructured(request);
+    available = reservations[0];
+    await runner.runStructured({ ...request, cacheDraw: "stage7-adaptive-2" });
+    expect(reservations).toEqual([available, available]);
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map(call => call.cacheStatus)).toEqual(["write", "write"]);
+    await runner.runStructured(request);
+    await runner.runStructured({ ...request, cacheDraw: "stage7-adaptive-2" });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map(call => call.cacheStatus)).toEqual(["write", "write", "hit", "hit"]);
+  });
+
   it("rejects a configured reasoning level the resolved model does not advertise", () => {
     const build = (reasoning: "high" | "xhigh", raw: Record<string, unknown>): LlmRunner =>
       createPiRunner({

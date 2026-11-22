@@ -12,6 +12,7 @@ import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAda
 import { parseDiff } from "../src/git/diff-parser.js";
 import { maybePublishToGitHub } from "../src/github/publisher.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
+import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
@@ -592,6 +593,87 @@ describe("phase 5 pipeline regressions", () => {
         })
       ])
     );
+  });
+
+  it.each([1, 3])("caches independent adaptive draws and replays them with concurrency %i", async concurrency => {
+    const repoRoot = initRepo();
+    const telemetry = nullTelemetry();
+    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-draw-test", logger: fakeLogger(), telemetry });
+    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
+    const finding = { title: "Zero-decimal origin token truncates the fee result", severity: "medium", confidence: "medium", path: "app.ts",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }, category: "correctness", evidence: { changedCode: "+bad" },
+      failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.", whyThisMatters: "matters", verification: "test" };
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
+    ]);
+    let attempts = 0;
+    const adapter: PiAiAdapter = { ...scripted, complete: async (...args) => {
+      attempts++;
+      if (concurrency === 1 && attempts === 2) {
+        const error = new Error("rate limited") as Error & { status: number; headers: Record<string, string> };
+        error.status = 429;
+        error.headers = { "retry-after": "0" };
+        throw error;
+      }
+      return scripted.complete(...args);
+    } };
+    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const packet = fakePacket();
+    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency } };
+    const run = (adaptive = true) => runLensPackets(fakePlan(), [packet], fakeTools(),
+      { ...cfg, review: { ...cfg.review, adaptiveSecondPass: adaptive } }, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    const primary = await run(false);
+    expect(scripted.calls).toBe(1);
+    expect(primary[0]?.findings).toEqual([]);
+    expect(primary[0]?.passesRun).toBe(1);
+    const cold = await run();
+    expect(scripted.calls).toBe(2);
+    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
+    expect(cold[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+    expect(cold[0]?.passesRun).toBe(2);
+    const warm = await run();
+    expect(scripted.calls).toBe(2);
+    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
+    expect(warm[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+    expect(warm[0]?.passesRun).toBe(2);
+    const uncachedAdapter = scriptedPiAdapter([
+      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
+    ]);
+    const uncachedRunner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter: uncachedAdapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const uncached = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, telemetry,
+      { runner: uncachedRunner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    expect(uncachedAdapter.calls).toBe(2);
+    expect(uncached[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+  });
+
+  it("keeps adaptive cache identity through identical tool continuations", async () => {
+    const repoRoot = initRepo();
+    const telemetry = nullTelemetry();
+    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-continuation", logger: fakeLogger(), telemetry });
+    const read = () => assistantMessage([toolCall("read-1", "read_range", { path: "app.ts", startLine: 1, endLine: 1 })]);
+    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
+    const adapter = scriptedPiAdapter([read(), assistantMessage([toolCall("submit-1", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      read(), assistantMessage([toolCall("submit-2", "submit_review", { findings: [], followUpHints: [], uncertainties: [] })])]);
+    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } };
+    const run = () => runLensPackets(fakePlan(), [fakePacket()], fakeTools("line"), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    const cold = await run();
+    expect(adapter.calls).toBe(4);
+    expect(cold[0]?.passesRun).toBe(2);
+    expect(cold[0]?.followUpHints).toHaveLength(1);
+    const warm = await run();
+    expect(adapter.calls).toBe(4);
+    expect(warm[0]?.passesRun).toBe(2);
+    expect(warm[0]?.followUpHints).toHaveLength(1);
   });
 
   it("runs an adaptive second pass when the first pass emits a concrete near-miss hint (plan 92 T1)", async () => {

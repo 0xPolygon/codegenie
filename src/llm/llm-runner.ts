@@ -102,6 +102,8 @@ export type LlmStructuredRequest<T> = {
   /** Type-only link between the request and the expected submit payload. */
   readonly responseType?: T;
   stage: ReviewStage;
+  /** Stable logical draw identity for local model-call caching, never sent to the provider. */
+  cacheDraw?: "stage7-adaptive-2";
   /** Optional placement repair: lowest reasoning, one provider attempt, no follow-up loop. */
   purpose?: "location_clarification";
   /** Stage 10 only: step down one supported reasoning level; repairs keep their own policy. */
