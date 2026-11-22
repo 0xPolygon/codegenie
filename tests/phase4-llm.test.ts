@@ -5691,6 +5691,65 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("not a zero-match result");
   });
 
+  it("finalizes after the first packed result refused at the aggregate limit, retaining its locator", async () => {
+    const telemetry = fakeTelemetry();
+    const meta = { backend: "text" as const, precision: "exact" as const, degraded: false,
+      sourceUsed: "head" as const, deliveryStatus: "full" as const, lookupStatus: "found" as const };
+    const execute = vi.fn(async args => args.path === "src/git/git-client.ts"
+      ? createPackableToolResult({ open: "", records: ["405\t" + "x".repeat(150)], separator: "\n", close: "" }, {
+        ...meta, totalLines: 469, requestedRange: { path: args.path, startLine: 405, endLine: 469 }, deliveredLineRange: [405, 405]
+      })
+      : { text: "x".repeat(args.path === "src/git/review-input-resolver.ts" ? 12_000 : 11_895) });
+    const tool: ToolDefinition = { name: "read_range", description: "read", execute,
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Integer(), endLine: Type.Integer() }) };
+    const read = (id: string, path: string, startLine = 1, endLine = 200) => ({
+      type: "toolCall" as const, id, name: tool.name, arguments: { path, startLine, endLine }
+    });
+    const adapter = scriptedAdapter([
+      assistant([read("first", "src/git/review-input-resolver.ts"), read("second", "src/git/other.ts")]),
+      assistant([read("no-fit", "src/git/git-client.ts", 405, 469), read("after-no-fit", "src/git/subprocess.ts", 220, 331)]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("cg-12-budget"), tools: [tool],
+      toolBudget: { maxToolCalls: 6, maxInvestigationRounds: 4, maxResultChars: 12_000 } });
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(adapter.contexts[1]).toContain("Hard result characters remaining: 105.");
+    expect(adapter.contexts[2]).toContain("The result budget is used up; further calls will be refused.");
+    expect(adapter.contexts[2]).toContain("next undelivered line: 405");
+    expect(adapter.toolNames[2]).toEqual(["submit_review"]);
+    expect(telemetry.toolCalls.at(-1)).toMatchObject({ status: "rejected", backendExecuted: false,
+      degradationReason: "tool_result_budget_exhausted", budgetState: { remainingResultChars: 105 } });
+    expect(telemetry.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      message: "tool_budget_remaining", data: expect.objectContaining({ resultPoolExhausted: true })
+    })]));
+  });
+
+  it("allows a narrower request when only the per-result cap prevented delivery", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async args => createPackableToolResult({ open: "", records: [
+      args.path === "src/wide.ts" ? "x".repeat(500) : "first line"
+    ], separator: "\n", close: "" }, { backend: "text", precision: "exact", degraded: false }));
+    const tool: ToolDefinition = { name: "read_range", description: "read", execute,
+      parameters: Type.Object({ path: Type.String() }) };
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "wide", name: tool.name, arguments: { path: "src/wide.ts" } }]),
+      assistant([{ type: "toolCall", id: "narrow", name: tool.name, arguments: { path: "src/short.ts" } }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("per-result-cap"), tools: [tool],
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 2000, maxSingleToolResultChars: 200 } });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(adapter.contexts[1]).toContain("Narrow the request");
+    expect(adapter.contexts[1]).not.toContain("The result budget is used up");
+    expect(telemetry.toolCalls.map(call => call.status)).toEqual(["rejected", "ok"]);
+  });
+
   it("keeps whole records through the runner and repacks cached results for a smaller budget", async () => {
     const telemetry = fakeTelemetry();
     const records = [
@@ -5837,7 +5896,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls[0]?.truncated).not.toBe(true);
     expect(telemetry.toolCalls[0]).not.toHaveProperty("backend");
     expect(telemetry.toolCalls[0]).not.toHaveProperty("precision");
-    expect(adapter.contexts[1]).toContain("tool result character budget exhausted");
+    expect(adapter.contexts[1]).toContain("The result budget is used up; further calls will be refused.");
     expect(adapter.contexts[1]).toContain("This tool call was not executed");
     expect(adapter.contexts[1]).toContain("not a zero-match result");
     expect(telemetry.toolCalls[0]?.degradationReason).not.toBe("budget_or_tool_rejected");
@@ -5908,7 +5967,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(results[1]?.content[0]?.text).not.toContain("tool rejected");
     for (const result of results.slice(2, 4)) {
       expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain("tool result character budget exhausted");
+      expect(result.content[0]?.text).toContain("The result budget is used up; further calls will be refused.");
       expect(result.content[0]?.text).toContain("This tool call was not executed");
       expect(result.content[0]?.text).toContain("not a zero-match result");
     }
@@ -5948,7 +6007,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(adapter.toolNames[1]).toContain("read_range");
       expect(adapter.toolNames[2]).toEqual([submitToolNameForStage(stage)]);
       expect(adapter.contexts[1]).toContain("target has been reached");
-      expect(adapter.contexts[2]).toContain("No further repository tool calls are allowed");
+      expect(adapter.contexts[2]).toContain(dimension === "maxResultChars"
+        ? "The result budget is used up; further calls will be refused."
+        : "No further repository tool calls are allowed");
       expect(telemetry.toolCalls.map(call => call.status)).toEqual(["ok", "ok"]);
       // A cache hit still spends one call and ten delivered characters.
       expect(execute).toHaveBeenCalledTimes(1);

@@ -882,6 +882,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
           if (toolCalls.length > 0 && !forceFinalize) {
             investigationRounds += 1;
             const toolResults: ConversationMessage[] = [];
+            let resultPoolExhausted = false;
             for (const toolCall of toolCalls) {
               const tool = repositoryTools.find((candidate) => candidate.name === toolCall.name);
               const budgetState = toolBudgetState({
@@ -893,7 +894,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 toolName: toolCall.name
               });
               const baseResultCharLimit = budgetState.toolResultCharLimit ?? budgetState.remainingResultChars;
-              const localBudgetReason = localBudgetRejectionReason({
+              const localBudgetReason = resultPoolExhausted ? "tool_result_budget_exhausted" : localBudgetRejectionReason({
                 resultCharLimit: baseResultCharLimit,
                 toolCallsUsed,
                 investigationRounds,
@@ -903,7 +904,11 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               const budgetRejected = localBudgetReason !== undefined;
               const outcome =
                 budgetRejected
-                  ? rejectedToolOutcome(toolCall, localBudgetReason, toolRejectionMessage(localBudgetReason), budgetState)
+                  ? rejectedToolOutcome(toolCall, localBudgetReason, localBudgetReason === "tool_result_budget_exhausted" &&
+                    (resultPoolExhausted || budgetState.remainingResultChars === 0)
+                    ? spentResultBudgetNotice(budgetState.remainingResultChars) +
+                      " This tool call was not executed. This is not a zero-match result."
+                    : toolRejectionMessage(localBudgetReason), budgetState)
                   : tool
                     ? await executeToolCall(adapter, repositoryTools, tool, toolCall, taskTimeout.signal, taskTimeout.timedOut, opts.toolResultCache)
                     : rejectedToolOutcome(toolCall, "unknown_tool", `unknown tool ${toolCall.name}`, budgetState);
@@ -917,13 +922,21 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               else rejectedToolCalls += 1;
               // Fixed budget-status messages are control information, not source content.
               if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
-                outcome.result = outcome.result.packable ? packTextToolResult(outcome.result, remainingResultChars)
-                  : outcome.result.outline ? packOutlineToolResult(outcome.result, remainingResultChars)
-                  : outcome.result.filePaths ? packFileListToolResult(outcome.result, remainingResultChars)
-                  : packSearchToolResult(outcome.result, remainingResultChars);
+                const canonical = outcome.result;
+                outcome.result = packRepositoryToolResult(canonical, remainingResultChars);
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
                   outcome.rejectionReason = "tool_result_budget_exhausted";
+                  const initialLimit = toolResultCharLimit(toolCall.name, budget, budget.maxResultChars);
+                  // A no-fit result can also be too large for this tool's own
+                  // cap. Close only if spending the aggregate allowance caused it.
+                  resultPoolExhausted = packedResultExhaustedPool(canonical, remainingResultChars,
+                    budgetState.remainingResultChars, initialLimit);
+                  if (resultPoolExhausted) {
+                    outcome.result.text = `${spentResultBudgetNotice(budgetState.remainingResultChars)}\nDetails for a later investigation:\n${outcome.result.text}`;
+                  } else if (!canonical.isError) {
+                    outcome.result.text = `This request has a ${remainingResultChars}-character delivery limit. Hard result characters remaining: ${budgetState.remainingResultChars}.\n${outcome.result.text}`;
+                  }
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
@@ -969,7 +982,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
             const feedback = remainingToolBudgetFeedback(toolBudgetState({
               toolCallsUsed, investigationRounds, resultCharsUsed, sourceResultCharsUsed, budget, softBudget,
               toolName: "read_range"
-            }), rejectedToolCalls);
+            }), rejectedToolCalls, resultPoolExhausted);
             messages.push({ role: "user", content: feedback.text, timestamp: 0 });
             opts.telemetry.event(definedRecord({
               stage: request.stage, level: "debug", message: "tool_budget_remaining",
@@ -986,7 +999,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               opts.telemetry.event({ stage: request.stage, level: "info", message: "tool_budget_soft_target_reached",
                 data: { ...feedback.remaining, ...request.telemetryContext } });
             }
-            if (toolCallsUsed >= budget.maxToolCalls || investigationRounds >= budget.maxInvestigationRounds || resultCharsUsed >= budget.maxResultChars || rejectedToolCalls >= maxRejectedToolCalls) {
+            if (resultPoolExhausted || toolCallsUsed >= budget.maxToolCalls || investigationRounds >= budget.maxInvestigationRounds ||
+                resultCharsUsed >= budget.maxResultChars || rejectedToolCalls >= maxRejectedToolCalls) {
               forceFinalize = true;
               budgetForceFinalize = false;
               queueForcedFinalizePrompt({
@@ -2403,7 +2417,11 @@ function toolRejectionMessage(reason: Exclude<ToolRejectionReason, "unknown_tool
 
 type LocalToolBudgetState = ToolBudgetState & { softLimits: ToolBudget };
 
-function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls = 0) {
+function spentResultBudgetNotice(remaining: number): string {
+  return `The result budget is used up; further calls will be refused. Hard result characters remaining: ${remaining}.`;
+}
+
+function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls = 0, resultPoolExhausted = false) {
   const target = state.softLimits;
   const softTargetReached = state.toolCallsUsed >= target.maxToolCalls
     || state.investigationRoundsUsed >= target.maxInvestigationRounds || state.resultCharsUsed >= target.maxResultChars;
@@ -2422,14 +2440,17 @@ function remainingToolBudgetFeedback(state: LocalToolBudgetState, rejectedCalls 
     hardRemaining: { toolCalls: Math.max(0, state.maxToolCalls - state.toolCallsUsed),
       investigationRounds: Math.max(0, state.maxInvestigationRounds - state.investigationRoundsUsed), resultChars: state.remainingResultChars },
     ...(state.maxSingleToolResultChars !== undefined ? { maxSingleToolResultChars: state.maxSingleToolResultChars } : {}),
-    ...(state.maxDiscoveryResultChars !== undefined ? { maxDiscoveryResultChars: state.maxDiscoveryResultChars } : {})
+    ...(state.maxDiscoveryResultChars !== undefined ? { maxDiscoveryResultChars: state.maxDiscoveryResultChars } : {}),
+    ...(resultPoolExhausted ? { resultPoolExhausted: true } : {})
   };
+  if (resultPoolExhausted || remaining.hardRemaining.resultChars === 0) {
+    return { text: spentResultBudgetNotice(remaining.hardRemaining.resultChars) + " Submit your result now.", remaining };
+  }
   const exhausted = remaining.hardRemaining.toolCalls === 0 || remaining.hardRemaining.investigationRounds === 0
-    || remaining.hardRemaining.resultChars === 0 || rejectedCalls >= remaining.rejectionLimit;
-  // Only soft targets are advertised to the model. Hard counters remain in
-  // telemetry; reaching a target is guidance, not an execution failure.
+    || rejectedCalls >= remaining.rejectionLimit;
   const text = [
     `Local investigation target remaining: ${remaining.ordinaryCalls} tool calls; ${remaining.investigationRounds} investigation rounds; ${remaining.resultChars} result characters (${remaining.discoveryResultChars} within the discovery target).`,
+    ...(softTargetReached ? [`Hard result characters remaining: ${remaining.hardRemaining.resultChars}.`] : []),
     ...(softTargetReached && !exhausted ? ["The local investigation target has been reached. Finish with the evidence collected where possible; use bounded continuation only for concrete unresolved questions, then submit."] : []),
     ...(remaining.maxSingleToolResultChars !== undefined ? [`Per-result cap: ${remaining.maxSingleToolResultChars} characters.`] : []),
     ...(remaining.maxDiscoveryResultChars !== undefined ? [`Discovery per-result cap: ${remaining.maxDiscoveryResultChars} characters. Prefer scoped searches and decisive source reads.`] : []),
@@ -2452,10 +2473,6 @@ function toolBudgetState(input: {
   const remainingSourceReserveChars = Math.max(0, (input.softBudget.reservedSourceResultChars ?? 0) - (input.sourceResultCharsUsed ?? 0));
   // Source reservation is a soft allocation target. Every tool may use the
   // shared continuation allowance up to the aggregate hard ceiling.
-  const perResultLimit = input.budget.maxSingleToolResultChars === undefined
-    ? remainingResultChars : Math.min(remainingResultChars, input.budget.maxSingleToolResultChars);
-  const toolResultCharLimit = !isSourceReadTool(input.toolName) && input.budget.maxDiscoveryResultChars !== undefined
-    ? Math.min(perResultLimit, input.budget.maxDiscoveryResultChars) : perResultLimit;
   return {
     toolCallsUsed: input.toolCallsUsed,
     maxToolCalls: input.budget.maxToolCalls,
@@ -2471,8 +2488,25 @@ function toolBudgetState(input: {
     ...(input.budget.maxSingleToolResultChars !== undefined ? { maxSingleToolResultChars: input.budget.maxSingleToolResultChars } : {}),
     ...(input.budget.maxDiscoveryResultChars !== undefined ? { maxDiscoveryResultChars: input.budget.maxDiscoveryResultChars } : {}),
     ...(input.softBudget.reservedSourceResultChars !== undefined ? { reservedSourceResultChars: input.softBudget.reservedSourceResultChars } : {}),
-    toolResultCharLimit
+    toolResultCharLimit: toolResultCharLimit(input.toolName, input.budget, remainingResultChars)
   };
+}
+
+function toolResultCharLimit(toolName: string, budget: ToolBudget, remainingChars: number): number {
+  const singleLimit = Math.min(remainingChars, budget.maxSingleToolResultChars ?? remainingChars);
+  return isSourceReadTool(toolName) ? singleLimit : Math.min(singleLimit, budget.maxDiscoveryResultChars ?? singleLimit);
+}
+
+function packRepositoryToolResult(result: ToolExecutionResult, allowance: number): ToolExecutionResult {
+  if (result.packable) return packTextToolResult(result, allowance);
+  if (result.outline) return packOutlineToolResult(result, allowance);
+  if (result.filePaths) return packFileListToolResult(result, allowance);
+  return packSearchToolResult(result, allowance);
+}
+
+function packedResultExhaustedPool(result: ToolExecutionResult, allowance: number, remaining: number, initialLimit: number): boolean {
+  return !result.isError && allowance === remaining && initialLimit > remaining &&
+    !packRepositoryToolResult(result, initialLimit).isError;
 }
 
 function isSourceReadTool(toolName: string): boolean {
