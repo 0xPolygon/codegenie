@@ -17,6 +17,7 @@ import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-
 import { createToolResultCache } from "../llm/tool-result-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
 import { buildRepositoryIndex } from "../repo/repository-index.js";
+import { createGuaranteeDeltaSourceReader } from "./guarantee-delta.js";
 import { buildLensRegistry, droppedLensesFromFailures } from "../skills/lens-registry.js";
 import { createPromptBuilder } from "../skills/prompt-builder.js";
 import { loadSkills } from "../skills/skill-loader.js";
@@ -257,6 +258,7 @@ export async function runReview(
       lensRegistry: services.lensRegistry,
       signal: run.abort.signal,
       checkpoint: (stage) => run.budget.checkpoint(stage),
+      ...(config.review.guaranteeDeltaPass === true ? { guaranteeDeltaSource: createGuaranteeDeltaSourceReader(resolved) } : {}),
       diff
     });
     throwIfHardAborted(run);

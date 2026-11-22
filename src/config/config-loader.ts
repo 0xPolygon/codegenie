@@ -286,6 +286,10 @@ function applyRawConfig(
     config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
     sources["review.adaptiveSecondPass"] = source;
   }
+  if (raw.review?.guaranteeDeltaPass !== undefined) {
+    config.review.guaranteeDeltaPass = raw.review.guaranteeDeltaPass;
+    sources["review.guaranteeDeltaPass"] = source;
+  }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;

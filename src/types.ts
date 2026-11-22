@@ -56,6 +56,8 @@ export type CodegenieConfig = {
     // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
     // only) earn one additional independent review pass. Off by default.
     adaptiveSecondPass?: boolean;
+    /** Experimental Plan 132 arm D, off unless enabled by user config or an eval case. */
+    guaranteeDeltaPass?: boolean;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -789,6 +791,7 @@ export type FindingProducer = {
   // absent for first-pass candidates. Historical artifacts may also carry
   // plan 84 ensemble pass numbers.
   ensemblePass?: number;
+  guaranteeDeltaId?: string;
 };
 
 export type CandidateFindingProvenance = {
@@ -882,6 +885,7 @@ export type StructuredUncertainty = {
   files: string[];
   symbols: string[];
   projectedSkillIds: string[];
+  guaranteeDeltaId?: string;
 };
 
 export type RepositoryEvidence = {
@@ -1141,6 +1145,7 @@ export type EvalCase = {
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
     adaptiveSecondPass?: boolean;
+    guaranteeDeltaPass?: boolean;
     verify?: boolean;
     compositionReasoningStepDown?: boolean;
     skipSvgReview?: boolean;

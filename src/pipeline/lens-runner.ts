@@ -1,4 +1,5 @@
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
+import pLimit from "p-limit";
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
@@ -33,6 +34,10 @@ import { isPacketReviewTestPath } from "../util/path-roles.js";
 import { normalizeStage7Submit, stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
+import {
+  buildGuaranteeDeltaInput, GUARANTEE_DELTA_SCHEMA, GUARANTEE_DELTA_TEMPLATE_VERSION, guaranteeDeltaEligible,
+  type GuaranteeDelta, type GuaranteeDeltaSourceReader
+} from "./guarantee-delta.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -41,6 +46,7 @@ type LensRunnerOptions = {
   signal?: AbortSignal;
   checkpoint?: (stage: ReviewStage) => "ok" | "exhausted";
   diff?: UnifiedDiff;
+  guaranteeDeltaSource?: GuaranteeDeltaSourceReader;
 };
 
 type SubmittedFollowUpHint = SubmitPacketReview["followUpHints"][number];
@@ -146,6 +152,9 @@ export async function runLensPackets(
   results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
   const adaptiveReviews = summarizeAdaptiveReviews(results);
   await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
+  if (config.review.guaranteeDeltaPass === true && opts.guaranteeDeltaSource) {
+    await runGuaranteeDeltaWave(results, packets, opts.guaranteeDeltaSource, config, telemetry, opts);
+  }
   telemetry.event({
     stage: 7,
     level: "info",
@@ -169,6 +178,98 @@ export async function runLensPackets(
   });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
   return results;
+}
+
+async function runGuaranteeDeltaWave(
+  results: PacketReviewResult[],
+  packets: ReviewPacket[],
+  readSource: GuaranteeDeltaSourceReader,
+  config: CodegenieConfig,
+  telemetry: TelemetryRecorder,
+  opts: LensRunnerOptions
+): Promise<void> {
+  const limit = pLimit(config.review.concurrency);
+  const resultsById = new Map(results.map(result => [result.packetId, result]));
+  const traces = await Promise.all(packets.filter(guaranteeDeltaEligible).map(packet => limit(async () => {
+    const packetId = packet.id;
+    const workerId = `guarantee-delta-${packetId}`;
+    const result = resultsById.get(packetId);
+    const stop = (outcome: string, errorCode?: string) => {
+      telemetry.event({ stage: 7, level: "debug", message: "stage7_guarantee_delta_skipped",
+        packetId, workerId, data: { outcome, ...(errorCode ? { errorCode } : {}) } });
+      return { packetId, outcome };
+    };
+    opts.signal?.throwIfAborted();
+    if (result?.status !== "completed") return stop("primary_review_incomplete");
+    if (opts.checkpoint?.(7) === "exhausted") return stop("budget_exhausted");
+    try {
+      const input = await buildGuaranteeDeltaInput(packet, readSource);
+      if (!input) return stop("source_unavailable_or_out_of_bounds");
+      const submitted = await opts.runner.runStructured<GuaranteeDelta>({
+        stage: 7,
+        purpose: "guarantee_delta",
+        prompt: input.prompt,
+        schema: GUARANTEE_DELTA_SCHEMA,
+        templateVersion: GUARANTEE_DELTA_TEMPLATE_VERSION,
+        timeoutMs: config.review.perPassTimeoutMs,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        telemetryContext: { workerId, packetId }
+      });
+      const hunks = new Map(input.hunks.map(hunk => [hunk.hunkId, hunk]));
+      const items = submitted.items.map((item, index) => {
+        const id = `${packetId}/guarantee-${index + 1}`;
+        const hunk = hunks.get(item.hunkId);
+        const question = item.question?.trim();
+        const open = item.status === "conditional" || item.status === "dropped" || item.status === "not_visible";
+        const hasBaseLine = hunk?.base.some(line => line.change === "removed" && line.number === item.baseLine);
+        const hasHeadLine = item.headLine === undefined || hunk?.head.some(line => line.number === item.headLine);
+        const trace = { id, hunkId: item.hunkId, status: item.status, guarantee: item.guarantee, baseLine: item.baseLine,
+          ...(item.headLine === undefined ? {} : { headLine: item.headLine }) };
+        if (!hasBaseLine || !hasHeadLine) return { ...trace, outcome: "invalid_checklist_location" };
+        if (!open) return { ...trace, outcome: "checked" };
+        const anchor = item.finding?.anchor;
+        const shownChangedLine = anchor?.side === "LEFT"
+          ? hunk?.base.some(line => line.change === "removed" && line.number === anchor.line)
+          : hunk?.head.some(line => line.change === "added" && line.number === anchor?.line);
+        if (item.finding && item.status !== "not_visible" && shownChangedLine
+          && anchor?.hunkId === item.hunkId && validateAnchorForDiff(anchor, opts.diff)) {
+          const candidate = stampFinding(packet, { ...item.finding, behaviorChange: "intentional_needs_confirmation" }, index,
+            [], workerId, telemetry, opts.diff, undefined, id);
+          if (result.findings.some(existing => isExactDuplicateCandidate(candidate, existing))) {
+            return { ...trace, outcome: "duplicate_candidate" };
+          }
+          result.findings.push(candidate);
+          result.reviewStatus = "findings";
+          delete result.noFindingReason;
+          return { ...trace, outcome: "candidate", candidateId: candidate.id };
+        }
+        if (question) {
+          const next = { question, files: [packet.path], symbols: [], projectedSkillIds: [], guaranteeDeltaId: id };
+          const merged = dedupeByQuestion([...result.uncertainties, next]);
+          if (!merged.includes(next)) return { ...trace, outcome: "duplicate_question" };
+          result.uncertainties = merged;
+          return { ...trace, outcome: "question", question };
+        }
+        return { ...trace, outcome: "unraised" };
+      });
+      const generation = stage7Generation.get(result);
+      if (generation) {
+        generation.directCandidates = result.findings.length;
+        const questions = items.filter(item => item.outcome === "question").length;
+        generation.submittedUncertainties += questions;
+        generation.keptUncertainties += questions;
+      }
+      telemetry.event({ stage: 7, level: "debug", message: "stage7_guarantee_delta_completed", packetId, workerId,
+        data: { items: items.length, maskedAddedCommentLines: input.maskedAddedCommentLines,
+          unraised: items.filter(item => item.outcome === "unraised").length } });
+      return { packetId, outcome: "completed", maskedAddedCommentLines: input.maskedAddedCommentLines, items };
+    } catch (error) {
+      opts.signal?.throwIfAborted();
+      return stop(isBudgetExhaustedError(error) ? "budget_exhausted" : "extra_pass_failed",
+        isCodegenieError(error) ? error.code : undefined);
+    }
+  })));
+  await telemetry.writeArtifact("guarantee-delta.json", traces);
 }
 
 type AdaptiveTrigger = NonNullable<AdaptiveReviewOutcome["trigger"]>;
@@ -863,12 +964,13 @@ function stampFinding(
   workerId: string,
   telemetry: TelemetryRecorder,
   diff: UnifiedDiff | undefined,
-  adaptivePass?: number
+  adaptivePass?: number,
+  guaranteeDeltaId?: string
 ): CandidateFinding {
   const modelAnchor = normalizeAnchor(submitted.anchor, packet, diff);
   // Adaptive second passes (plan 92) carry an `a` pass marker so candidate
   // ids never collide with the first pass, which keeps the plain id shape.
-  const passMarker = adaptivePass !== undefined ? `a${adaptivePass}` : "";
+  const passMarker = guaranteeDeltaId !== undefined ? "d" : adaptivePass !== undefined ? `a${adaptivePass}` : "";
   const candidateId = `${packet.id.slice(0, 8)}-${passMarker}f${index + 1}`;
   if (submitted.anchor !== undefined && modelAnchor === undefined) {
     telemetry.event({
@@ -945,6 +1047,7 @@ function stampFinding(
       lensId: primaryLens,
       skillIds: [...passSkillIds],
       workerId,
+      ...(guaranteeDeltaId !== undefined ? { guaranteeDeltaId } : {}),
       ...(adaptivePass !== undefined ? { ensemblePass: adaptivePass } : {})
     }
   };

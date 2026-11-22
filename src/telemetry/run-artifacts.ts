@@ -66,6 +66,7 @@ export const ARTIFACT_LOCATION = {
   "planner-dossier-chunks.json": "stages/05-planner/planner-dossier-chunks.json",
   "review-plan.json": "stages/05-planner/review-plan.json",
   "hunk-relationships.json": "stages/06-packets/hunk-relationships.json",
+  "guarantee-delta.json": "stages/07-review/guarantee-delta.json",
   "candidate-findings.json": "stages/09-verification/candidate-findings.json",
   "uncertainty-promotion.json": "stages/09-verification/uncertainty-promotion.json",
   "verification.json": "stages/09-verification/verification.json",

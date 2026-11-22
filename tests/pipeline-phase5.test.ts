@@ -17,6 +17,8 @@ import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
+import { buildGuaranteeDeltaInput, createGuaranteeDeltaSourceReader, guaranteeDeltaEligible, removedGuaranteeLine } from "../src/pipeline/guarantee-delta.js";
+import { promoteUncertaintiesForVerification } from "../src/pipeline/uncertainty-promotion.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
@@ -16205,6 +16207,109 @@ function attributedSources(findings: CandidateFinding[], body: string) {
     evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id)
   };
 }
+describe("Stage 7 guarantee delta", () => {
+  it.each([
+    ["  guard.verify(request);", true],
+    ["  if value == nil {", true],
+    ["  throw error;", true],
+    ["  const active = flags.enabled ? previous : [];", true],
+    ["  const value = 1;", false],
+    ["  // return verify();", false]
+  ] as const)("checks removed source for a call, condition or exit: %s", (line, expected) => {
+    expect(removedGuaranteeLine(line)).toBe(expected);
+    expect(guaranteeDeltaEligible(fakePacket({ hunkLines: [{ kind: "add", content: line }] }))).toBe(false);
+  });
+
+  it("projects both revisions with surrounding source and masks added and trailing comments", async () => {
+    const repoRoot = initRepo();
+    writeRepoFile(repoRoot, "app.ts", 'const marker = "🙂 // literal";\nexport function check() {\n  return ensure();\n}\n');
+    const base = commitAll(repoRoot, "base");
+    writeRepoFile(repoRoot, "app.ts", 'const marker = "🙂 // literal";\nexport function check() {\n  // whole-line-sentinel\n  return false; /* inline-sentinel\n  block-body-sentinel */\n}\n');
+    const head = commitAll(repoRoot, "untrusted commit-message-sentinel");
+    const packet = fakePacket({ hunkLines: [{ kind: "delete", oldLine: 3, content: "  return ensure();" }],
+      changedOldLineNumbers: [3], changedNewLineNumbers: [3, 4, 5], attentionNotes: ["planner-sentinel"] });
+    Object.assign(packet.hunks[0]!, { oldStart: 3, oldLines: 1, newStart: 3, newLines: 3, header: "hunk-header-sentinel" });
+    packet.contextText = "contextText-sentinel";
+    packet.intentText = "intent-sentinel";
+    const input = await buildGuaranteeDeltaInput(packet, createGuaranteeDeltaSourceReader({
+      mode: "head", repoRoot, headSha: head, mergeBase: base, commits: [], rawDiff: ""
+    }));
+    expect(input?.maskedAddedCommentLines).toBe(3);
+    expect(input?.prompt).toContain("return ensure();");
+    expect(input?.prompt).toContain("return false;");
+    expect(input?.prompt).toContain("export function check()");
+    expect(input?.prompt).toContain("🙂 // literal");
+    expect(input?.prompt).not.toContain("-sentinel");
+  });
+
+  it.each(["off", "on", "invalid"] as const)("keeps the primary prompts and traces supplemental items: %s", async (mode) => {
+    const primary = "  return ensure();";
+    const replacing = "  return false;";
+    const packet = fakePacket({
+      hunkLines: [{ kind: "delete", content: primary, oldLine: 1 }, { kind: "add", content: replacing, newLine: 1 }],
+      changedOldLineNumbers: [1]
+    });
+    const addition = fakePacket({ id: "addition", path: "added.ts" });
+    const diff = { files: [fakeDiffFile(packet.path, replacing)] };
+    const marker = { hunkId: "h1", baseLine: 1, headLine: 1 };
+    const question = "Can ensure() now be skipped and return an invalid result from app.ts?";
+    const calls: LlmStructuredRequest<unknown>[] = [];
+    const artifacts = new Map<string, unknown>();
+    const events: Array<{ message: string; data?: unknown }> = [];
+    const cfg = config();
+    cfg.review.guaranteeDeltaPass = mode !== "off";
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const telemetry = { ...nullTelemetry(), event: (event: { message: string; data?: unknown }) => { events.push(event); },
+      writeArtifact: async (name: string, value: unknown) => { artifacts.set(name, value); } };
+    const results = await runLensPackets(fakePlan(), [packet, addition], fakeTools(), cfg, telemetry, {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        calls.push(request);
+        if (request.purpose !== "guarantee_delta") return { findings: [], followUpHints: [], uncertainties: [] } as T;
+        if (mode === "invalid") throw new CodegenieError("llm_schema_invalid", "Missing checklist");
+        const finding = {
+          title: "Validation bypassed", severity: "medium", confidence: "high", path: packet.path, category: "correctness",
+          anchor: { path: packet.path, hunkId: "h1", side: "RIGHT", line: 1 },
+          failureMode: "Invalid data is returned without calling ensure.", whyThisMatters: "The caller expects validated data.",
+          verification: "Source comparison", evidence: { changedCode: replacing }
+        };
+        return { items: [
+          { ...marker, guarantee: "Validate before returning", status: "dropped", finding },
+          { ...marker, guarantee: "Check later callers", status: "not_visible", finding, question },
+          { ...marker, guarantee: "Keep the fallback", status: "kept", finding },
+          { ...marker, guarantee: "Evaluate the alternate path", status: "conditional" },
+          { ...marker, baseLine: 91, guarantee: "Unseen evidence", status: "dropped", finding }
+        ] } as T;
+      } },
+      promptBuilder, lensRegistry: fakeLensRegistry(), diff,
+      guaranteeDeltaSource: async (_path, side) => ({ lines: [side === "base" ? primary : replacing], commentLines: new Set() })
+    });
+    expect(calls.slice(0, 2).map(call => call.prompt)).toEqual([packet, addition].map(input =>
+      promptBuilder.buildPacketReviewPrompt({ packet: input, skills: [] }).prompt));
+    expect(calls).toHaveLength(mode === "off" ? 2 : 3);
+    expect(results.map(result => result.status)).toEqual(["completed", "completed"]);
+    if (mode !== "on") {
+      expect(results.flatMap(result => result.findings)).toEqual([]);
+      if (mode === "invalid") expect(events).toContainEqual(expect.objectContaining({
+        message: "stage7_guarantee_delta_skipped", data: { outcome: "extra_pass_failed", errorCode: "llm_schema_invalid" }
+      }));
+      return;
+    }
+    expect(calls[2]).toMatchObject({ purpose: "guarantee_delta", telemetryContext: { packetId: packet.id } });
+    expect(calls[2]?.tools).toBeUndefined();
+    expect(results[0]?.findings).toEqual([expect.objectContaining({
+      id: "packet-1-df1", behaviorChange: "intentional_needs_confirmation",
+      producedBy: expect.objectContaining({ guaranteeDeltaId: "packet-1/guarantee-1" })
+    })]);
+    expect(results[0]?.uncertainties).toContainEqual(expect.objectContaining({ question, guaranteeDeltaId: "packet-1/guarantee-2" }));
+    expect(artifacts.get("guarantee-delta.json")).toMatchObject([{ items: [
+      { outcome: "candidate" }, { outcome: "question" }, { outcome: "checked" }, { outcome: "unraised" },
+      { outcome: "invalid_checklist_location" }
+    ] }]);
+    const promoted = await promoteUncertaintiesForVerification({ packetResults: results, packets: [packet, addition] }, telemetry);
+    expect(promoted.summary.decisions).toContainEqual(expect.objectContaining({ guaranteeDeltaId: "packet-1/guarantee-2", question }));
+  });
+});
+
 describe("full-diff finding locations", () => {
   it.each([true, false])("retains cross-packet anchors without clarification (submitted=%s)", async (submittedAnchor) => {
     const anchor = { path: "production.ts", line: 1, side: "RIGHT" as const, hunkId: "h1" };

@@ -143,6 +143,7 @@ const caseSchema = z
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         adaptiveSecondPass: z.boolean().optional(),
+        guaranteeDeltaPass: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
         verify: z.boolean().optional(),
@@ -872,6 +873,9 @@ function applyCaseReviewConfig(
   }
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
+  }
+  if (review?.guaranteeDeltaPass !== undefined) {
+    config.review.guaranteeDeltaPass = review.guaranteeDeltaPass;
   }
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;

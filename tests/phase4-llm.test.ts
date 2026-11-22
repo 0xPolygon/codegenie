@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
+import { GUARANTEE_DELTA_SCHEMA, GUARANTEE_DELTA_TEMPLATE_VERSION } from "../src/pipeline/guarantee-delta.js";
 import type {
   CreateRunnerOptions,
   LlmCallUsage,
@@ -3054,6 +3055,31 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(efforts).toEqual(["minimal"]);
       expect(telemetry.events.some((event) => event.message === "recovery_obligation_opened")).toBe(false);
     } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["valid", "invalid", "missing", "multiple", "transient"] as const)("makes one submit-only guarantee-delta attempt: %s", async mode => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([]);
+    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+      id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { high: "high" }
+    } });
+    adapter.complete = vi.fn(async (_model, context, options) => {
+      expect(context.tools?.map((tool: { name: string }) => tool.name)).toEqual(["submit_review"]);
+      expect(options.reasoning).toBe("high");
+      if (mode === "transient") throw Object.assign(new Error("unavailable"), { status: 503 });
+      const submit = { type: "toolCall" as const, id: "delta", name: "submit_review",
+        arguments: mode === "invalid" ? { items: [42] } : { items: [] } };
+      return assistant(mode === "missing" ? [] : mode === "multiple" ? [submit, { ...submit, id: "extra" }] : [submit]);
+    });
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = runner.runStructured({ stage: 7, purpose: "guarantee_delta", prompt: "compare the excerpts",
+      schema: GUARANTEE_DELTA_SCHEMA, templateVersion: GUARANTEE_DELTA_TEMPLATE_VERSION, timeoutMs: 2000 });
+    if (mode === "valid") await expect(result).resolves.toEqual({ items: [] });
+    else await expect(result).rejects.toMatchObject({ code: mode === "transient" ? "llm_call_failed" : "llm_schema_invalid" });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.events.some(event => event.message === "recovery_obligation_opened")).toBe(false);
   });
 
   it.each([false, true])("gives repair a fresh allowance while respecting cancellation (%s)", async (cancel) => {

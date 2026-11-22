@@ -322,6 +322,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
       const runOpts = request.signal
         ? { ...opts, runSignal: AbortSignal.any([opts.runSignal, request.signal]) }
         : opts;
+      const oneShot = request.purpose !== undefined;
+      const submissionLabel = request.purpose === "guarantee_delta" ? "Guarantee delta" : "Location clarification";
       throwIfTaskAborted(runOpts.runSignal, () => false);
       const submitTool = buildSubmitTool(request);
       const repositoryTools = request.tools ?? [];
@@ -442,8 +444,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
         replaceConversationOverride?: boolean;
         cause?: unknown;
       }): void => {
-        if (request.purpose === "location_clarification") {
-          throw new CodegenieError("llm_schema_invalid", "Location clarification did not return a valid submission", { recoverable: true });
+        if (oneShot) {
+          throw new CodegenieError("llm_schema_invalid", `${submissionLabel} did not return a valid submission`, { recoverable: true });
         }
         const obligation = recoveryObligations.get(obligationKey);
         const retryAvailable = schemaRepairAttempts < MAX_SCHEMA_REPAIR_ATTEMPTS
@@ -522,7 +524,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
       // investigation calls and routes the pass to finalize; the hard deadline
       // (soft + grace) aborts. A pass that finished investigating is never
       // killed mid-finalize by the soft budget alone.
-      const graceMs = request.purpose === "location_clarification" ? 0 : finalizeGraceMs(request.timeoutMs);
+      const graceMs = oneShot ? 0 : finalizeGraceMs(request.timeoutMs);
       const softDeadlineAt = Date.now() + request.timeoutMs;
       let softDeadlineFinalize = false;
       const taskTimeout = timeoutSignal(runOpts.runSignal, request.stage === 10 ? COMPOSITION_TOTAL_TIMEOUT_MS : request.timeoutMs + graceMs);
@@ -757,8 +759,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   ...(cause instanceof SubmitSemanticValidationError ? { repairClassification: cause.classification } : {}), cause });
                 continue;
               }
-              if (request.purpose === "location_clarification") {
-                throw new CodegenieError("llm_schema_invalid", "Location clarification failed validation", { recoverable: true, cause });
+              if (oneShot) {
+                throw new CodegenieError("llm_schema_invalid", `${submissionLabel} failed validation`, { recoverable: true, cause });
               }
               const normalization = request.normalizeSubmit?.(submitCall.arguments);
               if (normalization) recordFidelity("submit_semantic_canonicalization_applied", {
@@ -847,8 +849,9 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
             }
           }
 
-          if (request.purpose === "location_clarification") {
-            throw new CodegenieError("llm_schema_invalid", "Location clarification did not submit coordinates", { recoverable: true });
+          if (oneShot) {
+            const message = request.purpose === "guarantee_delta" ? "Guarantee delta did not submit a checklist" : "Location clarification did not submit coordinates";
+            throw new CodegenieError("llm_schema_invalid", message, { recoverable: true });
           }
           if (forceFinalize) {
             if (!schemaRepairUsed && !finalizeSubmitRetryUsed && !softDeadlineFinalize) {
@@ -1550,7 +1553,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   }
 
   let lastError: unknown;
-  let maxAttempts = kind === "repair" || request.stage === 10 || request.purpose === "location_clarification" ? 1 : MAX_PROVIDER_ATTEMPTS;
+  let maxAttempts = kind === "repair" || request.stage === 10 || request.purpose !== undefined ? 1 : MAX_PROVIDER_ATTEMPTS;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     let estimatedTokens = 0;
@@ -3582,6 +3585,9 @@ function submitResponseDisciplineError(
   submitToolName: string,
   submitCalls: PiSubmitCall[]
 ): string | undefined {
+  if (request.purpose === "guarantee_delta") {
+    return submitCalls.length === 1 ? undefined : `Guarantee delta must call ${submitToolName} exactly once.`;
+  }
   if (request.stage !== 5 && request.stage !== 10) {
     return undefined;
   }

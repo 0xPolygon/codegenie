@@ -32,6 +32,7 @@ export function createFakeRunner(): LlmRunner {
         case 5:
           return fakePlan(request.prompt) as T;
         case 7:
+          if (request.purpose === "guarantee_delta") return { items: [] } as T;
           return fakePacketReview(request.prompt) as T;
         case 9:
           return fakeVerdict(request.prompt) as T;

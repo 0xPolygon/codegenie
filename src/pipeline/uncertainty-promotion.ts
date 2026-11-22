@@ -39,6 +39,7 @@ export type UncertaintyPromotionSummary = {
 
 export type PromotionDecision = {
   packetId: string;
+  guaranteeDeltaId?: string;
   sourceKind: PromotionSourceKind;
   question: string;
   files: string[];
@@ -61,6 +62,7 @@ type PromotionSource = {
   files: string[];
   symbols: string[];
   projectedSkillIds: string[];
+  guaranteeDeltaId?: string;
   reason: string;
   confidence?: Confidence;
 };
@@ -187,6 +189,7 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
       packet,
       sourceKind: "uncertainty",
       question: uncertainty.question,
+      ...(uncertainty.guaranteeDeltaId !== undefined ? { guaranteeDeltaId: uncertainty.guaranteeDeltaId } : {}),
       files: cleanStrings(uncertainty.files),
       symbols: cleanStrings(uncertainty.symbols),
       projectedSkillIds: [...uncertainty.projectedSkillIds],
@@ -321,7 +324,8 @@ function promotedCandidate(
       stage: 9,
       packetId: source.packet.id,
       lensId: source.packet.lenses[0] ?? "core/code-review",
-      skillIds: [...source.projectedSkillIds]
+      skillIds: [...source.projectedSkillIds],
+      ...(source.guaranteeDeltaId !== undefined ? { guaranteeDeltaId: source.guaranteeDeltaId } : {})
     },
     provenance: {
       source: "uncertainty_promotion",
@@ -979,6 +983,7 @@ function baseDecision(
 ): PromotionDecision {
   const decision: PromotionDecision = {
     packetId: source.packet.id,
+    ...(source.guaranteeDeltaId !== undefined ? { guaranteeDeltaId: source.guaranteeDeltaId } : {}),
     sourceKind: source.sourceKind,
     question: source.question.trim(),
     files: source.files,
