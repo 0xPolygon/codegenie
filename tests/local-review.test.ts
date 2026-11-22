@@ -205,7 +205,7 @@ describe("local review snapshots", () => {
     expect(resolved).not.toHaveProperty("headSha");
     expect(output).toHaveBeenCalledWith(expect.stringContaining(mode === "staged" ? "index" : "tracked worktree"));
     const report = String(output.mock.calls[0]?.[0]);
-    expect(report).not.toMatch(/https:\/\/github\.com\/[^\s]+\/blob\//u);
+    expect(report).not.toContain("https://github.com/");
     expect(report).not.toContain(path.dirname(objects[0]!));
     expect(report.includes("Omitted 1 untracked file.")).toBe(mode === "uncommitted");
     expect(report.includes("`git add -N <path>`")).toBe(mode === "uncommitted");
@@ -224,6 +224,22 @@ describe("local review snapshots", () => {
     expect(result.review).toMatchObject({ summary: "Nothing to review.", coverage: { totalHunks: 0 } });
     expect(writeOutput).toHaveBeenCalledWith(expect.stringContaining("Omitted 1 untracked file."));
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("git add -N <path>"));
+  });
+
+  it("names TMPDIR when the temporary directory sits inside the repository", async () => {
+    const repo = initRepo();
+    const inside = mkdtempSync(path.join(repo, "temp-"));
+    vi.stubEnv("TMPDIR", inside);
+    vi.stubEnv("TEMP", inside);
+    try {
+      await expect(snapshot(repo, "staged")).rejects.toMatchObject({
+        code: "invalid_args",
+        message: expect.stringContaining("set TMPDIR")
+      });
+      expect(readdirSync(inside)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("rejects unmerged index entries as an input error and cleans its scratch directory", async () => {

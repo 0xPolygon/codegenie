@@ -37,7 +37,7 @@ export async function captureLocalReview(
     })
   ]);
   if (isInside(repository, parent) || isInside(runs, parent)) {
-    throw new CodegenieError("invalid_args", "choose a temporary directory outside the repository and the review runs directory");
+    throw new CodegenieError("invalid_args", "set TMPDIR (TEMP on Windows) to a directory outside the repository and the review runs directory");
   }
   if (head.length === 0) {
     const symbolic = await runGit(repoRoot, ["symbolic-ref", "--quiet", "HEAD"], { allowedExitCodes: [0, 1] });
