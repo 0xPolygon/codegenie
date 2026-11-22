@@ -194,17 +194,19 @@ async function runGuaranteeDeltaWave(
     const packetId = packet.id;
     const workerId = `guarantee-delta-${packetId}`;
     const result = resultsById.get(packetId);
+    let projected = false;
     const stop = (outcome: string, errorCode?: string) => {
       telemetry.event({ stage: 7, level: "debug", message: "stage7_guarantee_delta_skipped",
-        packetId, workerId, data: { outcome, ...(errorCode ? { errorCode } : {}) } });
-      return { packetId, outcome };
+        packetId, workerId, data: { outcome, projected, ...(errorCode ? { errorCode } : {}) } });
+      return { packetId, outcome, projected };
     };
     opts.signal?.throwIfAborted();
     if (result?.status !== "completed") return stop("primary_review_incomplete");
     if (opts.checkpoint?.(7) === "exhausted") return stop("budget_exhausted");
     try {
       const input = await buildGuaranteeDeltaInput(packet, readSource);
-      if (!input) return stop("source_unavailable_or_out_of_bounds");
+      if ("reason" in input) return stop(input.reason);
+      projected = true;
       const submitted = await opts.runner.runStructured<GuaranteeDelta>({
         stage: 7,
         purpose: "guarantee_delta",
@@ -262,14 +264,26 @@ async function runGuaranteeDeltaWave(
       telemetry.event({ stage: 7, level: "debug", message: "stage7_guarantee_delta_completed", packetId, workerId,
         data: { items: items.length, maskedAddedCommentLines: input.maskedAddedCommentLines,
           unraised: items.filter(item => item.outcome === "unraised").length } });
-      return { packetId, outcome: "completed", maskedAddedCommentLines: input.maskedAddedCommentLines, items };
+      return { packetId, outcome: "completed", projected, maskedAddedCommentLines: input.maskedAddedCommentLines, items };
     } catch (error) {
       opts.signal?.throwIfAborted();
-      return stop(isBudgetExhaustedError(error) ? "budget_exhausted" : "extra_pass_failed",
-        isCodegenieError(error) ? error.code : undefined);
+      if (isSchemaInvalidError(error)) return stop("invalid_submission", "llm_schema_invalid");
+      if (isBudgetExhaustedError(error)) return stop("budget_exhausted");
+      return stop("extra_pass_failed", isCodegenieError(error) ? error.code : undefined);
     }
   })));
   await telemetry.writeArtifact("guarantee-delta.json", traces);
+  const skippedByReason: Record<string, number> = {};
+  for (const trace of traces) {
+    if (trace.outcome !== "completed") skippedByReason[trace.outcome] = (skippedByReason[trace.outcome] ?? 0) + 1;
+  }
+  telemetry.event({ stage: 7, level: "info", message: "stage7_guarantee_delta_summary", data: {
+    selected: traces.length,
+    projected: traces.filter(trace => trace.projected).length,
+    completed: traces.filter(trace => trace.outcome === "completed").length,
+    invalidSubmissions: skippedByReason.invalid_submission ?? 0,
+    skippedByReason
+  } });
 }
 
 type AdaptiveTrigger = NonNullable<AdaptiveReviewOutcome["trigger"]>;

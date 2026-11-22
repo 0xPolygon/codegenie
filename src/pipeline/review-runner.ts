@@ -258,7 +258,7 @@ export async function runReview(
       lensRegistry: services.lensRegistry,
       signal: run.abort.signal,
       checkpoint: (stage) => run.budget.checkpoint(stage),
-      ...(config.review.guaranteeDeltaPass === true ? { guaranteeDeltaSource: createGuaranteeDeltaSourceReader(resolved) } : {}),
+      ...(config.review.guaranteeDeltaPass === true ? { guaranteeDeltaSource: createGuaranteeDeltaSourceReader(resolved, diff) } : {}),
       diff
     });
     throwIfHardAborted(run);

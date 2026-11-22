@@ -16220,26 +16220,56 @@ describe("Stage 7 guarantee delta", () => {
     expect(guaranteeDeltaEligible(fakePacket({ hunkLines: [{ kind: "add", content: line }] }))).toBe(false);
   });
 
-  it("projects both revisions with surrounding source and masks added and trailing comments", async () => {
+  it("preserves pre-existing guarantees and masks only comments changed in the head", async () => {
     const repoRoot = initRepo();
-    writeRepoFile(repoRoot, "app.ts", 'const marker = "🙂 // literal";\nexport function check() {\n  return ensure();\n}\n');
+    const retained = 'const marker = "🙂 // literal"; // existing inline comment\n// Pre-existing guarantee: always validate\n';
+    writeRepoFile(repoRoot, "app.ts", retained + 'export function check() {\n  return ensure(); // base-only guarantee\n}\n');
     const base = commitAll(repoRoot, "base");
-    writeRepoFile(repoRoot, "app.ts", 'const marker = "🙂 // literal";\nexport function check() {\n  // whole-line-sentinel\n  return false; /* inline-sentinel\n  block-body-sentinel */\n}\n');
+    writeRepoFile(repoRoot, "app.ts", retained + 'export function check() {\n  // nearby-hunk-sentinel\n  return false; /* inline-sentinel\n  block-body-sentinel */\n}\n');
     const head = commitAll(repoRoot, "untrusted commit-message-sentinel");
-    const packet = fakePacket({ hunkLines: [{ kind: "delete", oldLine: 3, content: "  return ensure();" }],
-      changedOldLineNumbers: [3], changedNewLineNumbers: [3, 4, 5], attentionNotes: ["planner-sentinel"] });
-    Object.assign(packet.hunks[0]!, { oldStart: 3, oldLines: 1, newStart: 3, newLines: 3, header: "hunk-header-sentinel" });
+    const packet = fakePacket({ hunkLines: [{ kind: "delete", oldLine: 4, content: "  return ensure();" }],
+      changedOldLineNumbers: [4], changedNewLineNumbers: [5, 6], attentionNotes: ["planner-sentinel"] });
+    Object.assign(packet.hunks[0]!, { oldStart: 4, oldLines: 1, newStart: 5, newLines: 2, header: "hunk-header-sentinel" });
     packet.contextText = "contextText-sentinel";
     packet.intentText = "intent-sentinel";
-    const input = await buildGuaranteeDeltaInput(packet, createGuaranteeDeltaSourceReader({
+    const diff = parseDiff(git(repoRoot, ["diff", base, head]));
+    const reader = createGuaranteeDeltaSourceReader({
       mode: "head", repoRoot, headSha: head, mergeBase: base, commits: [], rawDiff: ""
-    }));
-    expect(input?.maskedAddedCommentLines).toBe(3);
-    expect(input?.prompt).toContain("return ensure();");
-    expect(input?.prompt).toContain("return false;");
-    expect(input?.prompt).toContain("export function check()");
-    expect(input?.prompt).toContain("🙂 // literal");
-    expect(input?.prompt).not.toContain("-sentinel");
+    }, diff);
+    const input = await buildGuaranteeDeltaInput(packet, reader);
+    expect(input).toHaveProperty("prompt");
+    if ("reason" in input) throw new Error(input.reason);
+    expect(input.maskedAddedCommentLines).toBe(2);
+    expect(input.prompt).toContain("return ensure(); // base-only guarantee");
+    expect(input.prompt).toContain("return false;");
+    expect(input.prompt).toContain("export function check()");
+    expect(input.prompt.match(/Pre-existing guarantee: always validate/gu)).toHaveLength(2);
+    expect(input.prompt.match(/existing inline comment/gu)).toHaveLength(2);
+    expect(input.prompt).toContain("🙂 // literal");
+    expect(input.prompt).not.toContain("-sentinel");
+    await expect(reader("unknown.txt", "head")).resolves.toEqual({ reason: "unsupported_language" });
+    await expect(reader("missing.ts", "head")).resolves.toEqual({ reason: "unreadable_revision" });
+  });
+
+  it("records parse failures, masked triggers, and the source cap separately", async () => {
+    const repoRoot = initRepo();
+    writeRepoFile(repoRoot, "app.ts", "export function broken( {\n");
+    const head = commitAll(repoRoot, "unparseable");
+    const reader = createGuaranteeDeltaSourceReader({
+      mode: "head", repoRoot, headSha: head, mergeBase: head, commits: [], rawDiff: ""
+    }, { files: [] });
+    await expect(reader("app.ts", "head")).resolves.toEqual({ reason: "parse_error" });
+    const packet = fakePacket({ hunkLines: [{ kind: "delete", content: "  ensure();", oldLine: 1 }],
+      changedOldLineNumbers: [1] });
+    expect(guaranteeDeltaEligible(packet)).toBe(true);
+    await expect(buildGuaranteeDeltaInput(packet, async (_path, side) => ({
+      lines: side === "base" ? ["  ensure();"] : ["  return false;"],
+      commentLines: new Set(),
+      ...(side === "base" ? { triggerLines: [""] } : {})
+    }))).resolves.toEqual({ reason: "no_trigger_after_masking" });
+    await expect(buildGuaranteeDeltaInput(packet, async (_path, side) => ({
+      lines: side === "base" ? ["  ensure();"] : ["x".repeat(24_001)], commentLines: new Set()
+    }))).resolves.toEqual({ reason: "source_char_cap" });
   });
 
   it.each(["off", "on", "invalid"] as const)("keeps the primary prompts and traces supplemental items: %s", async (mode) => {
@@ -16290,7 +16320,11 @@ describe("Stage 7 guarantee delta", () => {
     if (mode !== "on") {
       expect(results.flatMap(result => result.findings)).toEqual([]);
       if (mode === "invalid") expect(events).toContainEqual(expect.objectContaining({
-        message: "stage7_guarantee_delta_skipped", data: { outcome: "extra_pass_failed", errorCode: "llm_schema_invalid" }
+        message: "stage7_guarantee_delta_skipped", data: { outcome: "invalid_submission", projected: true, errorCode: "llm_schema_invalid" }
+      }));
+      if (mode === "invalid") expect(events).toContainEqual(expect.objectContaining({
+        message: "stage7_guarantee_delta_summary", data: { selected: 1, projected: 1, completed: 0,
+          invalidSubmissions: 1, skippedByReason: { invalid_submission: 1 } }
       }));
       return;
     }
