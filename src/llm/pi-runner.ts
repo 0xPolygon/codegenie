@@ -924,8 +924,11 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
                   outcome.rejectionReason = "tool_result_budget_exhausted";
-                  if (outcome.result.meta) outcome.result.meta = { ...outcome.result.meta,
-                    degraded: !outcome.result.meta.searchDelivery, degradationReason: "tool_result_budget_exhausted" };
+                  if (outcome.result.meta) {
+                    const meta = outcome.result.meta;
+                    outcome.result.meta = { ...meta,
+                      degraded: !(meta.searchDelivery || meta.pathListDelivery), degradationReason: "tool_result_budget_exhausted" };
+                  }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
               }
@@ -2496,7 +2499,8 @@ function recordToolCall(
   outcome: ToolRunOutcome
 ): void {
   const meta = outcome.result.meta ?? defaultToolMeta();
-  const searchBudgetRefusal = toolCall.name === "search_files" && outcome.errorCode === "budget_exhausted";
+  const searchOrListBudgetRefusal = outcome.errorCode === "budget_exhausted" &&
+    (toolCall.name === "search_files" || toolCall.name === "list_files");
   const preExecutionBudgetRefusal = outcome.errorCode === "budget_exhausted" && outcome.backendExecuted === false && outcome.cacheStatus === "disabled";
   const record = definedRecord({
     stage: request.stage,
@@ -2509,19 +2513,20 @@ function recordToolCall(
     args: toolArgsForRecord(outcome.args),
     backend: preExecutionBudgetRefusal ? undefined : meta.backend,
     precision: preExecutionBudgetRefusal ? undefined : meta.precision,
-    degraded: searchBudgetRefusal ? false : meta.degraded,
+    degraded: searchOrListBudgetRefusal ? false : meta.degraded,
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
     omittedCount: meta.omittedCount,
     omittedCountIsLowerBound: meta.omittedCountIsLowerBound,
     discoveryLimited: meta.discoveryLimited,
     searchDelivery: meta.searchDelivery,
+    pathListDelivery: meta.pathListDelivery,
     lookupStatus: meta.lookupStatus,
     lookupNote: meta.lookupNote,
     unparsedCandidatePaths: meta.unparsedCandidatePaths,
     incompleteCandidatePaths: meta.incompleteCandidatePaths,
     candidateScans: meta.candidateScans,
-    deliveryStatus: searchBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
+    deliveryStatus: searchOrListBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
     totalLines: meta.totalLines,
     deliveredLineRange: meta.deliveredLineRange,
     recovery: meta.recovery,
@@ -2530,7 +2535,7 @@ function recordToolCall(
     backendExecuted: outcome.backendExecuted,
     cacheHitKind: outcome.cacheHitKind,
     cacheEvictedEntries: outcome.cacheEvictedEntries,
-    resultCount: meta.searchDelivery?.deliveredCount ?? (searchBudgetRefusal ? 0 : undefined),
+    resultCount: meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,

@@ -87,23 +87,38 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
 /** Keep whole paths and disclose omissions rather than cutting a filename in half. */
 export function packFileListToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.filePaths) return input;
+  const available = input.filePaths;
   const paths: string[] = [];
-  let omitted = (input.meta?.omittedCount ?? 0) + input.filePaths.length;
-  const render = () => JSON.stringify({ paths, meta: { ...input.meta,
-    ...(omitted ? { degraded: true, truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) },
-    ...(omitted || input.meta?.truncated ? { notice: "Bounded listing, not exhaustive. Narrow the glob to inspect omitted paths." } : {}) });
-  for (const path of input.filePaths) {
+  const base = input.meta ?? { backend: "text" as const, precision: "exact" as const, degraded: false };
+  const backendOmittedCount = base.omittedCount ?? 0;
+  const boundedMeta = (budgetOmittedCount: number) => ({
+    ...base,
+    truncated: true,
+    omittedCount: backendOmittedCount + budgetOmittedCount,
+    degradationReason: budgetOmittedCount > 0 ? "tool_result_budget" : "list_path_limit"
+  });
+  const render = () => {
+    const budgetOmittedCount = available.length - paths.length;
+    const bounded = backendOmittedCount > 0 || budgetOmittedCount > 0 || base.truncated;
+    return JSON.stringify({ paths, meta: bounded ? boundedMeta(budgetOmittedCount) : { ...input.meta },
+      ...(bounded ? { notice: "Bounded listing. Narrow the glob to inspect omitted paths." } : {}) });
+  };
+  for (const path of available) {
     paths.push(path);
-    omitted--;
-    if (render().length > allowance) { paths.pop(); omitted++; }
+    if (render().length > allowance) paths.pop();
   }
-  if (render().length > allowance || (input.filePaths.length > 0 && paths.length === 0)) {
+  const text = render();
+  if (text.length > allowance || (available.length > 0 && paths.length === 0)) {
     return { text: "File listing cannot fit the remaining result budget. Narrow the glob; this is not an empty repository result.",
-      isError: true, errorCode: "budget_exhausted", meta: { backend: "text", precision: "text",
-        ...input.meta, degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
+      isError: true, errorCode: "budget_exhausted", meta: { ...boundedMeta(available.length),
+        degradationReason: "tool_result_budget",
+        deliveryStatus: "budget_rejected", pathListDelivery: { deliveredCount: 0, backendOmittedCount, budgetOmittedCount: available.length } } };
   }
-  return { ...input, text: render(), ...(omitted ? { meta: { backend: "text", precision: "text",
-    ...input.meta, degraded: true, truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } } : {}) };
+  const budgetOmittedCount = available.length - paths.length;
+  const bounded = backendOmittedCount > 0 || budgetOmittedCount > 0 || base.truncated;
+  return { ...input, text, meta: { ...(bounded ? boundedMeta(budgetOmittedCount) : base),
+    deliveryStatus: bounded ? "truncated" : paths.length > 0 ? "full" : "empty",
+    pathListDelivery: { deliveredCount: paths.length, backendOmittedCount, budgetOmittedCount } } };
 }
 
 /** Pack whole entries after cache lookup, never mutate the shared canonical result. */
