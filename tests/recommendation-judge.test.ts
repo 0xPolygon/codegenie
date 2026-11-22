@@ -90,7 +90,7 @@ describe("independent recommendation judge", () => {
     await writeFile(path.join(dir, "codegenie-review.out.md"), report);
     const score = { status: "pass", metrics: { costUSD: 5 } } as EvalScore;
     const adapter = adapterFor([{ ...result, status: "incorrect" }]);
-    await addRecommendationJudgment({ name: "test", recommendationJudge: config }, score, dir, true, adapter);
+    await addRecommendationJudgment({ name: "test", recommendationJudge: config }, score, dir, true, { adapter });
     expect(score).toMatchObject({ status: "pass", metrics: { costUSD: 5 }, recommendationQuality: {
       status: "completed", costUSD: 0.01, results: [{ status: "incorrect" }]
     } });

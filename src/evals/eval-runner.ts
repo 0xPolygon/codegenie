@@ -53,6 +53,7 @@ export type EvalRunOptions = {
   judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
+  codegenieHome?: string;
   /** Warnings from loading the user layers, reported with each review (#129). */
   configWarnings?: ConfigWarning[];
 };
@@ -335,7 +336,7 @@ export async function replayFromArtifacts(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -420,7 +421,7 @@ async function runArtifactCase(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -486,6 +487,7 @@ async function runLiveCase(
     let reviewOutput = "";
     await runReview(target, caseConfig.config, {
       repoRoot: actualRepoRoot,
+      ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
@@ -503,7 +505,7 @@ async function runLiveCase(
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -576,6 +578,7 @@ async function runRepeatedLiveCase(
         let reviewOutput = "";
         await runReview(target, caseConfig.config, {
           repoRoot: actualRepoRoot,
+          ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
@@ -589,7 +592,7 @@ async function runRepeatedLiveCase(
         }
         const artifacts = await loadEvalArtifacts(telemetryDir);
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-        await addRecommendationJudgment(entry.evalCase, score, execDir, true);
+        await addRecommendationJudgment(entry.evalCase, score, execDir, true, options);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
