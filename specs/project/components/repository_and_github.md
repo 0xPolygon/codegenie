@@ -340,6 +340,12 @@ The resolver must never checkout, reset, stash, or otherwise mutate the working 
 
 All resolver telemetry events use stage `1` (`input_resolved`, `pr_refs_fetched`, `base_resolved`, `shallow_deepened`, ...), with `gh`/`git` preflight failures reported at stage `0`.
 
+#### Local snapshot modes
+
+`--staged` and `--uncommitted` both use the HEAD tree as base, or the empty tree on an unborn branch. Stage 1 copies the worktree's active index into a private temporary directory, respecting `GIT_INDEX_FILE`. For `--uncommitted`, Git updates tracked entries in the copy, then produces the head tree. For `--staged`, Git writes the head tree directly from the copy. An unmerged index is a usage error.
+
+The scratch object store uses the original Git object store as an alternate. Classification, repository tools, and anchor validation work against the captured trees. The cache keys retain the base/head tree IDs and target mode. Scope the alternate to each Git subprocess and discard the scratch directory at run finalization. The resolver uses no commits or refs for the new snapshot objects and creates no GitHub client for these targets. Reports label each side and omit a commit SHA for the local head.
+
 #### Bare Command Default
 
 With no target arguments, the CLI passes `{ mode: "branch", branchName: <current branch> }` semantics through the resolver:

@@ -4,7 +4,7 @@ import { renderCodegenieError } from "../src/cli/render-error.js";
 import { CodegenieError, ReviewTargetUsageError } from "../src/util/errors.js";
 
 describe("renderCodegenieError", () => {
-  it("prints one sanitized reason and the four current review target forms", () => {
+  it("prints one sanitized reason and the supported review target forms", () => {
     const token = "sk-proj-AbCdEfGh1234567890AbCdEfGh1234567890";
     const error = new ReviewTargetUsageError(new CodegenieError(
       "git_ref_missing", `ref could not be resolved\r\n${token}\u0007`
@@ -15,7 +15,9 @@ describe("renderCodegenieError", () => {
       "  codegenie review HEAD\n" +
       "  codegenie review <branch>\n" +
       "  codegenie review origin/main...HEAD\n" +
-      "  codegenie review --pr N\n"
+      "  codegenie review --pr N\n" +
+      "  codegenie review --staged\n" +
+      "  codegenie review --uncommitted\n"
     );
   });
 

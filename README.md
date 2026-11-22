@@ -55,9 +55,15 @@ codegenie review --branch feat --base main
 codegenie review master...49f4645b          # shorthand for --base master --head 49f4645b
 codegenie review abc1234                    # one commit
 codegenie review abc1234 def5678            # a commit range
+codegenie review --staged                   # HEAD vs the Git index
+codegenie review --uncommitted              # HEAD vs tracked working-tree files
 ```
 
 A single positional target is branch-first: if it resolves as a branch, codegenie reviews it against its base; otherwise it is treated as a single commit.
+
+Use `--staged` to review the next commit, or `--uncommitted` to review staged and unstaged tracked changes together. Both options capture the code in a temporary Git snapshot and prohibit GitHub posting. On an unborn branch the base is empty. These reviews have no commit messages for inferring intent.
+
+`--uncommitted` reports the number of omitted untracked files and skips ignored files. Run `git add -N <path>` to include a new file without staging its contents. Git applies configured clean filters when capturing tracked working-tree files.
 
 First-class syntax context and default language guidance currently cover Go, TypeScript, JavaScript, Rust, Python, and Solidity. JavaScript has its own `lang/javascript` guidance for runtime semantics; `.js`, `.jsx`, `.mjs`, and `.cjs` share the proven ECMAScript adapter implementation without inheriting TypeScript-only checks. JavaScript CommonJS export inference, Flow/JSDoc semantic typing, unsupported proposal syntax, and framework/bundler semantics remain deferred. Solidity packets include contract-owned methods/types/events/errors/state values, source-only imports, overload-safe declaration identity, and deterministic default Foundry test links only when a nearest `foundry.toml` exists. File-level constants are not value symbols. Solidity storage-layout, generated-getter, ABI/export analysis, custom Foundry directories, and Hardhat TypeScript linking remain deferred; Solidity symbols intentionally leave `exported` unset. Python `.pyi` stubs/custom collection and Rust same-file/arbitrary integration-test discovery also remain deferred.
 
@@ -261,7 +267,7 @@ flowchart TB
 
 | # | Stage | What it does | LLM calls |
 |---|-------|--------------|-----------|
-| 1 | Resolve input | Turn `--pr` / branch / commit args into trusted base+head revisions and the raw diff. | — |
+| 1 | Resolve input | Resolve a PR, branch, commit or local snapshot to the base and head used for the diff. | — |
 | 2 | Parse & filter | Parse the unified diff; skip generated/vendor/lock/binary files; short-circuit zero-work runs. | — |
 | 3 | Classify | Assign language, test-vs-source status, review priority, and path-rule labels. | — |
 | 4 | Index | Build the symbol index (tree-sitter), extract changed-symbol facts and static risk signals. | — |

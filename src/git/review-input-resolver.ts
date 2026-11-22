@@ -1,6 +1,7 @@
 import type {
   CodegenieConfig,
   GitHubClient,
+  LocalReviewTarget,
   PullRequestMetadata,
   ResolvedReviewInput,
   ReviewCommandTarget,
@@ -31,7 +32,7 @@ type ResolvedPullRequestCommits = {
 const DEEPEN_STEPS = [100, 1000] as const;
 
 export async function resolveReviewCommandTarget(
-  target: ReviewCommandTarget,
+  target: Exclude<ReviewCommandTarget, LocalReviewTarget>,
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ResolveOptions = {}
