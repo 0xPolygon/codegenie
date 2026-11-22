@@ -31,6 +31,7 @@ describe("repository intelligence", () => {
     const repo = initRepo();
     // Shapes reproduced from cg-01, go-03 and pi-07 frozen campaign revisions.
     writeRepoFile(repo, "src/pi-runner.ts", `import {\n  type PiAiAdapter,\n} from "./llm-runner.js";\nexport function createAdapter() {\n  const resolveModelWithReason = (request: string) => request;\n  return resolveModelWithReason;\n}\n`);
+    writeRepoFile(repo, "src/broken.ts", "export function broken() {\n  resolveModelWithReason(\n");
     writeRepoFile(repo, "src/settings-manager.ts", `export class SettingsManager {\n  getDefaultTools(): string[] { return []; }\n}\n`);
     writeRepoFile(repo, "decoder/moepaging_test.go", `package decoder\nfunc greedyN() {}\nfunc benchmark() {\n  const greedyN = 12\n  const first, second = 1, 2\n  runLocal := func() int { return second }\n  _, _, _ = greedyN, first, runLocal\n}\n`);
     writeRepoFile(repo, "src/worker.rs", "fn outer() {\n    fn inner_worker() {}\n    inner_worker();\n}\n");
@@ -45,12 +46,17 @@ describe("repository intelligence", () => {
     expect(local.definitions).toHaveLength(1);
     expect(local.definitions[0]).toMatchObject({ symbol: { path: "src/pi-runner.ts", name: "resolveModelWithReason", kind: "function" } });
     expect(local.meta).toMatchObject({ lookupStatus: "found", precision: "syntactic" });
+    expect(local.meta.lookupNote).toBeUndefined();
+    expect(local.meta.incompleteCandidatePaths).toContain("src/broken.ts");
+    expect(telemetry.toolCalls).toContainEqual(expect.objectContaining({ tool: "find_definition", incompleteCandidatePaths: ["src/broken.ts"] }));
     const imported = await tools.findDefinition("PiAiAdapter", { pathGlob: "src/pi-runner.ts" });
     expect(imported.definitions).toEqual([]);
     expect(imported.meta.lookupStatus).toBe("not_found");
+    expect(imported.meta).toMatchObject({ unparsedCandidatePaths: [], incompleteCandidatePaths: [] });
     const prose = await tools.findDefinition("getAuth");
     expect(prose.definitions).toEqual([]);
     expect(prose.meta).toMatchObject({ lookupStatus: "unavailable", lookupNote: expect.stringContaining("docs/plan.md") });
+    expect(prose.meta.unparsedCandidatePaths).toContain("docs/plan.md");
     expect(telemetry.toolCalls).toContainEqual(expect.objectContaining({ tool: "find_definition", lookupNote: prose.meta.lookupNote }));
     expect((await tools.findDefinition("LoadQwenVisionEncoder")).meta.lookupStatus).toBe("unavailable");
     const go = await tools.findDefinition("greedyN");

@@ -353,6 +353,8 @@ export type ToolResultMeta = {
   discoveryLimited?: boolean;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
   lookupNote?: string;
+  unparsedCandidatePaths?: string[];
+  incompleteCandidatePaths?: string[];
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   recovery?: {
     tool: "read_range";
@@ -1774,6 +1776,8 @@ export type ToolCallRecord = {
   discoveryLimited?: boolean;
   lookupStatus?: ToolResultMeta["lookupStatus"];
   lookupNote?: ToolResultMeta["lookupNote"];
+  unparsedCandidatePaths?: ToolResultMeta["unparsedCandidatePaths"];
+  incompleteCandidatePaths?: ToolResultMeta["incompleteCandidatePaths"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   recovery?: ToolResultMeta["recovery"];
   budgetState?: ToolBudgetState;

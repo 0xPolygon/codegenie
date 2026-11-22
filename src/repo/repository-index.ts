@@ -464,7 +464,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     let fallbackCount = 0;
     let syntaxFallbacks = 0;
     const unparsedMentionPaths: string[] = [];
+    const unparsedCandidatePaths: string[] = [];
     const incompleteParsePaths: string[] = [];
+    const parseErrorPaths: string[] = [];
     let omittedByTruncation = 0;
     let omittedByDefinitionCap = 0;
     let processedCandidates = 0;
@@ -493,6 +495,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       }
       const { content, adapter, parsed } = candidateData;
       if (parsed.tree !== undefined) {
+        if (parsed.hasErrors) parseErrorPaths.push(candidate);
         const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
         for (const symbol of nestedDefinitionSymbols(parsed, symbolName)) {
           if (!matchingSymbols.some(existing => existing.name === symbol.name && existing.lineRange[0] === symbol.lineRange[0])) {
@@ -527,6 +530,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           }
         }
       } else {
+        unparsedCandidatePaths.push(candidate);
         // Documentation may contain examples that look exactly like declarations;
         // they are mentions, not definitions in the reviewed program.
         const declaration = isProsePath(candidate) || /\.adoc$/iu.test(candidate)
@@ -578,7 +582,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       deliveryStatus: definitionDeliveryStatus,
       requestedSource,
       sourceUsed: source.kind,
-      ...(unparsedMentionPaths.length > 0 || (incompleteParsePaths.length > 0 && verifiedCount === 0) ? { lookupNote: `Not checked: ${matches.filter(match => unparsedMentionPaths.includes(match.path) || incompleteParsePaths.includes(match.path)).length} text mention(s) in ${[...unparsedMentionPaths, ...incompleteParsePaths].length} unparsed or incomplete file(s) (${[...unparsedMentionPaths, ...incompleteParsePaths].slice(0, 3).join(", ")}); use find_symbol_mentions.` }
+      unparsedCandidatePaths,
+      incompleteCandidatePaths: parseErrorPaths,
+      ...(verifiedCount === 0 && (unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0) ? { lookupNote: `Not checked: ${matches.filter(match => unparsedMentionPaths.includes(match.path) || incompleteParsePaths.includes(match.path)).length} text mention(s) in ${[...unparsedMentionPaths, ...incompleteParsePaths].length} unparsed or incomplete file(s) (${[...unparsedMentionPaths, ...incompleteParsePaths].slice(0, 3).join(", ")}); use find_symbol_mentions.` }
         : verifiedCount === 0 && cappedDefinitions.definitions.length > 0 ? { lookupNote: "Text declarations are unverified leads; inspect their source." } : {}),
       ...(syntaxFallbacks > 0 ? { degradationReason: `${syntaxFallbacks} definition candidate(s) used text fallback` } : {}),
       ...(definitionRecovery !== undefined ? { recovery: definitionRecovery } : {}),
@@ -743,6 +749,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
           ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
           ...(measurement.meta.lookupNote !== undefined ? { lookupNote: measurement.meta.lookupNote } : {}),
+          ...(measurement.meta.unparsedCandidatePaths !== undefined ? { unparsedCandidatePaths: measurement.meta.unparsedCandidatePaths } : {}),
+          ...(measurement.meta.incompleteCandidatePaths !== undefined ? { incompleteCandidatePaths: measurement.meta.incompleteCandidatePaths } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
           ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),

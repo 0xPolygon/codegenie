@@ -8067,14 +8067,15 @@ it("keeps bounded redacted key/type feedback with a non-composition custom repai
 });
 
 
-it.each(["full", "cached", "truncated", "error", "unknown-revision"] as const)("retains separately identified ambiguous definition hits only when delivered in full: %s", async mode => {
+it.each(["full", "cached", "mixed-degraded", "truncated", "error", "unknown-revision"] as const)("retains separately identified ambiguous definition hits only when delivered in full: %s", async mode => {
   const definitions = [
     { symbol: { path: "src/access.go", name: "ReadForUser", kind: "function" as const, lineRange: [20, 24] as [number, number] }, text: "func ReadForUser(user) { return read(user.org); }" },
     { symbol: { path: "docs/design.txt", name: "ReadForUser", kind: "other" as const, nativeKind: "text declaration", lineRange: [8, 8] as [number, number] }, text: "ReadForUser is used by the handler." }
   ];
   const tool: ToolDefinition = { name: "find_definition", description: "Find candidates", parameters: Type.Object({ symbolName: Type.String(), source: Type.Object({ kind: Type.String() }) }),
     execute: async () => ({ text: JSON.stringify(definitions), definitions,
-      ...(mode === "error" ? { isError: true } : {}), meta: { backend: "text", precision: "text", degraded: false,
+      ...(mode === "error" ? { isError: true } : {}), meta: { backend: "text", precision: "text", degraded: mode === "mixed-degraded",
+        ...(mode === "mixed-degraded" ? { degradationReason: "1 definition candidate(s) used text fallback", unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"] } : {}),
         lookupStatus: "ambiguous", deliveryStatus: mode === "truncated" ? "truncated" : "full",
         ...(mode !== "unknown-revision" ? { sourceUsed: "base" as const } : {}) } }) };
   const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "lookup", name: tool.name, arguments: { symbolName: "ReadForUser", source: { kind: "auto" } } }]), assistant([validSubmitReviewCall("done")])]);
@@ -8084,14 +8085,18 @@ it.each(["full", "cached", "truncated", "error", "unknown-revision"] as const)("
     assistant([validSubmitReviewCall("done")])
   ]).complete;
   const execute = vi.spyOn(tool, "execute");
+  const telemetry = fakeTelemetry();
   const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-    telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+    telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
     toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
   const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
   await runner.runStructured({ ...submitReviewRequest("definitions"), tools: [tool], onToolResults: results => captured.push(...results),
     toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 2000 } });
   expect(captured[0]!.lookupStatus).toBe("ambiguous");
-  if (mode === "full" || mode === "cached") {
+  if (mode === "mixed-degraded") expect(telemetry.toolCalls[0]).toMatchObject({
+    unparsedCandidatePaths: ["schema/access.ridl"], incompleteCandidatePaths: ["src/broken.ts"]
+  });
+  if (mode === "full" || mode === "cached" || mode === "mixed-degraded") {
     expect(captured[0]!.repositoryEvidence).toEqual(definitions.slice(0, 1).map((hit, i) => ({ id: `lookup/hit-${i}`, tool: "find_definition",
       path: hit.symbol.path, lineRange: hit.symbol.lineRange, symbols: [hit.symbol.name], text: hit.text, source: "base", lookupStatus: "ambiguous" })));
     if (mode === "cached") {

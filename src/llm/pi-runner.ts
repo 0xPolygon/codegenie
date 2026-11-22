@@ -1221,7 +1221,9 @@ function submitCallHasFindings(toolCall: PiSubmitCall): boolean {
 function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, text: string,
   source: "head" | "base" | undefined): RepositoryEvidence[] | undefined {
   const meta = outcome.result.meta;
-  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || meta?.degraded
+  const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
+    && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
+  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
     || meta?.deliveryStatus !== "full" || !text.trim() || text.length > 8_000) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
@@ -2505,6 +2507,8 @@ function recordToolCall(
     discoveryLimited: meta.discoveryLimited,
     lookupStatus: meta.lookupStatus,
     lookupNote: meta.lookupNote,
+    unparsedCandidatePaths: meta.unparsedCandidatePaths,
+    incompleteCandidatePaths: meta.incompleteCandidatePaths,
     deliveryStatus: meta.deliveryStatus,
     recovery: meta.recovery,
     budgetState: outcome.budgetState,
