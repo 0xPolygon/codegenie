@@ -2117,12 +2117,21 @@ describe("phase 5 pipeline regressions", () => {
       .toContain("include local caller");
   });
 
-  it.each([1, 2])("uses only an unambiguous repository definition as a symbol hint fallback (%i matches)", async (matches) => {
+  it.each([
+    { label: "complete single result", matches: 1, deliveryStatus: "full", backend: "tree-sitter", attaches: true },
+    { label: "truncated single result", matches: 1, deliveryStatus: "truncated", backend: "tree-sitter", attaches: false },
+    { label: "single text match", matches: 1, deliveryStatus: "full", backend: "text", attaches: false },
+    { label: "multiple results", matches: 2, deliveryStatus: "full", backend: "tree-sitter", attaches: false }
+  ] as const)("checks completeness of the symbol hint fallback with $label", async ({ matches, deliveryStatus, backend, attaches }) => {
     const plan = fakePlan();
     plan.coverage[0]!.surroundingContextHints = [{
       kind: "enclosing_symbol", symbol: "finish", reason: "Check the final step", expectedUse: "packet_context"
     }];
-    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const meta = {
+      backend, precision: backend === "text" ? "text" as const : "syntactic" as const,
+      deliveryStatus, degraded: false,
+      ...(deliveryStatus === "truncated" ? { truncated: true, omittedCount: 1 } : {})
+    };
     const fallback = vi.fn(async () => ({
       definitions: Array.from({ length: matches }, (_, index) => ({
         symbol: {
@@ -2138,12 +2147,13 @@ describe("phase 5 pipeline regressions", () => {
       { config: config(), enabledLenses: ["core/code-review"] });
     expect(fallback).toHaveBeenCalledOnce();
     expect(fallback).toHaveBeenCalledWith("finish", { source: { kind: "head" } });
-    if (matches === 1) {
+    if (attaches) {
       expect(packet?.contextText).toContain("for helpers/0.ts:finish:1-3");
       expect(event).toHaveBeenCalledWith(expect.objectContaining({ message: "packet_symbol_hint_path_fallback" }));
       expect(packet?.surroundingContextHints).toEqual([]);
     } else {
       expect(packet?.contextText).not.toContain("function finish");
+      expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ message: "packet_symbol_hint_path_fallback" }));
       expect(packet?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "finish", expectedUse: "tool_lookup" })]);
     }
   });
