@@ -1454,6 +1454,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     // messages at the configured reasoning level.
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
     stage: request.stage,
+    ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
     schemaVersion: SCHEMA_VERSIONS[submitToolNameForStage(request.stage)],
@@ -1466,6 +1467,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     tools
   });
   const promptText = stableJson(canonicalRequest);
+  // Draw identity is local cache metadata, not part of the provider request.
+  const { cacheDraw: _cacheDraw, ...estimateRequest } = canonicalRequest;
+  const estimateText = request.cacheDraw === undefined ? promptText : stableJson(estimateRequest);
   const cacheKey = buildModelCallCacheKey(canonicalRequest);
   const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length, providerPromptCache);
 
@@ -1545,7 +1549,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       if (checkpoint === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
-      estimatedTokens = estimateProviderCallTokens(promptText);
+      estimatedTokens = estimateProviderCallTokens(estimateText);
       if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
@@ -1898,6 +1902,7 @@ function canonicalModelRequest(input: {
   model: string;
   reasoning: string;
   stage: ReviewStage;
+  cacheDraw?: LlmStructuredRequest<unknown>["cacheDraw"];
   templateVersion: string;
   schemaName: string;
   schemaVersion: number;
@@ -1918,6 +1923,7 @@ function canonicalModelRequest(input: {
     ...(input.providerRouting !== undefined ? { providerRouting: input.providerRouting } : {}),
     reasoning: input.reasoning,
     stage: input.stage,
+    ...(input.cacheDraw !== undefined ? { cacheDraw: input.cacheDraw } : {}),
     templateVersion: input.templateVersion,
     schemaName: input.schemaName,
     schemaVersion: input.schemaVersion,
