@@ -170,7 +170,7 @@ describe("phase 5 pipeline regressions", () => {
     }
     expect(renderMarkdownReview(result)).toContain(expected);
     expect(renderMarkdownReview(result)).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 3,
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 4,
       outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
     if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
@@ -14643,7 +14643,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       })
     ]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       notes: [
         expect.objectContaining({
           source: "uncertainty",

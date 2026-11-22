@@ -197,10 +197,11 @@ export function humanAttentionArtifact(
   attention: HumanAttentionNotes,
   output: SelectedHumanAttention,
   composerPromptGroups: AttentionHintGroup[],
+  keptGroups: AttentionHintGroup[],
   reconciled?: HumanAttentionNotes
 ): Record<string, unknown> {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     notes: attention.raw.map(rawAttentionHintArtifact),
     groups: attention.groups.map(attentionGroupArtifact),
     ...(reconciled ? { reconciledGroups: reconciled.groups.map(attentionGroupArtifact) } : {}),
@@ -208,7 +209,8 @@ export function humanAttentionArtifact(
     composerPromptGroupIds: composerPromptGroups.map((group) => group.key),
     outputGroupIds: output.groups.map((group) => group.key),
     outputNotes: output.notes,
-    omittedCount: output.omittedCount
+    omittedCount: output.omittedCount,
+    keptForOutputGroupIds: keptGroups.map((group) => group.key)
   };
 }
 

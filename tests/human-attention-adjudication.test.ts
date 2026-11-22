@@ -1,11 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildHumanAttentionNotes } from "../src/pipeline/human-attention.js";
+import { buildHumanAttentionNotes, humanAttentionArtifact, selectHumanAttentionGroups } from "../src/pipeline/human-attention.js";
 import type { PacketReviewResult, ReviewPacket } from "../src/types.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 const QUESTION = "Does the changed LiFi parser still tolerate malformed provider numeric fields?";
 
 describe("human-attention repository paths", () => {
+  it("retains all kept group IDs in the version 4 artifact even when output is capped", () => {
+    const attention = buildHumanAttentionNotes([packetResultWithHint()], { packets: [packet()] });
+    const groups = Array.from({ length: 7 }, (_, index) => ({ ...attention.groups[0]!, key: `group-${index}` }));
+    const output = selectHumanAttentionGroups(groups);
+    const artifact = humanAttentionArtifact(attention, output, [], groups);
+    expect(artifact.schemaVersion).toBe(4);
+    expect(artifact.keptForOutputGroupIds).toEqual(groups.map(group => group.key));
+    expect(artifact.outputGroupIds).toEqual(groups.slice(0, 5).map(group => group.key));
+    expect(artifact.omittedCount).toBe(2);
+    expect(artifact).not.toHaveProperty("suppressedByFindings");
+    expect(artifact).not.toHaveProperty("publicationFallbacks");
+  });
+
   it("retains unchanged files for file-only hints and uncertainties while rejecting unknown and unsafe paths", () => {
     const result = packetResultWithHint();
     result.followUpHints[0]!.files = ["./schema/shared.ridl:12-15", "missing.go", "../outside.go", "/tmp/outside.go", "C:\\outside.go"];

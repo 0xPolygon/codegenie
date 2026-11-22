@@ -435,7 +435,7 @@ export async function dedupeRankAndComposeReview(
       }))
     });
     await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
+      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, prioritizedPacketGroups, regroupedAttention),
         // These records deliberately share original scope/evidence objects.
         // Serialize to a tree before the scrubber's repeated-object protection
         // so shared provenance is not mistaken for circular data and redacted.
