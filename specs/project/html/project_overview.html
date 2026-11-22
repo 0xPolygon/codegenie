@@ -218,14 +218,10 @@ based on risk tags, language, changed symbols, and touched subsystems;
 codegenie should not run every lens on every hunk by default.</li>
 <li>Parallel hunk/file review passes: generate precise inline candidate
 findings anchored to changed lines.</li>
-<li>Optional cross-file/system follow-up: resolve repeated scoped
-follow-up questions from packet reviewers. The broad system pass that
-proactively inspects interactions across changed files, call sites,
-interfaces, migrations, tests, and architecture is deferred; the shipped
-stage only runs when repeated hints justify it.</li>
 <li>Verifier/deduper pass: reject speculative comments using the exact
 skill guidance recorded by the producing review item, merge duplicates,
-and publish only high-signal findings.</li>
+and publish only high-signal findings. The former targeted system
+follow-up was removed; a broader system pass remains deferred.</li>
 </ol>
 <p>The unit of review should be the changed hunk, but the unit of
 understanding should be the affected system. The review flow should look
@@ -238,7 +234,6 @@ like:</p>
   -&gt; selected lenses + targeted repo tools
   -&gt; candidate findings
   -&gt; cross-file follow-up hints recorded
-  -&gt; optional repeated-hint system follow-up
   -&gt; independent verifier
   -&gt; deduped staff-level review</code></pre>
 <p>codegenie should not dump the whole repository into model context.
