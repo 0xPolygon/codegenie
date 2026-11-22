@@ -174,7 +174,7 @@ describe("phase 5 pipeline regressions", () => {
     }
     expect(renderMarkdownReview(result)).toContain(expected);
     expect(renderMarkdownReview(result)).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 3,
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 4,
       outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
     if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
@@ -14714,7 +14714,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       })
     ]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       notes: [
         expect.objectContaining({
           source: "uncertainty",
@@ -14869,12 +14869,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       records: [expect.objectContaining({ findingId: candidate.id, decision: "suppressed", reason: "confidence-threshold" })]
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })],
-      fallbackGroupCount: 0,
-      omittedFallbackCount: 0,
-      publicationFallbacks: []
+      outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })]
     });
-    expect(events.some(event => event.message === "human_attention_publication_fallback")).toBe(false);
   });
 
   it("publishes a concrete keep without implicitly deleting its outstanding question", async () => {
@@ -14932,9 +14928,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       records: [expect.objectContaining({ findingId: candidate.id, decision: "published", reason: "low-confidence-anchorless" })]
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      outputNotes: [expect.objectContaining({ question: expect.any(String) })],
-      fallbackGroupCount: 0,
-      omittedFallbackCount: 0
+      outputNotes: [expect.objectContaining({ question: expect.any(String) })]
     });
   });
 
@@ -14992,7 +14986,6 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     expect(composerNotes).toHaveLength(1);
     expect(result.needsHumanAttention).toHaveLength(1);
     expect(result.health?.status).toBe("unresolved");
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ suppressedByVerification: [] });
   });
 
   it("does not suppress unrelated human-attention notes through weak same-file verifier overlap", async () => {
@@ -15198,8 +15191,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
           files: [],
           droppedPaths: [{ path: "billing/quotes.ts", reason: "unknown_path" }]
         })
-      ],
-      suppressedByVerification: []
+      ]
     });
   });
 

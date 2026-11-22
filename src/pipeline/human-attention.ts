@@ -1,14 +1,9 @@
 import type {
-  CandidateFinding,
-  CandidateFindingProvenance,
   Confidence,
-  FinalFinding,
   NeedsHumanAttentionNote,
   PacketReviewResult,
   ReviewPacket,
-  RunCoverageStatus,
-  UnifiedDiff,
-  VerificationVerdict
+  UnifiedDiff
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
@@ -67,58 +62,10 @@ export type HumanAttentionNotes = {
   mergeStats: HumanAttentionMergeStats;
 };
 
-export type VerificationResolution = {
-  // Plan 75 step 1: "stage9_verified_predicate" is the classic path (a
-  // verified predicate resolves fuzzily-related notes);
-  // "stage9_adjudicated_reject" is a confident reject of a PROMOTED
-  // candidate resolving its exact source note only — provenance-exact
-  // matching, never fuzzy.
-  source: "stage9_verified_predicate" | "stage9_adjudicated_reject";
-  candidateId: string;
-  verdict: VerificationVerdict["verdict"];
-  reason: string;
-  files: string[];
-  symbols: string[];
-  terms: Set<string>;
-  questionKeys: Set<string>;
-  provenance?: CandidateFindingProvenance | undefined;
-};
-
-type VerificationSuppressionRecord = {
-  groupKey: string;
-  noteIds: string[];
-  note: NeedsHumanAttentionNote;
-  candidateId: string;
-  verdict: VerificationVerdict["verdict"];
-  reason: string;
-  verdictReason: string;
-  match: {
-    sharedFiles: string[];
-    sharedSymbols: string[];
-    sharedTerms: number;
-    similarity: number;
-    questionMatched: boolean;
-    provenanceMatched: boolean;
-  };
-};
-
-type PublicationFallbackRecord = {
-  groupKey: string;
-  candidateId: string;
-  verdict: VerificationResolution["verdict"];
-};
-
-export type HumanAttentionOutput = {
+export type SelectedHumanAttention = {
+  groups: AttentionHintGroup[];
   notes: NeedsHumanAttentionNote[];
   omittedCount: number;
-  suppressedByFindings: NeedsHumanAttentionNote[];
-  suppressedByFindingGroups: AttentionHintGroup[];
-  suppressedByVerification: VerificationSuppressionRecord[];
-  keptGroups: AttentionHintGroup[];
-  selectedGroups: AttentionHintGroup[];
-  publicationFallbacks: PublicationFallbackRecord[];
-  fallbackGroupCount: number;
-  omittedFallbackCount: number;
 };
 
 export function buildHumanAttentionNotes(
@@ -240,238 +187,30 @@ export function buildHumanAttentionNotes(
 
 export function selectHumanAttentionGroups(
   groups: AttentionHintGroup[]
-): { groups: AttentionHintGroup[]; notes: NeedsHumanAttentionNote[]; omittedCount: number } {
+): SelectedHumanAttention {
   const emittedGroups = groups.slice(0, MAX_HUMAN_ATTENTION_NOTES);
   const emitted = emittedGroups.map(toAttentionNote);
   return { groups: emittedGroups, notes: emitted, omittedCount: Math.max(0, groups.length - emitted.length) };
 }
 
-export function selectHumanAttentionForOutput(
-  groups: AttentionHintGroup[],
-  findings: FinalFinding[],
-  packetsById: Map<string, ReviewPacket>,
-  verificationResolutions: VerificationResolution[],
-  telemetry?: TelemetryRecorder
-): HumanAttentionOutput {
-  const availableAfterFindings = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
-  const suppressedByFindingGroups = groups.filter((group) => !availableAfterFindings.includes(group));
-  const suppressedByFindings = suppressedByFindingGroups.map(toAttentionNote);
-  const publishedCandidateIds = new Set(findings.flatMap((finding) => [finding.id, ...finding.mergedCandidateIds]));
-  const activeResolutions = verificationResolutions.filter((resolution) =>
-    resolution.verdict === "reject" || publishedCandidateIds.has(resolution.candidateId)
-  );
-  const fallbackResolutions = verificationResolutions.filter((resolution) =>
-    (resolution.verdict === "keep" || resolution.verdict === "revise") &&
-    !publishedCandidateIds.has(resolution.candidateId)
-  );
-  const verificationSuppression = suppressAttentionGroupsResolvedByVerification(availableAfterFindings, activeResolutions);
-  const publicationFallbacks = verificationSuppression.available.flatMap((group): PublicationFallbackRecord[] => {
-    const match = firstVerificationResolutionMatch(group, fallbackResolutions);
-    return match === undefined ? [] : [{
-      groupKey: group.key,
-      candidateId: match.resolution.candidateId,
-      verdict: match.resolution.verdict
-    }];
-  });
-  const fallbackGroupKeys = new Set(publicationFallbacks.map((fallback) => fallback.groupKey));
-  const fallbackGroups = verificationSuppression.available.filter((group) => fallbackGroupKeys.has(group.key));
-  const ordinaryGroups = verificationSuppression.available.filter((group) => !fallbackGroupKeys.has(group.key));
-  const selected = selectHumanAttentionGroups([...fallbackGroups, ...ordinaryGroups]);
-  const selectedGroupKeys = new Set(selected.groups.map((group) => group.key));
-  const omittedFallbackCount = fallbackGroups.filter((group) => !selectedGroupKeys.has(group.key)).length;
-
-  if (suppressedByFindings.length > 0) {
-    telemetry?.event({
-      stage: 10,
-      level: "info",
-      message: "human_attention_hints_suppressed_by_findings",
-      data: {
-        suppressed: suppressedByFindings.length,
-        remainingGroups: availableAfterFindings.length
-      }
-    });
-  }
-  const adjudicatedSuppressed = verificationSuppression.suppressed.filter((record) => record.reason.startsWith("adjudicated by stage 9 reject"));
-  if (adjudicatedSuppressed.length > 0) {
-    telemetry?.event({
-      stage: 10,
-      level: "info",
-      message: "human_attention_hints_suppressed_by_adjudicated_reject",
-      data: { suppressed: adjudicatedSuppressed.length, candidateIds: adjudicatedSuppressed.map((record) => record.candidateId) }
-    });
-  }
-  if (verificationSuppression.suppressed.length > 0) {
-    telemetry?.event({
-      stage: 10,
-      level: "info",
-      message: "human_attention_hints_suppressed_by_verification",
-      data: {
-        suppressed: verificationSuppression.suppressed.length,
-        remainingGroups: verificationSuppression.available.length,
-        candidates: verificationSuppression.suppressed.map((record) => ({
-          candidateId: record.candidateId,
-          verdict: record.verdict,
-          groupKey: record.groupKey
-        }))
-      }
-    });
-  }
-  if (fallbackResolutions.length > 0) {
-    telemetry?.event({
-      stage: 10,
-      level: "info",
-      message: "human_attention_publication_fallback",
-      data: {
-        fallbackResolutionCount: fallbackResolutions.length,
-        fallbackCandidateIds: capStrings(fallbackResolutions.map((resolution) => resolution.candidateId)),
-        fallbackGroupCount: fallbackGroups.length,
-        fallbackGroupIds: capStrings(fallbackGroups.map((group) => group.key)),
-        selectedFallbackGroupIds: capStrings(fallbackGroups.filter((group) => selectedGroupKeys.has(group.key)).map((group) => group.key)),
-        omittedFallbackCount,
-        maxHumanAttentionNotes: MAX_HUMAN_ATTENTION_NOTES
-      }
-    });
-  }
-
-  return {
-    notes: selected.notes,
-    omittedCount: selected.omittedCount,
-    suppressedByFindings,
-    suppressedByFindingGroups,
-    suppressedByVerification: verificationSuppression.suppressed,
-    keptGroups: verificationSuppression.available,
-    selectedGroups: selected.groups,
-    publicationFallbacks: publicationFallbacks.slice(0, HUMAN_ATTENTION_LOCATION_CAP),
-    fallbackGroupCount: fallbackGroups.length,
-    omittedFallbackCount
-  };
-}
-
-export function suppressAttentionGroupsResolvedByVerification(
-  groups: AttentionHintGroup[],
-  resolutions: VerificationResolution[]
-): { available: AttentionHintGroup[]; suppressed: VerificationSuppressionRecord[] } {
-  if (resolutions.length === 0) {
-    return { available: groups, suppressed: [] };
-  }
-  const available: AttentionHintGroup[] = [];
-  const suppressed: VerificationSuppressionRecord[] = [];
-  for (const group of groups) {
-    const match = firstVerificationResolutionMatch(group, resolutions);
-    if (match === undefined) {
-      available.push(group);
-      continue;
-    }
-    suppressed.push({
-      groupKey: group.key,
-      noteIds: [...group.rawNoteIds].sort(),
-      note: toAttentionNote(group),
-      candidateId: match.resolution.candidateId,
-      verdict: match.resolution.verdict,
-      reason: match.resolution.source === "stage9_adjudicated_reject"
-        ? `adjudicated by stage 9 reject verdict for ${match.resolution.candidateId}`
-        : `resolved by stage 9 ${match.resolution.verdict} verdict for ${match.resolution.candidateId}`,
-      verdictReason: match.resolution.reason,
-      match: {
-        sharedFiles: match.sharedFiles,
-        sharedSymbols: match.sharedSymbols,
-        sharedTerms: match.sharedTerms,
-        similarity: match.similarity,
-        questionMatched: match.questionMatched,
-        provenanceMatched: match.provenanceMatched
-      }
-    });
-  }
-  return { available, suppressed };
-}
-
-export function buildVerificationResolutionIndex(
-  verdicts: VerificationVerdict[],
-  packetResults: PacketReviewResult[],
-  verifiedFindings: CandidateFinding[],
-  packetsById: Map<string, ReviewPacket>,
-  coverage: RunCoverageStatus
-): VerificationResolution[] {
-  if (coverage.verificationSkipped === true || verdicts.length === 0) {
-    return [];
-  }
-  const candidatesById = candidateFindingsById(packetResults, verifiedFindings, verdicts);
-  return verdicts.flatMap((verdict): VerificationResolution[] => {
-    const original = candidatesById.get(verdict.candidateId);
-    const adjudicatedReject = verdictIsAdjudicatedPromotionReject(verdict, original);
-    if (!verdictResolvesPredicate(verdict) && !adjudicatedReject) {
-      return [];
-    }
-    const resolved = verdict.finalFinding ?? original;
-    if (original === undefined && resolved === undefined) {
-      return [];
-    }
-    const files = cleanStrings([
-      ...(original !== undefined ? candidateFiles(original, packetsById) : []),
-      ...(resolved !== undefined ? candidateFiles(resolved, packetsById) : [])
-    ]);
-    const symbols = cleanStrings([
-      ...(original !== undefined ? candidateSymbols(original, packetsById) : []),
-      ...(resolved !== undefined ? candidateSymbols(resolved, packetsById) : [])
-    ]);
-    const normalizedQuestionKeys = new Set([
-      ...(original?.provenance !== undefined ? questionKeys(original.provenance.question) : []),
-      ...(resolved?.provenance !== undefined ? questionKeys(resolved.provenance.question) : [])
-    ]);
-    const terms = normalizedTerms([
-      original !== undefined ? candidateResolutionText(original) : "",
-      resolved !== undefined && resolved !== original ? candidateResolutionText(resolved) : "",
-      verdict.reason,
-      symbols.join(" ")
-    ].join(" "));
-    return [{
-      source: adjudicatedReject && !verdictResolvesPredicate(verdict) ? "stage9_adjudicated_reject" : "stage9_verified_predicate",
-      candidateId: verdict.candidateId,
-      verdict: verdict.verdict,
-      reason: verdict.reason,
-      files,
-      symbols,
-      terms,
-      questionKeys: normalizedQuestionKeys,
-      ...((resolved?.provenance ?? original?.provenance) !== undefined ? { provenance: resolved?.provenance ?? original?.provenance } : {})
-    }];
-  });
-}
-
 export function humanAttentionArtifact(
   attention: HumanAttentionNotes,
-  output: HumanAttentionOutput,
+  output: SelectedHumanAttention,
   composerPromptGroups: AttentionHintGroup[],
+  keptGroups: AttentionHintGroup[],
   reconciled?: HumanAttentionNotes
 ): Record<string, unknown> {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     notes: attention.raw.map(rawAttentionHintArtifact),
     groups: attention.groups.map(attentionGroupArtifact),
     ...(reconciled ? { reconciledGroups: reconciled.groups.map(attentionGroupArtifact) } : {}),
     mergeStats: attention.mergeStats,
     composerPromptGroupIds: composerPromptGroups.map((group) => group.key),
-    outputGroupIds: output.selectedGroups.map((group) => group.key),
+    outputGroupIds: output.groups.map((group) => group.key),
     outputNotes: output.notes,
     omittedCount: output.omittedCount,
-    publicationFallbacks: output.publicationFallbacks,
-    fallbackGroupIds: output.publicationFallbacks.map((fallback) => fallback.groupKey),
-    fallbackGroupCount: output.fallbackGroupCount,
-    omittedFallbackCount: output.omittedFallbackCount,
-    suppressedByFindings: output.suppressedByFindingGroups.map((group) => ({
-      groupKey: group.key,
-      noteIds: [...group.rawNoteIds].sort()
-    })),
-    suppressedByVerification: output.suppressedByVerification.map((record) => ({
-      groupKey: record.groupKey,
-      noteIds: record.noteIds,
-      candidateId: record.candidateId,
-      verdict: record.verdict,
-      reason: record.reason,
-      verdictReason: record.verdictReason,
-      match: record.match
-    })),
-    keptForOutputGroupIds: output.keptGroups.map((group) => group.key)
+    keptForOutputGroupIds: keptGroups.map((group) => group.key)
   };
 }
 
@@ -775,244 +514,6 @@ function rawAttentionHintArtifact(hint: RawAttentionHint): Record<string, unknow
   };
 }
 
-function firstVerificationResolutionMatch(
-  group: AttentionHintGroup,
-  resolutions: VerificationResolution[]
-): (VerificationResolutionMatch & { resolution: VerificationResolution }) | undefined {
-  for (const resolution of resolutions) {
-    const match = attentionGroupResolvedByVerification(group, resolution);
-    if (match !== undefined) {
-      return { ...match, resolution };
-    }
-  }
-  return undefined;
-}
-
-type VerificationResolutionMatch = {
-  sharedFiles: string[];
-  sharedSymbols: string[];
-  sharedTerms: number;
-  similarity: number;
-  questionMatched: boolean;
-  provenanceMatched: boolean;
-};
-
-function attentionGroupResolvedByVerification(
-  group: AttentionHintGroup,
-  resolution: VerificationResolution
-): VerificationResolutionMatch | undefined {
-  if (resolution.source === "stage9_adjudicated_reject") {
-    // Provenance-exact only: no fuzzy fallthrough for adjudicated rejects.
-    if (resolution.provenance !== undefined && attentionGroupMatchesProvenance(group, resolution.provenance)) {
-      return {
-        sharedFiles: sortedIntersection(normalizedSet(group.files), normalizedSet(resolution.files)),
-        sharedSymbols: sortedIntersection(normalizedSet(group.symbols), normalizedSet(resolution.symbols)),
-        sharedTerms: intersectionCount(attentionGroupTerms(group), resolution.terms),
-        similarity: tokenJaccard(attentionGroupTerms(group), resolution.terms),
-        questionMatched: true,
-        provenanceMatched: true
-      };
-    }
-    return undefined;
-  }
-  if (resolution.provenance !== undefined && attentionGroupMatchesProvenance(group, resolution.provenance)) {
-    const groupTerms = attentionGroupTerms(group);
-    const sharedTerms = intersectionCount(groupTerms, resolution.terms);
-    const similarity = tokenJaccard(groupTerms, resolution.terms);
-    return {
-      sharedFiles: sortedIntersection(normalizedSet(group.files), normalizedSet(resolution.files)),
-      sharedSymbols: sortedIntersection(normalizedSet(group.symbols), normalizedSet(resolution.symbols)),
-      sharedTerms,
-      similarity,
-      questionMatched: true,
-      provenanceMatched: true
-    };
-  }
-
-  const groupFiles = normalizedSet(group.files);
-  const resolutionFiles = normalizedSet(resolution.files);
-  const sharedFiles = sortedIntersection(groupFiles, resolutionFiles);
-  if (groupFiles.size > 0 && resolutionFiles.size > 0 && sharedFiles.length === 0) {
-    return undefined;
-  }
-
-  const groupSymbols = normalizedSet(group.symbols);
-  const resolutionSymbols = normalizedSet(resolution.symbols);
-  const sharedSymbols = sortedIntersection(groupSymbols, resolutionSymbols);
-  if (sharedFiles.length === 0 && sharedSymbols.length === 0) {
-    if (group.invalidPathCount > 0) {
-      const groupTerms = attentionGroupTerms(group);
-      const sharedTerms = intersectionCount(groupTerms, resolution.terms);
-      const similarity = tokenJaccard(groupTerms, resolution.terms);
-      const questionMatched = questionKeys(group.representative.question).some((key) => resolution.questionKeys.has(key));
-      return questionMatched || sharedTerms >= 7 || similarity >= 0.55
-        ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
-        : undefined;
-    }
-    return undefined;
-  }
-
-  const groupTerms = attentionGroupTerms(group);
-  const sharedTerms = intersectionCount(groupTerms, resolution.terms);
-  const similarity = tokenJaccard(groupTerms, resolution.terms);
-  const questionMatched = questionKeys(group.representative.question).some((key) => resolution.questionKeys.has(key));
-
-  if (sharedFiles.length > 0 && sharedSymbols.length > 0) {
-    return questionMatched || sharedTerms >= 3 || similarity >= 0.3
-      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
-      : undefined;
-  }
-  if (sharedSymbols.length > 0) {
-    return questionMatched || sharedTerms >= 4 || similarity >= 0.35
-      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
-      : undefined;
-  }
-  return questionMatched || sharedTerms >= 5 || similarity >= 0.45
-    ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
-    : undefined;
-}
-
-function attentionGroupMatchesProvenance(group: AttentionHintGroup, provenance: CandidateFindingProvenance): boolean {
-  if (provenance.source !== "uncertainty_promotion") {
-    return false;
-  }
-  if (!group.packetIds.has(provenance.sourcePacketId) || !group.sources.has(provenance.sourceKind)) {
-    return false;
-  }
-  const questionMatched = questionKeys(group.representative.question).some((key) =>
-    questionKeys(provenance.question).includes(key)
-  );
-  if (!questionMatched) {
-    return false;
-  }
-  const sharedFiles = sortedIntersection(normalizedSet(group.files), normalizedSet(provenance.files));
-  return sharedFiles.length > 0 || group.invalidPathCount > 0;
-}
-
-function attentionGroupCoveredByFinding(
-  group: AttentionHintGroup,
-  finding: FinalFinding,
-  packetsById: Map<string, ReviewPacket>
-): boolean {
-  const sharesSymbol = groupSharesFindingSymbol(group, finding, packetsById);
-  const sharesFile = groupSharesFindingFile(group, finding);
-  if (!sharesSymbol && !sharesFile) {
-    if (group.invalidPathCount === 0) {
-      return false;
-    }
-    const sharedTerms = intersectionCount(attentionGroupTerms(group), rootCauseTerms(finding));
-    const similarity = tokenJaccard(attentionGroupTerms(group), rootCauseTerms(finding));
-    return sharedTerms >= 7 || similarity >= 0.55;
-  }
-
-  const sharedTerms = intersectionCount(attentionGroupTerms(group), rootCauseTerms(finding));
-  const similarity = tokenJaccard(attentionGroupTerms(group), rootCauseTerms(finding));
-
-  if (sharesSymbol) {
-    return sharedTerms >= 4 || similarity >= 0.35;
-  }
-  return sharedTerms >= 5 || similarity >= 0.45;
-}
-
-function groupSharesFindingSymbol(
-  group: AttentionHintGroup,
-  finding: FinalFinding,
-  packetsById: Map<string, ReviewPacket>
-): boolean {
-  const left = normalizedSet(group.symbols);
-  if (left.size === 0) {
-    return false;
-  }
-  const right = normalizedSet(symbolsForFinding(finding, packetsById));
-  return right.size > 0 && [...left].some((symbol) => right.has(symbol));
-}
-
-function groupSharesFindingFile(group: AttentionHintGroup, finding: FinalFinding): boolean {
-  const groupFiles = normalizedSet(group.files);
-  if (groupFiles.size === 0) {
-    return false;
-  }
-  const findingFiles = normalizedSet([
-    finding.path,
-    ...(finding.evidence.relatedCode ?? []).map((related) => related.path)
-  ]);
-  return [...groupFiles].some((file) => findingFiles.has(file));
-}
-
-function candidateFindingsById(
-  packetResults: PacketReviewResult[],
-  verifiedFindings: CandidateFinding[],
-  verdicts: VerificationVerdict[]
-): Map<string, CandidateFinding> {
-  const candidates = new Map<string, CandidateFinding>();
-  for (const result of packetResults) {
-    for (const finding of result.findings) {
-      candidates.set(finding.id, finding);
-    }
-  }
-  for (const finding of verifiedFindings) {
-    candidates.set(finding.id, finding);
-  }
-  for (const verdict of verdicts) {
-    if (verdict.finalFinding !== undefined) {
-      candidates.set(verdict.finalFinding.id, verdict.finalFinding);
-    }
-  }
-  return candidates;
-}
-
-// Plan 75 step 1: a completed, high-false-positive-risk reject of a
-// promoted candidate is a final adjudication of the source note's predicate
-// — re-surfacing it as Needs Human Attention is noise. Uncertain rejects
-// (medium/low risk, or incomplete verification) keep the note visible.
-function verdictIsAdjudicatedPromotionReject(
-  verdict: VerificationVerdict,
-  original: CandidateFinding | undefined
-): boolean {
-  return verdict.verdict === "reject" &&
-    verdict.unresolvedConcern === undefined &&
-    verdict.verificationIncomplete !== true &&
-    verdict.falsePositiveRisk === "high" &&
-    original?.provenance?.source === "uncertainty_promotion";
-}
-
-function verdictResolvesPredicate(verdict: VerificationVerdict): boolean {
-  return verdict.verificationIncomplete !== true &&
-    verdict.requiredEvidencePresent === true;
-}
-
-function candidateFiles(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
-  const packet = packetsById.get(candidate.producedBy.packetId);
-  return cleanStrings([
-    candidate.path,
-    candidate.anchor?.path ?? "",
-    ...(candidate.provenance?.files ?? []),
-    packet?.path ?? "",
-    packet?.oldPath ?? ""
-  ]);
-}
-
-function candidateSymbols(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
-  return cleanStrings([
-    ...symbolsForFinding(candidate, packetsById),
-    ...(candidate.provenance?.symbols ?? [])
-  ]);
-}
-
-function candidateResolutionText(candidate: CandidateFinding): string {
-  return [
-    candidate.title,
-    candidate.failureMode,
-    candidate.whyThisMatters,
-    candidate.verification,
-    candidate.suggestedFix ?? "",
-    candidate.evidence.changedCode,
-    ...(candidate.evidence.relatedCode ?? []).flatMap((related) => [related.path, related.lines, related.whyRelevant]),
-    candidate.provenance?.question ?? "",
-    candidate.provenance?.reason ?? ""
-  ].join(" ");
-}
-
 function compareAttentionGroups(a: AttentionHintGroup, b: AttentionHintGroup): number {
   return attentionGroupRank(b) - attentionGroupRank(a) ||
     a.representative.question.localeCompare(b.representative.question) ||
@@ -1067,82 +568,6 @@ function attentionGroupTerms(group: AttentionHintGroup): Set<string> {
     group.reasons.join(" "),
     group.symbols.join(" ")
   ].join(" "));
-}
-
-function rootCauseTerms(finding: CandidateFinding): Set<string> {
-  return normalizedTerms([
-    finding.title,
-    finding.failureMode,
-    finding.whyThisMatters,
-    finding.suggestedFix ?? "",
-    finding.evidence.changedCode,
-    ...(finding.evidence.relatedCode ?? []).flatMap((related) => [related.whyRelevant, related.lines])
-  ].join(" "));
-}
-
-function symbolsForFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
-  const packet = packetsById.get(finding.producedBy.packetId);
-  const symbols = new Set<string>();
-  if (finding.anchor?.hunkId) {
-    const symbol = symbolForHunk(packet, finding.anchor.hunkId);
-    if (symbol !== undefined) {
-      symbols.add(symbol);
-    }
-  }
-  for (const hunk of matchingEvidenceHunks(finding, packet)) {
-    const symbol = symbolForHunk(packet, hunk.hunkId);
-    if (symbol !== undefined) {
-      symbols.add(symbol);
-    }
-  }
-  const packetSymbol = uniquePacketSymbol(packet);
-  if (packetSymbol !== undefined) {
-    symbols.add(packetSymbol);
-  }
-  return [...symbols];
-}
-
-function matchingEvidenceHunks(finding: CandidateFinding, packet: ReviewPacket | undefined): ReviewPacket["hunks"] {
-  if (!packet) {
-    return [];
-  }
-  const needle = normalizeSnippet(finding.evidence.changedCode);
-  if (needle.length === 0) {
-    return [];
-  }
-  return packet.hunks.filter((hunk) => {
-    const haystack = normalizeSnippet(hunk.lines.map((line) => line.content).join("\n"));
-    return haystack.length > 0 && (haystack.includes(needle) || needle.includes(haystack));
-  });
-}
-
-function symbolForHunk(packet: ReviewPacket | undefined, hunkId: string): string | undefined {
-  const symbols = [...new Set(
-    (packet?.symbolFacts ?? [])
-      .filter((fact) => fact.hunkId === hunkId)
-      .map((fact) => fact.enclosingSymbol)
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-  )];
-  return symbols.length === 1 ? symbols[0] : undefined;
-}
-
-function uniquePacketSymbol(packet: ReviewPacket | undefined): string | undefined {
-  const symbols = [...new Set(
-    (packet?.symbolFacts ?? [])
-      .map((fact) => fact.enclosingSymbol)
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-  )];
-  return symbols.length === 1 ? symbols[0] : undefined;
-}
-
-function normalizeSnippet(input: string): string {
-  return input
-    .split(/\r?\n/u)
-    .map((line) => line.replace(/^\s*[+-]\s?/u, "").trim())
-    .join("\n")
-    .toLowerCase()
-    .replace(/\s+/gu, " ")
-    .trim();
 }
 
 function normalizedSet(values: string[]): Set<string> {
