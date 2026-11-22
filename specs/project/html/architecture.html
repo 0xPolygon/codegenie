@@ -2400,9 +2400,11 @@ chronological narrative.</p>
 including skipped reasons.</p>
 <p>Run lifecycle:</p>
 <ul>
-<li>Run pruning: at run start, the telemetry recorder prunes
-<code>.codegenie/runs/</code> to the newest <code>retainRuns</code>
-directories (by mtime), never touching the active run.</li>
+<li>Run pruning: in recorder-managed roots, the telemetry recorder keeps
+the active run, the newest <code>retainRuns</code> authenticated prior
+runs (minimum one, ordered by run ID), and any authenticated runs still
+within their lease. Only expired sealed directories qualify for
+deletion. Caller-selected artifact directories skip retention.</li>
 <li>First-run provisioning: codegenie writes
 <code>.codegenie/.gitignore</code> (containing <code>runs/</code> and
 <code>cache/</code>) when creating <code>.codegenie/</code>.</li>

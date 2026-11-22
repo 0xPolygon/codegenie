@@ -5,8 +5,6 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
-  rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import path from "node:path";
@@ -27,9 +25,13 @@ import { stripCredentials } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import { STAGE_LABELS, STAGES } from "../review-stages.js";
+import { defaultConfig } from "../config/schema.js";
+import { sealAndPruneRuns, type PruneResult } from "./run-retention.js";
 
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodegenieConfig["telemetry"];
+  maxTimeMs?: number;
+  codegenieHome?: string;
   runMetadata?: RunArtifactMetadata;
   clock?: () => Date;
   idFactory?: () => string;
@@ -87,6 +89,7 @@ export type LogicalArtifactName = keyof typeof ARTIFACT_LOCATION;
 export const KNOWN_ARTIFACTS = new Set(Object.keys(ARTIFACT_LOCATION));
 
 const ROOT_STREAM_ARTIFACTS = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"] as const;
+const PRUNED_RUN_SAMPLE_LIMIT = 100;
 const PACKET_ARTIFACT_RE = /^packets\/[^/]+\.json$/u;
 const CANONICAL_PACKET_ARTIFACT_RE = /^stages\/06-packets\/packets\/[^/]+\.json$/u;
 const CANONICAL_ARTIFACT_PATHS: ReadonlySet<string> = new Set(Object.values(ARTIFACT_LOCATION));
@@ -374,6 +377,9 @@ export function createRunTelemetry(opts: CreateRunTelemetryOptions): RunTelemetr
 class RunTelemetryImpl {
   readonly runId: string;
   private readonly directoryName: string;
+  private readonly managesRunRetention: boolean;
+  private readonly maxTimeMs: number;
+  private readonly codegenieHome: string | undefined;
   private readonly startedAt: string;
   private readonly clock: () => Date;
   private readonly config: CodegenieConfig["telemetry"];
@@ -466,6 +472,9 @@ class RunTelemetryImpl {
     this.metadata = structuredClone(opts.runMetadata ?? {});
     this.runId = opts.idFactory?.() ?? createRunId(this.clock());
     this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
+    this.managesRunRetention = opts.directoryNameFactory === undefined;
+    this.maxTimeMs = opts.maxTimeMs ?? defaultConfig.review.maxTimeMs;
+    this.codegenieHome = opts.codegenieHome;
     this.startedAt = this.clock().toISOString();
     const thisImpl = this;
     this.recorder = {
@@ -503,7 +512,7 @@ class RunTelemetryImpl {
     mkdirSync(runsRoot, { recursive: true });
 
     const runDir = path.join(runsRoot, this.directoryName);
-    mkdirSync(runDir, { recursive: true });
+    mkdirSync(runDir, { recursive: !this.managesRunRetention });
     if (this.config.debugTrace) {
       mkdirSync(path.join(runDir, "debug", "llm-calls"), { recursive: true });
       mkdirSync(path.join(runDir, "debug", "tool-calls"), { recursive: true });
@@ -512,7 +521,18 @@ class RunTelemetryImpl {
     this.runDirectory = runDir;
     touchCoreFiles(runDir);
     this.flushBuffers();
-    this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
+    // A caller-supplied artifact directory does not make its parent a managed runs root.
+    if (this.managesRunRetention) {
+      this.recordPruneResult(sealAndPruneRuns({
+        runsRoot,
+        runId: this.runId,
+        retainRuns: this.config.retainRuns,
+        startedAtMs: Date.parse(this.startedAt),
+        maxTimeMs: this.maxTimeMs,
+        ...(this.codegenieHome !== undefined ? { codegenieHome: this.codegenieHome } : {}),
+        nowMs: this.clock().getTime()
+      }));
+    }
     return { runId: this.runId, runDir };
   }
 
@@ -1377,11 +1397,14 @@ class RunTelemetryImpl {
 
   private recordPruneResult(result: PruneResult): void {
     if (result.deleted.length > 0) {
+      // Bound the names before the generic event cap can discard the whole payload.
+      const runs = result.deleted.slice(0, PRUNED_RUN_SAMPLE_LIMIT);
+      const omittedCount = result.deleted.length - runs.length;
       this.recordEvent({
         stage: 0,
         level: "info",
         message: "old run directories pruned",
-        data: { count: result.deleted.length, runs: result.deleted.map((dir) => path.basename(dir)) }
+        data: { count: result.deleted.length, runs, ...(omittedCount > 0 ? { omittedCount } : {}) }
       });
     }
 
@@ -2057,52 +2080,8 @@ export function provisionCodegenieGitignore(repoRoot: string): void {
   writeFileSync(gitignorePath, "runs/\ncache/\nlocks/\n");
 }
 
-type PruneResult = {
-  deleted: string[];
-  failures: Array<{ path: string; error: string }>;
-};
-
-function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): PruneResult {
-  const result: PruneResult = { deleted: [], failures: [] };
-  const keepCount = Math.max(1, retainRuns);
-  const active = path.resolve(activeRunDir);
-
-  let names: string[];
-  try {
-    names = readdirSync(runsRoot);
-  } catch (error) {
-    result.failures.push({ path: runsRoot, error: errorMessage(error) });
-    return result;
-  }
-
-  const dirs = names
-    .map((name) => {
-      const entry = path.join(runsRoot, name);
-      try {
-        const stats = statSync(entry);
-        return stats.isDirectory() && path.resolve(entry) !== active ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
-      } catch (error) {
-        result.failures.push({ path: entry, error: errorMessage(error) });
-        return undefined;
-      }
-    })
-    .filter((entry): entry is { path: string; mtimeMs: number } => entry !== undefined)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  for (const dir of dirs.slice(keepCount)) {
-    try {
-      rmSync(dir.path, { recursive: true, force: true });
-      result.deleted.push(dir.path);
-    } catch (error) {
-      result.failures.push({ path: dir.path, error: errorMessage(error) });
-    }
-  }
-
-  return result;
-}
-
 function touchCoreFiles(runDir: string): void {
-  for (const relPath of ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"]) {
+  for (const relPath of ROOT_STREAM_ARTIFACTS) {
     const filePath = path.join(runDir, relPath);
     if (!existsSync(filePath)) {
       writeFileSync(filePath, "");

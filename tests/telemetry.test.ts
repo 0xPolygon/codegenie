@@ -1,9 +1,13 @@
 import {
   chmodSync,
+  constants,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  symlinkSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -11,10 +15,19 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { ARTIFACT_LOCATION, KNOWN_ARTIFACTS, canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { sealAndPruneRuns } from "../src/telemetry/run-retention.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
+import { initRepo } from "./helpers/git.js";
+
+beforeEach(() => {
+  vi.stubEnv("CODEGENIE_HOME", tempDir());
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("run telemetry", () => {
   it.each([
@@ -1260,71 +1273,244 @@ describe("run telemetry", () => {
     stderr.mockRestore();
   });
 
-  it("prunes old runs while keeping the active run", async () => {
+  it.each([0, 1, 2])("keeps the active run and the newest prior runs with retainRuns=%i", async (retainRuns) => {
+    const repoRoot = tempDir();
+    const storage = path.join(repoRoot, "storage");
+    const linkedStorage = path.join(repoRoot, "linked-storage");
+    mkdirSync(storage);
+    symlinkSync(storage, linkedStorage, "junction");
+    const runsRoot = path.join(linkedStorage, "shared-runs");
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true, runDir: runsRoot };
+    const prior = [];
+    for (const day of [2, 3, 4]) {
+      const run = createRunTelemetry({ telemetryConfig, clock: () => new Date(Date.UTC(2026, 0, day)) });
+      prior.push(await run.attachRunDirectory(repoRoot));
+      if (day !== 2) {
+        await run.finalize({ status: "completed_full", exitCode: 0 });
+      }
+    }
+    const crashed = prior[0]!;
+    const newest = prior[2]!;
+    expect(existsSync(path.join(crashed.runDir, "run.json"))).toBe(false);
+
+    const foreign = "unrelated";
+    const unmarked = "20260105-000000-12345678";
+    const foreignFile = "20260106-000000-12345678";
+    const linkedRun = "20260107-000000-12345678";
+    const linkedMarker = "20260108-000000-12345678";
+    const fakeRuns = ["20260109-000000-12345678", "20260110-000000-12345678"];
+    const markerFiles = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"];
+    mkdirSync(path.join(runsRoot, foreign));
+    for (const file of markerFiles) {
+      writeFileSync(path.join(runsRoot, foreign, file), "foreign data");
+    }
+    mkdirSync(path.join(runsRoot, unmarked));
+    writeFileSync(path.join(runsRoot, unmarked, "notes.txt"), "keep this");
+    for (const name of fakeRuns) {
+      const directory = path.join(runsRoot, name);
+      mkdirSync(directory);
+      for (const file of markerFiles) {
+        writeFileSync(path.join(directory, file), "repository data");
+      }
+    }
+    writeFileSync(path.join(runsRoot, foreignFile), "regular file");
+    symlinkSync(newest.runDir, path.join(runsRoot, linkedRun), "junction");
+    mkdirSync(path.join(runsRoot, linkedMarker));
+    const outsideDir = path.join(repoRoot, "outside");
+    mkdirSync(outsideDir);
+    const outsideFile = path.join(outsideDir, "notes.txt");
+    writeFileSync(outsideFile, "outside the runs root");
+    symlinkSync(path.join(newest.runDir, ".codegenie-run"), path.join(runsRoot, linkedMarker, ".codegenie-run"), "file");
+    symlinkSync(outsideDir, path.join(crashed.runDir, "outside-link"), "junction");
+    // Touch the oldest run last to make the actual directory timestamps misleading.
+    const later = new Date(Date.UTC(2026, 11, 1));
+    utimesSync(crashed.runDir, later, later);
+
+    const run = createRunTelemetry({
+      telemetryConfig: { ...telemetryConfig, retainRuns },
+      idFactory: () => "20260101-000000-12345678",
+      clock: () => new Date(Date.UTC(2026, 0, 11))
+    });
+    run.recorder.event({ stage: 0, level: "info", message: "pre-attach event" });
+    const active = await run.attachRunDirectory(repoRoot);
+    const kept = Math.max(1, retainRuns);
+    const deleted = prior.slice(0, -kept).reverse().map(({ runId }) => runId);
+
+    expect(readdirSync(runsRoot).sort()).toEqual([
+      active.runId, ...prior.slice(-kept).map(({ runId }) => runId), foreign,
+      unmarked, foreignFile, linkedRun, linkedMarker, ...fakeRuns
+    ].sort());
+    expect(readFileSync(path.join(runsRoot, foreign, "run.log"), "utf8")).toBe("foreign data");
+    expect(readFileSync(path.join(runsRoot, unmarked, "notes.txt"), "utf8")).toBe("keep this");
+    expect(readFileSync(path.join(runsRoot, foreignFile), "utf8")).toBe("regular file");
+    for (const name of fakeRuns) {
+      expect(readFileSync(path.join(runsRoot, name, "run.log"), "utf8")).toBe("repository data");
+    }
+    expect(readFileSync(outsideFile, "utf8")).toBe("outside the runs root");
+    const events = readJsonl(path.join(active.runDir, "events.jsonl"));
+    expect(events.map((event) => event.eventId)).toEqual(["ev-000001", "ev-000002"]);
+    expect(events[1]).toMatchObject({
+      message: "old run directories pruned", data: { count: deleted.length, runs: deleted }
+    });
+  });
+
+  it("keeps the exact prune count and a bounded sample for a large deletion batch", async () => {
     const repoRoot = tempDir();
     const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
-    for (const [index, name] of ["old-1", "old-2", "old-3"].entries()) {
-      const dir = path.join(runsRoot, name);
-      mkdirSync(dir);
-      writeFileSync(path.join(dir, "run.json"), "{}");
-      const mtime = new Date(Date.now() - (3 - index) * 1000);
-      utimesSync(dir, mtime, mtime);
+    const prior = Array.from({ length: 102 }, (_, index) =>
+      `20260101-000000-${index.toString(16).padStart(8, "0")}`
+    );
+    const startedAtMs = Date.parse("2026-01-01");
+    for (const runId of prior) {
+      mkdirSync(path.join(runsRoot, runId));
+      expect(sealAndPruneRuns({
+        runsRoot, runId, retainRuns: prior.length, startedAtMs,
+        maxTimeMs: defaultConfig.review.maxTimeMs, nowMs: startedAtMs
+      })).toEqual({ deleted: [], failures: [] });
     }
 
     const run = createRunTelemetry({
-      telemetryConfig: {
-        ...defaultConfig.telemetry,
-        enabled: true,
-        retainRuns: 2
-      },
-      idFactory: () => "active-run"
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 },
+      clock: () => new Date("2026-01-02")
     });
-    run.recorder.event({
-      stage: 0,
-      level: "info",
-      message: "pre-attach event"
+    const active = await run.attachRunDirectory(repoRoot);
+    const newest = prior.pop()!;
+    expect(readdirSync(runsRoot).sort()).toEqual([newest, active.runId].sort());
+    const [event] = readJsonl(path.join(active.runDir, "events.jsonl"));
+    expect(event).toMatchObject({
+      message: "old run directories pruned",
+      data: { count: prior.length, runs: prior.slice(-100).reverse(), omittedCount: prior.length - 100 }
     });
-    await run.attachRunDirectory(repoRoot);
-
-    expect(readdirSync(runsRoot).sort()).toEqual(["active-run", "old-2", "old-3"]);
-    const events = readFileSync(path.join(runsRoot, "active-run", "events.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(events.map((event) => event.eventId)).toEqual(["ev-000001", "ev-000002"]);
-    expect(events.map((event) => event.message)).toEqual([
-      "pre-attach event",
-      "old run directories pruned"
-    ]);
   });
 
-  it("prunes crashed run directories without requiring run.json", async () => {
+  it("keeps overlapping live reviews and prunes the same runs after the seal expires", async () => {
     const repoRoot = tempDir();
-    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
-    mkdirSync(runsRoot, { recursive: true });
-    const crashed = path.join(runsRoot, "crashed-before-run-json");
-    mkdirSync(crashed);
-    const retained = path.join(runsRoot, "retained-finished-run");
-    mkdirSync(retained);
-    writeFileSync(path.join(retained, "run.json"), "{}");
-    const oldTime = new Date(Date.now() - 10_000);
-    const newTime = new Date(Date.now() - 1000);
-    utimesSync(crashed, oldTime, oldTime);
-    utimesSync(retained, newTime, newTime);
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 };
+    let now = Date.parse("2026-01-01T00:00:00Z");
+    const attach = async () => {
+      const run = createRunTelemetry({ telemetryConfig, maxTimeMs: 600, clock: () => new Date(now) });
+      const { runDir } = await run.attachRunDirectory(repoRoot);
+      now += 1_000;
+      return { run, runDir };
+    };
 
-    const run = createRunTelemetry({
-      telemetryConfig: {
-        ...defaultConfig.telemetry,
-        enabled: true,
-        retainRuns: 1
-      },
-      idFactory: () => "active-crash-prune"
-    });
-    await run.attachRunDirectory(repoRoot);
+    const stale = await attach();
+    now += 90 * 60_000 - 3_000;
+    const first = await attach();
+    const second = await attach();
+    const third = await attach();
+    expect(existsSync(stale.runDir)).toBe(true);
+    // Exactly at expiry, the stale run was still eligible for protection.
+    const fourth = await attach();
+    expect(existsSync(stale.runDir)).toBe(false);
+    const live = [first, second, third, fourth];
+    for (const { run, runDir } of live) {
+      expect(existsSync(runDir)).toBe(true);
+      run.recorder.event({ stage: 1, level: "info", message: "live run can still write" });
+    }
 
-    expect(readdirSync(runsRoot).sort()).toEqual(["active-crash-prune", "retained-finished-run"]);
+    now += 91 * 60_000;
+    await attach();
+    expect(live.map(({ runDir }) => existsSync(runDir))).toEqual([false, false, false, true]);
   });
+
+  it("ignores tampered, oversized, copied and replayed seals", async () => {
+    const repo = tempDir();
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 };
+    const attach = (day: number, root = repo, idFactory?: () => string) => createRunTelemetry({
+      telemetryConfig, clock: () => new Date(Date.UTC(2026, 0, day)),
+      ...(idFactory !== undefined ? { idFactory } : {})
+    }).attachRunDirectory(root);
+    const original = await attach(1);
+    const otherRoot = await attach(2, tempDir());
+    const root = path.dirname(original.runDir);
+    const seal = path.join(original.runDir, ".codegenie-run");
+    const genuine = JSON.parse(readFileSync(seal, "utf8"));
+
+    // Keep the original inode occupied while reusing its pathname.
+    const moved = path.join(repo, "moved-original");
+    renameSync(original.runDir, moved);
+    mkdirSync(original.runDir);
+    copyFileSync(path.join(moved, ".codegenie-run"), seal);
+    const relocated = path.join(root, otherRoot.runId);
+    renameSync(otherRoot.runDir, relocated);
+    const misnamed = await attach(3, repo, () => "20260103-000000-00000001");
+    const wrongName = path.join(root, "20260103-000000-00000000");
+    renameSync(misnamed.runDir, wrongName);
+
+    const forged = await attach(4);
+    const forgedSeal = path.join(forged.runDir, ".codegenie-run");
+    writeFileSync(forgedSeal, JSON.stringify({ ...JSON.parse(readFileSync(forgedSeal, "utf8")), mac: "0".repeat(64) }));
+    const oversized = await attach(5);
+    const largeSeal = path.join(oversized.runDir, ".codegenie-run");
+    writeFileSync(largeSeal, readFileSync(largeSeal, "utf8") + " ".repeat(1024));
+    const invalidDirs = [relocated, wrongName, forged.runDir, oversized.runDir];
+    if (constants.O_NOFOLLOW) {
+      const linked = await attach(6);
+      const linkedSeal = path.join(linked.runDir, ".codegenie-run");
+      const relocatedSeal = path.join(repo, "linked-seal-source");
+      renameSync(linkedSeal, relocatedSeal);
+      symlinkSync(relocatedSeal, linkedSeal, "file");
+      invalidDirs.push(linked.runDir);
+    }
+
+    const validOld = await attach(7);
+    await attach(8);
+    await attach(9);
+    expect(existsSync(validOld.runDir)).toBe(false);
+    expect(readFileSync(seal, "utf8")).toBe(JSON.stringify(genuine));
+    for (const directory of invalidDirs) {
+      expect(existsSync(path.join(directory, ".codegenie-run"))).toBe(true);
+    }
+  });
+
+  it("does not attach to or seal a directory that already exists under the generated name", async () => {
+    const repo = tempDir();
+    const runId = "20260101-000000-12345678";
+    const directory = path.join(repo, ".codegenie", "runs", runId);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "run.log"), "user data");
+    const run = createRunTelemetry({
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true },
+      idFactory: () => runId
+    });
+
+    await expect(run.attachRunDirectory(repo)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readdirSync(directory)).toEqual(["run.log"]);
+    expect(readFileSync(path.join(directory, "run.log"), "utf8")).toBe("user data");
+  });
+
+  const unsafeKeyLocations = ["worktree", "unavailable", ...(constants.O_NOFOLLOW ? ["symlink"] : [])];
+  it.each(unsafeKeyLocations)(
+    "attaches without sealing or pruning with a %s key location",
+    async (location) => {
+      const repo = initRepo();
+      const cfg = { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 };
+      const attach = (day: number) => createRunTelemetry({
+        telemetryConfig: cfg, clock: () => new Date(Date.UTC(2026, 0, day))
+      }).attachRunDirectory(repo);
+      const old = await attach(1);
+      const recent = await attach(2);
+      const goodKey = path.join(process.env.CODEGENIE_HOME!, "retention.key");
+      const home = location === "worktree" ? path.join(repo, "home") : tempDir();
+      if (location === "symlink") {
+        symlinkSync(goodKey, path.join(home, "retention.key"), "file");
+      } else if (location === "unavailable") {
+        writeFileSync(path.join(home, "retention.key"), "", { flag: "wx" });
+      }
+      vi.stubEnv("CODEGENIE_HOME", home);
+
+      const { runDir } = await attach(3);
+      expect(existsSync(path.join(runDir, "run.log"))).toBe(true);
+      expect(existsSync(path.join(runDir, ".codegenie-run"))).toBe(false);
+      expect(existsSync(old.runDir)).toBe(true);
+      expect(existsSync(recent.runDir)).toBe(true);
+      if (location === "worktree") {
+        expect(existsSync(path.join(home, "retention.key"))).toBe(false);
+      }
+    }
+  );
 
   it("does not mutate an existing .codegenie gitignore", async () => {
     const repoRoot = tempDir();
@@ -1347,15 +1533,12 @@ describe("run telemetry", () => {
     const repoRoot = tempDir();
     const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
-    const protectedRun = path.join(runsRoot, "old-protected");
-    mkdirSync(protectedRun);
-    writeFileSync(path.join(protectedRun, "run.json"), "{}");
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true };
+    const oldest = createRunTelemetry({ telemetryConfig, clock: () => new Date("2026-01-01") });
+    const { runDir: protectedRun } = await oldest.attachRunDirectory(repoRoot);
     writeFileSync(path.join(protectedRun, "locked.txt"), "locked");
-    const newerRun = path.join(runsRoot, "newer-finalized");
-    mkdirSync(newerRun);
-    writeFileSync(path.join(newerRun, "run.json"), "{}");
-    const oldTime = new Date(Date.now() - 10_000);
-    utimesSync(protectedRun, oldTime, oldTime);
+    const newest = createRunTelemetry({ telemetryConfig, clock: () => new Date("2026-01-02") });
+    await newest.attachRunDirectory(repoRoot);
     chmodSync(protectedRun, 0o500);
 
     try {
@@ -1365,11 +1548,12 @@ describe("run telemetry", () => {
           enabled: true,
           retainRuns: 1
         },
-        idFactory: () => "active-with-prune-warning"
+        idFactory: () => "20260103-000000-12345678",
+        clock: () => new Date("2026-01-03")
       });
       const attached = await run.attachRunDirectory(repoRoot);
 
-      expect(attached.runDir).toBe(path.join(runsRoot, "active-with-prune-warning"));
+      expect(attached.runDir).toBe(path.join(runsRoot, "20260103-000000-12345678"));
       expect(existsSync(attached.runDir)).toBe(true);
       expect(existsSync(protectedRun)).toBe(true);
       expect(readFileSync(path.join(attached.runDir, "events.jsonl"), "utf8")).toContain(
