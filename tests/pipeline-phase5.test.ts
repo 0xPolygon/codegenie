@@ -3321,8 +3321,23 @@ describe("phase 5 pipeline regressions", () => {
     } else {
       expect(findDefinition).not.toHaveBeenCalled();
       expect(packets[0]?.contextText).toContain("function target() {}");
+      expect(packets[0]?.contextText).toContain("[... content truncated to fit packet context budget ...]");
       expect(events).toContainEqual(expect.objectContaining({ message: "packet_context_hint_unresolved", data: expect.objectContaining({ outcome: "symbol_truncated" }) }));
     }
+  });
+
+  it("marks a line-capped symbol even when the prefix fits the hint character budget", async () => {
+    const fixture = await textRepository({ "app.ts": `export function target() {\n${";\n".repeat(270)}}\n` });
+    try {
+      const direct = await fixture.tools.readSymbol("app.ts", { symbolName: "target" }, { kind: "head" });
+      expect(direct.meta).toMatchObject({ precision: "syntactic", lookupStatus: "found", truncated: true });
+      expect(direct.text!.length).toBeLessThan(2_000);
+      const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review",
+        surroundingContextHints: [{ kind: "enclosing_symbol", path: "app.ts", symbol: "target", reason: "inspect target", expectedUse: "packet_context" }] }] };
+      const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+      expect(packets[0]?.contextText).toContain("[... content truncated to fit packet context budget ...]");
+    } finally { fixture.dispose(); }
   });
 
   it("keeps a cross-file call-site hint as a tool lookup", async () => {

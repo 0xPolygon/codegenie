@@ -2453,7 +2453,10 @@ async function resolvePacketContextHint(
       && (result.meta.lookupStatus === undefined || result.meta.lookupStatus === "found")) {
       if (result.meta.truncated) telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: path,
         data: { kind: hint.kind, reason: hint.reason, outcome: "symbol_truncated" } });
-      return { text: renderHintContextBlock(hint, path, symbol, result.text), recovered: false };
+      const text = renderHintContextBlock(hint, path, symbol, result.text);
+      const marker = "\n[... content truncated to fit packet context budget ...]";
+      return { text: result.meta.truncated && !text.endsWith(marker.trimStart())
+        ? truncateTail(text + marker, MAX_HINT_CONTEXT_CHARS) : text, recovered: false };
     }
     const fallback = await withRepositoryToolCallContext(
       repoIndex.tools, { stage: 6, initiator: "harness" },
