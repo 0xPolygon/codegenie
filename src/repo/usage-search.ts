@@ -1,7 +1,7 @@
 import type { SourceSelector } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { isRepositoryTestPath } from "../util/path-roles.js";
-import { sha256Hex } from "../util/hashing.js";
+import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { classifyUsageSyntax, type UsageOccurrence } from "./usage-syntax.js";
@@ -15,7 +15,7 @@ export type UsagePage = { revision: "head" | "base"; scope: "all" | "tests"; pat
   entries: UsageEntry[]; candidateFiles: number; filesScanned: number; filesParsed: number; candidateProgress: number; scanComplete: boolean; coverageComplete: boolean;
   stopReason?: "row_limit" | "file_scan_limit"; nextCursor?: string; omissions: string[]; omittedDiagnostics: number };
 
-type Cursor = { version: 1; binding: string; path: string; line: number; column: number; incomplete?: boolean; startFile?: boolean };
+type Cursor = { path: string; line: number; column: number; incomplete?: boolean; startFile?: boolean };
 const MAX_FILES_PER_PAGE = 500;
 const MAX_ROWS = 100;
 const MAX_EXCERPT_CHARS = 2_000;
@@ -32,7 +32,7 @@ export async function findUsages(
   const scope = options.scope ?? "all";
   const requested = options.maxRows ?? 50;
   if (!Number.isInteger(requested) || requested < 1 || requested > MAX_ROWS) throw new CodegenieError("invalid_args", `maxRows must be between 1 and ${MAX_ROWS}`);
-  const binding = sha256Hex(JSON.stringify([resolver.resolveSource(source), source.kind, name, scope, options.pathGlob ?? null]));
+  const binding = toolCursorBinding(["find_usages", resolver.resolveSource(source), source.kind, name, scope, options.pathGlob ?? null]);
   const cursor = options.cursor ? decodeCursor(options.cursor, binding) : undefined;
   // Prefer supported source files over text-only leads so documentation does not
   // consume the first pages before syntactic callers are offered.
@@ -53,10 +53,10 @@ export async function findUsages(
   let coverageComplete = !cursor?.incomplete;
   const page = (next?: Cursor, stopReason?: UsagePage["stopReason"]): UsagePage => ({ revision: source.kind, scope, ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {}), rows, textMatches, entries, candidateFiles: paths.length, filesScanned, filesParsed, candidateProgress: start + filesScanned,
     scanComplete: next === undefined, coverageComplete: next === undefined && coverageComplete,
-    ...(stopReason ? { stopReason } : {}), ...(next ? { nextCursor: encodeCursor({ ...next, ...(!coverageComplete ? { incomplete: true } : {}) }) } : {}), omissions, omittedDiagnostics });
+    ...(stopReason ? { stopReason } : {}), ...(next ? { nextCursor: encodeToolCursor(binding, { ...next, ...(!coverageComplete ? { incomplete: true } : {}) }) } : {}), omissions, omittedDiagnostics });
   for (const path of paths.slice(start)) {
     checkAbort(options.signal);
-    if (filesScanned >= MAX_FILES_PER_PAGE) return page({ version: 1, binding, path, line: 1, column: 1, startFile: true }, "file_scan_limit");
+    if (filesScanned >= MAX_FILES_PER_PAGE) return page({ path, line: 1, column: 1, startFile: true }, "file_scan_limit");
     filesScanned++;
     const file = await resolver.readFile(path, source);
     checkAbort(options.signal);
@@ -79,11 +79,11 @@ export async function findUsages(
         if (match.line !== cursor!.line || match.column !== cursor!.column) continue;
         reachedCursor = true;
       }
-      if (rows.length + textMatches.length >= requested) return page({ version: 1, binding, path, line: match.line, column: match.column }, "row_limit");
+      if (rows.length + textMatches.length >= requested) return page({ path, line: match.line, column: match.column }, "row_limit");
       const excerpt = lines[match.line - 1];
       const location = { revision: source.kind, path, line: match.line, column: match.column, fileLines: lines.length,
         ...(excerpt !== undefined && excerpt.length <= MAX_EXCERPT_CHARS ? { excerpt } : { excerptOmitted: true as const }) };
-      const entryCursor = encodeCursor({ version: 1, binding, path, line: match.line, column: match.column,
+      const entryCursor = encodeToolCursor(binding, { path, line: match.line, column: match.column,
         ...(!coverageComplete ? { incomplete: true } : {}) });
       if (match.occurrence) {
         const evidence = match.occurrence.bindingEvidence;
@@ -132,14 +132,12 @@ function* findTextMatches(lines: string[], name: string): Generator<{ line: numb
   }
 }
 
-function encodeCursor(cursor: Cursor): string { return Buffer.from(JSON.stringify(cursor)).toString("base64url"); }
 function decodeCursor(value: string, binding: string): Cursor {
   try {
-    if (value.length > 4_096) throw new Error("oversized cursor");
-    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const parsed = decodeToolCursor(value, binding);
     if (typeof parsed === "object" && parsed !== null) {
       const cursor = parsed as Partial<Cursor>;
-      if (cursor.version === 1 && cursor.binding === binding && typeof cursor.path === "string"
+      if (typeof cursor.path === "string"
         && Number.isSafeInteger(cursor.line) && cursor.line! > 0 && Number.isSafeInteger(cursor.column) && cursor.column! > 0
         && (cursor.incomplete === undefined || typeof cursor.incomplete === "boolean")
         && (cursor.startFile === undefined || typeof cursor.startFile === "boolean")) return cursor as Cursor;
