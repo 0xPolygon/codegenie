@@ -262,7 +262,7 @@ function goTypeNativeKind(node: Node): string {
   return "type";
 }
 
-function declaredNames(node: Node): string[] {
+export function declaredNames(node: Node): string[] {
   const names = node.namedChildren
     .filter((child) => child.type === "identifier")
     .map((child) => child.text.trim())

@@ -21,7 +21,9 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
 
   const { packable, sourceLineRange, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext } = packable;
-  const { deliveredLineRange, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
+  // A backend continuation may be beyond the first line omitted by this cut.
+  // The range/record locator below is the authoritative caller continuation.
+  const { deliveredLineRange, recovery: _backendRecovery, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
   const degradationReason = (originalMeta.degraded ? originalMeta.degradationReason : undefined) ?? "tool_result_budget";
   const lineRange = deliveredLineRange ?? sourceLineRange;
   const firstLine = lineRange && lineRange[1] - lineRange[0] + 1 === records.length ? lineRange[0] : undefined;
