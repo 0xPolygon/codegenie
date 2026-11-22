@@ -9,7 +9,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
   let fixture: Awaited<ReturnType<typeof textRepository>>;
   beforeAll(async () => {
     fixture = await textRepository({
-      "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
+      "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "blank-line.custom": "\n", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
       "character-cap.ts": ["const required = makeRequirements();", "x".repeat(15_000), "y".repeat(15_000), "return required;"].join("\n"),
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
@@ -94,10 +94,11 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       .toMatchObject({ lookupStatus: "found", deliveryStatus: "empty", degraded: false });
     const beyond = await fixture.call("read_range", { path: "crlf.custom", startLine: 4, endLine: 9, source: { kind: "base" } });
     expect(beyond.text).toContain("crlf.custom@base has 3 lines; requested lines 4-9");
+    expect(beyond.text).toContain("delivered lines: none");
     expect(beyond.meta).toMatchObject({ totalLines: 3, deliveryStatus: "empty" });
     const throughEof = await fixture.call("read_range", { path: "crlf.custom", startLine: 2, endLine: 9 });
     expect(throughEof.sourceLineRange).toEqual([2, 3]);
-    expect(throughEof.text).toBe("two\r\nthree\r\n\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]");
+    expect(throughEof.text).toBe("crlf.custom@head lines 2-3 of 3\n2\ttwo\r\n3\tthree\r\n\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]");
     expect((await fixture.call("read_diff_blocks", { path: "schema/policy.ridl" })).meta)
       .toMatchObject({ lookupStatus: "not_found", deliveryStatus: "empty" });
     const missing = await fixture.call("read_range", { path: "missing.custom", startLine: 1, endLine: 2 });
@@ -111,6 +112,20 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect((await fixture.tools.readRange("revision.custom", 1, 1, { kind: "base" })).text).toBe("base-only");
     expect((await fixture.tools.readRange("unicode.custom", 2, 2)).text).toBe("用户 🔑");
     expect((await fixture.tools.readRange("crlf.custom", 2, 2)).text).toBe("two\r");
+  });
+
+  it("numbers a blank line and reports the base revision of a complete read", async () => {
+    const blank = await fixture.call("read_range", { path: "blank-line.custom", startLine: 1, endLine: 1 });
+    expect(blank.meta).toMatchObject({ deliveredLineRange: [1, 1], deliveryStatus: "full", totalLines: 1 });
+    expect(blank.text).toContain("blank-line.custom@head lines 1-1 of 1\n1\t\n\n");
+    const base = await fixture.call("read_range", { path: "revision.custom", startLine: 2, endLine: 2, source: { kind: "base" } });
+    expect(base.text).toContain("revision.custom@base lines 2-2 of 2\n2\tbase-tail\n\n");
+    const headerLength = "revision.custom@base lines 2-2 of 2".length;
+    const refused = packTextToolResult(base, headerLength);
+    expect(refused.meta).toMatchObject({ deliveryStatus: "budget_rejected", totalLines: 2 });
+    expect(refused.meta?.deliveredLineRange).toBeUndefined();
+    expect(refused.text).toContain("delivered lines: none; next undelivered line: 2");
+    expect(refused.text).not.toContain("base-tail");
   });
 
   it.each(["head", "base"] as const)("missing-file feedback guides discovery at %s without substituting another file", async kind => {
@@ -187,7 +202,10 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(range[1]).toBeLessThan(166);
     const next = await fixture.tools.readRange(args.path, range[1] + 1, args.endLine, args.source);
     const deliveredText = packed.text.split("\n\n[tool meta:")[0];
-    expect(deliveredText + "\n" + next.text).toBe(canonical.packable!.records.join("\n"));
+    const [header, ...deliveredLines] = deliveredText!.split("\n");
+    expect(header).toBe(`large.custom@base lines 39-${range[1]} of 620`);
+    expect(deliveredLines.join("\n") + "\n" + next.text.split("\n").map((line, i) => `${range[1] + 1 + i}\t${line}`).join("\n"))
+      .toBe(canonical.packable!.records.join("\n"));
     expect(packed.text).toContain(`continue with startLine=${range[1] + 1}, endLine=166`);
   });
 

@@ -1,4 +1,4 @@
-import { withMeta } from "./repository-tool-guidance.js";
+import { numberSourceLine, withMeta } from "./repository-tool-guidance.js";
 import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
@@ -69,17 +69,23 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
             errorCode: "budget_exhausted"
           };
         }
-        const records = text.split("\n");
         const range = meta.deliveredLineRange;
-        const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full" && text.length > 0
-          ? range ?? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)]
+        const records = text.split("\n");
+        const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full"
+          ? range ?? (text ? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)] : undefined)
           : undefined;
         const placement = sourceLineRange ? { sourceLineRange } : {};
-        if (!range) return { text: withMeta(text, meta), meta, ...placement };
+        if (!range) {
+          if (meta.requestedRange && meta.deliveryStatus === "empty") {
+            return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
+          }
+          return { text: withMeta(text, meta), meta, ...placement };
+        }
         const terminalNewline = records.length > range[1] - range[0] + 1;
         if (terminalNewline) records.pop();
+        const numbered = records.map((line, index) => numberSourceLine(line, range[0] + index));
         return {
-          ...createPackableToolResult({ open: "", records, separator: "\n", close: terminalNewline ? "\n" : "" }, meta),
+          ...createPackableToolResult({ open: "", records: numbered, separator: "\n", close: terminalNewline ? "\n" : "" }, meta),
           ...placement
         };
       })

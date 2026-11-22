@@ -237,7 +237,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           requestedSource: source.kind, sourceUsed: source.kind,
           degraded: false,
           lookupStatus: "found",
-          deliveryStatus: refused ? "budget_rejected" : omittedLines > 0 ? "truncated" : text.length === 0 ? "empty" : "full",
+          deliveryStatus: refused ? "budget_rejected" : omittedLines > 0 ? "truncated" : records.length === 0 ? "empty" : "full",
           requestedRange: { path, startLine, endLine },
           totalLines,
           ...(records.length > 0 ? { deliveredLineRange: [startLine, deliveredEnd] } : {}),

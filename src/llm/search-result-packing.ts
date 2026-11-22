@@ -1,14 +1,17 @@
 import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
-import { MISSING_FILE_GUIDANCE, withMeta } from "./repository-tool-guidance.js";
+import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
-function renderRecords({ open, records, separator, close }: ToolResultRecords): string {
-  return open + records.join(separator) + close;
+function renderRecordOpening(open: string, meta: ToolResultMeta): string {
+  const { requestedRange, sourceUsed, deliveredLineRange, totalLines } = meta;
+  if (!requestedRange || !sourceUsed || !deliveredLineRange || totalLines === undefined) return open;
+  return open + renderSourceBlockHeader(requestedRange.path, sourceUsed, deliveredLineRange, totalLines) + "\n";
 }
 
 /** Derive the canonical text and its packable representation together. */
 export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
-  return { text: withMeta(renderRecords(packable), meta), packable, meta };
+  const { open, records, separator, close } = packable;
+  return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta), packable, meta };
 }
 
 /** Keep the longest prefix of whole records that fits with its closing text and status. */
@@ -41,13 +44,14 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       if (next) notes.push(`next: ${next}`);
     }
     const footer = withMeta("", meta, notes);
-    const bodyLength = open.length + recordChars + (count - 1) * separator.length + close.length;
+    const deliveredOpening = renderRecordOpening(open, meta);
+    const bodyLength = deliveredOpening.length + recordChars + (count - 1) * separator.length + close.length;
     if (bodyLength + footer.length <= allowance) {
       const kept = { open, records: records.slice(0, count), separator, close,
         ...(labels ? { labels: labels.slice(0, count) } : {}) };
       return {
         ...result,
-        text: renderRecords(kept) + footer,
+        text: deliveredOpening + kept.records.join(separator) + close + footer,
         packable: kept,
         meta,
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})
@@ -55,17 +59,19 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     }
   }
 
+  const refusalMeta: ToolResultMeta = {
+    ...originalMeta,
+    truncated: true,
+    deliveryStatus: "budget_rejected",
+    degradationReason,
+    omittedCount: (originalMeta.omittedCount ?? 0) + records.length
+  };
+  const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source.";
   return {
-    text: "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source.",
+    text: originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
     isError: true,
     errorCode: "budget_exhausted",
-    meta: {
-      ...originalMeta,
-      truncated: true,
-      deliveryStatus: "budget_rejected",
-      degradationReason,
-      omittedCount: (originalMeta.omittedCount ?? 0) + records.length
-    }
+    meta: refusalMeta
   };
 }
 
