@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -1260,70 +1261,105 @@ describe("run telemetry", () => {
     stderr.mockRestore();
   });
 
-  it("prunes old runs while keeping the active run", async () => {
+  it.each([0, 1, 2])("keeps the active run and the newest prior runs with retainRuns=%i", async (retainRuns) => {
+    const repoRoot = tempDir();
+    const storage = path.join(repoRoot, "storage");
+    const linkedStorage = path.join(repoRoot, "linked-storage");
+    mkdirSync(storage);
+    symlinkSync(storage, linkedStorage, "junction");
+    const runsRoot = path.join(linkedStorage, "shared-runs");
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true, runDir: runsRoot };
+    const prior = [];
+    for (const day of [2, 3, 4]) {
+      const run = createRunTelemetry({ telemetryConfig, clock: () => new Date(Date.UTC(2026, 0, day)) });
+      prior.push(await run.attachRunDirectory(repoRoot));
+      if (day !== 2) {
+        await run.finalize({ status: "completed_full", exitCode: 0 });
+      }
+    }
+    const crashed = prior[0]!;
+    const newest = prior[2]!;
+    expect(existsSync(path.join(crashed.runDir, "run.json"))).toBe(false);
+
+    const foreign = "unrelated";
+    const unmarked = "20260105-000000-12345678";
+    const foreignFile = "20260106-000000-12345678";
+    const linkedRun = "20260107-000000-12345678";
+    const linkedMarker = "20260108-000000-12345678";
+    const markerFiles = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"];
+    mkdirSync(path.join(runsRoot, foreign));
+    for (const file of markerFiles) {
+      writeFileSync(path.join(runsRoot, foreign, file), "foreign data");
+    }
+    mkdirSync(path.join(runsRoot, unmarked));
+    writeFileSync(path.join(runsRoot, unmarked, "notes.txt"), "keep this");
+    writeFileSync(path.join(runsRoot, foreignFile), "regular file");
+    symlinkSync(newest.runDir, path.join(runsRoot, linkedRun), "junction");
+    mkdirSync(path.join(runsRoot, linkedMarker));
+    for (const file of markerFiles.slice(1)) {
+      writeFileSync(path.join(runsRoot, linkedMarker, file), "");
+    }
+    const outsideDir = path.join(repoRoot, "outside");
+    mkdirSync(outsideDir);
+    const outsideFile = path.join(outsideDir, "notes.txt");
+    writeFileSync(outsideFile, "outside the runs root");
+    symlinkSync(outsideFile, path.join(runsRoot, linkedMarker, "run.log"), "file");
+    symlinkSync(outsideDir, path.join(crashed.runDir, "outside-link"), "junction");
+    // Touch the oldest run last to make the actual directory timestamps misleading.
+    const later = new Date(Date.UTC(2026, 11, 1));
+    utimesSync(crashed.runDir, later, later);
+
+    const run = createRunTelemetry({
+      telemetryConfig: { ...telemetryConfig, retainRuns },
+      clock: () => new Date(Date.UTC(2026, 0, 1))
+    });
+    run.recorder.event({ stage: 0, level: "info", message: "pre-attach event" });
+    const active = await run.attachRunDirectory(repoRoot);
+    const kept = Math.max(1, retainRuns);
+    const deleted = prior.slice(0, -kept).reverse().map(({ runId }) => runId);
+
+    expect(readdirSync(runsRoot).sort()).toEqual([
+      active.runId, ...prior.slice(-kept).map(({ runId }) => runId), foreign,
+      unmarked, foreignFile, linkedRun, linkedMarker
+    ].sort());
+    expect(readFileSync(path.join(runsRoot, foreign, "run.log"), "utf8")).toBe("foreign data");
+    expect(readFileSync(path.join(runsRoot, unmarked, "notes.txt"), "utf8")).toBe("keep this");
+    expect(readFileSync(path.join(runsRoot, foreignFile), "utf8")).toBe("regular file");
+    expect(readFileSync(outsideFile, "utf8")).toBe("outside the runs root");
+    const events = readJsonl(path.join(active.runDir, "events.jsonl"));
+    expect(events.map((event) => event.eventId)).toEqual(["ev-000001", "ev-000002"]);
+    expect(events[1]).toMatchObject({
+      message: "old run directories pruned", data: { count: deleted.length, runs: deleted }
+    });
+  });
+
+  it("keeps the exact prune count and a bounded sample when the complete name list exceeds the event cap", async () => {
     const repoRoot = tempDir();
     const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
-    for (const [index, name] of ["old-1", "old-2", "old-3"].entries()) {
+    const prior = Array.from({ length: 700 }, (_, index) =>
+      `20260101-000000-${index.toString(16).padStart(8, "0")}`
+    );
+    for (const name of prior) {
       const dir = path.join(runsRoot, name);
       mkdirSync(dir);
-      writeFileSync(path.join(dir, "run.json"), "{}");
-      const mtime = new Date(Date.now() - (3 - index) * 1000);
-      utimesSync(dir, mtime, mtime);
+      for (const file of ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"]) {
+        writeFileSync(path.join(dir, file), "");
+      }
     }
 
     const run = createRunTelemetry({
-      telemetryConfig: {
-        ...defaultConfig.telemetry,
-        enabled: true,
-        retainRuns: 2
-      },
-      idFactory: () => "active-run"
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 }
     });
-    run.recorder.event({
-      stage: 0,
-      level: "info",
-      message: "pre-attach event"
+    const active = await run.attachRunDirectory(repoRoot);
+    const newest = prior.pop()!;
+    expect(readdirSync(runsRoot).sort()).toEqual([newest, active.runId].sort());
+    const [event] = readJsonl(path.join(active.runDir, "events.jsonl"));
+    expect(JSON.stringify(prior).length).toBeGreaterThan(16 * 1024);
+    expect(event).toMatchObject({
+      message: "old run directories pruned",
+      data: { count: prior.length, runs: prior.slice(-100).reverse(), omittedCount: prior.length - 100 }
     });
-    await run.attachRunDirectory(repoRoot);
-
-    expect(readdirSync(runsRoot).sort()).toEqual(["active-run", "old-2", "old-3"]);
-    const events = readFileSync(path.join(runsRoot, "active-run", "events.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(events.map((event) => event.eventId)).toEqual(["ev-000001", "ev-000002"]);
-    expect(events.map((event) => event.message)).toEqual([
-      "pre-attach event",
-      "old run directories pruned"
-    ]);
-  });
-
-  it("prunes crashed run directories without requiring run.json", async () => {
-    const repoRoot = tempDir();
-    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
-    mkdirSync(runsRoot, { recursive: true });
-    const crashed = path.join(runsRoot, "crashed-before-run-json");
-    mkdirSync(crashed);
-    const retained = path.join(runsRoot, "retained-finished-run");
-    mkdirSync(retained);
-    writeFileSync(path.join(retained, "run.json"), "{}");
-    const oldTime = new Date(Date.now() - 10_000);
-    const newTime = new Date(Date.now() - 1000);
-    utimesSync(crashed, oldTime, oldTime);
-    utimesSync(retained, newTime, newTime);
-
-    const run = createRunTelemetry({
-      telemetryConfig: {
-        ...defaultConfig.telemetry,
-        enabled: true,
-        retainRuns: 1
-      },
-      idFactory: () => "active-crash-prune"
-    });
-    await run.attachRunDirectory(repoRoot);
-
-    expect(readdirSync(runsRoot).sort()).toEqual(["active-crash-prune", "retained-finished-run"]);
   });
 
   it("does not mutate an existing .codegenie gitignore", async () => {
@@ -1347,15 +1383,12 @@ describe("run telemetry", () => {
     const repoRoot = tempDir();
     const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
-    const protectedRun = path.join(runsRoot, "old-protected");
-    mkdirSync(protectedRun);
-    writeFileSync(path.join(protectedRun, "run.json"), "{}");
+    const telemetryConfig = { ...defaultConfig.telemetry, enabled: true };
+    const oldest = createRunTelemetry({ telemetryConfig, clock: () => new Date("2026-01-01") });
+    const { runDir: protectedRun } = await oldest.attachRunDirectory(repoRoot);
     writeFileSync(path.join(protectedRun, "locked.txt"), "locked");
-    const newerRun = path.join(runsRoot, "newer-finalized");
-    mkdirSync(newerRun);
-    writeFileSync(path.join(newerRun, "run.json"), "{}");
-    const oldTime = new Date(Date.now() - 10_000);
-    utimesSync(protectedRun, oldTime, oldTime);
+    const newest = createRunTelemetry({ telemetryConfig, clock: () => new Date("2026-01-02") });
+    await newest.attachRunDirectory(repoRoot);
     chmodSync(protectedRun, 0o500);
 
     try {

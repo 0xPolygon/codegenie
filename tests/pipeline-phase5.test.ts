@@ -10836,21 +10836,36 @@ describe("phase 5 pipeline regressions", () => {
     ] });
   });
 
-  it("writes run artifacts for explicit runArtifactDir even when telemetry config is disabled", async () => {
+  it("writes explicit run artifacts without pruning sibling runs when telemetry config is disabled", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "forced-artifacts");
+    const parent = mkdtempSync(path.join(tmpdir(), "codegenie-run-"));
+    const runArtifactDir = path.join(parent, "forced-artifacts");
+    const priorRuns = [];
+    for (const day of [1, 2]) {
+      const prior = createRunTelemetry({
+        telemetryConfig: { ...defaultConfig.telemetry, enabled: true, runDir: parent },
+        clock: () => new Date(Date.UTC(2026, 0, day))
+      });
+      const { runDir } = await prior.attachRunDirectory(repo);
+      priorRuns.push(runDir);
+    }
 
+    const cfg = config();
+    cfg.telemetry.retainRuns = 1;
     await runReview(
       { mode: "branch", branchName: "feature" },
-      config(),
+      cfg,
       { repoRoot: repo, runArtifactDir }
     );
 
+    for (const runDir of priorRuns) {
+      expect(existsSync(path.join(runDir, "run.log"))).toBe(true);
+    }
     expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);

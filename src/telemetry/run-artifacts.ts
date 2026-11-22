@@ -1,12 +1,12 @@
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import path from "node:path";
@@ -87,6 +87,8 @@ export type LogicalArtifactName = keyof typeof ARTIFACT_LOCATION;
 export const KNOWN_ARTIFACTS = new Set(Object.keys(ARTIFACT_LOCATION));
 
 const ROOT_STREAM_ARTIFACTS = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"] as const;
+const RUN_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{8}$/u;
+const PRUNED_RUN_SAMPLE_LIMIT = 100;
 const PACKET_ARTIFACT_RE = /^packets\/[^/]+\.json$/u;
 const CANONICAL_PACKET_ARTIFACT_RE = /^stages\/06-packets\/packets\/[^/]+\.json$/u;
 const CANONICAL_ARTIFACT_PATHS: ReadonlySet<string> = new Set(Object.values(ARTIFACT_LOCATION));
@@ -374,6 +376,7 @@ export function createRunTelemetry(opts: CreateRunTelemetryOptions): RunTelemetr
 class RunTelemetryImpl {
   readonly runId: string;
   private readonly directoryName: string;
+  private readonly managesRunRetention: boolean;
   private readonly startedAt: string;
   private readonly clock: () => Date;
   private readonly config: CodegenieConfig["telemetry"];
@@ -466,6 +469,7 @@ class RunTelemetryImpl {
     this.metadata = structuredClone(opts.runMetadata ?? {});
     this.runId = opts.idFactory?.() ?? createRunId(this.clock());
     this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
+    this.managesRunRetention = opts.directoryNameFactory === undefined;
     this.startedAt = this.clock().toISOString();
     const thisImpl = this;
     this.recorder = {
@@ -512,7 +516,10 @@ class RunTelemetryImpl {
     this.runDirectory = runDir;
     touchCoreFiles(runDir);
     this.flushBuffers();
-    this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
+    // A caller-supplied artifact directory does not make its parent a managed runs root.
+    if (this.managesRunRetention) {
+      this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
+    }
     return { runId: this.runId, runDir };
   }
 
@@ -1377,11 +1384,14 @@ class RunTelemetryImpl {
 
   private recordPruneResult(result: PruneResult): void {
     if (result.deleted.length > 0) {
+      // Bound the names before the generic event cap can discard the whole payload.
+      const runs = result.deleted.slice(0, PRUNED_RUN_SAMPLE_LIMIT);
+      const omittedCount = result.deleted.length - runs.length;
       this.recordEvent({
         stage: 0,
         level: "info",
         message: "old run directories pruned",
-        data: { count: result.deleted.length, runs: result.deleted.map((dir) => path.basename(dir)) }
+        data: { count: result.deleted.length, runs, ...(omittedCount > 0 ? { omittedCount } : {}) }
       });
     }
 
@@ -2065,7 +2075,7 @@ type PruneResult = {
 function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): PruneResult {
   const result: PruneResult = { deleted: [], failures: [] };
   const keepCount = Math.max(1, retainRuns);
-  const active = path.resolve(activeRunDir);
+  const active = path.basename(activeRunDir);
 
   let names: string[];
   try {
@@ -2075,26 +2085,27 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
     return result;
   }
 
-  const dirs = names
-    .map((name) => {
-      const entry = path.join(runsRoot, name);
-      try {
-        const stats = statSync(entry);
-        return stats.isDirectory() && path.resolve(entry) !== active ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
-      } catch (error) {
-        result.failures.push({ path: entry, error: errorMessage(error) });
-        return undefined;
-      }
-    })
-    .filter((entry): entry is { path: string; mtimeMs: number } => entry !== undefined)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  for (const dir of dirs.slice(keepCount)) {
+  // The UTC timestamp prefix sorts by run creation time.
+  let kept = 0;
+  for (const name of names.sort().reverse()) {
+    if (name === active || !RUN_ID_RE.test(name)) {
+      continue;
+    }
+    const entry = path.join(runsRoot, name);
     try {
-      rmSync(dir.path, { recursive: true, force: true });
-      result.deleted.push(dir.path);
+      // Startup creates these markers even when the run never reaches finalization.
+      if (!lstatSync(entry, { throwIfNoEntry: false })?.isDirectory() ||
+        !ROOT_STREAM_ARTIFACTS.every((file) => lstatSync(path.join(entry, file), { throwIfNoEntry: false })?.isFile())) {
+        continue;
+      }
+      if (kept < keepCount) {
+        kept += 1;
+        continue;
+      }
+      rmSync(entry, { recursive: true });
+      result.deleted.push(name);
     } catch (error) {
-      result.failures.push({ path: dir.path, error: errorMessage(error) });
+      result.failures.push({ path: entry, error: errorMessage(error) });
     }
   }
 
@@ -2102,7 +2113,7 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
 }
 
 function touchCoreFiles(runDir: string): void {
-  for (const relPath of ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"]) {
+  for (const relPath of ROOT_STREAM_ARTIFACTS) {
     const filePath = path.join(runDir, relPath);
     if (!existsSync(filePath)) {
       writeFileSync(filePath, "");

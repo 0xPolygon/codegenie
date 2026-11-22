@@ -463,7 +463,7 @@ type RunTelemetry = {
   logger: Logger
   recorder: TelemetryRecorder
   // Creates .codegenie/ (with .gitignore provisioning) and the run directory,
-  // prunes old runs per telemetry.retainRuns, flushes stage-0 buffers.
+  // flushes stage-0 buffers and prunes old runs in recorder-managed roots.
   attachRunDirectory(repoRoot: string): Promise<{ runId: string; runDir: string }>
   // Writes run.json, telemetry.json, model-calls-summary.json,
   // tool-calls-summary.json, cost-profile.json from accumulated state and
@@ -805,9 +805,9 @@ Directory creation (`attachRunDirectory`):
 
 1. Resolve `telemetry.runDir` (default `.codegenie/runs`; out-of-repo values require user-level opt-in, enforced by the config loader).
 2. First-run provisioning: when creating `.codegenie/` itself, write `.codegenie/.gitignore` containing `runs/` and `cache/` (architecture law: provisioning happens only on creation; an existing `.codegenie/` is never modified).
-3. Create `<runDir>/<yyyyMMdd-HHmmss>-<shortid>/` where `shortid` is 6 random base36 chars; the directory name is the `runId`. Uniqueness comes from the timestamp + shortid; concurrent runs are supported because each run owns its directory exclusively.
-4. Prune: list sibling run directories, sort by mtime descending, delete those beyond the newest `telemetry.retainRuns` (default 20), never touching the active run. Pruning failures are `warn`-level, never fatal. Pruning emits a stage-`0` telemetry event with deleted run ids.
-5. Flush stage-`0` buffers into `run.log` / `events.jsonl`.
+3. Create `<runDir>/<runId>/`. The recorder generates `runId` from the UTC timestamp and eight random lowercase hexadecimal characters (`YYYYMMDD-HHMMSS-xxxxxxxx`). When a caller supplies an artifact directory, use that directory instead.
+4. Create the core stream files and flush stage-`0` buffers into `run.log` and `events.jsonl`.
+5. Prune in recorder-managed roots only. Eligible siblings are real directories named with the generated run ID format and containing all four regular stream files (`run.log`, `events.jsonl`, `model-calls.jsonl` and `tool-calls.jsonl`). A crashed run can qualify because these files are created at attachment. Older or foreign directories missing a marker and symlinked candidates or markers are left alone. Sort eligible prior runs by descending run ID and keep the newest `telemetry.retainRuns` (default 20, minimum 1) plus the active run. Caller-selected artifact directories skip pruning entirely. Pruning failures are nonfatal warnings. The stage-`0` prune event records the number deleted, up to 100 deleted run IDs, and the omitted count when the sample is shorter than the list.
 
 Artifact writer ownership (the layout itself is law in `architecture.md`):
 
@@ -972,7 +972,7 @@ Run artifacts and lifecycle:
 
 - `artifacts_run_dir_layout_and_naming`: `attachRunDirectory` creates `<runDir>/<yyyyMMdd-HHmmss>-<shortid>/`; `runId` equals the directory name.
 - `artifacts_gitignore_provisioned_on_create_only`: creating `.codegenie/` writes `.gitignore` with `runs/` and `cache/`; a pre-existing `.codegenie/` without `.gitignore` is left untouched.
-- `artifacts_retain_runs_pruning`: with `retainRuns: 2` and three prior runs, the oldest is deleted, the active run is never deleted, and a stage-0 telemetry event lists the pruned ids.
+- `artifacts_retain_runs_pruning`: keep the configured number of eligible prior runs plus the active run. Preserve foreign entries, symlinked candidates and markers, and siblings of a caller-selected run directory. The stage-0 prune event keeps the exact count and a bounded sample for large batches.
 - `artifacts_write_atomic_known_names_only`: `writeArtifact` accepts the architecture-named artifacts and `packets/<id>.json`, writes temp-then-rename, and rejects unknown names as a programming error.
 - `artifacts_finalize_summaries`: after scripted calls and tool executions, `finalize` writes `run.json` (with `durationMs`, totals, outcome), `telemetry.json` (per-stage runtimes derived from `stage_started`/`stage_completed` events, plus counts), `model-calls-summary.json` (per-stage aggregates plus cache hit/miss/write counts), and `cost-profile.json` (known/unknown cost split) with the documented required fields.
 - `tool_calls_summary_aggregates`: `finalize` writes `tool-calls-summary.json` whose per-tool and per-stage call counts, error/rejection/degradation rates, and average duration/result size match the run's recorded `tool-calls.jsonl` lines.
