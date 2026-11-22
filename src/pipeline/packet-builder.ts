@@ -130,6 +130,8 @@ const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
 const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_RANGES = 4;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
+// Reserve the original footer's space so disclosure wording cannot shorten an excerpt.
+const SLICED_SYMBOL_FOOTER_CHARS = 82;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
 const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
@@ -2219,9 +2221,8 @@ function renderSlicedSymbolContext(
     fact.changedLines.length > 0 ? `Changed ranges: ${compactLineRanges(fact.changedLines).join(", ")}` : undefined,
     "Relevant source excerpts:"
   ].filter((part): part is string => part !== undefined && part.length > 0).join("\n");
-  const scope = fact.symbolRange === undefined ? "the enclosing symbol" : `lines ${fact.symbolRange.join("-")}`;
-  const footer = `[symbol source sliced around changed lines; ${revision} ${readPath}, ${scope}: source outside the displayed lines and any clipped excerpt tails omitted]`;
-  const bodyBudget = Math.max(0, maxChars - header.length - footer.length - 2);
+  const footer = `[symbol source sliced around changed lines; ${revision}: source outside excerpts omitted]`;
+  const bodyBudget = Math.max(0, maxChars - header.length - SLICED_SYMBOL_FOOTER_CHARS - 2);
   const excerptText = excerpts.length > 0
     ? fitSymbolExcerpts(excerpts, bodyBudget)
     : truncateToBudget(fallbackSource.trimEnd(), Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));

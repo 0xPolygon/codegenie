@@ -3971,7 +3971,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("slices very large symbols around each changed line range", async () => {
+  it("preserves the baseline excerpt bytes in a tight multi-excerpt symbol slice", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
     const hugeSource = `export function changed() {\n${"  doWork();\n".repeat(1000)}}`;
     const readRanges: Array<{ startLine: number; endLine: number }> = [];
@@ -3979,7 +3979,7 @@ describe("phase 5 pipeline regressions", () => {
       ...fakeTools(),
       readRange: async (_pathName: string, startLine: number, endLine: number) => {
         readRanges.push({ startLine, endLine });
-        return { text: `// changed-line excerpt ${startLine}-${endLine}`, meta };
+        return { text: `// ${(startLine === 42 ? "x" : "y").repeat(2_000)}`, meta };
       },
       readSymbol: async () => ({
         text: hugeSource,
@@ -4027,11 +4027,25 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(readRanges).toEqual([{ startLine: 42, endLine: 58 }, { startLine: 142, endLine: 158 }]);
-    expect(packets[0]?.contextText).toContain("Signature: export function changed()");
-    expect(packets[0]?.contextText).toContain("Excerpt app.ts:42-58");
-    expect(packets[0]?.contextText).toContain("Excerpt app.ts:142-158");
-    expect(packets[0]?.contextText).toContain("head app.ts, lines 1-220: source outside the displayed lines and any clipped excerpt tails omitted");
-    expect(packets[0]?.contextText.length ?? 0).toBeLessThanOrEqual(8000);
+    const header = [
+      "Primary symbol: app.ts:changed",
+      "Signature: export function changed()",
+      "Line range: 1-220",
+      "Changed ranges: 50, 150",
+      "Relevant source excerpts:"
+    ].join("\n");
+    const baselineFooter = "[symbol source sliced around changed lines; source outside excerpt ranges omitted]";
+    const footer = "[symbol source sliced around changed lines; head: source outside excerpts omitted]";
+    expect(footer.length).toBe(baselineFooter.length);
+    const excerptChars = Math.floor((3_000 - header.length - baselineFooter.length - 4) / 2);
+    const truncation = "\n[... content truncated to fit packet context budget ...]";
+    const excerpt = (range: string, body: string) => {
+      const prefix = `Excerpt app.ts:${range}\n// `;
+      return prefix + body.repeat(excerptChars - prefix.length - truncation.length) + truncation;
+    };
+    const expected = [header, excerpt("42-58", "x"), "", excerpt("142-158", "y"), footer].join("\n");
+    expect(packets[0]?.contextText).toBe(`${expected}\nOutline for app.ts\nTop-level symbols: changed`);
+    expect(expected.length).toBeLessThanOrEqual(3_000);
   });
 
   it("skips inverted symbol excerpt ranges before readRange", async () => {
