@@ -361,6 +361,7 @@ export type PathListDelivery = {
 
 export type SearchDelivery = {
   source: SourceSelector["kind"];
+  emptyScope?: boolean;
   deliveredCount: number;
   scanIncomplete: boolean;
   discoveryOmittedCount: number;

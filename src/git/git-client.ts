@@ -14,7 +14,7 @@ import {
   type GitCappedCommandOptions
 } from "./subprocess.js";
 
-export type GrepResults = SearchResult[] & { omittedLines?: number; firstOmitted?: Pick<SearchResult, "path" | "line"> };
+export type GrepResults = SearchResult[] & { omittedLines?: number; firstOmitted?: Pick<SearchResult, "path" | "line">; emptyScope?: boolean };
 export type GrepPosition = Pick<SearchResult, "path" | "line">;
 type GrepOptions = {
   glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean;
@@ -210,7 +210,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         } catch (error) {
           const stderr = error instanceof CodegenieError ? String(error.context?.stderr ?? "") : "";
           if (/^fatal: (?:command line, |-e option, )/u.test(stderr)) {
-            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${stderr.slice(0, 300)}. Check brackets and parentheses; use name|other for alternatives.`, { cause: error });
+            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${stderr.slice(0, 300)}. Check brackets and parentheses. Escape literal punctuation, for example name\\( or return \\{. Use name|other for alternatives.`, { cause: error });
           }
           throw error;
         }

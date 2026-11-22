@@ -83,7 +83,7 @@ export class SourceResolver {
     const containedGlob = opts.glob === undefined ? undefined : containGlob(this.repoRoot, opts.glob);
     const paths = containedGlob === undefined ? undefined : await this.listFiles(containedGlob, opts.source);
     const startPath = opts.startAt ? Buffer.from(opts.startAt.path) : undefined;
-    return this.git.grep(commit, pattern, {
+    const results = await this.git.grep(commit, pattern, {
       ...(paths ? { paths: startPath ? paths.filter(path => Buffer.compare(Buffer.from(path), startPath) >= 0) : paths } : {}),
       ...(opts.maxResults !== undefined ? { maxResults: opts.maxResults } : {}),
       ...(opts.caseSensitive !== undefined ? { caseSensitive: opts.caseSensitive } : {}),
@@ -92,6 +92,8 @@ export class SourceResolver {
       ...(opts.startAt ? { startAt: opts.startAt } : {}),
       ...(opts.positioned ? { positioned: true } : {})
     });
+    if (paths?.length === 0) results.emptyScope = true;
+    return results;
   }
 
   private async readFileUncached(
