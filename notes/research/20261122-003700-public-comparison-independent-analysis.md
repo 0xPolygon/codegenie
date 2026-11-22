@@ -9,7 +9,7 @@ status: verified
 
 **The two versions find the required defects equally often, and the newer build is the more reliable one.** Over 114 paired reviews, released v0.8.0 published 32 of 84 required defects and master at `1f4c04d` published 33 of 84. The newer build had no partial reviews against seven, and its report stage needed a repair in 5 reviews against 34. Cost and time are the same. In both versions about half of the required defects are never raised by the reviewer at all, and that is where the detections are lost.
 
-This is one of two independent analyses. It is reconciled with [the other analysis](20261122-021000-public-version-comparison-codex.md): both count 32 of 84 for v0.8.0 and 33 of 84 for master, and agree on the repository splits, the excluded cases and the control findings. The analyses still differ on whether some control findings are real defects or policy-dependent. [Campaign plan](../../specs/plans/130-issue-138-public-version-comparison.md) · [Public cases](../../evals/public/README.md)
+This is one of two independent analyses. It is reconciled with [the other analysis](20261122-021000-public-version-comparison-codex.md): both count 32 of 84 for v0.8.0 and 33 of 84 for master, and agree on the repository splits, the excluded cases, the four false findings on pi-08 and the number of control findings in each arm (11 and 9, none contradicted by the source). They differ on how to class the control findings: the other analysis counts 15 of the 20 as source-supported issues, and this one classes 16 as not introduced by the change and 4 as a real but unreachable gap. [Campaign plan](../../specs/plans/130-issue-138-public-version-comparison.md) · [Public cases](../../evals/public/README.md)
 
 ## What ran
 
@@ -88,8 +88,9 @@ In these four pi cases the behaviour the oracle describes predates the reviewed 
 | Without the weak control cg-n3 | 8 of 24 | 7 of 24 |
 
 - All 20 findings come from three of the nine controls (go-11, pi-n2, pi-n3), in both arms. The six others, including cg-n3, drew no finding in any of their 36 reviews.
-- Checked against the source, none of the 20 is wrong about the code and none is a defect introduced by the change. Each describes behaviour that is deliberate, documented or unchanged from the base, for example a README snippet whose shape the change did not touch. I class all 20 as policy-dependent.
-- Twelve of the 20 are rated medium. A reader would have to dismiss them.
+- Checked against the source, none of the 20 is wrong about the code.
+- **Sixteen describe behaviour the change did not introduce.** The findings on go-11 and pi-n3 concern behaviour that is deliberate, documented or unchanged from the base, for example a README snippet whose shape the change did not touch. I class these as policy-dependent. All twelve medium-rated findings are among them; a reader would have to dismiss them.
+- **Four describe a real gap the change did introduce, which nothing in the repository can reach.** The pi-n2 change adds tab expansion and says tabs inside terminal string sequences stay untouched, but its scanner does not recognise one such sequence type, so a tab inside it would be rewritten. No code in the repository emits that sequence. Two reviews in each arm reported it, at low severity. I first classed these as policy-dependent with the rest; after reading the other analysis I think "accurate and low" is the fairer description, and pi-n2 should not be counted as a clean control.
 
 ## The scorer against these judgements
 
@@ -171,7 +172,7 @@ Arm B is `1f4c04d`. Current master has later fixes in the stages where B still s
 3. **Keep the Stage 9 stream limit and the Stage 10 repair routing.** B's reliability gains are visible at no cost: no incomplete verification, no partial review, and 29 fewer reviews needing a report repair.
 4. **Confirm the repair fixes on the next comparison.** By classification, 113 of B's 147 repair calls should disappear on master. Proving check: repair calls per stage on a build that includes #186 and #181, against 35 and 84 here.
 5. **Do not rank versions with the lexical scorer.** It is wrong on one observation in seven, and its totals agree with the adjudication only by cancellation. Use it to find leads and adjudicate against the oracle.
-6. **Look at the three controls that draw findings.** Twenty accurate but non-defect findings in 54 control reviews, twelve at medium, is the noise a reader of a clean change would see. Either they are not clean controls, or the reviewer needs a check for behaviour the change did not introduce.
+6. **Look at the three controls that draw findings.** Sixteen accurate findings about behaviour the change did not introduce, twelve of them at medium, is the noise a reader of a clean change would see; the reviewer needs a check for whether the change introduced what it reports. The four on pi-n2 are a real, low-severity gap, so that case is not a clean control.
 7. **Audit labels before the next campaign.** Four of 29 positive cases did not test what they claimed, and one of them inflated both arms by three detections.
 
 ## Limits
