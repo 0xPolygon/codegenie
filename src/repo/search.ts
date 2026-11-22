@@ -69,10 +69,10 @@ export function searchDeliveryMeta(meta: ToolResultMeta, delivery: SearchDeliver
 export class SearchBudgetError extends CodegenieError {
   readonly meta: ToolResultMeta;
 
-  constructor(message: string, delivery: SearchDelivery, reason: "search_discovery_limit" | "search_result_limit") {
+  constructor(message: string, delivery: SearchDelivery) {
     super("budget_exhausted", `${message} ${searchCutNotice(delivery)} This is not a zero-match result.`);
     this.meta = { ...searchDeliveryMeta({ backend: "text", precision: "text", degraded: false }, delivery, true),
-      degradationReason: reason };
+      degradationReason: "search_result_limit" };
   }
 }
 
@@ -116,21 +116,24 @@ export class SearchService {
         throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
       }
       throw new SearchBudgetError("No matching line fits the search output allowance.", {
-        source: source.kind, deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: omittedLines,
-        backendOmittedCount: 0, budgetOmittedCount: 0, shortenedExcerpts: 0,
+        source: source.kind, deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0,
+        backendOmittedCount: omittedLines, budgetOmittedCount: 0, shortenedExcerpts: 0,
         backendContextStripped: false, budgetContextStripped: false,
         ...(raw.firstOmitted ? { nextRead: raw.firstOmitted } : {})
-      }, "search_discovery_limit");
+      });
     }
-    const discoveryLimited = raw.length > maxResults || omittedLines > 0;
+    const scanIncomplete = raw.length > maxResults;
+    const discoveryLimited = scanIncomplete || (options.mention !== undefined && omittedLines > 0);
     // The extra text match may be a comment, not a verified identifier mention.
-    const countOmitted = options.mention === undefined ? omittedLines + Number(raw.length > maxResults) : 0;
+    const discoveryOmittedCount = options.mention === undefined ? Number(scanIncomplete) : 0;
     const classified = options.mention === undefined ? undefined : await this.classifyMentions(raw.slice(0, maxResults), options.mention, source);
     const lineCapped = capMatchTexts(classified?.results ?? raw.slice(0, maxResults));
     await this.enrich(lineCapped.results, source, options.contextMode ?? "none");
-    const capped = capSearchResultsTotal(lineCapped.results, countOmitted);
+    const capped = capSearchResultsTotal(lineCapped.results);
+    const backendOmittedCount = capped.omittedCount + (options.mention === undefined ? omittedLines : 0);
+    const omittedCount = discoveryOmittedCount + backendOmittedCount;
     const shortened = lineCapped.truncatedTextCount > 0 || capped.shortened;
-    const degraded = discoveryLimited || capped.omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
+    const degraded = discoveryLimited || omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
     const shortenedHit = capped.results.find(result => result.excerpt);
     const strippedHit = capped.shortened ? lineCapped.results.find(hasSearchContext) : undefined;
     const nextRead = earlierSearchPosition(
@@ -143,9 +146,9 @@ export class SearchService {
     const searchDelivery: SearchDelivery | undefined = options.mention === undefined ? {
       source: source.kind,
       deliveredCount: capped.results.length,
-      scanIncomplete: raw.length > maxResults,
-      discoveryOmittedCount: countOmitted,
-      backendOmittedCount: capped.omittedCount - countOmitted,
+      scanIncomplete,
+      discoveryOmittedCount,
+      backendOmittedCount,
       budgetOmittedCount: 0,
       shortenedExcerpts: capped.results.filter(result => result.excerpt).length,
       backendContextStripped: capped.shortened && lineCapped.results.some(hasSearchContext),
@@ -153,7 +156,7 @@ export class SearchService {
       ...(nextRead ? { nextRead: { path: nextRead.path, line: nextRead.line } } : {})
     } : undefined;
     if (lineCapped.results.length > 0 && capped.results.length === 0) {
-      if (searchDelivery) throw new SearchBudgetError("No complete search entry fits the result allowance.", searchDelivery, "search_result_limit");
+      if (searchDelivery) throw new SearchBudgetError("No complete search entry fits the result allowance.", searchDelivery);
       throw new CodegenieError("budget_exhausted", "No complete search entry fits the result allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
     }
     return {
@@ -163,7 +166,7 @@ export class SearchService {
       degraded,
       ...(searchDelivery ? { searchDelivery } : {}),
       ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
-      ...(discoveryLimited || capped.omittedCount > 0 || shortened ? { truncated: true, omittedCount: capped.omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
+      ...(discoveryLimited || omittedCount > 0 || shortened ? { truncated: true, omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };
   }
 
@@ -321,7 +324,7 @@ function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; trun
   };
 }
 
-function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: number) {
+function capSearchResultsTotal(results: SearchResult[]) {
   const capped = results.map(result => ({ ...result }));
   // Optional context must never evict core match locations.
   const shortened = JSON.stringify(capped).length > MAX_TOTAL_RESULT_CHARS;
@@ -332,7 +335,7 @@ function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: num
       delete result.enclosingSymbol;
     }
   }
-  let omittedCount = initialOmittedCount;
+  let omittedCount = 0;
   let firstOmitted: SearchPosition | undefined;
   const packed: SearchResult[] = [];
   for (const result of capped) {

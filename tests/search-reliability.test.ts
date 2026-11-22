@@ -32,14 +32,15 @@ describe("reliable search", () => {
     resolver.binding.headCommit = commitAll(repo, "oversized matching line");
     const result = await service.search("needle", { pathGlob: "big.txt" });
     expect(result.results.map(match => match.line)).toEqual([1, 3]);
-    expect(result).toMatchObject({ truncated: true, degraded: true, omittedCount: 1, discoveryLimited: true });
+    expect(result).toMatchObject({ truncated: true, degraded: true, omittedCount: 1, discoveryLimited: false });
     const packed = packSearchToolResult({ text: "", searchResults: result.results, meta: result }, 2000);
     expect(JSON.parse(packed.text).results).toHaveLength(2);
     expect(JSON.parse(packed.text).notice).toContain('Omitted 1 matching lines. Next read_range: "big.txt"@head:2.');
     await expect(service.search("x+", { pathGlob: "big.txt" })).rejects.toMatchObject({
       code: "budget_exhausted",
-      meta: { deliveryStatus: "budget_rejected", omittedCount: 1,
-        searchDelivery: { deliveredCount: 0, nextRead: { path: "big.txt", line: 2 } } }
+      meta: { deliveryStatus: "budget_rejected", degradationReason: "search_result_limit", omittedCount: 1, omittedCountIsLowerBound: false,
+        searchDelivery: { deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0, backendOmittedCount: 1,
+          nextRead: { path: "big.txt", line: 2 } } }
     });
     expect((await service.search("absent", { pathGlob: "big.txt" })).results).toEqual([]);
   });

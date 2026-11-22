@@ -296,10 +296,17 @@ describe("search delivery accounting over committed source", () => {
     expect(JSON.parse(incomplete.text).notice).toContain('Omitted at least 1 matching lines. Scan limited. Next read_range: "cmd/serve/admin.go"@head:3.');
     const exact = packSearchToolResult(await search("needle", { pathGlob: "src/oversized.ts" }), 4000);
     expect(exact.meta).toMatchObject({
-      omittedCount: 1, omittedCountIsLowerBound: false, searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 1 }
+      degradationReason: "search_result_limit", omittedCount: 1, omittedCountIsLowerBound: false,
+      searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 0, backendOmittedCount: 1 }
     });
+    expect(exact.meta?.discoveryLimited).not.toBe(true);
     expect(JSON.parse(exact.text).results).toMatchObject([{ line: 2 }]);
     expect(JSON.parse(exact.text).notice).toContain('Omitted 1 matching lines. Next read_range: "src/oversized.ts"@head:1.');
+    const mixed = packSearchToolResult(await search("needle", { pathGlob: "src/{excerpt,oversized}.ts", maxResults: 1 }), 4000);
+    expect(mixed.meta).toMatchObject({
+      degradationReason: "search_discovery_limit", discoveryLimited: true, omittedCount: 2, omittedCountIsLowerBound: true,
+      searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1, backendOmittedCount: 1 }
+    });
     const excerpt = packSearchToolResult(await search("needle", { pathGlob: "src/excerpt.ts" }), 4000);
     expect(excerpt.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 0, searchDelivery: { shortenedExcerpts: 1 } });
     expect(JSON.parse(excerpt.text).notice).toContain('Next read_range: "src/excerpt.ts"@head:1.');
