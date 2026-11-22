@@ -9,7 +9,7 @@ import { packUsagePage } from "./usage-result-packing.js";
 export function buildFindUsagesTool(tools: RepositoryTools): ToolDefinition {
   return {
     name: "find_usages",
-    description: "Find lexical uses at head or base, including calls, references, imports and re-exports. Results identify source positions, enclosing declarations and import spelling; bindings and dynamic dispatch remain unresolved. Set scope to tests to search test files. A cursor resumes the first unread row; use the same name, source, scope and pathGlob. Text-only matches are labelled separately. A renamed re-export consumed in another file can be missed.",
+    description: "Find lexical uses at head or base, including calls, constructions, references, imports and re-exports. Results identify source positions, enclosing declarations and import spelling; bindings and dynamic dispatch remain unresolved. Search an enclosing declaration's searchName to follow its callers; a dotted name narrows a common method. Set scope to tests to search test files. A cursor resumes the first unread row; use the same name, source, scope and pathGlob. Text-only matches are labelled separately. A renamed re-export consumed in another file can be missed.",
     parameters: Type.Object({
       name: Type.String({ minLength: 1, maxLength: 500 }),
       source: Type.Optional(Type.Object({ kind: Type.Union([Type.Literal("head"), Type.Literal("base")]) }, { additionalProperties: false })),

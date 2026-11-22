@@ -67,6 +67,12 @@ describe("usage syntax", () => {
       bindingEvidence: expect.objectContaining({ importedName: "*", localName: "util", moduleSpecifier: "./worker.js", binding: "unresolved" }) }));
   });
 
+  it("reports a default import's local spelling as unresolved evidence", async () => {
+    const file = await parse("src/caller.ts", "typescript", 'import run from "./worker.js";\nfunction caller() { run(); }\n');
+    expect(classifyUsageSyntax(file, "run")).toContainEqual(expect.objectContaining({ role: "call",
+      bindingEvidence: expect.objectContaining({ importedName: "default", localName: "run", moduleSpecifier: "./worker.js", binding: "unresolved" }) }));
+  });
+
   it("reports anonymous callbacks and their nearest named declaration without inventing a name", async () => {
     const file = await parse("src/caller.ts", "typescript", "class Runner { execute() { queue(() => run()); } }\n");
     const row = classifyUsageSyntax(file, "run")![0]!;
@@ -85,6 +91,20 @@ describe("usage syntax", () => {
   it("recognizes generic and parenthesized direct calls without treating arguments as calls", async () => {
     const file = await parse("src/generics.ts", "typescript", "run<number>();\n(run)();\nother(run);\n");
     expect(classifyUsageSyntax(file, "run")!.map(row => row.role)).toEqual(["call", "call", "reference"]);
+  });
+
+  it("keeps TypeScript shorthand object properties as references", async () => {
+    const file = await parse("src/options.ts", "typescript", "function build(defaultTools: string[]) { return { defaultTools }; }\n");
+    expect(classifyUsageSyntax(file, "defaultTools")!.map(row => row.role)).toEqual(["declaration", "reference"]);
+  });
+
+  it("matches a dotted suffix on segment boundaries and marks constructors", async () => {
+    const file = await parse("src/chain.ts", "typescript", "function f() { lm.sessions.load(); lm . sessions . load(); other.mysessions.load(); new Failure(); }\n");
+    const rows = classifyUsageSyntax(file, "sessions.load")!;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ spelling: "lm.sessions.load", receiver: "lm.sessions", role: "member_call" });
+    expect(rows[1]).toMatchObject({ spelling: "lm . sessions . load", role: "member_call" });
+    expect(classifyUsageSyntax(file, "Failure")![0]?.role).toBe("construct");
   });
 
   it("keeps same-named Go receiver methods and interface calls lexical", async () => {

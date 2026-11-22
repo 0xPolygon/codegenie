@@ -13,7 +13,7 @@ export type TextUsageRow = { revision: "head" | "base"; path: string; line: numb
 export type UsageEntry = { kind: "syntactic"; row: UsageRow; cursor: string } | { kind: "text"; row: TextUsageRow; cursor: string };
 export type UsagePage = { revision: "head" | "base"; scope: "all" | "tests"; pathGlob?: string; rows: UsageRow[]; textMatches: TextUsageRow[];
   entries: UsageEntry[]; candidateFiles: number; filesScanned: number; filesParsed: number; candidateProgress: number; scanComplete: boolean; coverageComplete: boolean;
-  stopReason?: "row_limit" | "file_scan_limit"; nextCursor?: string; omissions: string[]; omittedDiagnostics: number };
+  stopReason?: "row_limit" | "file_scan_limit"; nextCursor?: string; nextLocation?: { path: string; line: number; column: number; kind: "row" | "file" }; omissions: string[]; omittedDiagnostics: number };
 
 type Cursor = { path: string; line: number; column: number; incomplete?: boolean; startFile?: boolean };
 const MAX_FILES_PER_PAGE = 500;
@@ -24,7 +24,8 @@ const MAX_EXCERPT_CHARS = 2_000;
 export async function findUsages(
   resolver: SourceResolver, registry: LanguageAdapterRegistry, name: string, options: UsageSearchOptions = {}
 ): Promise<UsagePage> {
-  if (!name || name.length > 500 || /[\r\n\0]/u.test(name) || name.split(".").some(part => part.length === 0)) {
+  const normalizedName = name.replace(/\s+/gu, "");
+  if (!normalizedName || name.length > 500 || /[\r\n\0]/u.test(name) || normalizedName.split(".").some(part => part.length === 0)) {
     throw new CodegenieError("invalid_args", "name must be a non-empty single-line name with no empty dotted segment (maximum 500 characters)");
   }
   checkAbort(options.signal);
@@ -32,11 +33,11 @@ export async function findUsages(
   const scope = options.scope ?? "all";
   const requested = options.maxRows ?? 50;
   if (!Number.isInteger(requested) || requested < 1 || requested > MAX_ROWS) throw new CodegenieError("invalid_args", `maxRows must be between 1 and ${MAX_ROWS}`);
-  const binding = toolCursorBinding(["find_usages", resolver.resolveSource(source), source.kind, name, scope, options.pathGlob ?? null]);
+  const binding = toolCursorBinding(["find_usages", resolver.resolveSource(source), source.kind, normalizedName, scope, options.pathGlob ?? null]);
   const cursor = options.cursor ? decodeCursor(options.cursor, binding) : undefined;
   // Prefer supported source files over text-only leads so documentation does not
   // consume the first pages before syntactic callers are offered.
-  const paths = (await resolver.grepFiles(name.split(".").at(-1)!, options.pathGlob, source)).filter(path => scope === "all" || isRepositoryTestPath(path))
+  const paths = (await resolver.grepFiles(normalizedName.split(".").at(-1)!, options.pathGlob, source)).filter(path => scope === "all" || isRepositoryTestPath(path))
     .sort((a, b) => Number(!isSupportedSource(a)) - Number(!isSupportedSource(b)) || (a < b ? -1 : a > b ? 1 : 0));
   checkAbort(options.signal);
   const start = cursor ? paths.indexOf(cursor.path) : 0;
@@ -53,7 +54,8 @@ export async function findUsages(
   let coverageComplete = !cursor?.incomplete;
   const page = (next?: Cursor, stopReason?: UsagePage["stopReason"]): UsagePage => ({ revision: source.kind, scope, ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {}), rows, textMatches, entries, candidateFiles: paths.length, filesScanned, filesParsed, candidateProgress: start + filesScanned,
     scanComplete: next === undefined, coverageComplete: next === undefined && coverageComplete,
-    ...(stopReason ? { stopReason } : {}), ...(next ? { nextCursor: encodeToolCursor(binding, { ...next, ...(!coverageComplete ? { incomplete: true } : {}) }) } : {}), omissions, omittedDiagnostics });
+    ...(stopReason ? { stopReason } : {}), ...(next ? { nextCursor: encodeToolCursor(binding, { ...next, ...(!coverageComplete ? { incomplete: true } : {}) }),
+      nextLocation: { path: next.path, line: next.line, column: next.column, kind: next.startFile ? "file" as const : "row" as const } } : {}), omissions, omittedDiagnostics });
   for (const path of paths.slice(start)) {
     checkAbort(options.signal);
     if (filesScanned >= MAX_FILES_PER_PAGE) return page({ path, line: 1, column: 1, startFile: true }, "file_scan_limit");
@@ -67,11 +69,11 @@ export async function findUsages(
     const parsed = await adapter.parse({ path, language: registry.languageForPath(path), content: file.content, source, contentSha: file.contentSha });
     checkAbort(options.signal);
     if (parsed.tree) filesParsed++;
-    const syntax = classifyUsageSyntax(parsed, name);
+    const syntax = classifyUsageSyntax(parsed, normalizedName);
     if (!syntax || parsed.hasErrors) coverageComplete = false;
     const matches: Iterable<{ line: number; column: number; occurrence?: UsageOccurrence }> = syntax
       ? syntax.sort(compareUsageGroups).map(occurrence => ({ line: occurrence.line, column: occurrence.column, occurrence }))
-      : findTextMatches(lines, name);
+      : findTextMatches(lines, normalizedName);
     if (parsed.hasErrors) recordOmission(`${path}: parse has errors; syntax matches may be incomplete`);
     let reachedCursor = !cursor || path !== cursor.path || cursor.startFile === true;
     for (const match of matches) {

@@ -2,7 +2,7 @@ import type { Node } from "web-tree-sitter";
 import type { ParsedFile } from "../types.js";
 import { treeFromParsed } from "./language-adapter.js";
 
-export type UsageRole = "call" | "member_call" | "reference" | "import" | "re_export" | "declaration";
+export type UsageRole = "call" | "member_call" | "construct" | "reference" | "import" | "re_export" | "declaration";
 export type UsageOccurrence = {
   path: string;
   line: number;
@@ -17,7 +17,8 @@ export type UsageOccurrence = {
     nearestNamed?: { name: string; lineRange: [number, number] } };
 };
 
-const IDENTIFIERS = new Set(["identifier", "property_identifier", "field_identifier", "type_identifier"]);
+const IDENTIFIERS = new Set(["identifier", "property_identifier", "field_identifier", "type_identifier",
+  "shorthand_property_identifier", "shorthand_property_identifier_pattern"]);
 const DECLARATIONS = new Set(["function_declaration", "function_expression", "method_definition", "method_declaration", "func_literal", "arrow_function", "generator_function_declaration"]);
 const NAMED_BINDINGS = new Set(["variable_declarator", "class_declaration", "interface_declaration", "type_alias_declaration",
   "type_spec", "const_spec", "var_spec", "method_elem", "parameter_declaration", "required_parameter", "optional_parameter"]);
@@ -33,13 +34,15 @@ export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurr
     ?.namedChildren.find(child => child.type === "package_identifier")?.text : undefined;
   const spellings = new Set([lastName, ...imports.filter(entry => entry.importedName === lastName).map(entry => entry.localName)]);
   const rows: UsageOccurrence[] = [];
-  const visit = (node: Node): void => {
+  walkNodes(tree.rootNode, node => {
     if (IDENTIFIERS.has(node.type) && spellings.has(node.text)) {
       const parent = node.parent;
       const member = parent && ["member_expression", "selector_expression"].includes(parent.type)
         && sameNode(parent.childForFieldName("property") ?? parent.childForFieldName("field"), node) ? parent : undefined;
       const spelling = member?.text ?? node.text;
-      if (!dotted || spelling === name) {
+      const compactSpelling = spelling.replace(/\s+/gu, "");
+      const compactName = name.replace(/\s+/gu, "");
+      if (!dotted || compactSpelling === compactName || compactSpelling.endsWith(`.${compactName}`)) {
         const role = syntaxRole(node, member);
         const receiver = member?.childForFieldName("object")?.text ?? member?.childForFieldName("operand")?.text;
         const bindingEvidence = (role === "re_export" ? reExportEvidence(node) : undefined)
@@ -50,9 +53,7 @@ export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurr
           enclosing: enclosingDeclaration(node, tree.rootNode) });
       }
     }
-    for (const child of node.namedChildren) visit(child);
-  };
-  visit(tree.rootNode);
+  });
   return rows;
 }
 
@@ -72,8 +73,13 @@ function reExportEvidence(node: Node): UsageOccurrence["bindingEvidence"] {
 
 function importSpellings(root: Node, sought: string): NonNullable<UsageOccurrence["bindingEvidence"]>[] {
   const entries: NonNullable<UsageOccurrence["bindingEvidence"]>[] = [];
-  const visit = (node: Node): void => {
-    if (node.type === "import_specifier") {
+  walkNodes(root, node => {
+    if (node.type === "import_clause") {
+      const localName = node.namedChildren.find(child => child.type === "identifier")?.text;
+      const source = node.parent?.childForFieldName("source")?.text;
+      if (localName === sought && source) entries.push({ kind: "import_spelling", importedName: "default", localName,
+        moduleSpecifier: source.slice(1, -1), line: node.startPosition.row + 1, binding: "unresolved" });
+    } else if (node.type === "import_specifier") {
       const importedName = node.childForFieldName("name")?.text;
       const localName = node.childForFieldName("alias")?.text ?? importedName;
       let statement = node.parent;
@@ -95,10 +101,18 @@ function importSpellings(root: Node, sought: string): NonNullable<UsageOccurrenc
       if (moduleSpecifier && localName && localName !== "." && localName !== "_") entries.push({ kind: "import_spelling",
         importedName: "*", localName, moduleSpecifier, line: node.startPosition.row + 1, binding: "unresolved" });
     }
-    for (const child of node.namedChildren) visit(child);
-  };
-  visit(root);
+  });
   return entries;
+}
+
+function walkNodes(root: Node, visit: (node: Node) => void): void {
+  const pending: Node[] = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    visit(node);
+    const children = node.namedChildren;
+    for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]!);
+  }
 }
 
 function sameNode(a: Node | null | undefined, b: Node): boolean {
@@ -109,6 +123,7 @@ function syntaxRole(node: Node, member?: Node): UsageRole {
   for (let p = node.parent; p; p = p.parent) {
     if (["import_statement", "import_spec", "import_declaration"].includes(p.type)) return "import";
     if (["export_specifier", "export_clause"].includes(p.type)) return "re_export";
+    if (p.type === "new_expression" && sameCallable(p.childForFieldName("constructor"), member ?? node)) return "construct";
     if (p.type === "call_expression") {
       const target = p.childForFieldName("function");
       if (sameCallable(target, member ?? node)) return member ? "member_call" : "call";

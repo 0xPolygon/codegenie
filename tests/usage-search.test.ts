@@ -27,6 +27,7 @@ describe("pinned usage search", () => {
     const delivery = packUsagePage(page, "run", 4_000);
     expect(delivery).toMatchObject({ isError: true, errorCode: "budget_exhausted", nextCursor: page.nextCursor });
     expect(delivery.text).toContain("file-scan limit");
+    expect(delivery.text).toContain('Next candidate file "src/500.ts"@head.');
     const mockTools = { findUsages: async () => ({ page, meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false } }) } as unknown as RepositoryTools;
     const outcome = await buildFindUsagesTool(mockTools).execute({ name: "run" }, new AbortController().signal);
     expect(outcome).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected", degradationReason: "usage_scan_limit" } });
@@ -37,6 +38,7 @@ describe("pinned usage search", () => {
       "src/caller.ts": 'import { run as invoke } from "./worker";\nexport function caller() { invoke(); invoke(); }\n',
       "src/worker.ts": 'export function run() {}\n',
       "src/esm.ts": 'import { run } from "./worker.js";\nexport function call() { run(); }\n',
+      "src/long.ts": `export function long() { run(); /* ${"x".repeat(2_100)} */ }\n`,
       "src/nested.ts": 'function outer() {\n  run();\n  consume(() => run());\n  run();\n}\n',
       "src/worker.test.ts": 'import { run } from "./worker";\ntest("run", () => run());\n',
       "docs/guide.md": 'run appears here\n'
@@ -78,12 +80,16 @@ describe("pinned usage search", () => {
       expect(esm.rows.find(row => row.role === "call")?.bindingEvidence).toMatchObject({
         moduleSpecifier: "./worker.js", candidateModulePath: "src/worker.ts", binding: "unresolved"
       });
+      const long = await findUsages(resolver, registry, "run", { pathGlob: "src/long.ts" });
+      expect(long.rows.find(row => row.role === "call")).toMatchObject({ excerptOmitted: true, line: 1 });
+      expect(packUsagePage(long, "run", 4_000).text).toContain("source line omitted: too long to deliver");
       const fullText = packUsagePage(caller, "run", 100_000);
       expect(fullText.text.match(/src\/caller\.ts"@head: 2 lines/gu)).toHaveLength(1);
       expect(fullText.text).toContain('2\texport function caller() { invoke(); invoke(); }');
       const cut = Array.from({ length: fullText.text.length }, (_, n) => packUsagePage(caller, "run", n))
         .find(delivery => !delivery.isError && delivery.deliveredCount > 0 && delivery.deliveredCount < caller.entries.length)!;
       expect(cut.nextCursor).toBe(caller.entries[cut.deliveredCount]?.cursor);
+      expect(cut.text).toContain(`Next row "src/caller.ts"@head:${caller.entries[cut.deliveredCount]!.row.line}:${caller.entries[cut.deliveredCount]!.row.column}`);
       const resumed = await findUsages(resolver, registry, "run", { pathGlob: "src/caller.ts", cursor: cut.nextCursor! });
       expect(resumed.entries[0]?.row).toEqual(caller.entries[cut.deliveredCount]?.row);
       expect(packUsagePage(caller, "run", 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted", deliveredCount: 0 });
