@@ -963,7 +963,7 @@ async function resolveInput(
 function localUntrackedNotice(resolved: ResolvedReviewInput): string | undefined {
   const count = resolved.untrackedFiles ?? 0;
   if (count === 0) return undefined;
-  return `Omitted ${count} untracked file${count === 1 ? "" : "s"}. Run git add -N <path> to include a new file in an uncommitted review.`;
+  return `Omitted ${count} untracked file${count === 1 ? "" : "s"}. Run \`git add -N <path>\` to include a new file in an uncommitted review.`;
 }
 
 async function maybeZeroWork(

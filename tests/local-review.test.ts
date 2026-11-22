@@ -208,6 +208,7 @@ describe("local review snapshots", () => {
     expect(report).not.toMatch(/https:\/\/github\.com\/[^\s]+\/blob\//u);
     expect(report).not.toContain(path.dirname(objects[0]!));
     expect(report.includes("Omitted 1 untracked file.")).toBe(mode === "uncommitted");
+    expect(report.includes("`git add -N <path>`")).toBe(mode === "uncommitted");
     expect(stderr.mock.calls.flat().join("").includes("Omitted 1 untracked file.")).toBe(mode === "uncommitted");
   });
 
