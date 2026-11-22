@@ -10866,6 +10866,7 @@ describe("phase 5 pipeline regressions", () => {
     for (const runDir of priorRuns) {
       expect(existsSync(path.join(runDir, "run.log"))).toBe(true);
     }
+    expect(existsSync(path.join(runArtifactDir, ".codegenie-run"))).toBe(false);
     expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);

@@ -435,6 +435,7 @@ async function startRun(
     : config.telemetry;
   const run = createRunTelemetry({
     telemetryConfig,
+    maxTimeMs: config.review.maxTimeMs,
     ...(runArtifactDir ? { directoryNameFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
     runMetadata: {
       argv: process.argv,

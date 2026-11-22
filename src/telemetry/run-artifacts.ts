@@ -1,12 +1,10 @@
 import {
   appendFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
-  rmSync,
   writeFileSync
 } from "node:fs";
 import path from "node:path";
@@ -27,9 +25,12 @@ import { stripCredentials } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import { STAGE_LABELS, STAGES } from "../review-stages.js";
+import { defaultConfig } from "../config/schema.js";
+import { sealAndPruneRuns, type PruneResult } from "./run-retention.js";
 
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodegenieConfig["telemetry"];
+  maxTimeMs?: number;
   runMetadata?: RunArtifactMetadata;
   clock?: () => Date;
   idFactory?: () => string;
@@ -87,7 +88,6 @@ export type LogicalArtifactName = keyof typeof ARTIFACT_LOCATION;
 export const KNOWN_ARTIFACTS = new Set(Object.keys(ARTIFACT_LOCATION));
 
 const ROOT_STREAM_ARTIFACTS = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"] as const;
-const RUN_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{8}$/u;
 const PRUNED_RUN_SAMPLE_LIMIT = 100;
 const PACKET_ARTIFACT_RE = /^packets\/[^/]+\.json$/u;
 const CANONICAL_PACKET_ARTIFACT_RE = /^stages\/06-packets\/packets\/[^/]+\.json$/u;
@@ -377,6 +377,7 @@ class RunTelemetryImpl {
   readonly runId: string;
   private readonly directoryName: string;
   private readonly managesRunRetention: boolean;
+  private readonly maxTimeMs: number;
   private readonly startedAt: string;
   private readonly clock: () => Date;
   private readonly config: CodegenieConfig["telemetry"];
@@ -470,6 +471,7 @@ class RunTelemetryImpl {
     this.runId = opts.idFactory?.() ?? createRunId(this.clock());
     this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
     this.managesRunRetention = opts.directoryNameFactory === undefined;
+    this.maxTimeMs = opts.maxTimeMs ?? defaultConfig.review.maxTimeMs;
     this.startedAt = this.clock().toISOString();
     const thisImpl = this;
     this.recorder = {
@@ -507,7 +509,7 @@ class RunTelemetryImpl {
     mkdirSync(runsRoot, { recursive: true });
 
     const runDir = path.join(runsRoot, this.directoryName);
-    mkdirSync(runDir, { recursive: true });
+    mkdirSync(runDir, { recursive: !this.managesRunRetention });
     if (this.config.debugTrace) {
       mkdirSync(path.join(runDir, "debug", "llm-calls"), { recursive: true });
       mkdirSync(path.join(runDir, "debug", "tool-calls"), { recursive: true });
@@ -518,7 +520,14 @@ class RunTelemetryImpl {
     this.flushBuffers();
     // A caller-supplied artifact directory does not make its parent a managed runs root.
     if (this.managesRunRetention) {
-      this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
+      this.recordPruneResult(sealAndPruneRuns({
+        runsRoot,
+        runId: this.runId,
+        retainRuns: this.config.retainRuns,
+        startedAtMs: Date.parse(this.startedAt),
+        maxTimeMs: this.maxTimeMs,
+        nowMs: this.clock().getTime()
+      }));
     }
     return { runId: this.runId, runDir };
   }
@@ -2065,54 +2074,6 @@ export function provisionCodegenieGitignore(repoRoot: string): void {
     return;
   }
   writeFileSync(gitignorePath, "runs/\ncache/\nlocks/\n");
-}
-
-type PruneResult = {
-  deleted: string[];
-  failures: Array<{ path: string; error: string }>;
-};
-
-function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): PruneResult {
-  const result: PruneResult = { deleted: [], failures: [] };
-  const keepCount = Math.max(1, retainRuns);
-  const active = path.basename(activeRunDir);
-
-  let names: string[];
-  try {
-    names = readdirSync(runsRoot);
-  } catch (error) {
-    result.failures.push({ path: runsRoot, error: errorMessage(error) });
-    return result;
-  }
-
-  // The UTC timestamp prefix sorts by run creation time.
-  let kept = 0;
-  for (const name of names.sort().reverse()) {
-    if (name === active || !RUN_ID_RE.test(name)) {
-      continue;
-    }
-    const entry = path.join(runsRoot, name);
-    try {
-      // Startup creates these markers even when the run never reaches finalization.
-      if (!lstatSync(entry, { throwIfNoEntry: false })?.isDirectory() ||
-        !ROOT_STREAM_ARTIFACTS.every((file) => lstatSync(path.join(entry, file), { throwIfNoEntry: false })?.isFile())) {
-        continue;
-      }
-      if (kept < keepCount) {
-        kept += 1;
-        continue;
-      }
-      rmSync(entry, { recursive: true });
-      result.deleted.push(name);
-    } catch (error) {
-      // A concurrent review may have already pruned this run.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        result.failures.push({ path: entry, error: errorMessage(error) });
-      }
-    }
-  }
-
-  return result;
 }
 
 function touchCoreFiles(runDir: string): void {

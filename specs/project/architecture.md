@@ -1687,7 +1687,7 @@ The telemetry recorder must support redaction before any future external export.
 
 Run lifecycle:
 
-- Run pruning: in recorder-managed roots, the telemetry recorder keeps the active run and newest `retainRuns` eligible prior runs (minimum one, ordered by run ID). Eligibility requires a generated run ID and regular recorder stream files. Caller-selected artifact directories skip retention.
+- Run pruning: in recorder-managed roots, the telemetry recorder keeps the active run, the newest `retainRuns` authenticated prior runs (minimum one, ordered by run ID), and any authenticated runs still within their lease. Only expired sealed directories qualify for deletion. Caller-selected artifact directories skip retention.
 - First-run provisioning: codegenie writes `.codegenie/.gitignore` (containing `runs/` and `cache/`) when creating `.codegenie/`.
 - Concurrent runs: run directories are unique per run id; cache writes use write-temp-then-rename; an advisory lock file under `.codegenie/` guards ref cleanup. Concurrent runs are otherwise supported.
 
