@@ -50,6 +50,7 @@ export type ToolResultRecords = {
 };
 
 export type ToolExecutionResult = {
+  definitionPage?: import("../repo/definition-page.js").DefinitionPage;
   /** Canonical whole records for packing against each caller's result budget. */
   packable?: ToolResultRecords;
   /** Use this result when the preferred complete representation cannot fit. */

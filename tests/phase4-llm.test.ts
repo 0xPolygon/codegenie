@@ -16,6 +16,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
+import { textRepository } from "./helpers/text-repository.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
@@ -38,6 +39,7 @@ import {
   modelCallCacheEntryPath
 } from "../src/llm/model-call-cache.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
+import { buildReadDefinitionTool } from "../src/llm/definition-tool.js";
 import { createPackableToolResult } from "../src/llm/search-result-packing.js";
 import {
   SCHEMA_VERSIONS,
@@ -5605,6 +5607,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(captured).toHaveLength(1);
     if (mode === "full") expect(captured[0]!.repositoryEvidence).toMatchObject([{ path: "store.ts", source: "base", text: "return db.list(tenantId);" }]);
     else expect(captured[0]!.repositoryEvidence).toBeUndefined();
+  });
+
+  it("retains the unnumbered complete read_definition body as Stage 9 evidence", async () => {
+    const fixture = await textRepository({ "src/guard.ts": "export function guard() { return 1; }\n" });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "definition", name: tool.name,
+        arguments: { name: "guard", path: "src/guard.ts" } }]), assistant([validSubmitVerdictCall("done")])]);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+      await runner.runStructured({ stage: 9, prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 1_000,
+        tools: [tool], onToolResults: results => captured.push(...results),
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4_000 } });
+      expect(captured[0]?.repositoryEvidence).toMatchObject([{ path: "src/guard.ts", source: "head", lineRange: [1, 1],
+        text: "export function guard() { return 1; }" }]);
+      expect(adapter.contexts[1]).toContain("1\\texport function guard()");
+    } finally { fixture.dispose(); }
   });
 
   it.each(["CreateGitClientOptions", "runGit", "CreateSystemDefaultDevice"])("gives one corrective source-object error for %s without executing the rejected tool", async symbolName => {

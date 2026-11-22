@@ -8,6 +8,7 @@ import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
+import { buildReadDefinitionTool } from "./definition-tool.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -37,6 +38,7 @@ export type RepositoryToolDefinitionOptions = {
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
 const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
+  read_definition: buildReadDefinitionTool,
   read_range: buildSixReadRangeTool,
   search_files: buildSixSearchTool,
   list_files: buildSixListFilesTool
@@ -52,7 +54,7 @@ export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface 
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
   const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
   if (properties?.source && args && typeof args === "object" && "source" in args && typeof args.source === "string") {
-    const auto = tool.name === "read_symbol" || tool.name === "find_definition" ? ', or {"kind":"auto"}' : "";
+    const auto = tool.name === "read_symbol" || tool.name === "find_definition" || tool.name === "read_definition" ? ', or {"kind":"auto"}' : "";
     throw new CodegenieError("invalid_args", `source must be an object: {"kind":"head"} or {"kind":"base"}${auto}; not a string`);
   }
   const issues = submissionIssues(tool.parameters, args);

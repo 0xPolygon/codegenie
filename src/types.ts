@@ -692,8 +692,9 @@ export interface RepositoryTools {
   }>;
   findDefinition(
     symbolName: string,
-    options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
+    options?: { pathGlob?: string; exactPath?: string; source?: SymbolLookupSourceSelector }
   ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>;
+  readDefinitionPage?(name: string, options?: import("./repo/definition-page.js").DefinitionPageOptions): Promise<import("./repo/definition-page.js").DefinitionPage>;
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   searchFilesPage?(query: string, options?: SearchPageOptions): Promise<SearchPage>;
   findSymbolMentions(
@@ -1831,6 +1832,7 @@ export type ToolCallRecord = {
   modelCallId?: string;
   tool: string;
   args: {
+    name?: string;
     path?: string;
     packetId?: string;
     symbolName?: string;

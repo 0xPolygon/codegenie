@@ -10,6 +10,7 @@ const CACHEABLE_TOOL_NAMES = new Set([
   "read_file_outline",
   "read_symbol",
   "find_definition",
+  "read_definition",
   "read_diff_blocks",
   "search_files",
   "find_symbol_mentions",

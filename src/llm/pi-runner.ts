@@ -3,6 +3,7 @@ import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
+import { packDefinitionToolResult } from "./definition-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
@@ -921,7 +922,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               if (consumedCall) toolCallsUsed += 1;
               else rejectedToolCalls += 1;
               // Fixed budget-status messages are control information, not source content.
-              if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
+              if (!budgetRejected && (outcome.result.definitionPage || outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
                 const canonical = outcome.result;
                 outcome.result = packRepositoryToolResult(canonical, remainingResultChars);
                 if (outcome.result.isError) {
@@ -1240,11 +1241,17 @@ function submitCallHasFindings(toolCall: PiSubmitCall): boolean {
 function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, text: string,
   source: "head" | "base" | undefined): RepositoryEvidence[] | undefined {
   const meta = outcome.result.meta;
-  const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
+  const mixedDefinitionFallback = (toolCall.name === "find_definition" || toolCall.name === "read_definition") && meta?.degraded === true
     && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
   if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
-    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && (outcome.result.rawSource ?? text).length > 8_000)) return;
-  if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
+    || meta?.deliveryStatus !== "full" || !text.trim() || (!["find_definition", "read_definition"].includes(toolCall.name) && (outcome.result.rawSource ?? text).length > 8_000)) return;
+  if (toolCall.name === "read_definition" && outcome.result.rawSource !== undefined) {
+    const hit = outcome.result.definitions?.[0];
+    if (!hit || isTextFallbackHit(hit) || outcome.result.rawSource.length > 8_000 || !outcome.result.rawSource.trim()) return;
+    return [{ id: toolCall.id, tool: toolCall.name, path: hit.symbol.path, symbols: [hit.symbol.name],
+      lineRange: hit.symbol.lineRange, lookupStatus: "found", source, text: stripCredentials(outcome.result.rawSource) }];
+  }
+  if ((toolCall.name === "find_definition" || toolCall.name === "read_definition") && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
     if (hits) {
       // Keep the pre-numbering evidence-size boundary; display prefixes should not
@@ -2499,6 +2506,7 @@ function toolResultCharLimit(toolName: string, budget: ToolBudget, remainingChar
 }
 
 function packRepositoryToolResult(result: ToolExecutionResult, allowance: number): ToolExecutionResult {
+  if (result.definitionPage) return packDefinitionToolResult(result, allowance);
   if (result.packable) return packTextToolResult(result, allowance);
   if (result.outline) return packOutlineToolResult(result, allowance);
   if (result.filePaths) return packFileListToolResult(result, allowance);
@@ -2511,7 +2519,7 @@ function packedResultExhaustedPool(result: ToolExecutionResult, allowance: numbe
 }
 
 function isSourceReadTool(toolName: string): boolean {
-  return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition" || toolName === "read_diff_blocks";
+  return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition" || toolName === "read_definition" || toolName === "read_diff_blocks";
 }
 
 function fitToolResultText(text: string, remainingChars: number): string {
@@ -4309,6 +4317,7 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
+    name: typeof args.name === "string" ? args.name.slice(0, 200) : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,
