@@ -7,7 +7,7 @@ status: verified
 
 # Public version comparison: independent analysis
 
-**The two versions find the required defects equally often, and the newer build is the more reliable one.** Over 114 paired reviews, released v0.8.0 published 32 of 84 required defects and master at `1f4c04d` published 33 of 84. The newer build had no partial reviews against seven, and its report stage needed a repair in 5 reviews against 34. Cost and time are the same. In both versions about half of the required defects are never raised by the reviewer at all, and that is where the detections are lost.
+**The two versions find the required defects equally often, and the newer build is the more reliable one.** Over 114 paired reviews, released v0.8.0 published 32 of 84 required defects and master at `1f4c04d` published 33 of 84. The newer build had no partial reviews against seven, and its report stage needed a repair in 5 reviews against 34. Cost and time show no clear per-review difference: priced spend was $6.07 against $6.01, and median elapsed time 2.22 against 2.33 minutes per review. In both versions about half of the required defects are never raised by the reviewer at all, and that is where the detections are lost.
 
 This is one of two independent analyses. It is reconciled with [the other analysis](20261122-021000-public-version-comparison-codex.md): both count 32 of 84 for v0.8.0 and 33 of 84 for master, and agree on the repository splits, the excluded cases, the four false findings on pi-08 and the number of control findings in each arm (11 and 9, none contradicted by the source). They differ on how to class the control findings: the other analysis counts 15 of the 20 as source-supported issues, and this one classes 16 as not introduced by the change and 4 as a real but unreachable gap. [Campaign plan](../../specs/plans/130-issue-138-public-version-comparison.md) · [Public cases](../../evals/public/README.md)
 
@@ -58,7 +58,6 @@ Paired, by defect and repetition: both arms 21, A only 11, B only 12, neither 40
 | Verified but not published | 0 | 0 |
 
 - **Packet review is the bottleneck on these cases.** Half of the observations (44 and 42 of 84) never produce a candidate or a question. The verifier rejected a required defect three times in 168 observations, each time as unresolved.
-- This differs from the private case in the depth campaign, where the harder defect was found and then rejected. [Depth campaign analysis](20261121-211530-depth-campaign-independent-analysis.md)
 - All 65 published detections came from direct candidates. No promoted question became a published detection of a required defect.
 - Nothing verified was lost at composition: no required defect was merged away or suppressed.
 
