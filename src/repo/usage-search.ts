@@ -79,9 +79,20 @@ export async function findUsages(
     if (parsed.tree) filesParsed++;
     const syntax = classifyUsageSyntax(parsed, normalizedName);
     if (!syntax || parsed.hasErrors) coverageComplete = false;
-    const matches: Iterable<{ line: number; column: number; occurrence?: UsageOccurrence }> = syntax
-      ? syntax.sort(compareUsageGroups).map(occurrence => ({ line: occurrence.line, column: occurrence.column, occurrence }))
-      : findTextMatches(lines, normalizedName);
+    const classified = syntax?.sort(compareUsageGroups).map(occurrence => ({ line: occurrence.line, column: occurrence.column, occurrence }));
+    const classifiedPositions = new Set(classified?.map(match => `${match.line}:${match.column}`));
+    const finalSegmentOffset = normalizedName.length - (normalizedName.split(".").at(-1)?.length ?? 0);
+    // Keep non-classified lexical occurrences visible, including computed
+    // properties and comments. They are leads, never resolved source edges.
+    function* unclassified() {
+      for (const match of findTextMatches(lines, normalizedName)) {
+        if (classifiedPositions.has(`${match.line}:${match.column + finalSegmentOffset}`)) continue;
+        coverageComplete = false;
+        yield match;
+      }
+    }
+    function* combined() { if (classified) yield* classified; yield* unclassified(); }
+    const matches: Iterable<{ line: number; column: number; occurrence?: UsageOccurrence }> = combined();
     if (parsed.hasErrors) recordOmission(`${path}: parse has errors; syntax matches may be incomplete`);
     let reachedCursor = !cursor || path !== cursor.path || cursor.startFile === true;
     for (const match of matches) {
@@ -138,7 +149,17 @@ function resolveRelativeModule(from: string, specifier: string, paths: Set<strin
 function* findTextMatches(lines: string[], name: string): Generator<{ line: number; column: number }> {
   for (const [index, line] of lines.entries()) {
     let at = line.indexOf(name);
-    while (at >= 0) { yield { line: index + 1, column: at + 1 }; at = line.indexOf(name, at + Math.max(1, name.length)); }
+    while (at >= 0) {
+      const previousIndex = at > 1 && /[\uDC00-\uDFFF]/u.test(line[at - 1]!) ? at - 2 : at - 1;
+      const beforeCodePoint = previousIndex < 0 ? undefined : line.codePointAt(previousIndex);
+      const before = beforeCodePoint === undefined ? undefined : String.fromCodePoint(beforeCodePoint);
+      const nextCodePoint = line.codePointAt(at + name.length);
+      const after = nextCodePoint === undefined ? undefined : String.fromCodePoint(nextCodePoint);
+      if ((!before || !/[\p{ID_Continue}$_\u200c\u200d]/u.test(before)) && (!after || !/[\p{ID_Continue}$_\u200c\u200d]/u.test(after))) {
+        yield { line: index + 1, column: at + 1 };
+      }
+      at = line.indexOf(name, at + Math.max(1, name.length));
+    }
   }
 }
 
