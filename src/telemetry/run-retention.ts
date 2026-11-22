@@ -91,6 +91,7 @@ export function sealAndPruneRuns(options: {
         continue;
       }
       if (nowMs > seal.liveUntil) {
+        // Recheck identity immediately before Node's path-based recursive removal.
         const current = lstatSync(entry, { bigint: true, throwIfNoEntry: false });
         if (!current?.isDirectory() || current.ino !== seal.inode) {
           continue;
@@ -170,14 +171,22 @@ function verifySeal(
 }
 
 function readRegularFile(filePath: string, maxBytes: number, disallowedMode = 0): Buffer | undefined {
-  const entry = lstatSync(filePath, { throwIfNoEntry: false });
-  if (!entry?.isFile() || entry.size > maxBytes) {
-    return undefined;
+  // Windows lacks O_NOFOLLOW. The key is in the user's home, and a seal
+  // can only authenticate the specific root, run ID and inode it was signed for.
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  let fd: number;
+  try {
+    fd = openSync(filePath, flags);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP") {
+      return undefined;
+    }
+    throw error;
   }
-  const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stats = fstatSync(fd);
-    if (!stats.isFile() || (stats.mode & disallowedMode) !== 0) {
+    if (!stats.isFile() || stats.size > maxBytes || (stats.mode & disallowedMode) !== 0) {
       return undefined;
     }
     const buffer = Buffer.alloc(maxBytes + 1);

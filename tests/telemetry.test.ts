@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -17,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { ARTIFACT_LOCATION, KNOWN_ARTIFACTS, canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { sealAndPruneRuns } from "../src/telemetry/run-retention.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { initRepo } from "./helpers/git.js";
 
@@ -1355,19 +1357,22 @@ describe("run telemetry", () => {
   it("keeps the exact prune count and a bounded sample for a large deletion batch", async () => {
     const repoRoot = tempDir();
     const runsRoot = path.join(repoRoot, ".codegenie", "runs");
-    const prior = Array.from({ length: 105 }, (_, index) =>
+    mkdirSync(runsRoot, { recursive: true });
+    const prior = Array.from({ length: 102 }, (_, index) =>
       `20260101-000000-${index.toString(16).padStart(8, "0")}`
     );
-    for (const name of prior) {
-      await createRunTelemetry({
-        telemetryConfig: { ...defaultConfig.telemetry, enabled: true, retainRuns: prior.length },
-        clock: () => new Date("2026-01-01"),
-        idFactory: () => name
-      }).attachRunDirectory(repoRoot);
+    const startedAtMs = Date.parse("2026-01-01");
+    for (const runId of prior) {
+      mkdirSync(path.join(runsRoot, runId));
+      expect(sealAndPruneRuns({
+        runsRoot, runId, retainRuns: prior.length, startedAtMs,
+        maxTimeMs: defaultConfig.review.maxTimeMs, nowMs: startedAtMs
+      })).toEqual({ deleted: [], failures: [] });
     }
 
     const run = createRunTelemetry({
-      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 }
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, retainRuns: 1 },
+      clock: () => new Date("2026-01-02")
     });
     const active = await run.attachRunDirectory(repoRoot);
     const newest = prior.pop()!;
@@ -1440,18 +1445,22 @@ describe("run telemetry", () => {
     const oversized = await attach(5);
     const largeSeal = path.join(oversized.runDir, ".codegenie-run");
     writeFileSync(largeSeal, readFileSync(largeSeal, "utf8") + " ".repeat(1024));
-    const linked = await attach(6);
-    const linkedSeal = path.join(linked.runDir, ".codegenie-run");
-    const relocatedSeal = path.join(repo, "linked-seal-source");
-    renameSync(linkedSeal, relocatedSeal);
-    symlinkSync(relocatedSeal, linkedSeal, "file");
+    const invalidDirs = [relocated, wrongName, forged.runDir, oversized.runDir];
+    if (constants.O_NOFOLLOW) {
+      const linked = await attach(6);
+      const linkedSeal = path.join(linked.runDir, ".codegenie-run");
+      const relocatedSeal = path.join(repo, "linked-seal-source");
+      renameSync(linkedSeal, relocatedSeal);
+      symlinkSync(relocatedSeal, linkedSeal, "file");
+      invalidDirs.push(linked.runDir);
+    }
 
     const validOld = await attach(7);
     await attach(8);
     await attach(9);
     expect(existsSync(validOld.runDir)).toBe(false);
     expect(readFileSync(seal, "utf8")).toBe(JSON.stringify(genuine));
-    for (const directory of [relocated, wrongName, forged.runDir, oversized.runDir, linked.runDir]) {
+    for (const directory of invalidDirs) {
       expect(existsSync(path.join(directory, ".codegenie-run"))).toBe(true);
     }
   });
@@ -1472,7 +1481,8 @@ describe("run telemetry", () => {
     expect(readFileSync(path.join(directory, "run.log"), "utf8")).toBe("user data");
   });
 
-  it.each(["worktree", "symlink", "unavailable"] as const)(
+  const unsafeKeyLocations = ["worktree", "unavailable", ...(constants.O_NOFOLLOW ? ["symlink"] : [])];
+  it.each(unsafeKeyLocations)(
     "attaches without sealing or pruning with a %s key location",
     async (location) => {
       const repo = initRepo();
