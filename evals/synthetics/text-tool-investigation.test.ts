@@ -9,6 +9,7 @@ import { writeRepoFile } from "../../tests/helpers/git.js";
 describe("synthetic: investigating formats without a syntax adapter", () => {
   let fixture: Awaited<ReturnType<typeof textRepository>>;
   const small = "import ./types.custom\nrecord AccessRule {\n  permission = read\n}\n";
+  const numberedRule = "2\trecord AccessRule {\n3\t  permission = read\n4\t}";
   const long = Array.from({ length: 620 }, (_, i) => i === 570 ? "AccessRule permission = write" : `# filler ${i + 1}`).join("\n");
   beforeAll(async () => {
     fixture = await textRepository({
@@ -42,7 +43,7 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     }
     const read = await fixture.call("read_range", { path, startLine: 2, endLine: 4 });
     expect(read.meta).toMatchObject({ lookupStatus: "found", deliveryStatus: "full", sourceUsed: "head" });
-    expect(read.text).toContain("record AccessRule {\n  permission = read\n}");
+    expect(read.text).toContain(`${path}@head lines 2-4 of 4\n${numberedRule}`);
     expect(read.sourceLineRange).toEqual([2, 4]);
   });
 
@@ -55,7 +56,7 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
       expect(result.text).toContain('"sourceText"');
       // Wrapper appends metadata after the JSON payload.
       expect(result.text).toContain(JSON.stringify(small));
-      expect((await fixture.call("read_range", { path, startLine: 2, endLine: 4 })).text).toContain("record AccessRule {\n  permission = read\n}");
+      expect((await fixture.call("read_range", { path, startLine: 2, endLine: 4 })).text).toContain(numberedRule);
     });
 
   it("delivers a valid bounded outline with a source-read hint instead of cutting JSON/source in half", async () => {
@@ -87,7 +88,7 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     const hit = discovery.searchResults![0]!;
     const read = await fixture.call("read_range", { path: hit.path, startLine: hit.line - 1, endLine: hit.line + 1 });
     expect(read.meta?.deliveryStatus).toBe("full");
-    expect(read.text).toContain("# filler 570\nAccessRule permission = write\n# filler 572");
+    expect(read.text).toContain("570\t# filler 570\n571\tAccessRule permission = write\n572\t# filler 572");
     expect(read.text).not.toContain("# filler 1\n");
     expect(read.text.length).toBeLessThan(300);
   });
@@ -154,7 +155,7 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     expect(symbol.text).toContain("permission = read");
     const exact = await fixture.call("read_range", { path: "schema/access.ridl", startLine: 2, endLine: 4 });
     expect(exact.meta?.precision).toBe("exact");
-    expect(exact.text).toContain("record AccessRule {\n  permission = read\n}");
+    expect(exact.text).toContain(numberedRule);
     expect(await fixture.call("read_symbol", { path: "schema/access.ridl", symbolName: "AccessRule", line: 2 }))
       .toMatchObject({ isError: true, errorCode: "invalid_args" });
     expect((await fixture.call("find_definition", { symbolName: "AbsentIdentifier", pathGlob: "schema/access.ridl" })).meta?.lookupStatus).toBe("not_found");

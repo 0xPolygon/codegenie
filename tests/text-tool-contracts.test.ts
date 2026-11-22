@@ -16,7 +16,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
   let fixture: Awaited<ReturnType<typeof textRepository>>;
   beforeAll(async () => {
     fixture = await textRepository({
-      "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
+      "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "blank-line.custom": "\n", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
       "src/shared.ts": `export function SharedCall() {\n${Array.from({ length: 25 }, (_, i) => `  const value${i} = ${i};`).join("\n")}\n}\n`,
       "pkg/shared.go": `package pkg\nfunc SharedCall() {\n${Array.from({ length: 20 }, (_, i) => `  value${i} := ${i}`).join("\n")}\n}\n`,
@@ -24,6 +24,8 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
       "src/whitespace.ts": "export function WhitespaceCase() {\n\n\treturn 1;\n}\n",
       "schema/fallback.custom": "function UnverifiedLead() {\n  return 1;\n}\n",
+      "terminated.custom": "one\r\n\tsecond\r\n" + "    rest of source\r\n".repeat(40),
+      "character-cap.ts": ["const required = makeRequirements();", "x".repeat(15_000), "y".repeat(15_000), "return required;"].join("\n"),
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
     }, { "revision.custom": "head-only\nhead-tail" });
     writeRepoFile(fixture.repo, "revision.custom", "dirty-only");
@@ -49,13 +51,17 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     const cut = packTextToolResult(result, 550);
     expect(cut.isError).not.toBe(true);
     expect(cut.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
-    expect(cut.text).toContain("continue with startLine=");
-    expect(cut.text).toContain("delivered lines 1-");
+    expect(cut.text).toMatch(/last delivered: src\/shared\.ts@head:\d+/u);
+    expect(cut.text).toMatch(/next: src\/shared\.ts@head:\d+/u);
     const cutLines = cut.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
     expect(cutLines).toEqual(raw.text!.split("\n").slice(0, cutLines.length));
     const rest = await fixture.tools.readRange("src/shared.ts", cutLines.length + 1, 27, { kind: "head" });
     expect([...cutLines, ...rest.text.split("\n")].join("\n")).toBe(raw.text);
     expect(packTextToolResult(result, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    const headerOnlyBudget = result.text.indexOf("\n") + 1;
+    const refused = packTextToolResult(result, headerOnlyBudget);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    expect(refused.text).toContain("src/shared.ts@head:1");
   });
 
   it("labels text-only definition leads as unverified windows", async () => {
@@ -187,6 +193,13 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(await fixture.tools.readRange("empty.custom", 1, 10)).toMatchObject({ text: "", meta: { lookupStatus: "found", deliveryStatus: "empty", degraded: false } });
     expect((await fixture.call("read_range", { path: "schema/policy.ridl", startLine: 100, endLine: 110 })).meta)
       .toMatchObject({ lookupStatus: "found", deliveryStatus: "empty", degraded: false });
+    const beyond = await fixture.call("read_range", { path: "crlf.custom", startLine: 4, endLine: 9, source: { kind: "base" } });
+    expect(beyond.text).toContain("crlf.custom@base has 3 lines; requested lines 4-9");
+    expect(beyond.text).toContain("delivered lines: none");
+    expect(beyond.meta).toMatchObject({ totalLines: 3, deliveryStatus: "empty" });
+    const throughEof = await fixture.call("read_range", { path: "crlf.custom", startLine: 2, endLine: 9 });
+    expect(throughEof.sourceLineRange).toEqual([2, 3]);
+    expect(throughEof.text).toBe("crlf.custom@head lines 2-3 of 3\n2\ttwo\r\n3\tthree\r\n\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]");
     expect((await fixture.call("read_diff_blocks", { path: "schema/policy.ridl" })).meta)
       .toMatchObject({ lookupStatus: "not_found", deliveryStatus: "empty" });
     const missing = await fixture.call("read_range", { path: "missing.custom", startLine: 1, endLine: 2 });
@@ -200,6 +213,20 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect((await fixture.tools.readRange("revision.custom", 1, 1, { kind: "base" })).text).toBe("base-only");
     expect((await fixture.tools.readRange("unicode.custom", 2, 2)).text).toBe("用户 🔑");
     expect((await fixture.tools.readRange("crlf.custom", 2, 2)).text).toBe("two\r");
+  });
+
+  it("numbers a blank line and reports the base revision of a complete read", async () => {
+    const blank = await fixture.call("read_range", { path: "blank-line.custom", startLine: 1, endLine: 1 });
+    expect(blank.meta).toMatchObject({ deliveredLineRange: [1, 1], deliveryStatus: "full", totalLines: 1 });
+    expect(blank.text).toContain("blank-line.custom@head lines 1-1 of 1\n1\t\n\n");
+    const base = await fixture.call("read_range", { path: "revision.custom", startLine: 2, endLine: 2, source: { kind: "base" } });
+    expect(base.text).toContain("revision.custom@base lines 2-2 of 2\n2\tbase-tail\n\n");
+    const headerLength = "revision.custom@base lines 2-2 of 2".length;
+    const refused = packTextToolResult(base, headerLength);
+    expect(refused.meta).toMatchObject({ deliveryStatus: "budget_rejected", totalLines: 2 });
+    expect(refused.meta?.deliveredLineRange).toBeUndefined();
+    expect(refused.text).toContain("delivered lines: none; next undelivered line: 2");
+    expect(refused.text).not.toContain("base-tail");
   });
 
   it.each(["head", "base"] as const)("missing-file feedback guides discovery at %s without substituting another file", async kind => {
@@ -248,13 +275,66 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(lines.text.split("\n")).toHaveLength(400);
     expect(lines.text.endsWith("line 400")).toBe(true);
     expect(lines.meta).toMatchObject({ deliveryStatus: "truncated", truncated: true, omittedCount: 220 });
+    const bounded = await fixture.call("read_range", { path: "large.custom", startLine: 1, endLine: 800 });
+    expect(bounded.text).toContain("delivered lines 1-400 of 620; continue with startLine=401, endLine=800");
     const tail = await fixture.tools.readRange("large.custom", 401, 620);
     expect(tail.text.split("\n")).toHaveLength(220);
     expect(tail.meta.deliveryStatus).toBe("full");
     const wide = await fixture.call("read_range", { path: "wide.custom", startLine: 1, endLine: 1 });
-    expect(wide.meta).toMatchObject({ deliveryStatus: "truncated", truncated: true });
-    expect(wide.text).toContain("delivery: truncated");
-    expect((await fixture.tools.readRange("wide.custom", 1, 1)).text).toHaveLength(16_000);
+    expect(wide).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", truncated: true, omittedCount: 1 } });
+    expect(wide.text).toContain("Source line 1 exceeds the source character limit");
+
+    const characterCap = await fixture.call("read_range", { path: "character-cap.ts", startLine: 1, endLine: 8 });
+    expect(characterCap.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 2, deliveredLineRange: [1, 2] });
+    expect(characterCap.text).toContain("delivered lines 1-2 of 4; continue with startLine=3, endLine=8");
+    expect(characterCap.text).not.toContain("y".repeat(10));
+    const continuation = await fixture.tools.readRange("character-cap.ts", 3, 8);
+    expect(continuation.text).toBe("y".repeat(15_000) + "\nreturn required;");
+  });
+
+  it("repacks a real range at a smaller allowance and resumes on the first omitted line", async () => {
+    const args = { path: "large.custom", startLine: 39, endLine: 166, source: { kind: "base" as const } };
+    const canonical = await fixture.call("read_range", args);
+    expect(packTextToolResult(canonical, canonical.text.length)).toBe(canonical);
+    const packed = packTextToolResult(canonical, 448);
+    const range = packed.meta!.deliveredLineRange!;
+    expect(range[0]).toBe(39);
+    expect(range[1]).toBeLessThan(166);
+    const next = await fixture.tools.readRange(args.path, range[1] + 1, args.endLine, args.source);
+    const deliveredText = packed.text.split("\n\n[tool meta:")[0];
+    const [header, ...deliveredLines] = deliveredText!.split("\n");
+    expect(header).toBe(`large.custom@base lines 39-${range[1]} of 620`);
+    expect(deliveredLines.join("\n") + "\n" + next.text.split("\n").map((line, i) => `${range[1] + 1 + i}\t${line}`).join("\n"))
+      .toBe(canonical.packable!.records.join("\n"));
+    expect(packed.text).toContain(`continue with startLine=${range[1] + 1}, endLine=166`);
+  });
+
+  it("attributes a second cut of a capped range to the caller budget", async () => {
+    const canonical = await fixture.call("read_range", { path: "large.custom", startLine: 1, endLine: 620 });
+    expect(canonical.meta).toMatchObject({ degradationReason: "source_line_limit", omittedCount: 220 });
+
+    const packed = packTextToolResult(canonical, 448);
+    expect(packed.meta).toMatchObject({ degraded: false, degradationReason: "tool_result_budget", deliveryStatus: "truncated" });
+    const lastLine = packed.meta!.deliveredLineRange![1];
+    expect(packed.meta?.omittedCount).toBe(620 - lastLine);
+    expect(packed.text).toContain(`continue with startLine=${lastLine + 1}, endLine=620`);
+    expect(packTextToolResult(canonical, 1).meta).toMatchObject({
+      degradationReason: "tool_result_budget", deliveryStatus: "budget_rejected", omittedCount: 620
+    });
+    expect(canonical.meta?.degradationReason).toBe("source_line_limit");
+  });
+
+  it("only retains the terminal separator on the last page", async () => {
+    const args = { path: "terminated.custom", startLine: 1, endLine: 100 };
+    const canonical = await fixture.call("read_range", args);
+    const cut = packTextToolResult(canonical, 500);
+    const last = cut.meta!.deliveredLineRange![1];
+    expect(last).toBeLessThan(42);
+    const rest = await fixture.call("read_range", { ...args, startLine: last + 1 });
+    const body = (text: string) => text.split("\n\n[tool meta:")[0]!.slice(text.indexOf("\n") + 1);
+    expect(body(cut.text) + "\n" + body(rest.text)).toBe(body(canonical.text));
+    expect(body(rest.text).endsWith("\r\n")).toBe(true);
   });
 
   it.each(["../outside", "/etc/passwd", ".git/config"])("rejects unsafe paths instead of empty reads: %s", async path => {
@@ -264,7 +344,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
   it("keeps tool descriptions explicit about required bounds and unavailable syntax", () => {
     const description = (name: string) => fixture.definitions.find(tool => tool.name === name)!.description;
     expect(description("read_range")).toContain("Both startLine and endLine are required");
-    expect(description("read_range")).toContain("start beyond EOF returns empty text");
+    expect(description("read_range")).toContain("A start beyond EOF returns no source and gives the file length");
     expect(description("list_files")).toContain("not a regular expression or gitignore file");
     expect(description("search_files")).toContain("POSIX ERE");
     expect(description("search_files")).toContain("Invalid syntax is an error");
@@ -356,6 +436,34 @@ describe("whole-record tool packing", () => {
     expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
       meta: { deliveryStatus: "budget_rejected", truncated: true, omittedCount: 2 } });
     expect(refused.text).toContain("Narrow the request");
+  });
+
+  it("refuses a declaration header when its first source line cannot fit", () => {
+    const records = ["file.ts@head declaration lines 1-2 of 2", "1\t" + "x".repeat(500), "2\t" + "y".repeat(500)];
+    const meta = { backend: "text", precision: "exact", degraded: false } satisfies ToolResultMeta;
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "",
+      keepWithNext: [true, false, false] }, meta);
+    expect(packTextToolResult(result, 127)).toMatchObject({
+      isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected" }
+    });
+
+    const labeled = createPackableToolResult({ ...result.packable!, labels: ["file.ts@head:1", "file.ts@head:1", "file.ts@head:2"] }, meta);
+    const refused = packTextToolResult(labeled, 127);
+    expect(refused.text).toContain("First unread source: file.ts@head:1.");
+    expect(refused.text).not.toContain(records[0]);
+  });
+
+  it("cuts before a later block rather than returning its header alone", () => {
+    const records = ["a.ts@head declaration lines 5-5 of 5", "5\tconst first = 1;",
+      "b.ts@base declaration lines 10-10 of 10", "10\t" + "x".repeat(500)];
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "",
+      labels: ["a.ts@head:5", "a.ts@head:5", "b.ts@base:10", "b.ts@base:10"],
+      keepWithNext: [true, false, true, false] }, exactSource);
+    expect(packTextToolResult(result, result.text.length)).toBe(result);
+    const cut = packTextToolResult(result, 320);
+    expect(cut.packable?.records).toEqual(records.slice(0, 2));
+    expect(cut.text).toContain("last delivered: a.ts@head:5; next: b.ts@base:10");
+    expect(cut.text).not.toContain(records[2]);
   });
 
   it("repacks canonical symbol results from the cache without losing a complete later delivery", async () => {

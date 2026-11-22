@@ -215,26 +215,43 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
         const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
-        const rangeStart = startLine;
-        const requestedEnd = Math.min(endLine, lines.length);
-        const cappedEnd = Math.min(requestedEnd, rangeStart + READ_RANGE_MAX_LINES - 1);
-        const text = capText(lines.slice(rangeStart - 1, cappedEnd).join("\n"), READ_RANGE_MAX_CHARS);
-        // omittedCount is a count of real in-file lines that fell outside the
-        // returned window because of the line cap. Lines past EOF never existed,
-        // and character truncation is signalled by `truncated` alone.
-        const omittedLines = Math.max(0, requestedEnd - cappedEnd);
+        const terminalNewline = content.content.endsWith("\n");
+        const totalLines = lines.length - Number(terminalNewline);
+        const requestedEnd = Math.min(endLine, totalLines);
+        const cappedEnd = Math.min(requestedEnd, startLine + READ_RANGE_MAX_LINES - 1);
+        const records: string[] = [];
+        let chars = 0;
+        for (let index = startLine - 1; index < cappedEnd; index++) {
+          const line = lines[index]!;
+          const added = line.length + Number(records.length > 0);
+          if (chars + added > READ_RANGE_MAX_CHARS) break;
+          records.push(line);
+          chars += added;
+        }
+        const deliveredEnd = startLine + records.length - 1;
+        const omittedLines = Math.max(0, requestedEnd - deliveredEnd);
+        const refused = omittedLines > 0 && records.length === 0;
+        // Preserve the legacy trailing separator without counting it as another source line.
+        const keepTerminalNewline = terminalNewline && endLine > totalLines && deliveredEnd === totalLines &&
+          records.length > 0 && records.length < READ_RANGE_MAX_LINES && chars < READ_RANGE_MAX_CHARS;
+        const text = records.join("\n") + (keepTerminalNewline ? "\n" : "");
         const meta: ToolResultMeta = {
           backend: "text",
           precision: "exact",
           requestedSource: source.kind, sourceUsed: source.kind,
           degraded: false,
           lookupStatus: "found",
-          deliveryStatus: omittedLines > 0 || text.truncated ? "truncated" : text.text.length === 0 ? "empty" : "full",
-          ...(omittedLines > 0 || text.truncated
-            ? { truncated: true, ...(omittedLines > 0 ? { omittedCount: omittedLines } : {}) }
-            : {})
+          deliveryStatus: refused ? "budget_rejected" : omittedLines > 0 ? "truncated" : records.length === 0 ? "empty" : "full",
+          requestedRange: { path, startLine, endLine },
+          totalLines,
+          ...(records.length > 0 ? { deliveredLineRange: [startLine, deliveredEnd] } : {}),
+          ...(omittedLines > 0 ? {
+            truncated: true,
+            omittedCount: omittedLines,
+            degradationReason: deliveredEnd < cappedEnd ? "source_character_limit" : "source_line_limit"
+          } : {})
         };
-        return { value: { text: text.text, meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: text.text.length };
+        return { value: { text, meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: text.length };
       }
     );
   }

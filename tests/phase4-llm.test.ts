@@ -5789,6 +5789,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     expect(telemetry.toolCalls[0]?.resultChars).toBeGreaterThan(0);
     expect(telemetry.toolCalls[0]?.truncated).not.toBe(true);
+    expect(telemetry.toolCalls[0]).not.toHaveProperty("backend");
+    expect(telemetry.toolCalls[0]).not.toHaveProperty("precision");
     expect(adapter.contexts[1]).toContain("tool result character budget exhausted");
     expect(adapter.contexts[1]).toContain("This tool call was not executed");
     expect(adapter.contexts[1]).toContain("not a zero-match result");
