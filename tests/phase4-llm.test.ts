@@ -5625,6 +5625,39 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     else expect(captured[0]?.repositoryEvidence).toBeUndefined();
   });
 
+  it.each([105, 10_000])("keeps exact range no-fit and raw evidence distinct (%i char cap)", async maxSingleToolResultChars => {
+    const path = "src/git/git-client.ts";
+    const source = Array.from({ length: 65 }, (_, index) => `let fixture${index} = "${"x".repeat(100)}";`).join("\n");
+    const args = { path, startLine: 405, endLine: 469 };
+    const tools = { ...fakeRepositoryTools(), readRange: async () => ({
+      text: source, meta: { backend: "text" as const, precision: "exact" as const, degraded: false,
+        sourceUsed: "head" as const, deliveryStatus: "full" as const, lookupStatus: "found" as const,
+        totalLines: 469, requestedRange: args, deliveredLineRange: [405, 469] as [number, number] }
+    }) };
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "range", name: "read_range", arguments: args }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("cg-12-range-sidecar"),
+      tools: buildRepositoryToolDefinitions(tools).filter(tool => tool.name === "read_range"),
+      onToolResults: results => captured.push(...results), toolBudget: {
+        maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 20_000, maxSingleToolResultChars
+      } });
+    if (maxSingleToolResultChars === 105) {
+      expect(telemetry.toolCalls[0]).toMatchObject({ degraded: false, precision: "exact", deliveryStatus: "budget_rejected", errorCode: "budget_exhausted" });
+      expect(captured[0]?.repositoryEvidence).toBeUndefined();
+      expect(adapter.contexts[1]).toContain("next undelivered line: 405");
+    } else {
+      expect(source.length).toBeLessThanOrEqual(8000);
+      expect(telemetry.toolCalls[0]?.resultChars).toBeGreaterThan(8000);
+      expect(adapter.contexts[1]).toContain("405\\tlet fixture0");
+      expect(captured[0]?.repositoryEvidence).toMatchObject([{ path, lineRange: [405, 469], text: source }]);
+    }
+  });
+
   it.each([
     { requested: undefined, used: undefined, expected: "head" },
     { requested: "base", used: undefined, expected: "base" },
