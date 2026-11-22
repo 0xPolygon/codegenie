@@ -8193,6 +8193,30 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierPrompt.prompt).toContain("Do not use accidental-regression framing");
   });
 
+  it("names active six-surface tools in both stages while explicit current matches the default", () => {
+    const registry = fakeLensRegistry();
+    const packet = { packet: fakePacket(), skills: [] };
+    const candidate = { candidate: fakeFinding(), originContext: "", hunksText: "", skills: [] };
+    const original = createPromptBuilder(registry);
+    const current = createPromptBuilder(registry, { toolSurface: "current" });
+    expect(current.buildPacketReviewPrompt(packet)).toEqual(original.buildPacketReviewPrompt(packet));
+    expect(current.buildVerifierPrompt(candidate)).toEqual(original.buildVerifierPrompt(candidate));
+
+    const six = createPromptBuilder(registry, { toolSurface: "six" });
+    const { prompt: discovery } = six.buildPacketReviewPrompt({ ...packet, changeDirectory: "Pinned hunk h1" });
+    const { prompt: verification } = six.buildVerifierPrompt(candidate);
+    expect(discovery).toContain('read_change with a hunkId and context "function"');
+    expect(discovery).toContain('read_definition with source {kind:"base"}');
+    expect(discovery).toContain('find_usages for caller leads or scope "tests"');
+    expect(discovery).toContain("untrusted-data label=change-directory");
+    expect(discovery).toContain("Pinned hunk h1");
+    expect(verification).toContain("Follow read_definition body locations with read_range");
+    expect(verification).toContain("use its cursor with the same selector and context");
+    for (const prompt of [discovery, verification]) {
+      expect(prompt).not.toMatch(/\b(?:read_symbol|find_definition|read_diff_blocks|find_symbol_mentions|read_file_outline|find_likely_tests)\b/u);
+    }
+  });
+
   it("preserves behavior-change assessment from packet reviewer output", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() => ({
