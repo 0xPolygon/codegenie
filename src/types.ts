@@ -306,6 +306,15 @@ export type SymbolInfo = SymbolRef & {
   signature?: string;
 };
 
+/** A definition body and its actual position in the selected file revision. */
+export type DefinitionHit = {
+  symbol: SymbolInfo;
+  text?: string;
+  totalLines?: number;
+  deliveredLineRange?: [number, number];
+  nextLine?: number;
+};
+
 export type ChangedSymbol = SymbolInfo & {
   changedLines: number[];
 };
@@ -352,6 +361,10 @@ export type ToolResultMeta = {
   omittedCountIsLowerBound?: boolean;
   discoveryLimited?: boolean;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
+  lookupNote?: string;
+  unparsedCandidatePaths?: string[];
+  incompleteCandidatePaths?: string[];
+  candidateScans?: Partial<Record<"head" | "base", { unparsedCandidatePaths: string[]; incompleteCandidatePaths: string[] }>>;
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   totalLines?: number;
   /** Inclusive source lines when each packable record is one consecutive line. */
@@ -651,7 +664,7 @@ export interface RepositoryTools {
   findDefinition(
     symbolName: string,
     options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
-  ): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>;
+  ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>;
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   findSymbolMentions(
     symbolName: string,
@@ -1776,6 +1789,10 @@ export type ToolCallRecord = {
   omittedCountIsLowerBound?: boolean;
   discoveryLimited?: boolean;
   lookupStatus?: ToolResultMeta["lookupStatus"];
+  lookupNote?: ToolResultMeta["lookupNote"];
+  unparsedCandidatePaths?: ToolResultMeta["unparsedCandidatePaths"];
+  incompleteCandidatePaths?: ToolResultMeta["incompleteCandidatePaths"];
+  candidateScans?: ToolResultMeta["candidateScans"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   totalLines?: number;
   deliveredLineRange?: ToolResultMeta["deliveredLineRange"];

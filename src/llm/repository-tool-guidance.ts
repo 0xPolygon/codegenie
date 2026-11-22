@@ -27,6 +27,9 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
   if (meta.lookupStatus !== undefined) {
     notes.push(`lookup: ${meta.lookupStatus}`);
   }
+  if (meta.lookupNote !== undefined) {
+    notes.push(meta.lookupNote);
+  }
   if (meta.lookupStatus === "file_missing") {
     notes.push(MISSING_FILE_GUIDANCE);
   }
@@ -37,6 +40,7 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
     notes.push(
       `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${meta.recovery.source}`
     );
+    notes.push(`recovery reason: ${meta.recovery.reason}`);
   }
   if (meta.degraded) {
     notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);
