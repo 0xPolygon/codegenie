@@ -1,4 +1,5 @@
-import { withMeta } from "./repository-tool-guidance.js";
+import { numberSourceLine, withMeta } from "./repository-tool-guidance.js";
+import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
@@ -47,7 +48,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",
-      description: "Read committed text at head (default) or base; works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns at most 400 lines / 16,000 characters before local budget limits, with truncation metadata. An end beyond EOF is clipped; a start beyond EOF returns empty text, never the last line. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Read committed text at head (default) or base. Works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns numbered source with file length and delivered range. Reads up to 400 lines / 16,000 source characters before local budget limits. A cut gives the next line. An end beyond EOF is clipped. A start beyond EOF returns no source and gives the file length. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -59,10 +60,34 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; startLine: number; endLine: number; source?: SourceSelector };
-        const result = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
-        return { text: withMeta(result.text, result.meta), meta: result.meta,
-          ...(result.meta.deliveryStatus === "full" && result.text.length > 0
-            ? { sourceLineRange: [input.startLine, Math.min(input.endLine, input.startLine + result.text.split("\n").length - 1)] as [number, number] } : {}) };
+        const { text, meta } = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
+        if (meta.deliveryStatus === "budget_rejected") {
+          return {
+            text: withMeta(`Source line ${input.startLine} exceeds the source character limit. Use search_files scoped to this file to locate a match.`, meta),
+            meta,
+            isError: true,
+            errorCode: "budget_exhausted"
+          };
+        }
+        const range = meta.deliveredLineRange;
+        const records = text.split("\n");
+        const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full"
+          ? range ?? (text ? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)] : undefined)
+          : undefined;
+        const placement = sourceLineRange ? { sourceLineRange } : {};
+        if (!range) {
+          if (meta.requestedRange && meta.deliveryStatus === "empty") {
+            return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
+          }
+          return { text: withMeta(text, meta), meta, ...placement };
+        }
+        const terminalNewline = records.length > range[1] - range[0] + 1;
+        if (terminalNewline) records.pop();
+        const numbered = records.map((line, index) => numberSourceLine(line, range[0] + index));
+        return {
+          ...createPackableToolResult({ open: "", records: numbered, separator: "\n", close: terminalNewline ? "\n" : "" }, meta),
+          ...placement
+        };
       })
     },
     {

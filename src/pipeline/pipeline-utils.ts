@@ -153,11 +153,13 @@ export function inferAnchorFromChangedCode(packet: ReviewPacket | UnifiedDiff, c
       explicitDiff = false;
       continue;
     }
-    const numbered = stripLineNumberColumns(rawLine);
+    const numberedSource = /^\d+\t([^\n]*)$/u.exec(rawLine)?.[1];
+    const numbered = numberedSource ?? stripLineNumberColumns(rawLine);
     // A bare leading +/- may be a unary operator. Only displayed line
     // columns or explicit diff notation justify removing a diff prefix.
     const variants = new Set([rawLine, numbered].map(normalizeCodeLine));
-    const diffPrefix = explicitDiff || numbered !== rawLine ? /^\s*([+-])/.exec(numbered)?.[1] : undefined;
+    const diffPrefix = explicitDiff || (numberedSource === undefined && numbered !== rawLine)
+      ? /^\s*([+-])/.exec(numbered)?.[1] : undefined;
     if (diffPrefix !== undefined) {
       variants.clear();
       variants.add(normalizeCodeLine(numbered.replace(/^\s*[+-] ?/, "")));
