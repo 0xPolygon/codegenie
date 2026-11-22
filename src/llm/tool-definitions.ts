@@ -1,7 +1,7 @@
-import { MISSING_FILE_GUIDANCE } from "./repository-tool-guidance.js";
+import { withMeta } from "./repository-tool-guidance.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector, ToolResultMeta } from "../types.js";
+import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -302,40 +302,6 @@ function isCancellationError(error: unknown): boolean {
 
 async function runWithoutFacadeRecording<T>(tools: RepositoryTools, run: () => Promise<T>): Promise<T> {
   return withRepositoryToolCallContext(tools, { stage: 7, initiator: "model", record: false }, run);
-}
-
-function withMeta(text: string, meta: ToolResultMeta): string {
-  const notes: string[] = [];
-  if (meta.requestedSource !== undefined || meta.sourceUsed !== undefined) {
-    notes.push(`source: requested ${meta.requestedSource ?? "unspecified"}, used ${meta.sourceUsed ?? "unknown"}`);
-  }
-  if (meta.sourceFallback) {
-    notes.push("source fallback: head to base");
-  }
-  if (meta.baseOnly) {
-    notes.push("symbol exists only in base");
-  }
-  if (meta.lookupStatus !== undefined) {
-    notes.push(`lookup: ${meta.lookupStatus}`);
-  }
-  if (meta.lookupStatus === "file_missing") {
-    notes.push(MISSING_FILE_GUIDANCE);
-  }
-  if (meta.deliveryStatus !== undefined) {
-    notes.push(`delivery: ${meta.deliveryStatus}`);
-  }
-  if (meta.recovery !== undefined) {
-    notes.push(
-      `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${meta.recovery.source}`
-    );
-  }
-  if (meta.degraded) {
-    notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);
-  }
-  if (meta.truncated) {
-    notes.push(`truncated${meta.omittedCount ? `: ${meta.omittedCountIsLowerBound ? "at least " : ""}${meta.omittedCount} omitted` : ""}`);
-  }
-  return notes.length > 0 ? `${text}\n\n[tool meta: ${notes.join("; ")}]` : text;
 }
 
 function optionalOptions<T extends Record<string, unknown>>(input: T): Partial<T> {

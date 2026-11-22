@@ -25,7 +25,18 @@ export type LlmCallUsage = {
   providerCalls: 1;
 };
 
+export type ToolResultRecords = {
+  open: string;
+  records: string[];
+  separator: string;
+  close: string;
+  /** Optional short locators, indexed by record, for non-consecutive source. */
+  labels?: string[];
+};
+
 export type ToolExecutionResult = {
+  /** Canonical whole records for packing against each caller's result budget. */
+  packable?: ToolResultRecords;
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
   definitions?: Array<{ symbol: import("../types.js").SymbolInfo; text?: string }>;
