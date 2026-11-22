@@ -2,11 +2,11 @@ import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repositor
 import { createPackableToolResult, renderOutlineToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, ReviewToolSurface, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { RepositoryTools, ReviewToolSurface, SearchPage, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
-import { SearchBudgetError } from "../repo/search.js";
+import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 
 const SourceSelectorSchema = Type.Optional(
@@ -220,7 +220,8 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "search_files",
-      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]. Escape literal punctuation, for example name\\( or return \\{. No lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence.",
+      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]. Escape literal punctuation, for example name\\( or return \\{. No lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence."
+        + (tools.searchFilesPage ? " Continue with the returned cursor and the same search arguments." : ""),
       parameters: Type.Object(
         {
           query: Type.String({ minLength: 1, maxLength: 500 }),
@@ -228,12 +229,18 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
           maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
           caseSensitive: Type.Optional(Type.Boolean()),
-          source: SourceSelectorSchema
+          source: SourceSelectorSchema,
+          ...(tools.searchFilesPage ? { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) } : {})
         },
         { additionalProperties: false }
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
-        const input = args as Parameters<RepositoryTools["searchFiles"]>[1] & { query: string };
+        const input = args as SearchPageOptions & { query: string };
+        if (tools.searchFilesPage) {
+          const { query, ...options } = input;
+          const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, options));
+          return renderSearchPage(page, options.source?.kind ?? "head");
+        }
         const result = await runWithoutFacadeRecording(tools, () => tools.searchFiles(input.query, optionalOptions({
           pathGlob: input.pathGlob,
           contextMode: input.contextMode,
@@ -557,36 +564,61 @@ export function buildSixSearchTool(tools: RepositoryTools): ToolDefinition {
     execute: (args, signal) => wrapTool(signal, async () => {
       const { query, ...options } = args as SearchPageOptions & { query: string };
       if (!tools.searchFilesPage) throw new CodegenieError("config_error", "This repository cannot produce search pages.");
-      const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, options));
-      const revision = options.source?.kind ?? "head";
-      const total = page.rows.length + (page.meta.omittedCount ?? 0);
-      const scope = page.pathGlob === undefined ? "all files" : JSON.stringify(page.pathGlob);
-      const open = `Search at ${revision} (${page.revision}) in ${scope}: ${page.meta.omittedCountIsLowerBound ? "at least " : ""}${total} matches from this position\n`;
-      const files = new Set<string>();
-      const records = page.rows.map(({ hit, totalLines }) => {
-        const header = files.has(hit.path) ? [] : [`${JSON.stringify(hit.path)}@${revision}: ${totalLines} lines`];
-        files.add(hit.path);
-        const before = hit.contextBefore ?? [];
-        const after = hit.contextAfter ?? [];
-        const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn})` : "";
-        const enclosing = hit.enclosingSymbol;
-        return [
-          ...header,
-          ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
-          ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
-          `${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`,
-          ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
-        ].join("\n");
-      });
-      return createPackableToolResult({
-        open, records, separator: "\n", close: "",
-        labels: page.rows.map(({ hit }) => `${JSON.stringify(hit.path)}@${revision}:${hit.line}`),
-        cursors: page.rows.map(row => row.cursor),
-        searchExcerptFlags: page.rows.map(row => row.hit.excerpt === true),
-        ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}@${revision}:${page.next.line}, cursor=${page.next.cursor}` } : {})
-      }, page.meta);
+      const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, { ...options, mode: options.mode ?? "regex" }));
+      return renderSearchPage(page, options.source?.kind ?? "head");
     })
   };
+}
+
+function renderSearchPage(page: SearchPage, revision: SourceSelector["kind"]): ToolExecutionResult {
+  const full = renderSearchRows(page, revision);
+  if (page.meta.deliveryStatus === "empty") {
+    const text = page.meta.searchDelivery?.emptyScope ? `No tracked files match pathGlob at ${revision}.`
+      : `No matches in the selected ${revision} scope.`;
+    return { ...full, budgetFallback: { ...full, text } };
+  }
+  const firstContext = page.rows.find(({ hit }) => hasSearchContext(hit));
+  const delivery = page.meta.searchDelivery;
+  if (!firstContext || !delivery) return full;
+  // Optional context is shed before match locations when the complete page
+  // exceeds its allowance. The cursor still belongs to the original query.
+  const rows = page.rows.map(({ hit, ...row }) => {
+    const { contextBefore: _before, contextAfter: _after, enclosingSymbol: _symbol, ...match } = hit;
+    return { ...row, hit: match };
+  });
+  const position = searchContextPosition(firstContext.hit);
+  const meta = searchDeliveryMeta(page.meta, { ...delivery, budgetContextStripped: true });
+  const notice = `Context omitted to fit the result budget. Use read_range at ${JSON.stringify(position.path)}@${revision}:${position.line}.\n`;
+  return { ...full, budgetFallback: renderSearchRows({ ...page, rows, meta }, revision, notice) };
+}
+
+function renderSearchRows(page: SearchPage, revision: SourceSelector["kind"], notice = ""): ToolExecutionResult {
+  const total = page.rows.length + (page.meta.omittedCount ?? 0);
+  const scope = page.pathGlob === undefined ? "all files" : JSON.stringify(page.pathGlob);
+  const open = `Search at ${revision} (${page.revision}) in ${scope}: ${page.meta.omittedCountIsLowerBound ? "at least " : ""}${total} matches from this position\n${notice}`;
+  const files = new Set<string>();
+  const records = page.rows.map(({ hit, totalLines }) => {
+    const header = files.has(hit.path) ? [] : [`${JSON.stringify(hit.path)}@${revision}: ${totalLines} lines`];
+    files.add(hit.path);
+    const before = hit.contextBefore ?? [];
+    const after = hit.contextAfter ?? [];
+    const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn})` : "";
+    const enclosing = hit.enclosingSymbol;
+    return [
+      ...header,
+      ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
+      ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
+      `${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`,
+      ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
+    ].join("\n");
+  });
+  return { ...createPackableToolResult({
+    open, records, separator: "\n", close: "",
+    labels: page.rows.map(({ hit }) => `${JSON.stringify(hit.path)}@${revision}:${hit.line}`),
+    cursors: page.rows.map(row => row.cursor),
+    searchExcerptFlags: page.rows.map(row => row.hit.excerpt === true),
+    ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}@${revision}:${page.next.line}, cursor=${page.next.cursor}` } : {})
+  }, page.meta), searchResults: page.rows.map(row => row.hit) };
 }
 
 export function buildSixListFilesTool(tools: RepositoryTools): ToolDefinition {

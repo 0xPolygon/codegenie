@@ -105,23 +105,25 @@ export class SearchService {
     const source = options.source ?? { kind: "head" };
     const mode = options.mode ?? "regex";
     const contextMode = options.contextMode ?? "none";
+    const maxResults = clampMaxResults(options.maxResults, DEFAULT_MAX_RESULTS, HARD_MAX_RESULTS);
+    const caseSensitive = options.caseSensitive ?? true;
     const pathGlob = options.pathGlob === undefined ? undefined : containGlob(this.resolver.repoRoot, options.pathGlob);
     const revision = this.resolver.resolveSource(source);
-    const binding = toolCursorBinding(["search_files", revision, source.kind, query, mode, pathGlob ?? null, contextMode]);
+    const binding = toolCursorBinding(["search_files", revision, source.kind, query, mode, pathGlob ?? null, contextMode, maxResults, caseSensitive]);
     const startAt = options.cursor === undefined ? undefined : this.searchPosition(decodeToolCursor(options.cursor, binding));
     const raw = await this.limit(() => this.resolver.grep(query, {
-      source, positioned: true, fixedString: mode === "literal", maxResults: DEFAULT_MAX_RESULTS + 1,
+      source, positioned: true, fixedString: mode === "literal", maxResults: maxResults + 1, caseSensitive,
       ...(pathGlob === undefined ? {} : { glob: pathGlob }),
       ...(startAt ? { startAt } : {})
     })).catch(error => {
-      if (error instanceof CodegenieError && error.code === "invalid_args" && mode === "regex") {
+      if (error instanceof CodegenieError && error.code === "invalid_args" && options.mode === "regex") {
         throw new CodegenieError("invalid_args", error.message + " Use mode=literal to search for source text.", { cause: error });
       }
       throw error;
     });
 
-    const hits = capMatchTexts(raw.slice(0, DEFAULT_MAX_RESULTS)).results;
-    const nextHit = raw[DEFAULT_MAX_RESULTS];
+    const hits = capMatchTexts(raw.slice(0, maxResults)).results;
+    const nextHit = raw[maxResults];
     const skipped = raw.omittedLines ?? 0;
     const delivery: SearchDelivery = {
       source: source.kind, deliveredCount: hits.length, scanIncomplete: nextHit !== undefined,

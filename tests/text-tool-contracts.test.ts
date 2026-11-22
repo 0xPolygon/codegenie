@@ -497,15 +497,16 @@ describe("search delivery accounting over committed source", () => {
       degraded: false, deliveryStatus: "truncated", degradationReason: "search_discovery_limit", omittedCount: 1,
       omittedCountIsLowerBound: true, searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1 }
     });
-    expect(JSON.parse(incomplete.text).notice).toContain('Omitted at least 1 matching lines. Scan limited. Next read_range: "cmd/serve/admin.go"@head:3.');
+    expect(incomplete.text).toContain("truncated: at least 1 omitted");
+    expect(incomplete.text).toContain('next: "cmd/serve/admin.go"@head:3, cursor=');
     const exact = packSearchToolResult(await search("needle", { pathGlob: "src/oversized.ts" }), 4000);
     expect(exact.meta).toMatchObject({
       degradationReason: "search_result_limit", omittedCount: 1, omittedCountIsLowerBound: false,
       searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 0, backendOmittedCount: 1 }
     });
     expect(exact.meta?.discoveryLimited).not.toBe(true);
-    expect(JSON.parse(exact.text).results).toMatchObject([{ line: 2 }]);
-    expect(JSON.parse(exact.text).notice).toContain('Omitted 1 matching lines. Next read_range: "src/oversized.ts"@head:1.');
+    expect(exact.searchResults).toMatchObject([{ line: 2 }]);
+    expect(exact.text).toContain('matching lines omitted by the Git output cap: 1; inspect "src/oversized.ts"@head:1');
     const mixed = packSearchToolResult(await search("needle", { pathGlob: "src/{excerpt,oversized}.ts", maxResults: 1 }), 4000);
     expect(mixed.meta).toMatchObject({
       degradationReason: "search_discovery_limit", discoveryLimited: true, omittedCount: 2, omittedCountIsLowerBound: true,
@@ -513,19 +514,19 @@ describe("search delivery accounting over committed source", () => {
     });
     const excerpt = packSearchToolResult(await search("needle", { pathGlob: "src/excerpt.ts" }), 4000);
     expect(excerpt.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 0, searchDelivery: { shortenedExcerpts: 1 } });
-    expect(JSON.parse(excerpt.text).notice).toContain('Next read_range: "src/excerpt.ts"@head:1.');
+    expect(excerpt.text).toContain('Some matching lines are excerpts.');
+    expect(excerpt.text).toContain('"src/excerpt.ts"@head: 1 lines');
     const empty = packSearchToolResult(await search("missingNeedle"), 4000);
     expect(empty.meta).toMatchObject({ deliveryStatus: "empty", searchDelivery: { deliveredCount: 0, scanIncomplete: false } });
-    expect(JSON.parse(empty.text).results).toEqual([]);
+    expect(empty.searchResults).toEqual([]);
   });
 
   it("distinguishes an empty path scope from no matches and still validates its ERE", async () => {
     const fixed = packSearchToolResult(await fixture.call("search_files", {
       query: "needle", pathGlob: "test/**", source: { kind: "base" }
     }), 4000);
-    expect(JSON.parse(fixed.text)).toMatchObject({
-      results: [], notice: "No tracked files match pathGlob at the pinned base revision."
-    });
+    expect(fixed.searchResults).toEqual([]);
+    expect(fixed.text).toContain("No tracked files match pathGlob at the pinned base revision.");
     expect(fixed.meta?.searchDelivery).toMatchObject({ emptyScope: true, deliveredCount: 0 });
     const noMatch = packSearchToolResult(await fixture.call("search_files", {
       query: "unlikely-search-needle", pathGlob: "src/**"
@@ -538,7 +539,7 @@ describe("search delivery accounting over committed source", () => {
     expect(malformed.text).toContain("return \\{");
   });
 
-  it("repackages cached results per allowance and counts context or rows separately", async () => {
+  it("repackages cached search rows under each allowance and identifies the first omitted match", async () => {
     const args = { query: "proofVisibilityDiagnostics|regMu", contextMode: "lines" };
     const cache = createToolResultCache();
     const request = { toolName: "search_files", args, run: () => fixture.call("search_files", args) };
@@ -553,12 +554,14 @@ describe("search delivery accounting over committed source", () => {
       degraded: false, deliveryStatus: "truncated", degradationReason: "tool_result_budget", omittedCountIsLowerBound: false,
       searchDelivery: { budgetContextStripped: true, scanIncomplete: false }
     });
-    expect(rows.meta?.searchDelivery?.deliveredCount).toBe(JSON.parse(rows.text).results.length);
-    expect(rows.meta?.searchDelivery?.budgetOmittedCount).toBe(4 - JSON.parse(rows.text).results.length);
+    expect(rows.meta?.searchDelivery?.deliveredCount).toBe(rows.searchResults!.length);
+    expect(rows.meta?.searchDelivery?.budgetOmittedCount).toBe(4 - rows.searchResults!.length);
+    expect(rows.text).toContain("Context omitted to fit the result budget");
+    if (rows.meta?.searchDelivery?.budgetOmittedCount) expect(rows.text).toMatch(/next: .+@head:\d+, cursor=/u);
     const refused = packSearchToolResult(hit.result, 128);
     expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
       meta: { deliveryStatus: "budget_rejected", searchDelivery: { deliveredCount: 0, budgetOmittedCount: 4 } } });
-    expect(refused.text).toContain('Next read_range: "cmd/serve/admin.go"@head:1.');
+    expect(refused.text).toContain('First unread source: "cmd/serve/admin.go"@head:1, cursor=');
     expect(packSearchToolResult((await cache.execute(request)).result, 4000)).toEqual(full);
   });
 });

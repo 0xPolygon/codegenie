@@ -717,7 +717,7 @@ export type SourceFileMap = {
   smallSource?: string;
 };
 
-export type SearchPageOptions = Pick<SearchOptions, "source" | "pathGlob" | "contextMode"> & {
+export type SearchPageOptions = SearchOptions & {
   mode?: "regex" | "literal";
   cursor?: string;
 };
