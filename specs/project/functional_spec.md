@@ -35,14 +35,17 @@ codegenie review --branch feature-branch [--base main]
 codegenie review --head <head-ref> --base <base-ref>
 codegenie review <base-ref>...<head-ref>
 codegenie review <commit> [end-commit]
+codegenie review --staged
+codegenie review --uncommitted
 ```
 
-With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target. Reviewing uncommitted working-tree changes is out of scope for v1.
+With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target.
+
+`--staged` compares HEAD to the index. `--uncommitted` compares HEAD to a tracked working-tree snapshot, including staged and unstaged changes. Each flag is a standalone target without GitHub posting. On an unborn branch both use an empty base. The working-tree mode reports the number of omitted nonignored untracked files. `git add -N <path>` makes a new file eligible for this mode.
 
 Common review options:
 
 ```bash
-codegenie review --depth light|normal|deep
 codegenie review --lens <lens-name> [--lens <lens-name> ...]
 codegenie review --provider <provider>
 codegenie review --model <model-or-provider/model>
@@ -52,7 +55,7 @@ codegenie review --ci
 codegenie review --no-progress
 ```
 
-`--depth` controls the global review budget and planner bias. The default is `normal`. `light` should favor cheaper packet review and smaller tool budgets. `deep` should allow more `deep` packet coverage and larger tool budgets. Per-hunk coverage may still vary inside the selected depth when the planner sees concrete risk evidence.
+Codegenie runs one review mode using the budgets, close nudge and planner input that plan 128 measured as `normal`. When upgrading from 0.9.0, remove `--depth` from CLI invocations, `review.depth` from TOML and eval cases, and `depth` from GitHub Action inputs. A legacy `defaultDepth` in provider `settings.json` is silently ignored and dropped on the next save.
 
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 
@@ -136,7 +139,8 @@ Behavior:
 - Comment-author identity resolves as `bot-login` input → `/user` lookup → `github-actions[bot]`; status-comment reclaim requires an exact case-insensitive author match against it.
 - A non-triggering event is a skip: exit `0`, one-line stdout reason, nothing posted. Review and posting failures keep their existing nonzero exit semantics.
 - Inline posting maps to the existing `--post-github-comments` flag; the status comment is enabled only by this entrypoint. Repo-resident config can enable neither.
-- Model selection is a single spec input, `provider/model[:reasoning]` (reasoning defaults to `high` in action context; a `:suffix` that is not a reasoning level stays part of the model id). A generic `LLM_API_KEY` env var/input is routed to the env variable the named provider reads (via the provider registry's env-var map); provider-native env vars keep working and are never overwritten.
+- The workflow can supply `stage-models` alongside `model`. It is a map of `plan`, `review`, `verify`, and `compose` to optional `model` and `reasoning` fields. Missing fields inherit the global selection. An authorized comment that selects an alias applies that alias's selection to every stage and logs that the stage map was skipped. The generic key check includes explicit stage models alongside the global default and all aliases.
+- The global `model` is a workflow alias or a `provider/model[:reasoning]` spec. Reasoning defaults to `high`, and a suffix outside the reasoning vocabulary stays in the model ID. `llm-api-key` or `LLM_API_KEY` takes precedence over the credential env var it targets. With no generic key, provider-native credentials apply.
 - Telemetry remains disabled by default. Gate decisions and bounded terminal lifecycle/status counters are logged in CI. Terminal pre/post-cap body sizes are UTF-8 byte counts over the complete attempted payload including the status marker. The same terminal lifecycle object is persisted as `github-action.json` only when telemetry is enabled and the review exposes a run directory; preflight/skips are log-only because no review run exists.
 
 ## Provider And Model CLI
@@ -152,7 +156,6 @@ codegenie provider models [provider-or-search] [--all]
 codegenie provider config
 codegenie provider config set-provider <provider>
 codegenie provider config set-model <provider> <model>
-codegenie provider config set-depth <light|normal|deep>
 codegenie provider config set-reasoning <low|medium|high|xhigh|auto>
 ```
 
@@ -163,10 +166,9 @@ Behavior:
 - `provider logout [provider]` removes stored credentials for one provider, or all providers after confirmation.
 - `provider auth-status [provider]` reports whether auth is available and where it came from, such as stored credentials, environment variables, runtime override, or model-registry configuration. It must not print secret values.
 - `provider models [provider-or-search] [--all]` lists models from Pi's registry. By default it lists authenticated/available models; `--all` lists every known model. Output should include provider, model id, context window, max output tokens when known, reasoning support, and vision/input capability when known.
-- `provider config` prints user-level effective defaults as JSON, including the codegenie home directory, auth path, models path, settings path, default provider/model, default depth, default reasoning override, and effective depth/reasoning.
+- `provider config` prints user-level effective defaults as JSON, including the codegenie home directory, auth path, models path, settings path, default provider/model, default reasoning override, and effective reasoning.
 - `provider config set-provider` sets the user-level default provider after validating that the provider exists.
 - `provider config set-model` validates the model exists for the provider and stores both the default provider and default model.
-- `provider config set-depth` stores the user-level default review depth using codegenie's `light|normal|deep` depth vocabulary.
 - `provider config set-reasoning` stores a user-level reasoning override; `auto` clears the stored override, letting resolution fall through to `~/.codegenie/config.toml` and then the built-in `high` default. Providers with different reasoning scales map onto codegenie's four levels.
 
 User provider state should live under `~/.codegenie/` by default, overridable with `CODEGENIE_HOME`:
@@ -175,7 +177,7 @@ User provider state should live under `~/.codegenie/` by default, overridable wi
 ~/.codegenie/
   auth.json       # provider credentials, chmod 0600
   models.json     # Pi model registry custom providers/models when supported
-  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  settings.json   # default provider/model/reasoning, chmod 0600
   config.toml     # optional user-level config overrides and trust opt-ins
   sessions/       # provider/session state when Pi needs it
 ```
@@ -190,12 +192,6 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
 
-Stored `defaultDepth` participates in review-depth resolution; repo project policy outranks the personal default, and depth has no environment layer:
-
-```text
---depth > repo codegenie.toml > settings.json defaultDepth > config.toml > built-in normal
-```
-
 If no authenticated model can be resolved, codegenie should fail before Stage 5 with a clear `config_error`, for example: `no authenticated provider model is available; run: codegenie provider login <provider>`.
 
 ## Review Pipeline
@@ -209,7 +205,7 @@ codegenie should use a staged review pipeline:
 5. Run the planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
-8. Run optional cross-file/system follow-up review only for repeated scoped follow-up hints from Stage 7; skip otherwise.
+8. Unused: the targeted system follow-up stage was deleted in #114.
 9. Verify candidate findings, with only minimal duplicate suppression needed to avoid repeated verifier calls.
 10. Deduplicate, rank, and compose final output.
 11. Optionally post verified inline comments and a PR summary through GitHub.
@@ -222,30 +218,26 @@ The planner should choose coverage and lenses based on language, changed symbols
 
 The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
-## Stage 1: Diff Parsing And Change Inventory
+## Stage 1: Input Resolution
 
-Stage 1 resolves the requested review target into a deterministic local change inventory.
+Stage 1 resolves the requested review target into base and head revisions, commit metadata and a raw diff.
 
-Inputs can come from `--pr`, `--branch`, or commit/range mode, but the output should be normalized into the same internal shape: changed files, hunks, absolute old/new line mappings, file statuses, and commit or PR metadata when available.
+Inputs can come from `--pr`, `--branch`, or commit/range mode.
 
 Stage 1 should:
 
 - Resolve the base and head revisions for the selected input mode.
 - Collect commit titles and descriptions across the reviewed range.
-- Parse the unified diff into files and hunks.
-- Preserve old/new line numbers for every hunk line.
-- Identify file status such as added, modified, renamed, copied, deleted, binary, or mode-only.
-- Preserve diff side information for each changed line so added lines, removed lines, and context lines can be reviewed and anchored correctly.
 - Record GitHub PR metadata when `--pr` is used.
-- Fail clearly when the target cannot be resolved or the diff cannot be parsed.
+- Fail clearly when the target cannot be resolved or its diff cannot be obtained.
 
-This stage must not call the LLM. Its output is the source of truth for later anchor validation, hunk ids, changed-line detection, and GitHub inline-comment mapping.
+This stage must not call the LLM.
 
-Deleted files and deletion-only hunks are part of the review inventory. codegenie should not silently drop them merely because the file no longer exists in the head worktree. Stage 1 should retain their old-side line numbers and old path so later stages can review removed behavior, removed tests, removed exports, removed cleanup, and broken references caused by deletion.
+## Stage 2: Diff Parsing And Filtering
 
-## Stage 2: Filtering Ignored And Non-Reviewable Files
+Stage 2 parses the unified diff into files and hunks, preserving file status, old/new line numbers and diff sides for later anchor validation and GitHub inline-comment mapping. It must fail clearly if the diff cannot be parsed.
 
-Stage 2 removes files that should not enter the review pipeline and records why they were filtered.
+It also removes files that should not enter the review pipeline and records why they were filtered.
 
 Filtering should be deterministic and explainable. Stage 2 runs the shared deterministic detectors the skip policy needs — built-in generated/vendor/binary/lockfile detection, repository ignore rules where appropriate, and explicit `codegenie.toml` skip rules — and applies policy over their results. Detection results are recorded with provenance on each filter decision and reused by Stage 3 classification for kept files: nothing is detected twice, and filtered files receive no further classification, parsing, or review work.
 
@@ -262,7 +254,7 @@ Stage 2 should filter or mark:
 
 Filtering decisions must be recorded in telemetry and surfaced in coverage summaries when they affect review completeness. Filtered files should not produce candidate findings, but their counts and paths may still be visible to the planner as review-scope facts.
 
-Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
+Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. Preserve their old paths and line numbers for reviewing removed behavior. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
 
 ## Stage 3: File Classification
 
@@ -343,7 +335,7 @@ The LLM decides whether a signal matters in the context of the PR. A static sign
 
 The planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
 
-V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
+V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, the fixed review-mode label (`normal`), configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
 
 The planner should explicitly build a diff understanding before assigning coverage and lenses. It should distinguish declared intent from inferred behavior:
 
@@ -368,7 +360,7 @@ The deterministic file filter owns exclusions. Every hunk in a kept file is elig
 
 The planner ranks attention with `light`, `normal`, or `deep` coverage and may suggest lenses and context hints for specific hunks. Later stages may validate malformed planner output or apply deterministic default coverage to omitted hunks, but they should not become independent risk classifiers.
 
-Configured review depth should influence budgets and defaults, not replace judgment. A `light` run may still review a concrete critical-risk hunk at `normal`; a `deep` run may still give mechanical hunks `light` coverage. Deterministic file exclusions apply at every depth.
+Budgets follow each packet's coverage and profile; there is no run-level depth (#129). Deterministic file exclusions always apply.
 
 ## Large Review Handling
 
@@ -749,7 +741,7 @@ Eval cases should be YAML files stored outside the codegenie repository when the
 - An external local repository path.
 - A fixture repository.
 - A branch, commit, commit range, or PR target.
-- Review settings such as depth, lenses, max findings, concurrency, cache on/off, verification on/off, provider/model/reasoning overrides, and telemetry/debug options.
+- Review settings such as lenses, max findings, concurrency, cache on/off, verification on/off, provider/model/reasoning overrides, and telemetry/debug options.
 - Expected final findings.
 - Expected candidate findings.
 - Findings that must not appear.
@@ -853,6 +845,8 @@ Stage 10 should:
 
 Published findings retain open verification conditions through deterministic rendering and include selected supporting evidence. The separate composition-sources artifact retains the original assessments and supporting evidence when telemetry is enabled. Ordinary reviews with telemetry disabled do not retain those originals separately.
 
+The inline confidence floor demotes ineligible inline findings before the soft inline cap is applied. After selection, reports group findings by severity and order each severity by file and line, with anchorless findings last for a file; the displayed order within a severity is not an importance ranking.
+
 The final composer should prefer no comments over weak comments. The default target is roughly 3-7 high-signal comments per PR, but this is a soft cap: verified critical and high-severity findings should not be hidden only to satisfy the default limit.
 
 The composer should produce a final review object containing:
@@ -931,14 +925,13 @@ This section covers the resolved configuration surface. Repo `codegenie.toml` ma
 V1 configuration should support:
 
 - Default base branch for branch review.
-- Default review depth: `light`, `normal`, or `deep`.
 - Independent verification on or off. Verification is enabled by default and may be disabled only through this explicit configuration, per Stage 9.
 - Path-based file handling rules, including processing mode, review priority, labels, and reasons.
 - Enabling and disabling lenses.
 - Extra Markdown skill paths.
 - Severity and confidence thresholds, including a minimum severity threshold for reported findings.
 - Maximum findings (the report cap) and soft comment cap (the inline-comment target). Neither cap suppresses verified critical or high-severity findings.
-- LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency; one provider/model/reasoning configuration applies to the whole run. Repo `codegenie.toml` must not set provider credentials, default provider, default model, or reasoning effort.
+- LLM runtime options for `@earendil-works/pi-ai`, including shared provider-call concurrency and optional user-scoped model/reasoning selections for plan, review, verify, and compose. Unspecified fields inherit the global settings. Repo `codegenie.toml` must not set provider credentials, model selection, or reasoning effort.
 - Runtime and per-pass timeouts.
 - Maximum total token budget for a run.
 - Maximum model calls per run.
@@ -950,7 +943,6 @@ V1 configuration should support:
 If no config exists, codegenie should run with sensible defaults:
 
 - Core correctness-oriented lenses enabled.
-- Review depth set to `normal`.
 - Independent verification enabled.
 - Style/lint lenses disabled.
 - Low-confidence findings suppressed.
@@ -995,7 +987,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 
 Config trust partitioning:
 
-- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, caps, and `telemetry.enabled`.
+- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, base branch, labels, caps, and `telemetry.enabled`.
 - Out-of-repo or provider-routing settings — `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`). Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 
@@ -1056,7 +1048,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Spec/doc discovery and spec alignment. Deterministic discovery of repo-resident specs through configured `specs.paths` globs (path proximity to changed package roots, then filename/title keyword overlap; top 5 docs as capped snippets), plus `relevantSpecs` and `specAlignmentQuestions` on the planner's diff understanding, with spec-alignment findings citing both the spec evidence and the changed-code behavior. V1 compares declared intent against inferred behavior only. Build when evals show intent-only alignment missing real spec violations.
 - Human-thread awareness. Fetching existing PR review comments and threads, passing deterministically extracted and truncated summaries to the planner as hints (never findings), and composer acknowledgment of overlap with existing threads — without dropping verified findings or adopting an existing comment without codegenie's own evidence and verification. V1 lists only codegenie's own prior comments, for rerun duplicate avoidance. Build when codegenie is observed re-raising points humans already made on the thread.
 - Configured command execution. Opt-in `tools.testCommands` for test/typecheck/build commands run with timeouts, results treated as evidence rather than automatic findings, enabled only through user-level trust. V1 never executes repository commands. Build when evals show findings that only execution evidence could confirm or reject.
-- Per-role model/reasoning tiering. Optional per-role model and reasoning overrides (planner, packet reviewer, verifier, composer) supplied from user-level config or CLI. V1 runs one provider/model/reasoning configuration for the whole run. Build when evals identify roles where cheaper models or lower reasoning hold review quality.
 - Rich pre-attached packet context. Sibling symbol names, AST summaries, nearby imports, and small examples of nearby established patterns assembled into packets at construction time. V1 packets carry enclosing-symbol source, a file outline, and likely tests; reviewers fetch the rest on demand with read-only tools. Build when tool-call telemetry shows reviewers repeatedly refetching the same local context.
 - Per-language static-signal packs. Language-specific deterministic signal rules — ignored errors, concurrency primitives, migration files, resource cleanup, lifecycle-sensitive code — beyond the two v1 cross-language rules. Build when evals show planner risk-targeting misses attributable to absent signals.
 - Cost-based run budgets. A maximum-cost budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and the token budget covers the need. Build when Pi-reported pricing is reliable.
@@ -1065,7 +1056,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 ## Out Of Scope For V1
 
 - GitLab support.
-- Reviewing uncommitted working-tree changes.
 - Approving or requesting changes through GitHub reviews.
 - Auto-fixing or editing code.
 - Executable TypeScript skill packages from users.

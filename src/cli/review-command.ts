@@ -8,7 +8,6 @@ import type {
   OutputFormat,
   ParsedReviewCommand,
   ReviewCommandTarget,
-  ReviewDepth,
   ReviewResult,
   TelemetryEvent
 } from "../types.js";
@@ -21,7 +20,7 @@ type ParseReviewCommandOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   allowOutput?: boolean;
-};
+} & Pick<LoadConfigOptions, "actionStageModels">;
 
 type ExecuteReviewCommandResult = {
   runId: string;
@@ -33,6 +32,7 @@ type ExecuteReviewCommandResult = {
 };
 
 type ExecuteReviewCommandOptions = {
+  conciseTargetErrors?: boolean;
   writeOutput?: (text: string) => void;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onTelemetryEvent?: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => void;
@@ -42,8 +42,9 @@ type CommanderReviewOptions = {
   pr?: string;
   branch?: string;
   head?: string;
+  staged?: boolean;
+  uncommitted?: boolean;
   base?: string;
-  depth?: string;
   budgetBoost?: string;
   maxTime?: string;
   lens?: string[];
@@ -86,8 +87,9 @@ export function parseReviewCommand(
     .option("--pr <number>", "GitHub pull request number")
     .option("--branch <branch>", "branch to review")
     .option("--head <ref>", "head ref or commit to review with --base")
+    .option("--staged", "review HEAD against the Git index")
+    .option("--uncommitted", "review HEAD against the tracked working tree")
     .option("--base <branch>", "base branch/ref for branch/head/default review")
-    .option("--depth <depth>", "review depth: light, normal, or deep")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
@@ -122,7 +124,6 @@ export function parseReviewCommand(
   const providerConfig = provider.command("config").description("show or update provider defaults");
   providerConfig.command("set-provider").argument("<provider>");
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
-  providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument(REASONING_USAGE);
   program.command("use").description("shorthand for `provider use`").argument("<model>");
   program.command("version").description("show codegenie version");
@@ -166,6 +167,9 @@ export function parseReviewCommand(
   if (opts.env !== undefined) {
     loadOptions.env = opts.env;
   }
+  if (opts.actionStageModels !== undefined) {
+    loadOptions.actionStageModels = opts.actionStageModels;
+  }
   const loaded = loadConfig(loadOptions);
 
   const options = buildReviewOptions(commandOptions);
@@ -174,6 +178,7 @@ export function parseReviewCommand(
     config: loaded.config,
     options,
     repoRoot,
+    codegenieHome: loaded.paths.home,
     warnings: loaded.warnings,
     configSources: loaded.sources
   };
@@ -187,6 +192,7 @@ export async function executeReviewCommand(
   let inventory = { filesChanged: 0, keptFiles: 0 };
   const overrides = {
     repoRoot: parsed.repoRoot,
+    codegenieHome: parsed.codegenieHome,
     format: parsed.options.format,
     postGithubComments: parsed.options.postGithubComments,
     onRunStart: (run: { runId: string; runDir: string }) => {
@@ -201,6 +207,7 @@ export async function executeReviewCommand(
   const review = await runReview(parsed.target, parsed.config, {
     ...overrides,
     configWarnings: parsed.warnings,
+    ...(opts.conciseTargetErrors === true ? { conciseTargetErrors: true } : {}),
     ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
   return {
@@ -217,12 +224,12 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
   const hasBranch = options.branch !== undefined;
   const hasHead = options.head !== undefined;
   const hasCommits = commits.length > 0;
-  const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits].filter(Boolean).length;
+  const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits, options.staged, options.uncommitted].filter(Boolean).length;
 
   if (targetModeCount > 1) {
     throw new CodegenieError(
       "invalid_args",
-      "--pr, --branch, --head, and positional commits are mutually exclusive"
+      "--pr, --branch, --head, --staged, --uncommitted, and positional targets are mutually exclusive"
     );
   }
 
@@ -234,8 +241,12 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
     throw new CodegenieError("invalid_args", "--post-github-comments requires --pr");
   }
 
-  if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
+  if (options.base !== undefined && (hasPr || options.staged || options.uncommitted || (hasCommits && !isSingleRef(commits)))) {
     throw new CodegenieError("invalid_args", "--base is only valid for branch, head, or default review");
+  }
+
+  if (options.staged || options.uncommitted) {
+    return { mode: options.staged ? "staged" : "uncommitted" };
   }
 
   if (hasPr) {
@@ -302,9 +313,6 @@ function parseBaseHeadShorthand(commits: string[]): ReviewCommandTarget | undefi
 
 function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides {
   const cli: CliConfigOverrides = {};
-  if (options.depth !== undefined) {
-    cli.depth = parseDepth(options.depth);
-  }
   if (options.budgetBoost !== undefined) {
     cli.budgetBoost = parseBudgetBoost(options.budgetBoost);
   }
@@ -379,13 +387,6 @@ function parsePrNumber(value: string | undefined): number {
     throw new CodegenieError("invalid_args", "--pr must be a positive integer");
   }
   return Number(raw);
-}
-
-function parseDepth(value: string): ReviewDepth {
-  if (value === "light" || value === "normal" || value === "deep") {
-    return value;
-  }
-  throw new CodegenieError("invalid_args", "--depth must be one of: light, normal, deep");
 }
 
 function parseBudgetBoost(value: string): number {

@@ -551,6 +551,7 @@ describe("stage 9 evidence-aware verification", () => {
     expect(calls).toBe(0);
     expect(result.verified).toEqual([]);
     expect(result.gateRejections).toBe(1);
+    expect(result.verificationCandidateCount).toBe(0);
     expect(telemetry.artifacts.get("verification.json")).toEqual([
       expect.objectContaining({
         candidateId: "low-weak",
@@ -581,7 +582,7 @@ describe("stage 9 evidence-aware verification", () => {
     const telemetry = captureTelemetry();
     let calls = 0;
 
-    await verifyFindings(
+    const result = await verifyFindings(
       { packetResults: findings.map((finding) => packetResult(finding.producedBy.packetId, [finding])), packets: fixture.packets },
       fakeTools(),
       config(),
@@ -605,6 +606,7 @@ describe("stage 9 evidence-aware verification", () => {
     const records = telemetry.artifacts.get("verification.json") as EvalVerificationRecord[];
     expect(calls).toBe(4);
     expect(records.filter((record) => "verdict" in record)).toHaveLength(4);
+    expect(result).toMatchObject({ incompleteCount: 0, verificationCandidateCount: 4 });
     expect(records.filter((record) =>
       !("verdict" in record) &&
       record.gateDecision === "scheduled_for_evidence_resolution" &&
@@ -647,6 +649,7 @@ describe("stage 9 evidence-aware verification", () => {
     expect(validation).toMatchObject({ ok: false, details: expect.stringContaining("findingUpdates.title") });
     expect(result.verified).toEqual([]);
     expect(result.incompleteCount).toBe(1);
+    expect(result.verificationCandidateCount).toBe(1);
     expect(result.verdicts[0]).toMatchObject({ verdict: "incomplete", verificationIncomplete: true });
   });
 

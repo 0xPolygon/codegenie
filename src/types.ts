@@ -1,7 +1,6 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
-export type ReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -17,6 +16,8 @@ export type ConfigSource =
   | "provider-settings"
   | "repo-config"
   | "environment"
+  | "eval-case"
+  | "github-action"
   | "cli";
 
 export type ClassificationPathRule = {
@@ -35,7 +36,6 @@ export type CodegenieConfig = {
     restrictTo?: string[];
   };
   review: {
-    depth: ReviewDepth;
     verify: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
@@ -68,6 +68,7 @@ export type CodegenieConfig = {
     provider?: string;
     model?: string;
     reasoning?: ReasoningLevel;
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>;
     maxConcurrentCalls: number;
     // Plan 86 step 3 escape hatch: when true (default), Anthropic
     // finalize/repair/no-tool calls run with thinking disabled and genuinely
@@ -103,7 +104,6 @@ export type CodegeniePaths = {
 export type ProviderSettings = {
   defaultProvider?: string;
   defaultModel?: string;
-  defaultDepth?: ReviewDepth;
   defaultReasoning?: ReasoningLevel;
 };
 
@@ -113,7 +113,10 @@ export type ReviewCommandTarget =
   | { mode: "branch"; branchName: string; baseBranch?: string }
   | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "single_ref"; ref: string; baseBranch?: string }
-  | { mode: "commit_range"; startCommit: string; endCommit?: string };
+  | { mode: "commit_range"; startCommit: string; endCommit?: string }
+  | LocalReviewTarget;
+
+export type LocalReviewTarget = { mode: "staged" } | { mode: "uncommitted" };
 
 export type ReviewCommandOptions = {
   format: OutputFormat;
@@ -127,11 +130,12 @@ export type ParsedReviewCommand = {
   config: CodegenieConfig;
   options: ReviewCommandOptions;
   repoRoot: string;
+  codegenieHome: string;
   warnings: ConfigWarning[];
   configSources: Record<string, ConfigSource>;
 };
 
-export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
+export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range" | LocalReviewTarget["mode"];
 
 export type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
@@ -202,6 +206,7 @@ export type ResolvedReviewInput = {
   endCommit?: string;
   mergeBase?: string;
   headSha?: string;
+  untrackedFiles?: number;
   pr?: PullRequestMetadata;
   commits: CommitInfo[];
   rawDiff: string;
@@ -595,6 +600,8 @@ export type ReviewPacket = {
   relatedChangedContext: RelatedChangedContext[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
+  /** Real context loss (#175); internal, never rendered to models. */
+  contextLoss?: string[];
   fileContext?: {
     mode: "file-diff" | "whole-file";
     reason: string;
@@ -1018,6 +1025,7 @@ export type PostingPlan = {
 };
 
 export type ReviewRunStats = {
+  stageModels?: Partial<Record<"plan" | "review" | "verify" | "compose", { provider: string; id: string; reasoning: ReasoningLevel }>>;
   model?: {
     provider?: string;
     id?: string;
@@ -1065,6 +1073,8 @@ export type ReviewHealth = {
   status: "failed" | "incomplete" | "unresolved" | "completed";
   diagnostics: ReviewDiagnostic[];
   unresolvedCount: number;
+  /** Total candidates selected for verification when some remained incomplete. Includes duplicates sharing their representative's verdict. */
+  verificationCandidateCount?: number;
 };
 
 export type ReviewResult = {
@@ -1119,7 +1129,6 @@ export type EvalCase = {
     target?: string;
   };
   review?: {
-    depth?: ReviewDepth;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
@@ -1403,6 +1412,7 @@ export type EvalRunInfo = {
       provider?: string;
       model?: string;
       reasoning?: ReasoningLevel;
+      stages?: CodegenieConfig["llm"]["stages"];
       maxConcurrentCalls: number;
     };
   };
@@ -1630,7 +1640,9 @@ export type DossierCompaction = {
 export type PlannerDossier = {
   runId: string;
   mode: ReviewMode;
-  depth: ReviewDepth;
+  // The single review mode keeps the planner input measured as "normal" in
+  // the plan 128 campaign; changing this label is a prompt change.
+  depth: "normal";
   target: {
     baseRef?: string;
     headRef?: string;

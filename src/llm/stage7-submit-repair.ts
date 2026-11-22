@@ -120,6 +120,14 @@ const STAGE7_CANDIDATE_FIELD_NAMES = new Set([
 const STAGE7_NO_FINDING_REASON_MAX_CHARS = 1000;
 const STAGE7_FIELD_TRUNCATION_SUFFIX = " [truncated by codegenie]";
 
+export function normalizeStage7Submit(value: unknown) {
+  if (!isRecord(value) || value.noFindingReason !== "" || !Array.isArray(value.findings) || value.findings.length === 0) {
+    return undefined;
+  }
+  const { noFindingReason: _empty, ...normalized } = value;
+  return { value: normalized, removedFields: ["noFindingReason"], reason: "empty_reason_with_findings" };
+}
+
 export function stage7SubmitRepairDecision(
   request: LlmStructuredRequest<unknown>,
   submitCall: PiToolCall,

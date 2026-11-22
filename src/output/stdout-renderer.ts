@@ -16,6 +16,7 @@ export function renderPostingSummaryForStdout(
   const notice = renderReviewHealth(health, result.composition, {
     shown: result.needsHumanAttention.length,
     omitted: result.needsHumanAttentionOmittedCount ?? 0,
+    verificationIncompleteCount: result.coverage.verificationIncompleteCount,
     inFullReview: true
   });
   if (result.posting !== undefined) {

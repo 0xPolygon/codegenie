@@ -228,29 +228,37 @@ their codebase, language, or domain more precisely.</p>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--branch</span> feature-branch [--base main]</span>
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--head</span> <span class="op">&lt;</span>head-ref<span class="op">&gt;</span> --base <span class="op">&lt;</span>base-ref<span class="op">&gt;</span></span>
 <span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>base-ref<span class="op">&gt;</span>...<span class="op">&lt;</span>head-ref<span class="op">&gt;</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span></code></pre></div>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--staged</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--uncommitted</span></span></code></pre></div>
 <p>With no target arguments, <code>codegenie review</code> reviews the
 current branch against the resolved base branch, equivalent to
 <code>--branch &lt;current-branch&gt;</code> with the same
 base-resolution and merge-base semantics. If the current branch is the
 resolved base itself, or no base branch can be resolved, codegenie
-should fail with a clear error asking for an explicit review target.
-Reviewing uncommitted working-tree changes is out of scope for v1.</p>
+should fail with a clear error asking for an explicit review target.</p>
+<p><code>--staged</code> compares HEAD to the index.
+<code>--uncommitted</code> compares HEAD to a tracked working-tree
+snapshot, including staged and unstaged changes. Each flag is a standalone
+target without GitHub posting. On an unborn branch both use an empty base.
+The working-tree mode reports the number of omitted nonignored untracked
+files. <code>git add -N &lt;path&gt;</code> makes a new file eligible for
+this mode.</p>
 <p>Common review options:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--depth</span> light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--ci</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--no-progress</span></span></code></pre></div>
-<p><code>--depth</code> controls the global review budget and planner
-bias. The default is <code>normal</code>. <code>light</code> should
-favor cheaper packet review and smaller tool budgets. <code>deep</code>
-should allow more <code>deep</code> packet coverage and larger tool
-budgets. Per-hunk coverage may still vary inside the selected depth when
-the planner sees concrete risk evidence.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--ci</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--no-progress</span></span></code></pre></div>
+<p>Codegenie runs one review mode using the budgets, close nudge and
+planner input that plan 128 measured as <code>normal</code>. When
+upgrading from 0.9.0, remove <code>--depth</code> from CLI invocations,
+<code>review.depth</code> from TOML and eval cases, and
+<code>depth</code> from GitHub Action inputs. A legacy
+<code>defaultDepth</code> in provider <code>settings.json</code> is
+silently ignored and dropped on the next save.</p>
 <p><code>--lens</code> restricts the run to the named lenses and may be
 repeated. It overrides the config-enabled lens set for the run, and it
 may explicitly enable a lens that is disabled by default, such as a
@@ -415,15 +423,15 @@ must equal the configured trigger phrase, default
 <code>codegenie review</code>, or start with it followed by whitespace —
 trailing text is ignored and never parsed into options).</li>
 <li>Authorization: payload author association must be in the allowlist
-(default OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR/FIRST_TIME_CONTRIBUTOR) and a live collaborator-permission
-check must report write or admin; <code>allowed-users</code> bypasses
-both explicitly. Bot actors are ignored unless allowlisted.
-CONTRIBUTOR and FIRST_TIME_CONTRIBUTOR are included because GitHub
-uses those labels for some write-access org teammates (private
-membership, and some org-repo permission shapes) instead of MEMBER.
-Authorization logic lives only in the binary — payload-only YAML
-approximations are forbidden. Workflow templates are single-job with
-per-PR <code>concurrency</code> and uniform
+(default OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR/FIRST_TIME_CONTRIBUTOR)
+and a live collaborator-permission check must report write or admin;
+<code>allowed-users</code> bypasses both explicitly. Bot actors are
+ignored unless allowlisted. CONTRIBUTOR and FIRST_TIME_CONTRIBUTOR are
+included because GitHub uses those labels for some write-access org
+teammates (private membership, and some org-repo permission shapes)
+instead of MEMBER. Authorization logic lives only in the binary —
+payload-only YAML approximations are forbidden. Workflow templates are
+single-job with per-PR <code>concurrency</code> and uniform
 <code>cancel-in-progress: true</code> (newest event wins); the accepted
 residual is that a comment can supersede its own PR’s in-flight run
 before the skip decision. <code>preflight-only: true</code> remains
@@ -440,13 +448,20 @@ existing nonzero exit semantics.</li>
 <li>Inline posting maps to the existing
 <code>--post-github-comments</code> flag; the status comment is enabled
 only by this entrypoint. Repo-resident config can enable neither.</li>
-<li>Model selection is a single spec input,
-<code>provider/model[:reasoning]</code> (reasoning defaults to
-<code>high</code> in action context; a <code>:suffix</code> that is not
-a reasoning level stays part of the model id). A generic
-<code>LLM_API_KEY</code> env var/input is routed to the env variable the
-named provider reads (via the provider registry’s env-var map);
-provider-native env vars keep working and are never overwritten.</li>
+<li>The workflow can supply <code>stage-models</code> alongside
+<code>model</code>. It is a map of <code>plan</code>, <code>review</code>,
+<code>verify</code>, and <code>compose</code> to optional <code>model</code>
+and <code>reasoning</code> fields. Missing fields inherit the global
+selection. An authorized comment that selects an alias applies that
+alias’s selection to every stage and logs that the stage map was
+skipped. The generic key check includes explicit stage models alongside
+the global default and all aliases.</li>
+<li>The global <code>model</code> is a workflow alias or a
+<code>provider/model[:reasoning]</code> spec. Reasoning defaults to
+<code>high</code>, and a suffix outside the reasoning vocabulary stays
+in the model ID. <code>llm-api-key</code> or <code>LLM_API_KEY</code>
+takes precedence over the credential env var it targets. With no
+generic key, provider-native credentials apply.</li>
 <li>Telemetry remains disabled by default. Gate decisions and bounded
 terminal lifecycle/status counters are logged in CI. Terminal
 pre/post-cap body sizes are UTF-8 byte counts over the complete
@@ -466,8 +481,7 @@ setup, backed by Pi’s provider/model registry and auth storage:</p>
 <span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config</span>
 <span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-provider <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
 <span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-model <span class="op">&lt;</span>provider<span class="op">&gt;</span> <span class="op">&lt;</span>model<span class="op">&gt;</span></span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-depth <span class="op">&lt;</span>light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span><span class="op">&gt;</span></span>
-<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
 <p>Behavior:</p>
 <ul>
 <li><code>provider list</code> prints providers known to Pi’s model
@@ -489,16 +503,13 @@ include provider, model id, context window, max output tokens when
 known, reasoning support, and vision/input capability when known.</li>
 <li><code>provider config</code> prints user-level effective defaults as
 JSON, including the codegenie home directory, auth path, models path,
-settings path, default provider/model, default depth, default reasoning
-override, and effective depth/reasoning.</li>
+settings path, default provider/model, default reasoning override, and
+effective reasoning.</li>
 <li><code>provider config set-provider</code> sets the user-level
 default provider after validating that the provider exists.</li>
 <li><code>provider config set-model</code> validates the model exists
 for the provider and stores both the default provider and default
 model.</li>
-<li><code>provider config set-depth</code> stores the user-level default
-review depth using codegenie’s <code>light|normal|deep</code> depth
-vocabulary.</li>
 <li><code>provider config set-reasoning</code> stores a user-level
 reasoning override; <code>auto</code> clears the stored override,
 letting resolution fall through to <code>~/.codegenie/config.toml</code>
@@ -510,7 +521,7 @@ default, overridable with <code>CODEGENIE_HOME</code>:</p>
 <pre class="text"><code>~/.codegenie/
   auth.json       # provider credentials, chmod 0600
   models.json     # Pi model registry custom providers/models when supported
-  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  settings.json   # default provider/model/reasoning, chmod 0600
   config.toml     # optional user-level config overrides and trust opt-ins
   sessions/       # provider/session state when Pi needs it</code></pre>
 <p>The home directory should be created with mode <code>0700</code>
@@ -528,10 +539,6 @@ in v1):</p>
 <code>config.toml</code> because the dedicated
 <code>provider config set-*</code> commands write
 <code>settings.json</code>.</p>
-<p>Stored <code>defaultDepth</code> participates in review-depth
-resolution; repo project policy outranks the personal default, and depth
-has no environment layer:</p>
-<pre class="text"><code>--depth &gt; repo codegenie.toml &gt; settings.json defaultDepth &gt; config.toml &gt; built-in normal</code></pre>
 <p>If no authenticated model can be resolved, codegenie should fail
 before Stage 5 with a clear <code>config_error</code>, for example:
 <code>no authenticated provider model is available; run: codegenie provider login &lt;provider&gt;</code>.</p>
@@ -548,8 +555,8 @@ labels, and configured priority.</li>
 <li>Build compact review packets per hunk or file.</li>
 <li>Run selected lenses on relevant packets, with bounded parallelism
 where packets can be reviewed independently.</li>
-<li>Run optional cross-file/system follow-up review only for repeated
-scoped follow-up hints from Stage 7; skip otherwise.</li>
+<li>Unused: the targeted system follow-up stage was deleted in
+#114.</li>
 <li>Verify candidate findings, with only minimal duplicate suppression
 needed to avoid repeated verifier calls.</li>
 <li>Deduplicate, rank, and compose final output.</li>
@@ -557,9 +564,8 @@ needed to avoid repeated verifier calls.</li>
 GitHub.</li>
 </ol>
 <p>Stage ids are stable for telemetry and evals. Mentally, the pipeline
-is six phases: Inventory (stages 1-4), Plan (5), Review (6-7 plus the
-optional Stage 8 follow-up), Verify (9), Compose (10), Publish (11).
-Stage 8 is intentionally narrow and often skips itself.</p>
+is six phases: Inventory (stages 1-4), Plan (5), Review (6-7), Verify
+(9), Compose (10), Publish (11). Stage 8 was deleted in #114.</p>
 <p>The unit of candidate review is the changed hunk or file. The unit of
 understanding is the affected system.</p>
 <p>The planner should choose coverage and lenses based on language,
@@ -573,43 +579,29 @@ deduplication, and telemetry are required. Tree-sitter changed-symbol
 extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and
 Solidity should improve packet quality, but parser gaps should degrade
 gracefully rather than block review.</p>
-<h2 id="stage-1-diff-parsing-and-change-inventory">Stage 1: Diff Parsing
-And Change Inventory</h2>
-<p>Stage 1 resolves the requested review target into a deterministic
-local change inventory.</p>
+<h2 id="stage-1-input-resolution">Stage 1: Input Resolution</h2>
+<p>Stage 1 resolves the requested review target into base and head
+revisions, commit metadata and a raw diff.</p>
 <p>Inputs can come from <code>--pr</code>, <code>--branch</code>, or
-commit/range mode, but the output should be normalized into the same
-internal shape: changed files, hunks, absolute old/new line mappings,
-file statuses, and commit or PR metadata when available.</p>
+commit/range mode.</p>
 <p>Stage 1 should:</p>
 <ul>
 <li>Resolve the base and head revisions for the selected input
 mode.</li>
 <li>Collect commit titles and descriptions across the reviewed
 range.</li>
-<li>Parse the unified diff into files and hunks.</li>
-<li>Preserve old/new line numbers for every hunk line.</li>
-<li>Identify file status such as added, modified, renamed, copied,
-deleted, binary, or mode-only.</li>
-<li>Preserve diff side information for each changed line so added lines,
-removed lines, and context lines can be reviewed and anchored
-correctly.</li>
 <li>Record GitHub PR metadata when <code>--pr</code> is used.</li>
-<li>Fail clearly when the target cannot be resolved or the diff cannot
-be parsed.</li>
+<li>Fail clearly when the target cannot be resolved or its diff cannot
+be obtained.</li>
 </ul>
-<p>This stage must not call the LLM. Its output is the source of truth
-for later anchor validation, hunk ids, changed-line detection, and
-GitHub inline-comment mapping.</p>
-<p>Deleted files and deletion-only hunks are part of the review
-inventory. codegenie should not silently drop them merely because the
-file no longer exists in the head worktree. Stage 1 should retain their
-old-side line numbers and old path so later stages can review removed
-behavior, removed tests, removed exports, removed cleanup, and broken
-references caused by deletion.</p>
-<h2 id="stage-2-filtering-ignored-and-non-reviewable-files">Stage 2:
-Filtering Ignored And Non-Reviewable Files</h2>
-<p>Stage 2 removes files that should not enter the review pipeline and
+<p>This stage must not call the LLM.</p>
+<h2 id="stage-2-diff-parsing-and-filtering">Stage 2: Diff Parsing And
+Filtering</h2>
+<p>Stage 2 parses the unified diff into files and hunks, preserving file
+status, old/new line numbers and diff sides for later anchor validation
+and GitHub inline-comment mapping. It must fail clearly if the diff
+cannot be parsed.</p>
+<p>It also removes files that should not enter the review pipeline and
 records why they were filtered.</p>
 <p>Filtering should be deterministic and explainable. Stage 2 runs the
 shared deterministic detectors the skip policy needs — built-in
@@ -636,10 +628,11 @@ coverage summaries when they affect review completeness. Filtered files
 should not produce candidate findings, but their counts and paths may
 still be visible to the planner as review-scope facts.</p>
 <p>Deleted reviewable source, test, config, migration, or documentation
-files should remain in scope by default. If deleted-file context cannot
-be reconstructed from local git or the diff, codegenie should mark the
-file as degraded or partially reviewed rather than pretending it was
-reviewed normally.</p>
+files should remain in scope by default. Preserve their old paths and
+line numbers for reviewing removed behavior. If deleted-file context
+cannot be reconstructed from local git or the diff, codegenie should
+mark the file as degraded or partially reviewed rather than pretending
+it was reviewed normally.</p>
 <h2 id="stage-3-file-classification">Stage 3: File Classification</h2>
 <p>File classification should be deterministic, narrow, and auditable by
 default. It should not require an LLM. The classifier runs on kept files
@@ -752,15 +745,15 @@ available, and whether the facts came from tree-sitter or fallback
 detection. The full TypeScript schema is defined in
 <code>architecture.md</code>.</p>
 <p>Example per-hunk symbol metadata:</p>
-<div class="sourceCode" id="cb8"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>{</span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="st">&quot;store/user.go&quot;</span><span class="op">,</span></span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="st">&quot;...&quot;</span><span class="op">,</span></span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  enclosingSymbol<span class="op">:</span> <span class="st">&quot;(*Store).SaveUser&quot;</span><span class="op">,</span></span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  symbolKind<span class="op">:</span> <span class="st">&quot;method&quot;</span><span class="op">,</span></span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  symbolRange<span class="op">:</span> [<span class="dv">42</span><span class="op">,</span> <span class="dv">91</span>]<span class="op">,</span></span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  changedLines<span class="op">:</span> [<span class="dv">55</span><span class="op">,</span> <span class="dv">56</span>]<span class="op">,</span></span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>  signature<span class="op">:</span> <span class="st">&quot;func (s *Store) SaveUser(ctx context.Context, user User) error&quot;</span></span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="st">&quot;store/user.go&quot;</span><span class="op">,</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="st">&quot;...&quot;</span><span class="op">,</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  enclosingSymbol<span class="op">:</span> <span class="st">&quot;(*Store).SaveUser&quot;</span><span class="op">,</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  symbolKind<span class="op">:</span> <span class="st">&quot;method&quot;</span><span class="op">,</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  symbolRange<span class="op">:</span> [<span class="dv">42</span><span class="op">,</span> <span class="dv">91</span>]<span class="op">,</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  changedLines<span class="op">:</span> [<span class="dv">55</span><span class="op">,</span> <span class="dv">56</span>]<span class="op">,</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  signature<span class="op">:</span> <span class="st">&quot;func (s *Store) SaveUser(ctx context.Context, user User) error&quot;</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <h2 id="static-signals">Static Signals</h2>
 <p>Static signals are deterministic hints produced by syntax, diff, or
 language-specific checks. They are not findings and must not be
@@ -793,16 +786,17 @@ Pass</h2>
 review pass and must not produce publishable findings.</p>
 <p>V1 planner input should be a compact deterministic dossier: PR
 metadata, commit messages, changed file inventory, file processing
-facts, configured review depth, configured labels/priorities, hunk
-ranges, <code>HunkSymbolFacts</code>, changed symbol summaries, touched
-tests, static signals, and available lenses.</p>
+facts, the fixed review-mode label (<code>normal</code>), configured
+labels/priorities, hunk ranges, <code>HunkSymbolFacts</code>, changed
+symbol summaries, touched tests, static signals, and available
+lenses.</p>
 <p>The planner should explicitly build a diff understanding before
 assigning coverage and lenses. It should distinguish declared intent
 from inferred behavior:</p>
-<div class="sourceCode" id="cb9"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffUnderstanding <span class="op">=</span> {</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  declaredIntent<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  inferredBehavior<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb8"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffUnderstanding <span class="op">=</span> {</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  declaredIntent<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  inferredBehavior<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Declared intent comes from PR title/body, commit titles/descriptions,
 and branch names when useful. Inferred behavior comes from the changed
 files, changed symbols, tests, static signals, and diff summary.</p>
@@ -833,11 +827,8 @@ lenses and context hints for specific hunks. Later stages may validate
 malformed planner output or apply deterministic default coverage to
 omitted hunks, but they should not become independent risk
 classifiers.</p>
-<p>Configured review depth should influence budgets and defaults, not
-replace judgment. A <code>light</code> run may still review a concrete
-critical-risk hunk at <code>normal</code>; a <code>deep</code> run may
-still give mechanical hunks <code>light</code> coverage. Deterministic
-file exclusions apply at every depth.</p>
+<p>Budgets follow each packet’s coverage and profile; there is no
+run-level depth (#129). Deterministic file exclusions always apply.</p>
 <h2 id="large-review-handling">Large Review Handling</h2>
 <p>codegenie must handle large PRs and large commit ranges without
 trying to fit the entire diff into one model context.</p>
@@ -947,9 +938,8 @@ run concurrently up to the configured limit. Stage 7 scheduling orders
 configured priority, then coverage, then a deterministic
 product-source/test/docs/snapshot class rank and larger packet-local
 changed-line count; stable input order breaks final ties. This rank is
-Stage-7-only, so verification and system-review ordering is unchanged.
-The planner does not emit scheduling groups in v1 (see Future
-Considerations).</p>
+Stage-7-only, so verification ordering is unchanged. The planner does
+not emit scheduling groups in v1 (see Future Considerations).</p>
 <p>Parallel execution rules:</p>
 <ul>
 <li>Hunk/file candidate-generation passes may run concurrently.</li>
@@ -1005,8 +995,8 @@ caller/callee/output topology remains visible to Stage 7.</p>
 <li>Allow very nearby same-file hunks to coalesce when the combined
 packet stays below strict size limits.</li>
 <li>Do not create cross-file review packets in v1.</li>
-<li>Cross-file concerns are recorded as follow-up hints (see Stage
-8).</li>
+<li>Cross-file concerns are recorded as follow-up hints (see Follow-Up
+Hints).</li>
 <li>Split packets back into smaller packets when patch or context size
 limits would be exceeded.</li>
 </ul>
@@ -1146,52 +1136,29 @@ findings, tool calls, prompt size, token usage, runtime, and task status
 in telemetry. Findings outside the changed hunk should not be treated as
 inline candidates unless they can be re-anchored to a changed line with
 concrete evidence.</p>
-<h2 id="stage-8-cross-file-system-follow-up-review">Stage 8: Cross-File
-/ System Follow-Up Review</h2>
-<p>Stage 8 is a narrow targeted follow-up, not a broad whole-repo review
-pass. It promotes repeated, scoped Stage 7 follow-up hints into a small
-number of focused system review tasks. If no repeated scoped hints
-exist, Stage 8 records <code>system_review_skipped</code> and performs
-no model work.</p>
-<p>Packet reviewers emit structured follow-up hints when they need
-cross-file evidence they cannot resolve locally:</p>
-<div class="sourceCode" id="cb10"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FollowUpHint <span class="op">=</span> {</span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Specific cross-file question the packet reviewer could not resolve locally.</span></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Files the reviewer believes are needed to answer the question.</span></span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Symbols, functions, types, methods, interfaces, or constants involved.</span></span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Lenses that should be active if this hint becomes a system follow-up task.</span></span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>  suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Why this follow-up is needed and what evidence triggered it.</span></span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Reviewer confidence that the follow-up is worth scheduling.</span></span>
-<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
-<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<h2 id="follow-up-hints">Follow-Up Hints</h2>
+<p>Stage 8 (targeted system follow-up review) was deleted in #114; stage
+ids 9-11 are unchanged. Packet reviewers emit structured follow-up hints
+when they need cross-file evidence they cannot resolve locally:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FollowUpHint <span class="op">=</span> {</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Specific cross-file question the packet reviewer could not resolve locally.</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Files the reviewer believes are needed to answer the question.</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Symbols, functions, types, methods, interfaces, or constants involved.</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Lenses relevant to the question.</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>  suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Why this follow-up is needed and what evidence triggered it.</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Reviewer confidence that the question matters.</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Hints must be pointer-rich. Vague hints such as “check architecture”
 should be rejected or ignored unless they include a specific question
 with named files or symbols.</p>
-<p>Stage 8 should:</p>
-<ul>
-<li>Ignore low-confidence hints.</li>
-<li>Group hints by normalized question plus concrete file/symbol
-scope.</li>
-<li>Require the same scoped question to appear from more than one packet
-before scheduling work.</li>
-<li>Cap work to a small number of tasks per run.</li>
-<li>Give each task the same read-only repository tool suite as packet
-review, under a stricter task budget.</li>
-<li>Produce either candidate findings, resolved hint notes, or no
-output.</li>
-<li>Send every Stage 8 candidate finding through Stage 9 verification
-before it can reach composition or publishing.</li>
-<li>Suppress duplicate human-attention notes only when Stage 8
-explicitly resolves the same scoped question.</li>
-</ul>
-<p>Hints that are not promoted, or that remain unresolved, are still
-recorded in telemetry. Medium- and high-confidence unresolved hints are
-surfaced in the final report as “needs human attention” notes so the
+<p>Hints are recorded in telemetry. Medium- and high-confidence hints
+are surfaced in the final report as “needs human attention” notes so the
 cross-file question reaches a human reviewer instead of disappearing
 silently.</p>
 <h2 id="stage-9-candidate-verification">Stage 9: Candidate
@@ -1237,16 +1204,16 @@ or reject the candidate; it must not search for new issues.</p>
 candidate’s specific claim. It should not expand into a new review pass
 or introduce unrelated findings.</p>
 <p>Verifier output should be structured:</p>
-<div class="sourceCode" id="cb11"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerificationVerdict <span class="op">=</span> {</span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>  requiredEvidencePresent<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>  falsePositiveRisk<span class="op">:</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span></span>
-<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>  finalFinding<span class="op">?:</span> CandidateFinding</span>
-<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>  revisedAnchor<span class="op">?:</span> DiffAnchor</span>
-<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>  verificationIncomplete<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb10"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerificationVerdict <span class="op">=</span> {</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>  requiredEvidencePresent<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>  falsePositiveRisk<span class="op">:</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>  finalFinding<span class="op">?:</span> CandidateFinding</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>  revisedAnchor<span class="op">?:</span> DiffAnchor</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>  verificationIncomplete<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Verifier rules:</p>
 <ul>
 <li><code>keep</code> only when the issue is real, tied to changed
@@ -1506,10 +1473,10 @@ packet).</li>
 testing against real repositories, fixture repositories, and previously
 captured artifacts.</p>
 <p>The v1 eval command should support:</p>
-<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
+<div class="sourceCode" id="cb11"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
 <p><code>--from-artifacts</code> re-scores a previously captured run
 directory against the case expectations without re-running the review;
 it is the only artifact-replay mode in v1.</p>
@@ -1520,9 +1487,9 @@ repositories. A case may point at:</p>
 <li>An external local repository path.</li>
 <li>A fixture repository.</li>
 <li>A branch, commit, commit range, or PR target.</li>
-<li>Review settings such as depth, lenses, max findings, concurrency,
-cache on/off, verification on/off, provider/model/reasoning overrides,
-and telemetry/debug options.</li>
+<li>Review settings such as lenses, max findings, concurrency, cache
+on/off, verification on/off, provider/model/reasoning overrides, and
+telemetry/debug options.</li>
 <li>Expected final findings.</li>
 <li>Expected candidate findings.</li>
 <li>Findings that must not appear.</li>
@@ -1661,6 +1628,11 @@ deterministic rendering and include selected supporting evidence. The
 separate composition-sources artifact retains the original assessments
 and supporting evidence when telemetry is enabled. Ordinary reviews with
 telemetry disabled do not retain those originals separately.</p>
+<p>The inline confidence floor demotes ineligible inline findings before
+the soft inline cap is applied. After selection, reports group findings
+by severity and order each severity by file and line, with anchorless
+findings last for a file; the displayed order within a severity is not
+an importance ranking.</p>
 <p>The final composer should prefer no comments over weak comments. The
 default target is roughly 3-7 high-signal comments per PR, but this is a
 soft cap: verified critical and high-severity findings should not be
@@ -1676,7 +1648,7 @@ applicable.</li>
 <li>Suggested fix or suggested test when useful.</li>
 <li>Summary-only findings that cannot be anchored inline.</li>
 <li>“Needs human attention” notes for unresolved medium- and
-high-confidence follow-up hints (see Stage 8).</li>
+high-confidence follow-up hints (see Follow-Up Hints).</li>
 <li>A clear “no findings” result when no credible findings are
 found.</li>
 <li>Posting plan for GitHub mode.</li>
@@ -1716,7 +1688,7 @@ be emitted as JSON; its shape is the publisher’s posting record
 <p>Stage 11 is optional and runs only when GitHub posting is
 requested.</p>
 <p>GitHub posting is opt-in with:</p>
-<div class="sourceCode" id="cb13"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--pr</span> 123 <span class="at">--post-github-comments</span></span></code></pre></div>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--pr</span> 123 <span class="at">--post-github-comments</span></span></code></pre></div>
 <p>GitHub posting cannot be enabled from configuration in v1; it
 requires the explicit <code>--post-github-comments</code> flag on each
 run.</p>
@@ -1767,8 +1739,6 @@ user-scoped provider state.</p>
 <p>V1 configuration should support:</p>
 <ul>
 <li>Default base branch for branch review.</li>
-<li>Default review depth: <code>light</code>, <code>normal</code>, or
-<code>deep</code>.</li>
 <li>Independent verification on or off. Verification is enabled by
 default and may be disabled only through this explicit configuration,
 per Stage 9.</li>
@@ -1782,10 +1752,11 @@ threshold for reported findings.</li>
 inline-comment target). Neither cap suppresses verified critical or
 high-severity findings.</li>
 <li>LLM runtime options for <code>@earendil-works/pi-ai</code>,
-including provider-call concurrency; one provider/model/reasoning
-configuration applies to the whole run. Repo <code>codegenie.toml</code>
-must not set provider credentials, default provider, default model, or
-reasoning effort.</li>
+including shared provider-call concurrency and optional user-scoped
+model/reasoning selections for plan, review, verify, and compose.
+Unspecified fields inherit the global settings. Repo
+<code>codegenie.toml</code> must not set provider credentials, model
+selection, or reasoning effort.</li>
 <li>Runtime and per-pass timeouts.</li>
 <li>Maximum total token budget for a run.</li>
 <li>Maximum model calls per run.</li>
@@ -1800,7 +1771,6 @@ directory.</li>
 <p>If no config exists, codegenie should run with sensible defaults:</p>
 <ul>
 <li>Core correctness-oriented lenses enabled.</li>
-<li>Review depth set to <code>normal</code>.</li>
 <li>Independent verification enabled.</li>
 <li>Style/lint lenses disabled.</li>
 <li>Low-confidence findings suppressed.</li>
@@ -1858,7 +1828,7 @@ and rejected if option-like (leading <code>-</code>).</li>
 <p>Config trust partitioning:</p>
 <ul>
 <li>Repo <code>codegenie.toml</code> may set safe keys only: lenses
-on/off, classification path rules, depth, base branch, labels, caps, and
+on/off, classification path rules, base branch, labels, caps, and
 <code>telemetry.enabled</code>.</li>
 <li>Out-of-repo or provider-routing settings —
 <code>lenses.extraSkillPaths</code> outside the repo,
@@ -1947,21 +1917,18 @@ planning measurably degrades plan quality on large reviews.</li>
 <li>Cross-packet review-signal index. Normalizing planner tasks, packet
 hints, candidate findings, and uncertainties into typed
 <code>ReviewSignal</code> records indexed by symbol, file, category, and
-configured labels, with graded promotion rules. This is the richer
-follow-on shape for the narrow Stage 8 repeated-hint rule. Build when
-the simple promotion rule misses real cross-file findings or produces
-noisy/duplicate system tasks.</li>
-<li>Broad cross-file/system review. The shipped Stage 8 only promotes
-repeated scoped packet hints into a few focused tasks. The broader
-target shape remains deferred: the planner may emit
-<code>systemFollowUpTasks</code>; packet hints, candidate findings, and
-uncertainties may be promoted through a typed signal index; each task
-carries a stable topic, sources, related packet ids, bounded file/symbol
-sets, lenses, priority, and a tool budget; system workers may inspect
-wider subsystem relationships under explicit constraints. Build when
-telemetry shows recurring medium/high-confidence hints left unresolved,
-or evals attribute missed findings to the narrow repeated-hint
-rule.</li>
+configured labels, with graded promotion rules. Build when evals
+attribute missed findings to unexamined cross-file hints.</li>
+<li>Broad cross-file/system review. A narrow repeated-hint Stage 8
+shipped earlier and was deleted in #114. The broader target shape
+remains deferred: the planner may emit <code>systemFollowUpTasks</code>;
+packet hints, candidate findings, and uncertainties may be promoted
+through a typed signal index; each task carries a stable topic, sources,
+related packet ids, bounded file/symbol sets, lenses, priority, and a
+tool budget; system workers may inspect wider subsystem relationships
+under explicit constraints. Build when telemetry shows recurring
+medium/high-confidence hints left unresolved, or evals attribute missed
+findings to them.</li>
 <li>Planner scheduling groups. Planner-emitted hunk groups carrying
 parallelism and ordering intent. V1 packets are independent by
 construction and scheduling is priority-only; groups become meaningful
@@ -2019,12 +1986,6 @@ for test/typecheck/build commands run with timeouts, results treated as
 evidence rather than automatic findings, enabled only through user-level
 trust. V1 never executes repository commands. Build when evals show
 findings that only execution evidence could confirm or reject.</li>
-<li>Per-role model/reasoning tiering. Optional per-role model and
-reasoning overrides (planner, packet reviewer, verifier, composer)
-supplied from user-level config or CLI. V1 runs one
-provider/model/reasoning configuration for the whole run. Build when
-evals identify roles where cheaper models or lower reasoning hold review
-quality.</li>
 <li>Rich pre-attached packet context. Sibling symbol names, AST
 summaries, nearby imports, and small examples of nearby established
 patterns assembled into packets at construction time. V1 packets carry
@@ -2053,7 +2014,6 @@ are insufficient to localize a regression.</li>
 <h2 id="out-of-scope-for-v1">Out Of Scope For V1</h2>
 <ul>
 <li>GitLab support.</li>
-<li>Reviewing uncommitted working-tree changes.</li>
 <li>Approving or requesting changes through GitHub reviews.</li>
 <li>Auto-fixing or editing code.</li>
 <li>Executable TypeScript skill packages from users.</li>

@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
@@ -341,11 +342,14 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
-  it("records a failed review sample without losing its retained findings", () => {
+  it.each([
+    { label: "missing failure diagnostic", failure: undefined },
+    { label: "blank reason", failure: { stage: 9, reason: " \r\n\t" } }
+  ])("keeps retained findings and a generic message for a failed review with $label", ({ failure }) => {
     const retained = finalFinding("retained", "src/retained.ts", 5);
     const artifacts: EvalArtifacts = {
       candidates: [], verification: [], finalSelection: [], finalFindings: [retained], packets: [], hintEvents: [],
-      metricsSources: { runJson: { outcome: { status: "failed", errorCode: "review_failed", exitCode: 1 } } }
+      metricsSources: { runJson: { outcome: { status: "failed", errorCode: "review_failed", exitCode: 1, failure } } }
     };
     const score = scoreEvalRun({
       name: "failed-review",
@@ -354,7 +358,7 @@ describe("eval scoring", () => {
     }, artifacts, "live");
 
     expect(score.status).toBe("error");
-    expect(score.error?.code).toBe("review_failed");
+    expect(score.error).toEqual({ code: "review_failed", message: "The review run failed." });
     expect(score.metrics.reportedFindings).toBe(1);
     expect(score.expectationResults).toMatchObject([
       { status: "pass", matched: [{ findingId: "retained" }] },
@@ -420,6 +424,21 @@ describe("eval scoring", () => {
     expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
     artifacts.metricsSources = {};
     expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+  });
+
+  it("does not credit stale returned output as the go-04 resident-KV defect", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/goinfer/go-04/eval.yml", "utf8")) as EvalCase;
+    const expectation = evalCase.should_find![0]!;
+    const finding = candidate("go-04-probe", "decoder/blockspec.go", 435, {
+      failureMode: "The final seed token is stale in the returned output, but the resident KV cache contains the complete generated prefix."
+    });
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final seed token is stale in the returned output, while the KV cache is complete and no positions are missing.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The trailing token is stale in output, but the cache contains every written row and has no missing KV entries.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final token is recorded as resident even though its KV state is stale, so reuse produces incorrect output.";
+    expect(matchExpectation(expectation, finding).matched).toBe(true);
   });
 
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
@@ -2109,13 +2128,16 @@ describe("eval command fixture suite", () => {
 
     const config = {
       ...defaultConfig,
-      llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" },
+      llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model", stages: { plan: { model: "provider/model", reasoning: "low" as const } } },
       cache: { ...defaultConfig.cache, enabled: true }
     };
     const suite = await loadEvalSuite(suiteDir);
     const result = await runEvalCase(suite, suite.cases[0]!, { config });
 
     expect(result.status).toBe("pass");
+    expect(result.info.effectiveConfig?.llm.stages).toEqual({ plan: { model: "provider/model", reasoning: "low" } });
+    expect(JSON.parse(readFileSync(path.join(result.runDir, "info.json"), "utf8")).effectiveConfig.llm.stages)
+      .toEqual({ plan: { model: "provider/model", reasoning: "low" } });
     expect(result.info.cache).toMatchObject({ enabled: true, source: "config" });
   });
 
@@ -2154,12 +2176,15 @@ describe("eval command fixture suite", () => {
     const suite = await loadEvalSuite(suiteDir);
     const config = {
       ...defaultConfig,
-      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1 },
+      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1,
+        stages: { review: { model: "bad/override", reasoning: "low" as const } } },
       review: { ...defaultConfig.review, concurrency: 1 }
     };
     const result = await runEvalCase(suite, suite.cases[0]!, { config });
 
     expect(result.status).toBe("pass");
+    const evalEvents = readFileSync(path.join(result.runDir, "telemetry", "events.jsonl"), "utf8");
+    expect(evalEvents).toContain("Per-run model and reasoning overrides ignore matching stage settings.");
     expect(result.info.effectiveConfig).toMatchObject({
       review: { concurrency: 3 },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
@@ -2329,6 +2354,58 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.score.metrics.reportedFindings).toBe(0);
+  });
+
+  it("rejects the retired review.depth field in eval cases", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-suite-"));
+    writeFileSync(path.join(suiteDir, "depth.yml"), [
+      "name: depth",
+      "artifacts:",
+      "  path: logs/1",
+      "review:",
+      "  depth: normal"
+    ].join("\n"));
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining("depth")] }
+    });
+  });
+
+  it("counts a designed symbol slice as sliced, not as degraded context (#175)", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-slice-suite-"));
+    const logsDir = mkdtempSync(path.join(tmpdir(), "codegenie-slice-logs-"));
+    const repo = initRepo();
+    const body = (marker: string) => `export function large(): number {\n  let total = 0;\n${Array.from({ length: 300 }, (_, i) =>
+      `  total += ${i === 150 ? marker : String(i)};\n`).join("")}  return total;\n}\n`;
+    writeRepoFile(repo, "src/large.ts", body("150"));
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/large.ts", body("151"));
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "slice.yml"), [
+      "name: slice",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "logs:",
+      `  dir: ${JSON.stringify(logsDir)}`
+    ].join("\n"));
+    const config = { ...defaultConfig, llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" } };
+    const suite = await loadEvalSuite(suiteDir);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config });
+    expect(result.status).toBe("pass");
+    const telemetryDir = path.join(logsDir, "1", "telemetry");
+    const events = readFileSync(path.join(telemetryDir, "events.jsonl"), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line) as { stage: number; message: string; data?: Record<string, unknown> });
+    expect(events.some(event => event.message === "packet_symbol_source_truncated")).toBe(true);
+    const metrics = events.filter(event => event.message === "pipeline_metrics");
+    expect(metrics.find(event => event.stage === 6)?.data).toMatchObject({ packets: { generated: 1, degraded: 0, sliced: 1 } });
+    expect(metrics.find(event => event.stage === 9 && event.data?.coverage !== undefined)?.data).toMatchObject({ coverage: { hunks: { degraded: 0 } } });
+    const review = JSON.parse(readFileSync(path.join(telemetryDir, "final-review.json"), "utf8")) as { budgetSummary?: { contextPressure?: { degradedHunks?: number } } };
+    expect(review.budgetSummary?.contextPressure?.degradedHunks ?? 0).toBe(0);
+    expect(result.info.score.metrics.degradedHunks ?? 0).toBe(0);
+    expect(readFileSync(path.join(telemetryDir, "stages", "10-composition", "coverage.json"), "utf8")).not.toContain("enclosing symbol source truncated");
   });
 
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {
@@ -2509,7 +2586,7 @@ describe("eval repeats (plan 79)", () => {
     expect(renderCaseResult(result)).toContain("finalRecall 3/3 (1.00)");
   }, 60_000);
 
-  it("scores a thrown repeat from finalized findings and usage, with a fallback for a throw before finalization", async () => {
+  it("scores thrown repeats from finalized artifacts or the original error when run.json is absent or malformed", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-repeat-throw-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.ts", "export const value = 0;\n");
@@ -2520,7 +2597,7 @@ describe("eval repeats (plan 79)", () => {
     const fixture = finalFinding("retained", "src/app.ts", 1);
     const evalCase: EvalCase = {
       name: "repeat-throw",
-      repeat: 2,
+      repeat: 3,
       repo: { external: repo },
       command: { branch: "feature", base: "main" },
       review: { cache: false },
@@ -2543,12 +2620,19 @@ describe("eval repeats (plan 79)", () => {
       .mockImplementationOnce(async (_target, _config, overrides) => {
         writeTelemetryArtifact(overrides!.runArtifactDir!, "candidate-findings.json", []);
         throw new CodegenieError("invalid_args", `Failed before telemetry finalized\r\n  ${credential}`);
+      })
+      .mockImplementationOnce(async (_target, _config, overrides) => {
+        const telemetry = overrides!.runArtifactDir!;
+        writeArtifactSet(telemetry, [], [fixture]);
+        writeFileSync(path.join(telemetry, "run.json"), '{"outcome":');
+        throw new CodegenieError("llm_call_failed", `Original provider failure\r\n  ${credential}`);
       });
     try {
       const result = await runEvalCase({ dir: suiteDir, cases: [entry] }, entry, { config: defaultConfig });
-      expect(runReview).toHaveBeenCalledTimes(2);
+      expect(runReview).toHaveBeenCalledTimes(3);
       const first = JSON.parse(readFileSync(path.join(result.runDir, "repeats/1/score.json"), "utf8"));
       const second = JSON.parse(readFileSync(path.join(result.runDir, "repeats/2/score.json"), "utf8"));
+      const third = JSON.parse(readFileSync(path.join(result.runDir, "repeats/3/score.json"), "utf8"));
       expect(first).toMatchObject({
         status: "error",
         error: { code: "review_failed", message: "Stage 10: Provider request was rejected" },
@@ -2560,12 +2644,20 @@ describe("eval repeats (plan 79)", () => {
         error: { code: "invalid_args", message: "Failed before telemetry finalized [redacted:pattern]" },
         metrics: { reportedFindings: 0 }
       });
+      expect(third).toMatchObject({
+        status: "error",
+        error: { code: "llm_call_failed", message: "Original provider failure [redacted:pattern]" },
+        metrics: { reportedFindings: 0 }
+      });
       const persisted = readFileSync(path.join(result.runDir, "eval-aggregate.json"), "utf8");
       expect(persisted).not.toContain(credential);
-      expect(JSON.parse(persisted).executions[1].score.error).toEqual(second.error);
-      expect(result.info.repeats?.totals).toMatchObject({ errors: 2, elapsedSeconds: 2, costUSD: 0.25 });
-      expect(renderCaseResult(result)).toContain("ERROR draw 1 review_failed: Stage 10: Provider request was rejected");
-      expect(renderCaseResult(result)).toContain("ERROR draw 2 invalid_args: Failed before telemetry finalized [redacted:pattern]");
+      expect(JSON.parse(persisted).executions.map((draw: { score: EvalScore }) => draw.score.error))
+        .toEqual([first.error, second.error, third.error]);
+      expect(result.info.repeats?.totals).toMatchObject({ errors: 3, elapsedSeconds: 2, costUSD: 0.25 });
+      const report = renderCaseResult(result);
+      expect(report).toContain("ERROR draw 1 review_failed: Stage 10: Provider request was rejected");
+      expect(report).toContain("ERROR draw 2 invalid_args: Failed before telemetry finalized [redacted:pattern]");
+      expect(report).toContain("ERROR draw 3 llm_call_failed: Original provider failure [redacted:pattern]");
     } finally {
       runReview.mockRestore();
     }

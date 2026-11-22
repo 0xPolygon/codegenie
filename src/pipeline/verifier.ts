@@ -171,7 +171,14 @@ export async function verifyFindings(
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: VerifyOptions
-): Promise<{ verified: CandidateFinding[]; verdicts: VerificationVerdict[]; incompleteCount: number; gateRejections: number; verificationSkipped: boolean }> {
+): Promise<{
+  verified: CandidateFinding[];
+  verdicts: VerificationVerdict[];
+  incompleteCount: number;
+  verificationCandidateCount: number;
+  gateRejections: number;
+  verificationSkipped: boolean;
+}> {
   telemetry.event({ stage: 9, level: "info", message: "stage_started", data: { candidates: candidateCount(input.packetResults) } });
   const packetsById = new Map(input.packets.map((packet) => [packet.id, packet]));
   const inputCandidates = input.packetResults.flatMap((result) => result.findings);
@@ -294,7 +301,7 @@ export async function verifyFindings(
         verdicts: verdictCounts(verdicts)
       }
     });
-    return { verified: clustered.all, verdicts, incompleteCount: 0, gateRejections, verificationSkipped: true };
+    return { verified: clustered.all, verdicts, incompleteCount: 0, verificationCandidateCount: 0, gateRejections, verificationSkipped: true };
   }
 
   const orderedRepresentatives = orderVerifierRepresentatives(clustered.representatives);
@@ -329,6 +336,7 @@ export async function verifyFindings(
   releaseVerifierReservations(scheduling.reservations, opts);
   const verdicts: VerificationVerdict[] = [];
   let incompleteCount = 0;
+  let verificationCandidateCount = 0;
   for (const candidate of scheduling.laneLimited) {
     records.push(...laneLimitedVerificationRecords(
       candidate,
@@ -346,7 +354,9 @@ export async function verifyFindings(
       incompleteReason: "budget_limited"
     }));
     const duplicates = clustered.duplicatesByRepresentative.get(candidate.id) ?? [];
-    incompleteCount += 1 + duplicates.length;
+    const represented = 1 + duplicates.length;
+    incompleteCount += represented;
+    verificationCandidateCount += represented;
     records.push(
       ...duplicateVerificationRecords(verdict, clustered.duplicatesByRepresentative, anchorStripped, {
         ...candidateRecordMeta(candidate.id, verificationLaneByCandidateId, gateReasonByCandidateId, gateFactsByCandidateId),
@@ -364,9 +374,10 @@ export async function verifyFindings(
       };
       records.push(verificationRecord(outcome.value, anchorStripped, meta));
       records.push(...duplicateVerificationRecords(outcome.value, clustered.duplicatesByRepresentative, anchorStripped, meta));
+      const represented = 1 + (clustered.duplicatesByRepresentative.get(outcome.value.candidateId)?.length ?? 0);
+      verificationCandidateCount += represented;
       if (outcome.value.verificationIncomplete) {
-        const duplicates = clustered.duplicatesByRepresentative.get(outcome.value.candidateId) ?? [];
-        incompleteCount += 1 + duplicates.length;
+        incompleteCount += represented;
       }
       continue;
     }
@@ -383,7 +394,9 @@ export async function verifyFindings(
     };
     records.push(verificationRecord(verdict, anchorStripped, meta));
     const duplicates = clustered.duplicatesByRepresentative.get(candidateId) ?? [];
-    incompleteCount += 1 + duplicates.length;
+    const represented = 1 + duplicates.length;
+    incompleteCount += represented;
+    verificationCandidateCount += represented;
     records.push(...duplicateVerificationRecords(verdict, clustered.duplicatesByRepresentative, anchorStripped, meta));
   }
 
@@ -432,8 +445,8 @@ export async function verifyFindings(
       verdicts: verdictCounts(verdicts)
     }
   });
-  telemetry.event({ stage: 9, level: "info", message: "stage_completed", data: { verified: verified.length, incompleteCount, gateRejections } });
-  return { verified, verdicts, incompleteCount, gateRejections, verificationSkipped: false };
+  telemetry.event({ stage: 9, level: "info", message: "stage_completed", data: { verified: verified.length, incompleteCount, verificationCandidateCount, gateRejections } });
+  return { verified, verdicts, incompleteCount, verificationCandidateCount, gateRejections, verificationSkipped: false };
 }
 
 function preGateAnchor(

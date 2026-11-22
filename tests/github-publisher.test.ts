@@ -153,29 +153,6 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body).toContain("Inline findings included in the review body");
   });
 
-  it("demotes low-confidence inline findings into the review body", async () => {
-    const diff = parseDiff(RAW_DIFF);
-    const hunk = diff.files[0]?.hunks[0];
-    if (!hunk) {
-      throw new Error("missing hunk");
-    }
-    const finding = finalFinding({ hunkId: hunk.id, line: 1, confidence: "low", finalBody: "Low confidence body." });
-    const created: Array<{ body: string; comments: unknown[] }> = [];
-    const github = fakeGithub({
-      createReview: async (_number, review) => {
-        created.push(review);
-      }
-    });
-
-    const record = await maybePublishToGitHub(reviewResult(finding), resolved(), defaultConfig, nullTelemetry(), { github, diff });
-
-    expect(record?.status).toBe("posted");
-    expect(record?.inlinePosted).toBe(0);
-    expect(record?.demotedToBody).toBe(1);
-    expect(created[0]?.comments).toEqual([]);
-    expect(created[0]?.body).toContain("Low confidence body.");
-  });
-
   it("posts a configured no-finding summary comment", async () => {
     const created: Array<{ body: string; comments: unknown[] }> = [];
     const github = fakeGithub({

@@ -30,7 +30,7 @@ function valueAt(payload: unknown, dottedPath: string): unknown {
     value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined, payload);
 }
 
-async function capture(provider: string, model: string, forced: boolean): Promise<unknown> {
+async function capture(provider: string, model: string, forced: boolean, options: { forceSubmitToolChoice?: boolean } = {}): Promise<unknown> {
   const adapter = createRealPiAiAdapter();
   const ref = await adapter.resolveModel({ provider, model });
   expect(ref).toBeDefined();
@@ -41,6 +41,7 @@ async function capture(provider: string, model: string, forced: boolean): Promis
   }, {
     submitToolName: "submit_review", reasoning: "high", maxRetries: 0,
     ...(forced ? { toolChoice: { type: "tool", name: "submit_review" } } : {}),
+    ...options,
     onPayload: (body: unknown) => { payload = body; throw new Error("stop before network"); }
   }).catch(() => undefined);
   expect(payload).toBeDefined();
@@ -75,6 +76,68 @@ describe("forced submits keep Pi's native reasoning mapping", () => {
       const [choicePath, choice] = forcedChoice as [string, unknown];
       expect(valueAt(forced, choicePath)).toEqual(choice);
       expect(valueAt(plain, choicePath)).not.toEqual(choice);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("forced submits over Vercel's Anthropic Messages API", () => {
+  it.each([
+    { model: "openai/gpt-6-astra", alwaysOn: true },
+    { model: "openai/gpt-6.1-sol", alwaysOn: true },
+    { model: "openai/gpt-6.2-sol", alwaysOn: true },
+    { model: "openai/gpt-6.2-astra", alwaysOn: true },
+    { model: "openai/gpt-6.2-sol-fast", alwaysOn: true },
+    { model: "openai/gpt-6-luna", alwaysOn: false }
+  ])("uses a supported thinking mode for $model", async ({ model, alwaysOn }) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-vercel-thinking-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
+    vi.stubEnv("AI_GATEWAY_API_KEY", "test-only-key");
+    try {
+      const forced = await capture("vercel-ai-gateway", model, true);
+      if (alwaysOn) {
+        const ordinary = await capture("vercel-ai-gateway", model, false);
+        const reasoning = reasoningFields(ordinary);
+        expect(reasoning).toHaveProperty("thinking");
+        expect(reasoningFields(forced)).toEqual(reasoning);
+        expect(valueAt(forced, "tool_choice")).toEqual({ type: "auto" });
+      } else {
+        expect(valueAt(forced, "thinking")).toEqual({ type: "disabled" });
+        expect(valueAt(forced, "tool_choice")).toEqual({ type: "tool", name: "submit_review" });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("forced submits over Amazon Bedrock (#47)", () => {
+  it.each([
+    { model: "us.anthropic.claude-opus-5-5", thinking: "adaptive" },
+    { model: "global.anthropic.claude-sonnet-5-5", thinking: "adaptive" },
+    { model: "us.anthropic.claude-fable-5-2", thinking: "adaptive" },
+    { model: "us.anthropic.claude-opus-4-5-20251101-v1:0", thinking: "enabled" },
+    { model: "amazon.nova-2-lite-v1:0", thinking: undefined }
+  ])("uses supported tool choice and keeps native reasoning for $model", async ({ model, thinking }) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-bedrock-submit-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
+    vi.stubEnv("AWS_REGION", "us-east-1");
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "test-only-key");
+    try {
+      const ordinary = await capture("amazon-bedrock", model, false);
+      const forced = await capture("amazon-bedrock", model, true);
+      const optedOut = await capture("amazon-bedrock", model, true, { forceSubmitToolChoice: false });
+      expect(valueAt(ordinary, "additionalModelRequestFields.thinking.type")).toBe(thinking);
+      const nativeFields = valueAt(ordinary, "additionalModelRequestFields");
+      expect(valueAt(forced, "additionalModelRequestFields")).toEqual(nativeFields);
+      expect(valueAt(optedOut, "additionalModelRequestFields")).toEqual(nativeFields);
+      expect(valueAt(forced, "toolConfig.toolChoice")).toEqual(thinking === undefined
+        ? { tool: { name: "submit_review" } }
+        : { auto: {} });
+      expect(valueAt(optedOut, "toolConfig.toolChoice")).toEqual({ auto: {} });
     } finally {
       vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });

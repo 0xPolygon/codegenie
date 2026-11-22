@@ -340,6 +340,12 @@ The resolver must never checkout, reset, stash, or otherwise mutate the working 
 
 All resolver telemetry events use stage `1` (`input_resolved`, `pr_refs_fetched`, `base_resolved`, `shallow_deepened`, ...), with `gh`/`git` preflight failures reported at stage `0`.
 
+#### Local snapshot modes
+
+`--staged` and `--uncommitted` both use the HEAD tree as base, or the empty tree on an unborn branch. Stage 1 copies the worktree's active index into a private temporary directory, respecting `GIT_INDEX_FILE`. For `--uncommitted`, Git updates tracked entries in the copy, then produces the head tree. For `--staged`, Git writes the head tree directly from the copy. An unmerged index is a usage error.
+
+The scratch object store uses the original Git object store as an alternate. Classification, repository tools, and anchor validation work against the captured trees. The cache keys retain the base/head tree IDs and target mode. Scope the alternate to each Git subprocess and discard the scratch directory at run finalization. The resolver uses no commits or refs for the new snapshot objects and creates no GitHub client for these targets. Reports label each side and omit a commit SHA for the local head.
+
 #### Bare Command Default
 
 With no target arguments, the CLI passes `{ mode: "branch", branchName: <current branch> }` semantics through the resolver:
@@ -617,7 +623,7 @@ Skipped findings are not demoted to the body (skip means "already said"); each d
 `maybePublishToGitHub` executes Stage 11 when `finalReview.postingPlan` is present:
 
 1. Re-assert preconditions: mode `github_pr`, `gh` preflight, `viewPr` metadata cached (so `createReview` has the head SHA for `commit_id`).
-2. Select inline candidates: findings referenced by `postingPlan.inline` with `publication: "inline"`. Defense-in-depth re-checks (each demotion recorded in telemetry): confidence must be ≥ `review.minInlineConfidence` (low-confidence findings are never posted), and the anchor must pass `validateDiffAnchor` against the parsed diff. Failures demote the finding's content into the review body rather than dropping it silently — deleted-file findings about removed behavior are the canonical case.
+2. Select inline candidates: findings referenced by `postingPlan.inline` with `publication: "inline"`. The composer applies `review.minInlineConfidence` before the soft comment cap and puts below-floor findings in the review body. The publisher revalidates each planned anchor with `validateDiffAnchor` against the parsed diff. Invalid anchors demote the finding into the review body and log the reason.
 3. Run duplicate detection; drop skips.
 4. If no inline comments and no body findings remain: post nothing unless `github.summaryWhenNoFindings` is true (then post a body-only review); record `skipped_no_findings` / `skipped_all_duplicates`.
 5. Build the review body: `postingPlan.reviewBody` (summary, total finding count, broad/system findings) + partial-coverage disclosure from `finalReview.coverage` when applicable + demoted findings rendered with their file/line references.
@@ -659,6 +665,8 @@ GitHub returns 422 when any inline comment is invalid for its diff; the review-c
 Every attempt, demotion, and the final status is recorded in `RunPostingRecord` and stage-11 telemetry events (`github_review_posted`, `github_422_recovery`, `github_posting_failed`).
 
 ### GitHub Action Adapter (Plan 97)
+
+The Action validates the workflow's `stage-models` input after the trigger gate, including in preflight. A nonempty map requires a global `model`. The adapter passes it to the config loader as a trusted replacement for `llm.stages` after CLI and environment shadowing. An explicit comment alias skips the map and emits a warning. Explicit stage model providers participate in generic-key routing and stored-login checks before the status comment is claimed. The decision and lifecycle records include the applied map, and the review footer reports the runner's resolved stage models.
 
 `src/github-action/` is a self-contained adapter around the review path — the GitHub Actions trigger surface (`codegenie github-action`), authoritative preflight/event gating, and the status comment. It composes public seams only (synthesized `review --pr` argv, run-start/telemetry observers, the returned report); nothing in this component or the pipeline imports from it. Its bounded shared seams are the CLI dispatch, viewer-identity fallback, provider API-key env-name lookup, and run-attachment observer. Functional behavior (lanes, trigger phrase, authorization) is specified in `functional_spec.md` GitHub Action Mode.
 
@@ -815,7 +823,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `publish.sanitize-mentions` — `@user` becomes `` `@user` `` in posted bodies.
 - `publish.sanitize-secrets` — fixture bodies with a GitHub token, AWS key, private key block, and JWT post fully redacted.
 - `publish.body-caps` — oversized inline body truncates at 10000 chars with the truncation note before the marker; review body caps at 60000.
-- `publish.confidence-floor` — low-confidence finding never posts inline regardless of posting plan (defense-in-depth demotion recorded).
+- `publish.confidence-floor` — the composer keeps verified below-floor findings in the review body and reserves inline slots for eligible findings. An explicit low inline floor allows otherwise eligible low-confidence findings inline.
 - `publish.invalid-anchor-demoted` — anchor failing re-validation moves the finding text into the review body, not dropped.
 - `publish.duplicates-skipped-not-demoted` — duplicate findings appear in neither comments nor body.
 - `publish.no-findings-respects-config` — nothing posts when empty unless `summaryWhenNoFindings: true`.

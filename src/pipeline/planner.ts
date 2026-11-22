@@ -69,6 +69,7 @@ const MAX_COVERAGE_FOCUS_NOTES = 5;
 const MAX_COVERAGE_RELATED_SYMBOLS = 12;
 const MAX_COVERAGE_RELATED_FILES = 12;
 const MAX_SAFETY_DEEP_SOURCE_HUNKS = 20;
+const MISSING_PLANNER_REASON = "default_coverage_missing_planner_reason";
 const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "coverage"]);
 const MISPLACED_PLANNER_ROOT_KEYS = new Set(["focusNotes", "relatedSymbols", "relatedFiles", "surroundingContextHints"]);
 
@@ -90,7 +91,7 @@ export async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  config: CodegenieConfig,
+  _config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: PlannerOptions = {}
 ): Promise<PlannerDossier> {
@@ -110,7 +111,7 @@ export async function buildPlannerDossier(
   const dossier: PlannerDossier = {
     runId: telemetry.runId,
     mode: resolved.mode,
-    depth: config.review.depth,
+    depth: "normal",
     target: {
       ...(resolved.baseRef !== undefined ? { baseRef: truncate(resolved.baseRef, 200) } : {}),
       ...(resolved.headRef !== undefined ? { headRef: truncate(resolved.headRef, 200) } : {}),
@@ -336,18 +337,7 @@ async function runPlannerCall(
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: false,
-      recoverInvalidSubmit: (input) => {
-        if (input.submitCalls.length === 1) {
-          const original = input.submitCalls[0]!.arguments;
-          const normalized = normalizePlannerBookkeeping(original);
-          if (stableJson(original) !== stableJson(normalized)) {
-            recovery.usedDeterministicRecovery = true;
-            telemetry.event({ stage: 5, level: "info", message: "planner_bookkeeping_normalized", data: { coverageEntries: Array.isArray(normalized.coverage) ? normalized.coverage.length : 0 } });
-            return normalized;
-          }
-        }
-        return recoverPlannerInvalidSubmit(input, telemetry, recovery);
-      },
+      recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry, recovery),
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
@@ -375,9 +365,30 @@ function recoverPlannerInvalidSubmit(
     return undefined;
   }
   const wrappedPlan = recoverWrappedPlannerSubmit(input.submitCalls);
+  const args = wrappedPlan?.recovered ?? input.submitCalls[0]!.arguments;
+  if (!isRecord(args) || !hasPlannerRequiredRoots(args)) {
+    recovery.usedSchemaRepair = true;
+    return undefined;
+  }
+  const normalized = normalizePlannerBookkeeping(args);
+  const normalizedBookkeeping = stableJson(args) !== stableJson(normalized);
+  const strippedKeys = Object.keys(normalized).filter((key) => !SUBMIT_PLAN_ROOT_KEYS.has(key)).sort();
+  let defaultedReasons = 0;
+  const coverage = !input.schemaRepairUsed && Array.isArray(normalized.coverage)
+    ? normalized.coverage.map((entry: unknown) => {
+        if (!isRecord(entry) || Object.hasOwn(entry, "reason")) return entry;
+        defaultedReasons += 1;
+        return { ...entry, reason: MISSING_PLANNER_REASON };
+      })
+    : normalized.coverage;
+  if (!wrappedPlan && !normalizedBookkeeping && strippedKeys.length === 0 && defaultedReasons === 0) {
+    recovery.usedSchemaRepair = true;
+    return undefined;
+  }
+  const recovered = { diffUnderstanding: normalized.diffUnderstanding, coverage };
+  recovery.usedDeterministicRecovery = true;
+  recovery.recoveredRootKeys = Math.max(recovery.recoveredRootKeys, Object.keys(recovered).length);
   if (wrappedPlan !== undefined) {
-    recovery.usedDeterministicRecovery = true;
-    recovery.recoveredRootKeys = Math.max(recovery.recoveredRootKeys, Object.keys(wrappedPlan.recovered).length);
     if (wrappedPlan.kind === "string") {
       recovery.unwrappedPlanStringCount += 1;
     } else {
@@ -391,60 +402,38 @@ function recoverPlannerInvalidSubmit(
         submitCallId: wrappedPlan.submitCallId,
         invalidSubmitCallCount: input.submitCalls.length,
         schemaRepairUsed: input.schemaRepairUsed,
-        recoveredRootKeys: Object.keys(wrappedPlan.recovered).length
+        recoveredRootKeys: Object.keys(recovered).length
       }
     });
-    return wrappedPlan.recovered;
   }
-  const candidates = input.submitCalls.flatMap((call) => {
-    const args = call.arguments;
-    if (!isRecord(args) || !hasPlannerRequiredRoots(args)) {
-      return [];
-    }
-    const strippedKeys = Object.keys(args)
-      .filter((key) => !SUBMIT_PLAN_ROOT_KEYS.has(key))
-      .sort();
-    if (strippedKeys.length === 0) {
-      return [];
-    }
-    const recovered: Record<string, unknown> = {};
-    for (const key of SUBMIT_PLAN_ROOT_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(args, key)) {
-        recovered[key] = args[key];
-      }
-    }
-    return [{
-      recovered,
-      strippedKeys,
-      score: plannerRecoveryScore(args)
-    }];
-  });
-  const best = candidates.sort((a, b) => b.score - a.score || a.strippedKeys.length - b.strippedKeys.length)[0];
-  if (best === undefined) {
-    recovery.usedSchemaRepair = true;
-    return undefined;
+  if (normalizedBookkeeping) {
+    telemetry.event({ stage: 5, level: "info", message: "planner_bookkeeping_normalized",
+      data: { coverageEntries: Array.isArray(coverage) ? coverage.length : 0 } });
   }
-  recovery.usedDeterministicRecovery = true;
-  recovery.recoveredRootKeys = Math.max(recovery.recoveredRootKeys, Object.keys(best.recovered).length);
-  for (const key of best.strippedKeys) {
+  for (const key of strippedKeys) {
     recovery.strippedRootKeys.add(key);
     if (MISPLACED_PLANNER_ROOT_KEYS.has(key)) {
       recovery.misplacedRootKeys.add(key);
     }
   }
 
-  telemetry.event({
-    stage: 5,
-    level: "warn",
-    message: "planner_schema_recovery_stripped_root_keys",
-    data: {
-      strippedKeys: best.strippedKeys,
-      invalidSubmitCallCount: input.submitCalls.length,
-      schemaRepairUsed: input.schemaRepairUsed,
-      recoveredRootKeys: Object.keys(best.recovered).length
-    }
-  });
-  return best.recovered;
+  if (strippedKeys.length > 0) {
+    telemetry.event({
+      stage: 5,
+      level: "warn",
+      message: "planner_schema_recovery_stripped_root_keys",
+      data: {
+        strippedKeys,
+        invalidSubmitCallCount: input.submitCalls.length,
+        schemaRepairUsed: input.schemaRepairUsed,
+        recoveredRootKeys: Object.keys(recovered).length
+      }
+    });
+  }
+  if (defaultedReasons > 0) {
+    telemetry.event({ stage: 5, level: "info", message: "planner_recovery_missing_reasons_defaulted", data: { count: defaultedReasons } });
+  }
+  return recovered;
 }
 
 function emptyPlannerRecoveryDraft(): PlannerRecoveryDraft {
@@ -680,13 +669,6 @@ function compareSafetyCoverageCandidates(a: SourceHunkSafetyCandidate, b: Source
 function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {
   return Object.prototype.hasOwnProperty.call(args, "diffUnderstanding") &&
     Object.prototype.hasOwnProperty.call(args, "coverage");
-}
-
-function plannerRecoveryScore(args: Record<string, unknown>): number {
-  return [
-    "diffUnderstanding",
-    "coverage"
-  ].filter((key) => Object.prototype.hasOwnProperty.call(args, key)).length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1522,12 +1504,14 @@ function mergeDuplicateDecision(
 ): HunkCoverageDecision {
   const coverage = strongestCoverage(a.coverage, b.coverage);
   const selected = coverage === b.coverage && coverage !== a.coverage ? b : a;
+  const conflictReasons = conflict ? dedupe([a.reason, b.reason]).filter(reason =>
+    reason !== MISSING_PLANNER_REASON && reason !== `planner_empty_lenses: ${MISSING_PLANNER_REASON}`) : [];
   return {
     ...selected,
     coverage,
     lenses: dedupe([...a.lenses, ...b.lenses]),
     surroundingContextHints: dedupeByJson([...a.surroundingContextHints, ...b.surroundingContextHints]),
-    reason: conflict ? `planner duplicate coverage decisions merged: ${dedupe([a.reason, b.reason]).join("; ")}` : selected.reason,
+    reason: conflictReasons.length > 0 ? `planner duplicate coverage decisions merged: ${conflictReasons.join("; ")}` : selected.reason,
     focusNotes: dedupe([...(a.focusNotes ?? []), ...(b.focusNotes ?? [])]).slice(0, MAX_COVERAGE_FOCUS_NOTES),
     relatedSymbols: dedupe([...(a.relatedSymbols ?? []), ...(b.relatedSymbols ?? [])]).slice(0, MAX_COVERAGE_RELATED_SYMBOLS),
     relatedFiles: dedupe([...(a.relatedFiles ?? []), ...(b.relatedFiles ?? [])]).slice(0, MAX_COVERAGE_RELATED_FILES)

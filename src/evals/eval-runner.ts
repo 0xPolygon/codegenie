@@ -3,10 +3,9 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer } from "../config/config-loader.js";
+import { applyRepoConfigLayer, clearStageOverridesForRun } from "../config/config-loader.js";
 import {
   reasoningLevelSchema,
-  reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
   severitySchema
 } from "../config/schema.js";
@@ -14,6 +13,7 @@ import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
 import type {
   CodegenieConfig,
+  ConfigWarning,
   EvalArtifacts,
   EvalCase,
   EvalCaseResult,
@@ -52,6 +52,9 @@ export type EvalRunOptions = {
   judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
+  codegenieHome?: string;
+  /** Warnings from loading the user layers, reported with each review (#129). */
+  configWarnings?: ConfigWarning[];
 };
 
 const positiveNumberSchema = z.number().positive();
@@ -132,7 +135,6 @@ const caseSchema = z
       .optional(),
     review: z
       .object({
-        depth: reviewDepthSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -332,7 +334,7 @@ export async function replayFromArtifacts(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -417,7 +419,7 @@ async function runArtifactCase(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -483,10 +485,11 @@ async function runLiveCase(
     let reviewOutput = "";
     await runReview(target, caseConfig.config, {
       repoRoot: actualRepoRoot,
+      ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
-      configWarnings: repoLayer.warnings,
+      configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
       onRunStart: (run) => {
         reviewRunId = run.runId;
       },
@@ -500,7 +503,7 @@ async function runLiveCase(
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true);
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true, options);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -573,10 +576,11 @@ async function runRepeatedLiveCase(
         let reviewOutput = "";
         await runReview(target, caseConfig.config, {
           repoRoot: actualRepoRoot,
+          ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
-          configWarnings: repoLayer.warnings,
+          configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
           writeOutput: (chunk) => {
             reviewOutput += chunk;
           }
@@ -586,7 +590,7 @@ async function runRepeatedLiveCase(
         }
         const artifacts = await loadEvalArtifacts(telemetryDir);
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
-        await addRecommendationJudgment(entry.evalCase, score, execDir, true);
+        await addRecommendationJudgment(entry.evalCase, score, execDir, true, options);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
@@ -847,13 +851,11 @@ function applyCaseReviewConfig(
   loaded: CodegenieConfig,
   evalCase: EvalCase,
   cacheOverride: boolean | undefined
-): { config: CodegenieConfig; cache: EvalRunInfo["cache"] } {
+): { config: CodegenieConfig; cache: EvalRunInfo["cache"]; warnings: ConfigWarning[] } {
   const config = structuredClone(loaded) as CodegenieConfig;
   const review = evalCase.review;
   const llm = evalCase.llm;
-  if (review?.depth !== undefined) {
-    config.review.depth = review.depth;
-  }
+  const warnings: ConfigWarning[] = [];
   if (review?.maxFindings !== undefined) {
     config.review.maxFindings = review.maxFindings;
   }
@@ -893,6 +895,7 @@ function applyCaseReviewConfig(
   const provider = llm?.provider ?? review?.provider;
   const model = llm?.model ?? review?.model;
   const reasoning = llm?.reasoning ?? review?.reasoning;
+  clearStageOverridesForRun(config, { model: provider !== undefined || model !== undefined, reasoning: reasoning !== undefined }, warnings, "eval-case");
   if (provider !== undefined) {
     config.llm.provider = provider;
   }
@@ -910,7 +913,8 @@ function applyCaseReviewConfig(
   config.cache.enabled = cacheEnabled;
   return {
     config,
-    cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir }
+    cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir },
+    warnings
   };
 }
 
@@ -927,6 +931,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
       ...(config.llm.provider !== undefined ? { provider: config.llm.provider } : {}),
       ...(config.llm.model !== undefined ? { model: config.llm.model } : {}),
       ...(config.llm.reasoning !== undefined ? { reasoning: config.llm.reasoning } : {}),
+      ...(config.llm.stages !== undefined ? { stages: structuredClone(config.llm.stages) } : {}),
       maxConcurrentCalls: config.llm.maxConcurrentCalls
     }
   };

@@ -10,7 +10,6 @@ const providerSettingsSchema = z
   .object({
     defaultProvider: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
-    defaultDepth: z.enum(["light", "normal", "deep"]).optional(),
     defaultReasoning: reasoningLevelSchema.optional()
   })
   .strict();
@@ -30,6 +29,10 @@ export function loadProviderSettings(paths: CodegeniePaths = getCodegeniePaths()
     });
   }
 
+  // Older settings files may still contain this removed default.
+  if (typeof parsed === "object" && parsed !== null && "defaultDepth" in parsed) {
+    delete parsed.defaultDepth;
+  }
   const result = providerSettingsSchema.safeParse(parsed);
   if (!result.success) {
     throw new CodegenieError("config_error", `invalid provider settings at ${paths.settingsPath}`, {
@@ -42,9 +45,6 @@ export function loadProviderSettings(paths: CodegeniePaths = getCodegeniePaths()
   }
   if (result.data.defaultModel !== undefined) {
     settings.defaultModel = result.data.defaultModel;
-  }
-  if (result.data.defaultDepth !== undefined) {
-    settings.defaultDepth = result.data.defaultDepth;
   }
   if (result.data.defaultReasoning !== undefined) {
     settings.defaultReasoning = result.data.defaultReasoning;

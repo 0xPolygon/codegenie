@@ -8,7 +8,10 @@ import {
   assertSafeRef,
   assertSafeRefspec,
   runGit,
-  runGitCapped
+  runGitCapped,
+  type GitEnvironment,
+  type GitCommandOptions,
+  type GitCappedCommandOptions
 } from "./subprocess.js";
 
 export type GrepResults = SearchResult[] & { omittedLines?: number };
@@ -16,7 +19,7 @@ export type GrepResults = SearchResult[] & { omittedLines?: number };
 export interface GitClient {
   revParse(ref: string): Promise<string>;
   catFile(ref: string, path: string): Promise<string>;
-  lsTree(ref: string, glob?: string): Promise<string[]>;
+  lsTree(ref: string): Promise<string[]>;
   lsFiles(paths: string[]): Promise<string[]>;
   grep(
     ref: string,
@@ -61,6 +64,7 @@ export interface InternalGitClient extends GitClient {
 
 type CreateGitClientOptions = {
   defaultRemote?: string;
+  gitEnv?: GitEnvironment;
 };
 
 const LOG_FORMAT = "%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e";
@@ -84,12 +88,17 @@ const DIFF_FLAGS = [
 export function createGitClient(repoRoot: string, opts: CreateGitClientOptions = {}): InternalGitClient {
   let emptyTree: string | undefined;
   const defaultRemote = opts.defaultRemote ?? "origin";
+  const environment = opts.gitEnv === undefined ? {} : { gitEnv: opts.gitEnv };
+  const run = (args: string[], options: GitCommandOptions = {}) =>
+    runGit(repoRoot, args, { ...options, ...environment });
+  const runCapped = (args: string[], options: GitCappedCommandOptions) =>
+    runGitCapped(repoRoot, args, { ...options, ...environment });
 
   return {
     async revParse(ref: string): Promise<string> {
       assertSafeRef(ref);
       return trimSha(
-        await runGit(repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`], {
+        await run(["rev-parse", "--verify", `${ref}^{commit}`], {
           errorCode: "git_ref_missing"
         })
       );
@@ -98,21 +107,19 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async catFile(ref: string, filePath: string): Promise<string> {
       assertSafeRef(ref);
       assertSafePath(filePath);
-      return runGit(repoRoot, ["cat-file", "blob", `${ref}:${filePath}`], {
+      return run(["cat-file", "blob", `${ref}:${filePath}`], {
         stripFinalNewline: false,
         errorCode: "git_ref_missing"
       });
     },
 
-    async lsTree(ref: string, glob?: string): Promise<string[]> {
+    async lsTree(ref: string): Promise<string[]> {
       assertSafeRef(ref);
-      const args = ["ls-tree", "-r", "--name-only", ref, "--"];
-      if (glob !== undefined) {
-        assertSafeGlob(glob);
-        args.push(`:(glob)${glob}`);
-      }
-      const stdout = await runGit(repoRoot, args, { errorCode: "git_ref_missing" });
-      return stdout.split("\n").filter(Boolean);
+      const stdout = await run(["ls-tree", "-r", "-z", "--name-only", ref, "--"], {
+        stripFinalNewline: false,
+        errorCode: "git_ref_missing"
+      });
+      return splitNul(stdout);
     },
 
     async lsFiles(paths: string[]): Promise<string[]> {
@@ -122,7 +129,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       for (const filePath of paths) {
         assertSafePathspec(filePath);
       }
-      const stdout = await runGit(repoRoot, ["ls-files", "-z", "--", ...paths], {
+      const stdout = await run(["ls-files", "-z", "--", ...paths], {
         stripFinalNewline: false,
         errorCode: "invalid_args"
       });
@@ -170,7 +177,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
           ...(grepOpts.glob !== undefined ? [`:(glob)${grepOpts.glob}`] : [])];
         let stdout: string;
         try {
-          stdout = await runGitCapped(repoRoot, args, {
+          stdout = await runCapped(args, {
             maxBytes: Math.max(64 * 1024, (maxResults - results.length) * 1024),
             maxLines: maxResults - results.length,
             lineLimitBytes: 32 * 1024,
@@ -197,7 +204,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       assertSafeRef(a, "merge-base ref");
       assertSafeRef(b, "merge-base ref");
       return trimSha(
-        await runGit(repoRoot, ["merge-base", a, b], {
+        await run(["merge-base", a, b], {
           errorCode: "git_ref_missing"
         })
       );
@@ -205,8 +212,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async log(range: string): Promise<CommitInfo[]> {
       assertSafeLogRange(range);
-      const stdout = await runGit(
-        repoRoot,
+      const stdout = await run(
         ["log", "--no-show-signature", "--date=iso-strict", `--format=${LOG_FORMAT}`, range, "--"],
         { errorCode: "git_ref_missing" }
       );
@@ -217,7 +223,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       assertSafeRef(base, "diff base");
       assertSafeRef(head, "diff head");
       try {
-        return await runGit(repoRoot, [...DIFF_FLAGS, base, head, "--"], {
+        return await run([...DIFF_FLAGS, base, head, "--"], {
           stripFinalNewline: false,
           errorCode: "git_ref_missing"
         });
@@ -235,21 +241,21 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async fetch(refspec: string): Promise<void> {
       assertSafeRef(defaultRemote, "default remote");
       assertSafeRefspec(refspec);
-      await runGit(repoRoot, ["fetch", defaultRemote, refspec], {
+      await run(["fetch", defaultRemote, refspec], {
         network: true,
         errorCode: "git_fetch_failed"
       });
     },
 
     async isShallow(): Promise<boolean> {
-      const stdout = await runGit(repoRoot, ["rev-parse", "--is-shallow-repository"], {
+      const stdout = await run(["rev-parse", "--is-shallow-repository"], {
         errorCode: "git_ref_missing"
       });
       return stdout.trim() === "true";
     },
 
     async currentBranch(): Promise<string | undefined> {
-      const stdout = await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], {
+      const stdout = await run(["rev-parse", "--abbrev-ref", "HEAD"], {
         errorCode: "git_ref_missing"
       });
       const branch = stdout.trim();
@@ -258,7 +264,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async isInsideWorktree(): Promise<boolean> {
       try {
-        const stdout = await runGit(repoRoot, ["rev-parse", "--is-inside-work-tree"], {
+        const stdout = await run(["rev-parse", "--is-inside-work-tree"], {
           errorCode: "not_git_worktree"
         });
         return stdout.trim() === "true";
@@ -268,7 +274,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     },
 
     async repoRoot(): Promise<string> {
-      return runGit(repoRoot, ["rev-parse", "--show-toplevel"], {
+      return run(["rev-parse", "--show-toplevel"], {
         errorCode: "not_git_worktree"
       });
     },
@@ -276,7 +282,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async commitExists(sha: string): Promise<boolean> {
       assertSafeRef(sha, "commit sha");
       try {
-        await runGit(repoRoot, ["cat-file", "-e", `${sha}^{commit}`], {
+        await run(["cat-file", "-e", `${sha}^{commit}`], {
           errorCode: "git_ref_missing"
         });
         return true;
@@ -307,7 +313,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     },
 
     async remotes(): Promise<GitRemote[]> {
-      const stdout = await runGit(repoRoot, ["remote", "-v"], {
+      const stdout = await run(["remote", "-v"], {
         allowedExitCodes: [0],
         errorCode: "git_ref_missing"
       });
@@ -331,12 +337,12 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         args.push(`--deepen=${fetchOpts.deepen}`);
       }
       args.push(remote, refspec);
-      await runGit(repoRoot, args, { network: true, errorCode: "git_fetch_failed" });
+      await run(args, { network: true, errorCode: "git_fetch_failed" });
     },
 
     async deleteRef(ref: string): Promise<void> {
       assertSafeRef(ref);
-      await runGit(repoRoot, ["update-ref", "-d", ref], {
+      await run(["update-ref", "-d", ref], {
         allowedExitCodes: [0, 1],
         errorCode: "git_ref_missing"
       });
@@ -344,7 +350,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async listRefs(prefix: string): Promise<string[]> {
       assertSafeRef(prefix, "ref prefix");
-      const stdout = await runGit(repoRoot, ["for-each-ref", "--format=%(refname)", prefix], {
+      const stdout = await run(["for-each-ref", "--format=%(refname)", prefix], {
         errorCode: "git_ref_missing"
       });
       return stdout.split("\n").filter(Boolean);
@@ -353,7 +359,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async lsTreeEntry(ref: string, filePath: string): Promise<GitTreeEntry | undefined> {
       assertSafeRef(ref);
       assertSafePathspec(filePath);
-      const stdout = await runGit(repoRoot, ["ls-tree", ref, "--", filePath], {
+      const stdout = await run(["ls-tree", ref, "--", filePath], {
         errorCode: "git_ref_missing"
       });
       const line = stdout.split("\n").find(Boolean);
@@ -369,7 +375,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async emptyTreeSha(): Promise<string> {
       emptyTree ??= trimSha(
-        await runGit(repoRoot, ["hash-object", "-t", "tree", "/dev/null"], {
+        await run(["hash-object", "-t", "tree", "/dev/null"], {
           errorCode: "git_ref_missing"
         })
       );
@@ -380,7 +386,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       assertSafeRef(sha, "commit sha");
       try {
         return trimSha(
-          await runGit(repoRoot, ["rev-parse", "--verify", `${sha}^1`], {
+          await run(["rev-parse", "--verify", `${sha}^1`], {
             errorCode: "git_ref_missing"
           })
         );
@@ -394,7 +400,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async parentShas(sha: string): Promise<string[]> {
       assertSafeRef(sha, "commit sha");
-      const stdout = await runGit(repoRoot, ["cat-file", "-p", sha], {
+      const stdout = await run(["cat-file", "-p", sha], {
         stripFinalNewline: false,
         errorCode: "git_ref_missing"
       });
@@ -413,7 +419,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       for (const filePath of paths) {
         assertSafePathspec(filePath);
       }
-      const stdout = await runGit(repoRoot, ["check-ignore", "--no-index", "--stdin", "-z"], {
+      const stdout = await run(["check-ignore", "--no-index", "--stdin", "-z"], {
         input: `${paths.join("\0")}\0`,
         stripFinalNewline: false,
         allowedExitCodes: [0, 1],
@@ -429,7 +435,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     ): Promise<string> {
       assertSafeRef(ref);
       assertSafePath(filePath);
-      return runGitCapped(repoRoot, ["cat-file", "blob", `${ref}:${filePath}`], {
+      return runCapped(["cat-file", "blob", `${ref}:${filePath}`], {
         maxBytes: prefixOpts.maxBytes,
         maxLines: prefixOpts.maxLines,
         errorCode: "git_ref_missing"
