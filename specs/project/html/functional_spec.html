@@ -1738,10 +1738,11 @@ threshold for reported findings.</li>
 inline-comment target). Neither cap suppresses verified critical or
 high-severity findings.</li>
 <li>LLM runtime options for <code>@earendil-works/pi-ai</code>,
-including provider-call concurrency; one provider/model/reasoning
-configuration applies to the whole run. Repo <code>codegenie.toml</code>
-must not set provider credentials, default provider, default model, or
-reasoning effort.</li>
+including shared provider-call concurrency and optional user-scoped
+model/reasoning selections for plan, review, verify, and compose.
+Unspecified fields inherit the global settings. Repo
+<code>codegenie.toml</code> must not set provider credentials, model
+selection, or reasoning effort.</li>
 <li>Runtime and per-pass timeouts.</li>
 <li>Maximum total token budget for a run.</li>
 <li>Maximum model calls per run.</li>
@@ -1971,12 +1972,9 @@ for test/typecheck/build commands run with timeouts, results treated as
 evidence rather than automatic findings, enabled only through user-level
 trust. V1 never executes repository commands. Build when evals show
 findings that only execution evidence could confirm or reject.</li>
-<li>Per-role model/reasoning tiering. Optional per-role model and
-reasoning overrides (planner, packet reviewer, verifier, composer)
-supplied from user-level config or CLI. V1 runs one
-provider/model/reasoning configuration for the whole run. Build when
-evals identify roles where cheaper models or lower reasoning hold review
-quality.</li>
+<li>GitHub Action inputs for per-stage model and reasoning settings.
+User-scoped <code>llm.stages</code> selections exist; Action-specific
+stage mappings are deferred separately.</li>
 <li>Rich pre-attached packet context. Sibling symbol names, AST
 summaries, nearby imports, and small examples of nearby established
 patterns assembled into packets at construction time. V1 packets carry

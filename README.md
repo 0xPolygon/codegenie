@@ -229,6 +229,7 @@ reasoning = "low"
 - A stage model must include the provider and cannot include a reasoning suffix.
 - These settings are user-scoped; repo configuration cannot set them.
 - Per-run CLI, environment or eval-case model and reasoning settings override matching fields for every stage, with a warning. Stored provider defaults remain fallbacks.
+- The Action's selected `model` is a per-run setting and overrides matching stage fields. Action-specific stage mappings are not yet available.
 - Explicit composition reasoning is used as written. Inherited composition reasoning may run one supported level lower by default; repairs and location clarification use the selected model's lowest supported level.
 - Every selected model and reasoning level is validated before model calls. Smaller models may lack the context window for large prompts.
 
@@ -321,7 +322,7 @@ For optional judge calibration, `scripts/calibrate-recommendations.ts` loads one
 
 **Fail honestly, degrade predictably.** The planner ranks attention across all hunks kept by the deterministic file filter. Omitted hunks get normal coverage. A failed planner falls back to a deterministic plan; a failed packet marks its hunks in coverage; budget exhaustion stops future dispatch without discarding completed work. Partial reviews exit `0` and *say they're partial*.
 
-**Build when evidence demands it.** Richer designs (hierarchical planning, per-role model tiering, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
+**Build when evidence demands it.** Richer designs (hierarchical planning, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
 
 Eval cases can opt into stricter reliability checks:
 

@@ -17,7 +17,7 @@ This component is responsible for:
 - The lens registry: lens existence derived from loaded skills (`lens exists iff at least one loaded skill declares it`), `enabledByDefault` conflict resolution, `--lens` validation with an available-lens error listing, config precedence for the effective enabled-lens set, and one-line lens summaries for the planner dossier.
 - The prompt builder: the four stage prompt templates (stages 5, 7, 9, 10), the deterministic dossier renderer `renderDossier` (also called by the pipeline's dossier compaction for size estimation), per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
 - The provider/auth command layer: `codegenie provider ...`, `~/.codegenie/` path resolution, Pi provider/model registry access, login/logout/auth status, model listing, user-level default provider/model/reasoning settings, and credential registration with the redaction layer.
-- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codegenie-owned agent loop driving Pi public streams + final submit provenance + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, single run-wide model resolution from the resolved `llm` config (`llm.model ?? Pi/provider default`, already merged from CLI/environment/user settings by the config loader), reasoning-effort resolution from the resolved `llm.reasoning` with the built-in `high` default, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one law `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
+- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codegenie-owned agent loop driving Pi public streams + final submit provenance + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, global and optional per-stage model/reasoning resolution from the user-scoped `llm` config, shared `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
 - The delegated `ToolDefinition` type and the factory that wraps `RepositoryTools` methods as model-facing tool definitions, including rendering tool rejections as model-visible errors.
 - The local model-call cache: normalized-request key derivation, per-provider-call caching with conversation-prefix keying, cache-schema-version validation on read, refusal of repo-tracked cache directories, 14-day / 500MB eviction at run start, and hit/miss/write telemetry.
 - The logger and telemetry recorder: `run.log` and `events.jsonl` writing, level filtering, stderr mirroring, stage `0` pre-pipeline event buffering, and monotonic event ids.
@@ -243,9 +243,9 @@ codegenie's normalized interface maps the submit tool choice onto vendor dialect
 | `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | Pi's native mapping | |
 | unknown | `"required"` | Pi's native mapping | |
 
-Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
+The runner records `reasoningTokens` when provider usage exposes it; missing usage remains unknown.
 
-**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking disabled (no reasoning is passed, so Pi's Anthropic simple adapter sends thinking disabled) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The once-per-run `provider_protocol` event records the flag; forced-submit calls record no `reasoningRequested` and cache keys carry `forced-submit-no-thinking`.
+**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking disabled (no reasoning is passed, so Pi's Anthropic simple adapter sends thinking disabled) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The `provider_protocol` event records the flag once per selected model; forced-submit calls record no `reasoningRequested` and cache keys carry `forced-submit-no-thinking`.
 
 **Session-ID / cache-affinity semantics differ sharply per provider** (verified in pi-ai 0.80.3):
 
@@ -258,10 +258,8 @@ Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` rec
 // src/llm/llm-runner.ts
 
 // Plain telemetry label derived from stage (5 → planner, 7 → packetReview,
-// 9 → verifier, 10 → composer). No per-role aggregation or resolution machinery
-// hangs off it — the numeric stage is the aggregation key, and one model and one
-// reasoning level serve every stage in v1 (per-role tiering is deferred; see
-// architecture.md).
+// 9 → verifier, 10 → composer). Numeric stage is the aggregation and
+// optional model/reasoning selection key.
 type LlmRole = "planner" | "packetReview" | "verifier" | "composer"
 
 // Internal usage report delivered to the pipeline's budget ledger after every
@@ -713,7 +711,7 @@ Loop invariants:
 
 ### Model Resolution, Concurrency, And Provider Retries
 
-Model resolution, once per run: `llm.model ?? Pi/provider default`, scoped by `llm.provider` when present — the resolved config already carries CLI/environment/user-level defaults merged by the config loader; the runner never reads `ProviderSettings` directly. One model serves all roles; per-role tiering (`llm.roleModels`/`llm.roleReasoning`) is deferred to Future Considerations — see architecture.md. At `createPiRunner` time the runner resolves the model eagerly; if it resolves to nothing, or the chosen provider has no usable auth, construction throws `config_error` naming the missing provider/model/auth and suggesting `codegenie provider login <provider>`. Reasoning resolution is `llm.reasoning ?? "high"` (the built-in default), one level for the whole run. The single resolved provider, model, and reasoning settings are folded into the cache key's llm-settings hash.
+The runner resolves the global model from `llm.model ?? Pi/provider default`, scoped by `llm.provider` when present. Optional `llm.stages` fields select a model and/or base reasoning for plan, review, verify or compose; omitted fields inherit global settings. Each effective selection is validated before calls, and the selected model and reasoning enter each model-call cache key. Invalid selections or missing credentials raise `config_error`. Per-run CLI, environment or eval-case overrides take precedence for their field. All stages share the same runner, limiter and budget ledger.
 
 Concurrency: a single `p-limit` semaphore of `llm.maxConcurrentCalls` (default 6) wraps each individual provider `complete()` call — not the whole `runStructured` invocation, since a tool-using task holds its loop across many provider calls and wrapping the loop would deadlock the run under low limits. Cache hits bypass the semaphore (no provider work). The pipeline's `review.concurrency` worker bound stacks on top of this limit, per `architecture.md`.
 

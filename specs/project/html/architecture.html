@@ -1240,24 +1240,25 @@ directly.</p>
 <span id="cb16-41"><a href="#cb16-41" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
 <span id="cb16-42"><a href="#cb16-42" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
 <span id="cb16-43"><a href="#cb16-43" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
-<span id="cb16-44"><a href="#cb16-44" aria-hidden="true" tabindex="-1"></a>    maxConcurrentCalls<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb16-45"><a href="#cb16-45" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb16-46"><a href="#cb16-46" aria-hidden="true" tabindex="-1"></a>  cache<span class="op">:</span> {</span>
-<span id="cb16-47"><a href="#cb16-47" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb16-48"><a href="#cb16-48" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb16-49"><a href="#cb16-49" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb16-50"><a href="#cb16-50" aria-hidden="true" tabindex="-1"></a>  telemetry<span class="op">:</span> {</span>
-<span id="cb16-51"><a href="#cb16-51" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb16-52"><a href="#cb16-52" aria-hidden="true" tabindex="-1"></a>    logLevel<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
-<span id="cb16-53"><a href="#cb16-53" aria-hidden="true" tabindex="-1"></a>    debugTrace<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb16-54"><a href="#cb16-54" aria-hidden="true" tabindex="-1"></a>    runDir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb16-55"><a href="#cb16-55" aria-hidden="true" tabindex="-1"></a>    retainRuns<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb16-56"><a href="#cb16-56" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb16-57"><a href="#cb16-57" aria-hidden="true" tabindex="-1"></a>  eval<span class="op">:</span> {</span>
-<span id="cb16-58"><a href="#cb16-58" aria-hidden="true" tabindex="-1"></a>    defaultEvalDir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb16-59"><a href="#cb16-59" aria-hidden="true" tabindex="-1"></a>    logsDir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb16-60"><a href="#cb16-60" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb16-61"><a href="#cb16-61" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb16-44"><a href="#cb16-44" aria-hidden="true" tabindex="-1"></a>    stages<span class="op">?:</span> <span class="bu">Partial</span><span class="op">&lt;</span><span class="bu">Record</span><span class="op">&lt;</span><span class="st">&quot;plan&quot;</span> <span class="op">|</span> <span class="st">&quot;review&quot;</span> <span class="op">|</span> <span class="st">&quot;verify&quot;</span> <span class="op">|</span> <span class="st">&quot;compose&quot;</span><span class="op">,</span> { model<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> reasoning<span class="op">?:</span> ReasoningLevel }<span class="op">&gt;&gt;</span></span>
+<span id="cb16-45"><a href="#cb16-45" aria-hidden="true" tabindex="-1"></a>    maxConcurrentCalls<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-46"><a href="#cb16-46" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-47"><a href="#cb16-47" aria-hidden="true" tabindex="-1"></a>  cache<span class="op">:</span> {</span>
+<span id="cb16-48"><a href="#cb16-48" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-49"><a href="#cb16-49" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-50"><a href="#cb16-50" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-51"><a href="#cb16-51" aria-hidden="true" tabindex="-1"></a>  telemetry<span class="op">:</span> {</span>
+<span id="cb16-52"><a href="#cb16-52" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-53"><a href="#cb16-53" aria-hidden="true" tabindex="-1"></a>    logLevel<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
+<span id="cb16-54"><a href="#cb16-54" aria-hidden="true" tabindex="-1"></a>    debugTrace<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-55"><a href="#cb16-55" aria-hidden="true" tabindex="-1"></a>    runDir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-56"><a href="#cb16-56" aria-hidden="true" tabindex="-1"></a>    retainRuns<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-57"><a href="#cb16-57" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-58"><a href="#cb16-58" aria-hidden="true" tabindex="-1"></a>  eval<span class="op">:</span> {</span>
+<span id="cb16-59"><a href="#cb16-59" aria-hidden="true" tabindex="-1"></a>    defaultEvalDir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb16-60"><a href="#cb16-60" aria-hidden="true" tabindex="-1"></a>    logsDir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-61"><a href="#cb16-61" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-62"><a href="#cb16-62" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>GitHub posting is enabled only by the
 <code>--post-github-comments</code> flag in v1; it cannot be enabled
 from configuration. <code>summaryWhenNoFindings</code> is a flag-scoped
@@ -1725,14 +1726,19 @@ unless config explicitly disables the lens; config always wins.</p>
 <li>Wrap <code>@earendil-works/pi-ai</code>.</li>
 <li>Execute model calls with prompt, tools, timeout, and schema
 expectations.</li>
-<li>Resolve the model once from the resolved
-<code>llm.provider</code>/<code>llm.model</code> (already merged from
-CLI, environment, and user-level settings by the config loader); a
-single model serves all roles:
-<code>llm.model ?? Pi/provider default</code>.</li>
-<li>Resolve reasoning effort the same way for all roles:
-<code>llm.reasoning ?? &quot;high&quot;</code>. The runner never reads user state
+<li>Resolve the global model from
+<code>llm.provider</code>/<code>llm.model</code>, then resolve optional
+user-scoped <code>llm.stages</code> model and reasoning selections for
+plan, review, verify and compose before any model calls. Missing stage
+fields inherit the resolved global values. Per-run CLI, environment and
+eval-case settings override matching stage fields with a warning; stored
+provider defaults remain fallbacks. The runner never reads user state
 directly.</li>
+<li>Validate every effective stage model and reasoning level before
+calls. Use one runner, concurrency limiter and budget ledger. Explicit
+compose reasoning is used as configured; inherited compose reasoning
+steps down by default on the selected model. Repairs and location
+clarification use that model’s lowest supported level.</li>
 <li>Record per-call telemetry: model, provider, duration, token usage,
 prompt hash, output hash, and schema validation result.</li>
 <li>Enforce <code>llm.maxConcurrentCalls</code>.</li>
@@ -2936,15 +2942,12 @@ humans already made on the PR.</p>
 (<code>tools.testCommands</code> plus a timeout, honored only with
 user-level opt-in, never from repo config), with command output becoming
 evidence for reviewers, never automatic findings.</p>
-<h3 id="per-role-model-and-reasoning-tiering">Per-role model and
-reasoning tiering</h3>
-<p><code>llm.roleModels</code> and <code>llm.roleReasoning</code> maps
-keyed by role (<code>planner</code>, <code>packetReview</code>,
-<code>verifier</code>, <code>composer</code>) overriding the single
-<code>llm.model</code>/<code>llm.reasoning</code> per role. They remain
-provider-routing keys under the config trust partition (user-scoped
-sources only). Trigger: evals identify roles where cheaper models or
-lower reasoning hold review quality.</p>
+<h3 id="per-stage-model-and-reasoning-selection">Per-stage model and
+reasoning selection</h3>
+<p>The user-scoped <code>llm.stages</code> map supports optional model
+and reasoning overrides for plan, review, verify and compose. The GitHub
+Action stage mapping is deferred separately. Mixed-model quality
+requires measurement before recommending a particular mapping.</p>
 <h3 id="rich-pre-attached-packet-context">Rich pre-attached packet
 context</h3>
 <p><code>PacketContext</code> regains

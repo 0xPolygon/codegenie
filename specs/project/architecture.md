@@ -841,6 +841,7 @@ type CodegenieConfig = {
     provider?: string
     model?: string
     reasoning?: ReasoningLevel
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>
     maxConcurrentCalls: number
   }
   cache: {
