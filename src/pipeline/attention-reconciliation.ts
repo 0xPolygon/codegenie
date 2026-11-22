@@ -347,7 +347,7 @@ export function reconcileAttention(
   const isSuppressedFindingRef = (ref: string) => {
     if (publishedCandidateIds === undefined) return false;
     const entry = evidence.get(ref);
-    if (!entry) return false;
+    if (!entry?.candidateId) return false;
     const verdict = verdictByRef.get(ref) ?? verdictByCandidate.get(entry.candidateId);
     return (verdict === "keep" || verdict === "revise") && !publishedCandidateIds.has(entry.candidateId);
   };
