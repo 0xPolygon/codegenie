@@ -363,6 +363,7 @@ export type ToolResultMeta = {
   totalLines?: number;
   /** Inclusive source lines when each packable record is one consecutive line. */
   deliveredLineRange?: [number, number];
+  requestedRange?: { path: string; startLine: number; endLine: number };
   recovery?: {
     tool: "read_range";
     path: string;
@@ -1772,8 +1773,8 @@ export type ToolCallRecord = {
     source?: string;
     contextMode?: string;
   };
-  backend: ToolBackend;
-  precision: ToolPrecision;
+  backend?: ToolBackend;
+  precision?: ToolPrecision;
   engine?: "git-grep";
   degraded: boolean;
   degradationReason?: string;
@@ -1784,6 +1785,8 @@ export type ToolCallRecord = {
   pathListDelivery?: PathListDelivery;
   lookupStatus?: ToolResultMeta["lookupStatus"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
+  totalLines?: number;
+  deliveredLineRange?: ToolResultMeta["deliveredLineRange"];
   recovery?: ToolResultMeta["recovery"];
   budgetState?: ToolBudgetState;
   cacheStatus?: "hit" | "miss" | "disabled" | "write";
