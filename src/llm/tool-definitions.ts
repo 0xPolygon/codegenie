@@ -28,6 +28,7 @@ const SymbolLookupSourceSelectorSchema = Type.Optional(
 );
 
 const PATH_DISCOVERY_GUIDANCE = "Use known file paths; package/import directories and function names do not establish filenames. Discover unknown paths with list_files (head only), find_definition or search_files at the intended revision before reading.";
+const LIST_FILES_GUIDANCE = "List tracked files at the head revision using a repo-relative glob: ** crosses directories; * and ? match within a segment; [ab] character classes and {api,data}/** alternatives are supported, including dotfiles. Use **/*.txt to include nested files. This is a glob, not a regular expression or gitignore file; use braces for path alternatives. Untracked files are excluded.";
 
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
@@ -308,7 +309,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_likely_tests",
-      description: "Find likely tests for a path or symbol using deterministic test conventions.",
+      description: "Find likely tests for a path or symbol using deterministic test conventions. If results are cut, use read_range at the next returned test path and line.",
       parameters: Type.Object(
         {
           path: Type.Optional(Type.String({ minLength: 1 })),
@@ -330,12 +331,22 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as Parameters<RepositoryTools["findLikelyTests"]>[0];
         const result = await runWithoutFacadeRecording(tools, () => tools.findLikelyTests(input));
-        return { text: withMeta(JSON.stringify(result.tests, null, 2), result.meta), meta: result.meta };
+        if (!result.tests.length) return { text: withMeta("[]", result.meta), meta: result.meta };
+        const revision = input.source?.kind ?? "head";
+        return createPackableToolResult({
+          open: "[\n",
+          records: result.tests.map(test => JSON.stringify(test, null, 2).split("\n").map(line => "  " + line).join("\n")),
+          separator: ",\n", close: "\n]",
+          labels: result.tests.map(test => `${test.path}@${revision}:${test.lineRange[0]}`)
+        }, result.meta);
       })
     },
-    {
+    tools.listFilesPage ? {
+      ...buildSixListFilesTool(tools),
+      description: LIST_FILES_GUIDANCE + " Continue from the returned cursor with the same glob."
+    } : {
       name: "list_files",
-      description: "List tracked files at the head revision using a repo-relative glob: ** crosses directories; * and ? match within a segment; [ab] character classes and {api,data}/** alternatives are supported, including dotfiles. Use **/*.txt to include nested files. This is a glob, not a regular expression or gitignore file; use braces for path alternatives. Untracked files are excluded. Bounded results disclose omissions; narrow the glob when truncated.",
+      description: LIST_FILES_GUIDANCE + " Bounded results disclose omissions; narrow the glob when truncated.",
       parameters: Type.Object(
         {
           glob: Type.String({ minLength: 1 })
@@ -590,13 +601,13 @@ export function buildSixListFilesTool(tools: RepositoryTools): ToolDefinition {
       const { glob, cursor } = args as { glob: string; cursor?: string };
       if (!tools.listFilesPage) throw new CodegenieError("config_error", "This repository cannot produce file listing pages.");
       const page = await runWithoutFacadeRecording(tools, () => tools.listFilesPage!(glob, cursor));
-      return createPackableToolResult({
+      return { ...createPackableToolResult({
         open: `Head tree ${page.tree}, glob ${JSON.stringify(page.glob)}: ${page.totalPaths} paths\n`,
         records: page.rows.map(row => JSON.stringify(row.path)), separator: "\n", close: "",
         labels: page.rows.map(row => JSON.stringify(row.path)),
         cursors: page.rows.map(row => row.cursor),
         ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}, cursor=${page.next.cursor}` } : {})
-      }, page.meta);
+      }, page.meta), filePaths: page.rows.map(row => row.path) };
     })
   };
 }

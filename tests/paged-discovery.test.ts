@@ -100,12 +100,12 @@ describe("six-tool discovery on pinned Git snapshots", () => {
     }
   });
 
-  it("pages whole paths in pinned head order and reports exact omissions", async () => {
+  it.each(["current", "six"] as const)("pages whole %s paths in pinned head order and reports exact omissions", async surface => {
     const paths = Array.from({ length: 503 }, (_, index) => `src/path-${String(index).padStart(3, "0")}.ts`);
     const fixture = await textRepository(Object.fromEntries(paths.map(path => [path, "export {};\n"])));
     try {
       writeRepoFile(fixture.repo, "src/untracked.ts", "export {};\n");
-      const list = buildSixListFilesTool(fixture.tools);
+      const list = surface === "six" ? buildSixListFilesTool(fixture.tools) : fixture.definitions.find(tool => tool.name === "list_files")!;
       const signal = new AbortController().signal;
       const args = { glob: "src/*.ts" };
       const full = await list.execute(args, signal);
@@ -124,6 +124,33 @@ describe("six-tool discovery on pinned Git snapshots", () => {
       expect(next.text.split("\n")[1]).toBe(JSON.stringify(paths[count]));
       const mismatch = await list.execute({ glob: "**/*.ts", cursor: nextCursor(clipped.text) }, signal);
       expect(mismatch.errorCode).toBe("invalid_args");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps complete likely-test entries and locates the first omitted test on both caps", async () => {
+    const path = "src/cli/review-command.ts";
+    const testPath = "src/cli/review-command.test.ts";
+    const fixture = await textRepository({
+      [path]: "export function executeReview() {}\n",
+      [testPath]: Array.from({ length: 25 }, (_, i) =>
+        `test("review command ${String(i).padStart(2, "0")}", () => { executeReview(); });\n`).join("")
+    });
+    try {
+      const full = await fixture.call("find_likely_tests", { path, source: { kind: "base" } });
+      expect(full.meta).toMatchObject({ omittedCount: 5, recovery: { path: testPath, source: "base", startLine: 21 } });
+      const sourceRows = full.packable!.records as string[];
+      expect(sourceRows).toHaveLength(20);
+      const packed = packTextToolResult(full, 950);
+      expect(packed.isError).toBeUndefined();
+      const rows = JSON.parse(packed.text.split("\n\n[tool meta:", 1)[0]!);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(20);
+      const firstUnread = JSON.parse(sourceRows[rows.length]!).lineRange[0];
+      expect(packed.text).toContain(`next: ${testPath}@base:${firstUnread}`);
+      expect(packed.text).not.toContain("first omitted test reference");
+      expect(packed.meta?.omittedCount).toBe(25 - rows.length);
     } finally {
       fixture.dispose();
     }
