@@ -42,6 +42,8 @@ describe("phase 6 live review path", () => {
 
     const fingerprint = reviewCacheFingerprint(baseConfig, resolved, "registry");
     expect(reviewCacheFingerprint(changedOutputDirs, resolved, "registry")).toBe(fingerprint);
+    expect(reviewCacheFingerprint({ ...baseConfig, review: { ...baseConfig.review, toolSurface: "current" } }, resolved, "registry")).toBe(fingerprint);
+    expect(reviewCacheFingerprint({ ...baseConfig, review: { ...baseConfig.review, toolSurface: "six" } }, resolved, "registry")).not.toBe(fingerprint);
     expect(reviewCacheFingerprint({
       ...baseConfig,
       lenses: { ...baseConfig.lenses, extraSkillPaths: ["/worktree/skills"] },
@@ -58,6 +60,17 @@ describe("phase 6 live review path", () => {
     ]) {
       expect(reviewCacheFingerprint(config, resolved, "registry")).not.toBe(fingerprint);
     }
+  });
+
+  it("rejects the unfinished six-tool surface before any model setup", async () => {
+    const resolveModel = vi.fn();
+    const complete = vi.fn();
+    const config: CodegenieConfig = { ...defaultConfig, review: { ...defaultConfig.review, toolSurface: "six" } };
+    await expect(runReview({ mode: "commit_range", startCommit: "base", endCommit: "head" }, config, {
+      piAdapter: { resolveModel, complete, validateToolCall }
+    })).rejects.toMatchObject({ code: "config_error", message: expect.stringContaining("requires a build with all six repository tools") });
+    expect(resolveModel).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("ignores stage settings when the deterministic fake runner is selected", async () => {
@@ -116,8 +129,8 @@ describe("phase 6 live review path", () => {
     expect(renderMarkdownReview(result)).toContain("Stage models (base reasoning)");
     const calls = readJsonl<{ stage: number; provider: string; model: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
     expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 5, provider: "openrouter", model: "planner" }),
-      expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model" }),
-      expect.objectContaining({ stage: 9, provider: "scripted", model: "scripted-model", reasoningConfigured: "medium" }),
+      expect.objectContaining({ stage: 7, provider: "scripted", model: "scripted-model", toolSurface: "current" }),
+      expect.objectContaining({ stage: 9, provider: "scripted", model: "scripted-model", reasoningConfigured: "medium", toolSurface: "current" }),
       expect.objectContaining({ stage: 10, provider: "anthropic", model: "composer", reasoningConfigured: "low" })]));
   });
 

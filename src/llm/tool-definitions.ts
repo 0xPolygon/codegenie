@@ -2,7 +2,7 @@ import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repositor
 import { createPackableToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { RepositoryTools, ReviewToolSurface, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -30,7 +30,14 @@ const PATH_DISCOVERY_GUIDANCE = "Use known file paths; package/import directorie
 
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
+  toolSurface?: ReviewToolSurface;
 };
+
+export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
+  if (surface === "six") {
+    throw new CodegenieError("config_error", 'review.toolSurface = "six" requires a build with all six repository tools. Select "current" for this build.');
+  }
+}
 
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
@@ -46,6 +53,7 @@ export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" 
 }
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
+  assertRepositoryToolSurfaceAvailable(options.toolSurface);
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",

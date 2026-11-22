@@ -1,5 +1,6 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
+export type ReviewToolSurface = "current" | "six";
 
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -36,6 +37,7 @@ export type CodegenieConfig = {
     restrictTo?: string[];
   };
   review: {
+    toolSurface?: ReviewToolSurface;
     verify: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
@@ -1171,6 +1173,7 @@ export type EvalCase = {
     target?: string;
   };
   review?: {
+    toolSurface?: ReviewToolSurface;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;

@@ -863,6 +863,7 @@ async function runVerifierStructured(
 ): Promise<SubmitVerificationVerdict> {
   let repairAttempt: VerifierRepairAttempt | undefined;
   let deterministicRecovered = false;
+  const toolSurface = config.review.toolSurface ?? "current";
   try {
     const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
@@ -872,10 +873,10 @@ async function runVerifierStructured(
         required: [...SubmitVerificationVerdictSchema.required, "proofAssessment"] },
       ...(opts.signal ? { signal: opts.signal } : {}),
       templateVersion: prompt.templateVersion,
-      tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
+      tools: buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: candidate.category === "testing" }),
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
-      telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
+      telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId, toolSurface },
       normalizeSubmit: value => normalizeVerifierSubmission(candidate, value),
       validateSubmit: (value) => {
         try {
