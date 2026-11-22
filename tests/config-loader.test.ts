@@ -27,6 +27,9 @@ describe("config loader", () => {
     const overridden = loadConfig({ repoRoot, homeOverride, env: { CODEGENIE_MODEL: "new" }, cli: { reasoning: "high" } });
     expect(overridden.config.llm.stages).toBeUndefined();
     expect(overridden.warnings.filter(warning => warning.source === "cli" && warning.key === "llm.stages")).toHaveLength(1);
+    const auto = loadConfig({ repoRoot, homeOverride, env: { CODEGENIE_MODEL: "new" }, cli: { reasoning: "auto" } });
+    expect(auto.warnings.filter(warning => warning.key === "llm.stages" && warning.source === "environment")).toHaveLength(1);
+    expect(auto.config.llm.stages?.review).toEqual({ reasoning: "low" });
     expect(rawConfigSchema.safeParse({ llm: { stages: { review: { model: "provider/model:high" } } } }).success).toBe(false);
     expect(rawConfigSchema.safeParse({ llm: { stages: { wrong: { model: "provider/model" } } } }).success).toBe(false);
   });

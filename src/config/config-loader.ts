@@ -128,10 +128,14 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
   applyEnvironment(config, env, sources);
   applyCliOverrides(config, opts.cli ?? {}, sources, warnings);
+  const cliModelOverride = opts.cli?.provider !== undefined || opts.cli?.model !== undefined;
+  const cliReasoningOverride = opts.cli?.reasoning !== undefined && opts.cli.reasoning !== "auto";
+  const cliOverridesStage = Object.values(config.llm.stages ?? {}).some(selection =>
+    cliModelOverride && selection.model !== undefined || cliReasoningOverride && selection.reasoning !== undefined);
   clearStageOverridesForRun(config, {
-    model: Boolean(env.CODEGENIE_PROVIDER || env.CODEGENIE_MODEL || opts.cli?.provider !== undefined || opts.cli?.model !== undefined),
-    reasoning: Boolean(env.CODEGENIE_REASONING || (opts.cli?.reasoning !== undefined && opts.cli.reasoning !== "auto"))
-  }, warnings, opts.cli?.provider !== undefined || opts.cli?.model !== undefined || opts.cli?.reasoning !== undefined ? "cli" : "environment");
+    model: Boolean(env.CODEGENIE_PROVIDER || env.CODEGENIE_MODEL || cliModelOverride),
+    reasoning: Boolean(env.CODEGENIE_REASONING || cliReasoningOverride)
+  }, warnings, cliOverridesStage ? "cli" : "environment");
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {

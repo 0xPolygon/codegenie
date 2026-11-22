@@ -28,6 +28,16 @@ describe("review progress", () => {
     expect(stream.cursorCount).toBeGreaterThan(0);
   });
 
+  it("clears the TTY spinner before writing a stage-model line and redraws afterwards", () => {
+    const stream = fakeStream(true);
+    const progress = createReviewProgress({ enabled: true, env: {}, stream });
+    try {
+      stream.actions.length = 0;
+      progress!.writeLine("Stage models: plan one/model high");
+      expect(stream.actions).toEqual(["clear", "cursor", "write:Stage models: plan one/model high\n", "clear", "cursor", expect.stringContaining("Reviewing")]);
+    } finally { progress?.stop(); }
+  });
+
   it("does not throw when the progress stream rejects writes", () => {
     const stream = fakeStream(true);
     stream.write = () => {
@@ -57,6 +67,7 @@ type FakeProgressStream = NodeJS.WriteStream & {
   writes: string[];
   clearCount: number;
   cursorCount: number;
+  actions: string[];
 };
 
 function fakeStream(isTTY: boolean): FakeProgressStream {
@@ -65,16 +76,20 @@ function fakeStream(isTTY: boolean): FakeProgressStream {
     writes: [] as string[],
     clearCount: 0,
     cursorCount: 0,
+    actions: [] as string[],
     write(chunk: string) {
       this.writes.push(chunk);
+      this.actions.push(`write:${chunk}`);
       return true;
     },
     clearLine() {
       this.clearCount += 1;
+      this.actions.push("clear");
       return true;
     },
     cursorTo() {
       this.cursorCount += 1;
+      this.actions.push("cursor");
       return true;
     }
   };

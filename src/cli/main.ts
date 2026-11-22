@@ -43,7 +43,9 @@ async function main(): Promise<void> {
       onTelemetryEvent: (event) => {
         if (event.message === "stage_models" && event.data?.models && typeof event.data.models === "object") {
           const models = event.data.models as Record<string, { provider: string; id: string; reasoning: string }>;
-          process.stderr.write(stripCredentials(`Stage models (base reasoning): ${Object.entries(models).map(([stage, model]) => `${stage} ${model.provider}/${model.id} ${model.reasoning}`).join(", ")}\n`));
+          const line = stripCredentials(`Stage models (base reasoning): ${Object.entries(models).map(([stage, model]) => `${stage} ${model.provider}/${model.id} ${model.reasoning}`).join(", ")}\n`);
+          if (progress) progress.writeLine(line);
+          else process.stderr.write(line);
         }
         progress?.onTelemetryEvent(event);
       },
