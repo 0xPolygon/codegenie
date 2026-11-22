@@ -1,5 +1,6 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
+import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
 import type {
@@ -7,7 +8,6 @@ import type {
   CoverageLevel,
   DiffFile,
   DiffHunk,
-  DiffLine,
   FileFacts,
   HunkCoverageDecision,
   HunkSymbolFacts,
@@ -1508,24 +1508,8 @@ function renderWindow(lines: PacketLine[], start: number, end: number, totalLine
   return parts.filter(Boolean).join("\n");
 }
 
-function packetLine(line: DiffLine): PacketLine {
-  return {
-    kind: line.kind,
-    content: line.content,
-    ...(line.oldLineNumber !== undefined ? { oldLine: line.oldLineNumber } : {}),
-    ...(line.newLineNumber !== undefined ? { newLine: line.newLineNumber } : {})
-  };
-}
-
 function renderLines(lines: PacketLine[]): string {
-  return lines
-    .map((line) => {
-      const oldLine = line.oldLine === undefined ? " " : String(line.oldLine);
-      const newLine = line.newLine === undefined ? " " : String(line.newLine);
-      const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " ";
-      return `${oldLine.padStart(4)} ${newLine.padStart(4)} ${prefix}${line.content}`;
-    })
-    .join("\n");
+  return lines.map(renderNumberedDiffLine).join("\n");
 }
 
 function combinedPatchChars(planned: PlannedHunk[]): number {

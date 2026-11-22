@@ -41,6 +41,7 @@ import { escapeRegExp } from "../util/regex.js";
 import { isProsePath } from "../util/path-roles.js";
 import { containGlob, containPath } from "./path-guard.js";
 import { DiffBlockRenderer } from "./diff-blocks.js";
+import { ReadChangeService, type ReadChangeInput } from "./read-change.js";
 import { LanguageAdapterRegistry, treeFromParsed, walkNamed, lineRange } from "./language-adapter.js";
 import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
@@ -145,6 +146,7 @@ export async function buildRepositoryIndex(
 
 export class RepositoryToolsFacade implements RepositoryToolsHost {
   private readonly diffBlocks: DiffBlockRenderer;
+  private readonly changes: ReadChangeService;
   private readonly search: SearchService;
   private readonly limit = pLimit(8);
   private readonly toolCallContext = new AsyncLocalStorage<RepositoryToolCallContext>();
@@ -158,6 +160,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     }
   ) {
     this.diffBlocks = new DiffBlockRenderer(opts.diff, opts.resolver);
+    this.changes = new ReadChangeService(opts.diff, opts.resolver, opts.registry);
     this.search = new SearchService(opts.resolver, opts.registry, this.limit);
   }
 
@@ -451,6 +454,15 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         };
       }
     );
+  }
+
+  readChange(input: ReadChangeInput, currentHunks?: readonly string[]) {
+    const path = input.path === undefined ? undefined : containPath(this.opts.resolver.repoRoot, input.path, this.guardTelemetry("read_change"));
+    return this.changes.read(path === undefined ? input : { ...input, path }, currentHunks);
+  }
+
+  readChangePromptDirectory(currentHunks: readonly string[], canContinue: boolean): string {
+    return this.changes.promptDirectory(currentHunks, canContinue);
   }
 
   async findDefinition(

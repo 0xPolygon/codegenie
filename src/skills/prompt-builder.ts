@@ -54,7 +54,7 @@ export type ProjectSkillsOptions = {
 export type PromptBuilder = {
   renderDossier(dossier: PlannerDossier): string;
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt;
-  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt;
+  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[]; changeDirectory?: string }): BuiltPrompt;
   buildVerifierPrompt(input: {
     candidate: CandidateFinding;
     originContext: string;
@@ -273,7 +273,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Finish by calling submit_plan exactly once with object arguments matching the schema, for example {\"diffUnderstanding\": {...}, \"coverage\": [...]}. Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text."
       ], projection, 1);
     },
-    buildPacketReviewPrompt: ({ packet, skills }) => {
+    buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
       const blocks = [
         fenceUntrusted(packet.prSummary, "pr-summary"),
@@ -309,10 +309,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
             : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
         depthCloseGuidance(packet),
         "Skill guidance:\n" + projection.text,
+        ...(changeDirectory ? [fenceUntrusted(changeDirectory, "change-directory")] : []),
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
-      ], projection, blocks.length);
+      ], projection, blocks.length + Number(Boolean(changeDirectory)));
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
