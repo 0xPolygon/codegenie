@@ -950,16 +950,30 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
               }
-              const deliveryBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
-              const resultText = !consumedCall || budgetRejected || deliveryBudgetRejected
-                ? outcome.result.text
-                : fitToolResultText(outcome.result.text, remainingResultChars);
-              if (resultText.length < outcome.result.text.length) {
-                outcome.result = {
-                  ...outcome.result,
-                  text: resultText,
-                  meta: markTruncated(outcome.result.meta)
-                };
+              let deliveryBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
+              let resultText = outcome.result.text;
+              if (consumedCall && !budgetRejected && !deliveryBudgetRejected) {
+                const fitted = fitToolResultText(resultText, remainingResultChars);
+                if (fitted === undefined) {
+                  const originalLength = resultText.length;
+                  const initialLimit = toolResultCharLimit(sourceRead, budget, budget.maxResultChars);
+                  resultPoolExhausted ||= remainingResultChars === budgetState.remainingResultChars
+                    && initialLimit > remainingResultChars && originalLength <= initialLimit;
+                  const reason = resultPoolExhausted ? spentResultBudgetNotice(budgetState.remainingResultChars)
+                    : `This tool result does not fit its ${remainingResultChars}-character delivery limit. Hard result characters remaining: ${budgetState.remainingResultChars}.`;
+                  resultText = `${reason} No result was delivered; this is not a zero-match result.`;
+                  // A backend continuation can point beyond source that this
+                  // caller never received; do not expose it as a recovery.
+                  const { recovery: _recovery, deliveredLineRange: _range, truncated: _truncated,
+                    omittedCount: _omittedCount, omittedCountIsLowerBound: _omittedCountIsLowerBound, ...meta } = outcome.result.meta ?? defaultToolMeta();
+                  outcome.result = { text: resultText, isError: true, errorCode: "budget_exhausted",
+                    meta: { ...meta, deliveryStatus: "budget_rejected",
+                      degradationReason: (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" } };
+                  outcome.status = "rejected";
+                  outcome.errorCode = "budget_exhausted";
+                  outcome.rejectionReason = "tool_result_budget_exhausted";
+                  deliveryBudgetRejected = true;
+                } else resultText = fitted;
               }
               if (consumedCall && !budgetRejected && !deliveryBudgetRejected) {
                 resultCharsUsed += resultText.length;
@@ -2525,18 +2539,11 @@ function isSourceReadTool(toolName: string, args?: Record<string, unknown>): boo
   return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition" || toolName === "read_diff_blocks";
 }
 
-function fitToolResultText(text: string, remainingChars: number): string {
+function fitToolResultText(text: string, remainingChars: number): string | undefined {
   if (text.length <= remainingChars) {
     return text;
   }
-  if (remainingChars <= 0) {
-    return "";
-  }
-  const marker = "\n[tool result truncated by codegenie tool budget]";
-  if (remainingChars <= marker.length) {
-    return marker.slice(0, remainingChars);
-  }
-  return `${text.slice(0, remainingChars - marker.length).trimEnd()}${marker}`;
+  return undefined;
 }
 
 function recordToolCall(
@@ -4347,16 +4354,6 @@ function sourceForRecord(source: unknown): string | undefined {
     return (source as { kind: string }).kind;
   }
   return undefined;
-}
-
-function markTruncated(meta: ToolResultMeta | undefined): ToolResultMeta {
-  return {
-    ...(meta ?? defaultToolMeta()),
-    degraded: true,
-    truncated: true,
-    deliveryStatus: "truncated",
-    degradationReason: meta?.degradationReason ?? "tool_result_budget"
-  };
 }
 
 function defaultToolMeta(): ToolResultMeta {
