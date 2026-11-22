@@ -3,8 +3,8 @@ name: public-pi-08
 repo:
   external: ~/.cache/codegenie/public-evals/pi/pi-08
 command:
-  base: bb437b097bf31f32608580d2f3d09d994533751c
-  head: 3595e080cb013232c4141cab9976eebcdddcc417
+  base: 2b00dade7cec918aefb025c8b7a4fa304a30acdd
+  head: 8a2ce5a54024be2eb2b879288212141741afa65e
 review:
   verify: true
   debug: true
@@ -12,6 +12,6 @@ review:
 should_find:
 - id: paste-marker-undefined-suffix
   path: packages/tui/src/components/editor.ts
-  lineRange: [1303, 1311]
+  lineRange: [1287, 1298]
   severityAtLeast: low
   failureModePattern: "undefined|optional|suffix"
