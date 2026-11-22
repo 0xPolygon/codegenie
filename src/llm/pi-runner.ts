@@ -956,7 +956,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 const fitted = fitToolResultText(resultText, remainingResultChars);
                 if (fitted === undefined) {
                   const originalLength = resultText.length;
-                  const initialLimit = toolResultCharLimit(toolCall.name, budget, budget.maxResultChars);
+                  const initialLimit = toolResultCharLimit(sourceRead, budget, budget.maxResultChars);
                   resultPoolExhausted ||= remainingResultChars === budgetState.remainingResultChars
                     && initialLimit > remainingResultChars && originalLength <= initialLimit;
                   const reason = resultPoolExhausted ? spentResultBudgetNotice(budgetState.remainingResultChars)
