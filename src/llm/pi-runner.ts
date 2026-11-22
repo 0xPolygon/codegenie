@@ -1415,6 +1415,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     tools
   });
   const promptText = stableJson(canonicalRequest);
+  // Draw identity is local cache metadata, not part of the provider request.
+  const { cacheDraw: _cacheDraw, ...estimateRequest } = canonicalRequest;
+  const estimateText = request.cacheDraw === undefined ? promptText : stableJson(estimateRequest);
   const cacheKey = buildModelCallCacheKey(canonicalRequest);
   const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length, providerPromptCache);
 
@@ -1494,7 +1497,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       if (checkpoint === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
-      estimatedTokens = estimateProviderCallTokens(promptText);
+      estimatedTokens = estimateProviderCallTokens(estimateText);
       if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
