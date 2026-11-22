@@ -3,6 +3,7 @@ import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
 import { withMeta } from "../src/llm/repository-tool-guidance.js";
+import { assertRepositoryToolArguments, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
 import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
@@ -62,6 +63,18 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     const backendCut = await fixture.call("find_symbol_mentions", { symbolName: "detectLanguage", pathGlob: "src/detect.ts", maxResults: 2 });
     expect(backendCut.meta?.truncated).toBe(true);
     expect(backendCut.text).toContain("next: src/detect.ts@head:3");
+  });
+
+  it("explains the source object required by every source-bearing repository tool", () => {
+    const tools = [...fixture.definitions, buildSixReadRangeTool(fixture.tools), buildSixSearchTool(fixture.tools)]
+      .filter(tool => Boolean((tool.parameters as { properties?: Record<string, unknown> }).properties?.source));
+    expect(tools.length).toBeGreaterThanOrEqual(7);
+    for (const tool of tools) {
+      expect(() => assertRepositoryToolArguments(tool, { source: "head" })).toThrow('source must be an object: {"kind":"head"} or {"kind":"base"}');
+      try { assertRepositoryToolArguments(tool, { source: "head" }); } catch (error) {
+        expect(String(error)).not.toContain(`Invalid arguments for ${tool.name}: Invalid arguments for`);
+      }
+    }
   });
 
   it("delivers numbered symbol lines, preserves raw evidence and resumes at the first unread line", async () => {

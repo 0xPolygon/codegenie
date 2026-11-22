@@ -5607,6 +5607,22 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     else expect(captured[0]!.repositoryEvidence).toBeUndefined();
   });
 
+  it.each(["CreateGitClientOptions", "runGit", "CreateSystemDefaultDevice"])("gives one corrective source-object error for %s without executing the rejected tool", async symbolName => {
+    const execute = vi.fn(async () => ({ text: "unexpected source" }));
+    const tool: ToolDefinition = { name: "find_definition", description: "find", parameters: Type.Object({
+      symbolName: Type.String(), source: Type.Optional(Type.Object({ kind: Type.Union([Type.Literal("head"), Type.Literal("base"), Type.Literal("auto")]) })) }), execute };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "wrong-source", name: tool.name,
+      arguments: { symbolName, source: "head" } }]), assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("wrong-source"), tools: [tool],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 2_000 } });
+    expect(execute).not.toHaveBeenCalled();
+    expect(adapter.contexts[1]).toContain('source must be an object: {\\"kind\\":\\"head\\"}');
+    expect(adapter.contexts[1]).not.toContain("Invalid arguments for find_definition: Invalid arguments for");
+  });
+
   it.each([7_900, 8_001])("uses raw symbol bytes for evidence and its 8k limit (%i)", async size => {
     const rawSource = "x".repeat(size);
     const tool: ToolDefinition = { name: "read_symbol", description: "read", parameters: Type.Object({ path: Type.String() }),
