@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
+import { maybePublishToGitHub } from "../src/github/publisher.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
@@ -24,7 +25,7 @@ import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/r
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
 import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
-import { renderPostingSummaryForStdout } from "../src/output/stdout-renderer.js";
+import { renderPostingSummaryForStdout, renderReviewForStdout } from "../src/output/stdout-renderer.js";
 import {
   createPromptBuilder,
   plannerDossierPromptProjection,
@@ -45,14 +46,17 @@ import type {
   CoverageLevel,
   DiffFile,
   FileFacts,
+  GitHubClient,
   HunkSymbolFacts,
   PacketReviewResult,
   PlannerDossier,
   RepositoryIndex,
   RepositoryTools,
   RepositoryToolsHost,
+  ResolvedReviewInput,
   ReviewPacket,
   ReviewPlan,
+  ReviewResult,
   RunCoverageStatus,
   StaticSignal,
   SymbolMentionOptions,
@@ -13383,66 +13387,130 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summaryOnlyFindings).toEqual([]);
   });
 
-  it("publishes verified low-confidence changed-line behavior deltas with concrete evidence", async () => {
-    const finding: CandidateFinding = {
-      ...fakeFinding(),
-      confidence: "low",
-      category: "correctness",
-      evidence: {
-        changedCode: "+ return calculateAmountFromUSD(price, decimals)",
-        relatedCode: [{
-          path: "src/caller.ts",
-          lines: "42: calculateAmountFromUSD(price, decimals)",
-          whyRelevant: "The caller still reaches the changed conversion path."
-        }]
-      },
-      failureMode: "The changed conversion path rejects a concrete token-decimal case that the previous implementation accepted.",
-      whyThisMatters: "A reachable caller can now fail a request that previously succeeded.",
-      suggestedTest: "Add a regression test for the changed conversion path with the affected decimal case.",
-      verification: "Verifier confirmed the changed line and related caller path; reachability should remain explicit in the final review."
+  it.each([
+    { name: "default inline floor" },
+    { name: "deterministic fallback", fallback: true },
+    { name: "explicit low inline floor", allowLowInline: true },
+    { name: "withheld representative anchor", anchorless: true },
+    { name: "unqualified exception", unqualified: true },
+    { name: "binding soft cap", cap: true },
+    { name: "binding soft cap with a prior inline comment", cap: true, duplicate: true }
+  ])("enforces the inline floor through GitHub posting ($name)", async ({ fallback, allowLowInline, anchorless, unqualified, cap, duplicate }) => {
+    const { suggestedTest: _suggestedTest, ...exception } = lowConfidenceDeltaFinding("exception", {
+      title: "Supported conversion can reject",
+      severity: "high",
+      ...(anchorless ? { anchorSource: "backfill_packet_representative" as const } : {})
+    });
+    const eligible = {
+      ...fakeFinding(), id: "eligible", title: "Index can exceed the bound", path: "index.ts",
+      anchor: { path: "index.ts", line: 1, side: "RIGHT" as const, hunkId: "h2" },
+      failureMode: "The lookup can use an index beyond the final element."
+    };
+    const findings = cap ? [exception, eligible] : [exception];
+    const diff = fakeChangedLineDiff(findings.map(finding => ({
+      path: finding.path, hunkId: finding.anchor!.hunkId, line: finding.anchor!.line, content: finding.evidence.changedCode
+    })));
+    const baseConfig = config();
+    const cfg = {
+      ...baseConfig,
+      review: {
+        ...baseConfig.review,
+        minInlineConfidence: allowLowInline ? "low" as const : baseConfig.review.minInlineConfidence,
+        softCommentCap: cap ? 1 : baseConfig.review.softCommentCap
+      }
+    };
+    const resolved: ResolvedReviewInput = {
+      mode: "github_pr", repoRoot: "/tmp/repo", commits: [], rawDiff: "",
+      pr: {
+        owner: "example", repo: "demo", number: 1, title: "Review", body: "",
+        url: "https://github.com/example/demo/pull/1", baseRefName: "main", baseSha: "a".repeat(40),
+        headRefName: "feature", headSha: "b".repeat(40)
+      }
     };
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-
+    const artifacts = new Map<string, unknown>();
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => { events.push(event); },
+      writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); }
+    };
     const result = await dedupeRankAndComposeReview(
       {
-        verified: [finding],
+        verified: findings,
         verdicts: [{
-          candidateId: finding.id,
+          ...qualifiedLowConfidenceVerdict(exception.id),
           verdict: "revise",
-          reason: "Concrete behavior delta confirmed, reachability remains narrow.",
-          requiredEvidencePresent: true,
-          falsePositiveRisk: "medium"
+          requiredEvidencePresent: !unqualified
         }]
       },
-      fakePlan(),
-      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
-      fakeCoverage(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
+      fakePlan(), resolved, fakeCoverage(), cfg, telemetry,
       {
         runner: {
-          runStructured: async () => {
-            throw composerTransientError();
+          runStructured: async <T>() => {
+            if (fallback) throw composerTransientError();
+            return {
+              summary: "Review finished.",
+              composedFindings: findings.map(finding => ({
+                findingIds: [finding.id], publication: "inline",
+                ...attributedSources([finding], finding.failureMode)
+              }))
+            } as T;
           }
         },
-        promptBuilder: fakePromptBuilder(),
-        diff: fakeDiff()
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), diff, postGithubComments: true
       }
     );
 
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]).toMatchObject({ id: finding.id, confidence: "low", publication: "inline" });
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 10,
-      message: "low_confidence_verified_delta_published",
-      file: finding.path,
-      data: expect.objectContaining({ findingId: finding.id, anchorless: false, publication: "inline" })
-    }));
+    const report = renderMarkdownReview(result);
+    const json = JSON.parse(renderReviewForStdout(result, "json")) as ReviewResult;
+    const outgoing: Array<Parameters<GitHubClient["createReview"]>[1]> = [];
+    const github: GitHubClient = {
+      viewPr: async () => resolved.pr!,
+      listOwnComments: async () => duplicate ? [{
+        id: "previous", author: "bot", isCodegenie: true, path: eligible.path, side: "RIGHT", line: 1
+      }] : [],
+      createReview: async (_number, payload) => { outgoing.push(payload); }
+    };
+    const posting = await maybePublishToGitHub(result, resolved, cfg, telemetry, { github, diff });
+
+    const inlineIds = allowLowInline ? [exception.id] : cap ? [eligible.id] : [];
+    const summaryIds = allowLowInline || unqualified ? [] : [exception.id];
+    const postedPaths = allowLowInline ? [exception.path] : cap && !duplicate ? [eligible.path] : [];
+    expect(result.composition?.mode).toBe(fallback ? "deterministic_fallback" : "llm");
+    expect(json.findings.map(finding => finding.id)).toEqual(inlineIds);
+    expect(json.summaryOnlyFindings.map(finding => finding.id)).toEqual(summaryIds);
+    expect(json.postingPlan?.inline.map(item => item.findingId) ?? []).toEqual(inlineIds);
+    expect(outgoing.flatMap(payload => payload.comments.map(comment => comment.path))).toEqual(postedPaths);
+    expect(posting?.demotedToBody ?? 0).toBe(0);
+    expect(posting?.skippedDuplicates ?? 0).toBe(duplicate ? 1 : 0);
+    if (duplicate) {
+      expect(posting?.duplicateDecisions).toEqual([expect.objectContaining({
+        findingId: eligible.id, action: "skip_fuzzy_proximity", matchedCommentId: "previous"
+      })]);
+    }
+    expect(outgoing.some(payload => payload.body.includes(exception.title))).toBe(summaryIds.length > 0);
+    expect(outgoing.some(payload => payload.body.includes(eligible.title))).toBe(false);
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find(finding => finding.id === exception.id);
+    expect(published?.anchor).toEqual(anchorless || unqualified ? undefined : exception.anchor);
+    expect(report.includes(exception.title)).toBe(!unqualified);
+    if (summaryIds.length > 0) expect(report.split("## Summary-Only Findings")[1]).toContain(exception.title);
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: expect.arrayContaining([expect.objectContaining({
+        findingId: exception.id,
+        decision: unqualified ? "suppressed" : "published",
+        reason: unqualified ? "confidence-threshold" : anchorless ? "low-confidence-anchorless" :
+          allowLowInline ? "composer-selected" : "min-inline-confidence"
+      })])
+    });
+    const event = events.find(event => event.message === "low_confidence_verified_delta_published");
+    if (unqualified) {
+      expect(event).toBeUndefined();
+    } else {
+      expect(event?.data).toMatchObject({
+        findingId: exception.id, anchorless: anchorless === true, publication: allowLowInline ? "inline" : "summary-only"
+      });
+    }
   });
 
   it("publishes a qualified promotion after withholding its gate-only anchor as summary-only", async () => {
@@ -13574,7 +13642,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       );
 
       expect(result.noFindings, testCase.name).toBe(!testCase.published);
-      expect(result.findings, testCase.name).toHaveLength(testCase.published ? 1 : 0);
+      expect(result.findings, testCase.name).toEqual([]);
+      expect(result.summaryOnlyFindings, testCase.name).toHaveLength(testCase.published ? 1 : 0);
     }
   });
 
@@ -13610,7 +13679,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       );
 
       expect(result.noFindings, name).toBe(!published);
-      expect(result.findings, name).toEqual(published
+      expect(result.findings, name).toEqual([]);
+      expect(result.summaryOnlyFindings, name).toEqual(published
         ? [expect.objectContaining({ id: representative.id, mergedCandidateIds: expect.arrayContaining([representative.id, sibling.id]) })]
         : []);
     }
@@ -13653,7 +13723,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       }
     );
 
-    expect(result.findings).toEqual([expect.objectContaining({ id: first.id, publication: "inline" })]);
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([expect.objectContaining({ id: first.id, publication: "summary-only" })]);
     expect(artifacts.get("final-selection.json")).toMatchObject({
       records: expect.arrayContaining([
         expect.objectContaining({ findingId: second.id, decision: "suppressed", reason: "report-cap" })

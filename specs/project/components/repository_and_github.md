@@ -617,7 +617,7 @@ Skipped findings are not demoted to the body (skip means "already said"); each d
 `maybePublishToGitHub` executes Stage 11 when `finalReview.postingPlan` is present:
 
 1. Re-assert preconditions: mode `github_pr`, `gh` preflight, `viewPr` metadata cached (so `createReview` has the head SHA for `commit_id`).
-2. Select inline candidates: findings referenced by `postingPlan.inline` with `publication: "inline"`. Defense-in-depth re-checks (each demotion recorded in telemetry): confidence must be ≥ `review.minInlineConfidence` (low-confidence findings are never posted), and the anchor must pass `validateDiffAnchor` against the parsed diff. Failures demote the finding's content into the review body rather than dropping it silently — deleted-file findings about removed behavior are the canonical case.
+2. Select inline candidates: findings referenced by `postingPlan.inline` with `publication: "inline"`. The composer applies `review.minInlineConfidence` before the soft comment cap and puts below-floor findings in the review body. The publisher revalidates each planned anchor with `validateDiffAnchor` against the parsed diff. Invalid anchors demote the finding into the review body and log the reason.
 3. Run duplicate detection; drop skips.
 4. If no inline comments and no body findings remain: post nothing unless `github.summaryWhenNoFindings` is true (then post a body-only review); record `skipped_no_findings` / `skipped_all_duplicates`.
 5. Build the review body: `postingPlan.reviewBody` (summary, total finding count, broad/system findings) + partial-coverage disclosure from `finalReview.coverage` when applicable + demoted findings rendered with their file/line references.
@@ -815,7 +815,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `publish.sanitize-mentions` — `@user` becomes `` `@user` `` in posted bodies.
 - `publish.sanitize-secrets` — fixture bodies with a GitHub token, AWS key, private key block, and JWT post fully redacted.
 - `publish.body-caps` — oversized inline body truncates at 10000 chars with the truncation note before the marker; review body caps at 60000.
-- `publish.confidence-floor` — low-confidence finding never posts inline regardless of posting plan (defense-in-depth demotion recorded).
+- `publish.confidence-floor` — the composer keeps verified below-floor findings in the review body and reserves inline slots for eligible findings. An explicit low inline floor allows otherwise eligible low-confidence findings inline.
 - `publish.invalid-anchor-demoted` — anchor failing re-validation moves the finding text into the review body, not dropped.
 - `publish.duplicates-skipped-not-demoted` — duplicate findings appear in neither comments nor body.
 - `publish.no-findings-respects-config` — nothing posts when empty unless `summaryWhenNoFindings: true`.

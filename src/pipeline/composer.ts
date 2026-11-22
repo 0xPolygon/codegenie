@@ -1718,40 +1718,39 @@ function applyCaps(
       suppressedReasons.set(finding.id, "severity-threshold");
       return { ...finding, publication: "suppressed" as const };
     }
-    if (belowConfidence(finding.confidence, config.review.minConfidence)) {
-      const outcome = lowConfidenceBehaviorDeltaOutcome(finding, opts.lowConfidencePublishableIds);
-      if (outcome !== "suppress") {
-        const published = outcome === "publish_summary_only"
-          ? { ...finding, publication: "summary-only" as const }
-          : finding;
-        if (outcome === "publish_summary_only") {
-          downgradeReasons.set(finding.id, "low-confidence-anchorless");
-        }
-        opts.telemetry.event({
-          stage: 10,
-          level: "info",
-          message: "low_confidence_verified_delta_published",
-          file: finding.path,
-          data: {
-            findingId: finding.id,
-            mergedCandidateIds: finding.mergedCandidateIds,
-            category: finding.category,
-            confidence: finding.confidence,
-            severity: finding.severity,
-            anchorless: outcome === "publish_summary_only",
-            publication: published.publication
-          }
-        });
-        return published;
-      }
+    const exception = belowConfidence(finding.confidence, config.review.minConfidence)
+      ? lowConfidenceBehaviorDeltaOutcome(finding, opts.lowConfidencePublishableIds)
+      : undefined;
+    if (exception === "suppress") {
       suppressedReasons.set(finding.id, "confidence-threshold");
       return { ...finding, publication: "suppressed" as const };
     }
-    if (belowConfidence(finding.confidence, config.review.minInlineConfidence) && finding.publication === "inline") {
+    let publication = finding.publication;
+    if (exception === "publish_summary_only") {
+      publication = "summary-only";
+      downgradeReasons.set(finding.id, "low-confidence-anchorless");
+    } else if (publication === "inline" && belowConfidence(finding.confidence, config.review.minInlineConfidence)) {
+      publication = "summary-only";
       downgradeReasons.set(finding.id, "min-inline-confidence");
-      return { ...finding, publication: "summary-only" as const };
     }
-    return finding;
+    if (exception !== undefined) {
+      opts.telemetry.event({
+        stage: 10,
+        level: "info",
+        message: "low_confidence_verified_delta_published",
+        file: finding.path,
+        data: {
+          findingId: finding.id,
+          mergedCandidateIds: finding.mergedCandidateIds,
+          category: finding.category,
+          confidence: finding.confidence,
+          severity: finding.severity,
+          anchorless: exception === "publish_summary_only",
+          publication
+        }
+      });
+    }
+    return publication === finding.publication ? finding : { ...finding, publication };
   });
 
   let inlineCount = 0;
