@@ -8165,6 +8165,9 @@ describe("phase 5 pipeline regressions", () => {
       intentSignals: dossier.intentSignals,
       skills: []
     });
+    expect(verifierPrompt.templateVersion).toBe("p9.33");
+    expect(verifierPrompt.prompt).toContain("the only claimed authority for the change is its added docs, tests or comments");
+    expect(verifierPrompt.prompt).toContain('keep or revise the evidenced contract change with behaviorChange:"intentional_needs_confirmation"');
     expect(extractPromptJson(verifierPrompt.prompt, "intent-signals")).toMatchObject({ behaviorChangeLike: true });
     expect(verifierPrompt.prompt).toContain("Do not use accidental-regression framing");
   });

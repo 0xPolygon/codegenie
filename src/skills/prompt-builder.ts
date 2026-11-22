@@ -75,7 +75,7 @@ export type PromptBuilder = {
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
   5: "p5.9",
   7: "p7.17",
-  9: "p9.31",
+  9: "p9.33",
   10: "p10.25"
 };
 
@@ -134,6 +134,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
   ],
   9: [
+    { surface: "same-change intent as claim", reason: "A change's own docs, tests or comments cannot settle an evidenced loss of a previous guarantee on their own.", evidence: "Plan 132 arm C, public discovery and verification losses (#216)" },
     { surface: "collected source evidence and bounded test claims", reason: "Reuse relevant complete tool deliveries across packets and distinguish a proven local assertion gap from global absence.", evidence: "OMSX 205254: validator body collected elsewhere but verifier only inspected search hits; 214916 overstates absence of transport validation." },
     { surface: "proofAssessment", reason: "Separates evidence establishing a defect from essential unresolved assumptions; secondary severity uncertainty does not invalidate proof.", evidence: "Run 87 published a conditional contract-denomination claim despite unresolved contract semantics." },
     SHARED_SUBMIT_KEY_CHECK,
@@ -361,6 +362,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
         "For category:\"testing\" candidates, production code does not need to change. A test rewrite, deletion, or helper consolidation can be a real finding when concrete evidence shows the old/base tests covered a named behavior boundary, the new/head tests no longer cover that boundary or only cover a narrower helper, and the boundary remains live or contract-relevant. Prefer revise over reject when the candidate is directionally right but too broad; reject generic add-more-tests comments without a specific missing behavior boundary.",
         "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If intent signals are refactor-like or behavior-preserving without explicit behavior-change intent, compare base versus head behavior and keep or revise material semantic regressions that can break callers. If intent signals are mixed, frame the issue as intentional_needs_confirmation unless evidence proves accidental regression. Reject accidental-regression framing when PR text/spec clearly requires the behavior change and caller impact is covered.",
+        "When source establishes an observable loss of a base guarantee and the only claimed authority for the change is its added docs, tests or comments, treat them as the author's claim and keep or revise the evidenced contract change with behaviorChange:\"intentional_needs_confirmation\".",
         "Examples of refactor-like or behavior-preserving intent include refactor, cleanup, consolidation, behavior-preserving, no behavior change, and equivalent behavior.",
         "When revising or keeping a behavior-change finding, preserve or set behaviorChange and intentEvidence. Do not use accidental-regression framing without behavior-preserving/refactor evidence and a concrete caller-visible regression.",
         `Keep the verdict reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
