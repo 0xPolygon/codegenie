@@ -115,7 +115,7 @@ export class SearchService {
       ...(startAt ? { startAt } : {})
     })).catch(error => {
       if (error instanceof CodegenieError && error.code === "invalid_args" && mode === "regex") {
-        throw new CodegenieError("invalid_args", error.message + " Escape a literal parenthesis as \\(, for example track\\(, or use mode=literal.", { cause: error });
+        throw new CodegenieError("invalid_args", error.message + " Use mode=literal to search for source text.", { cause: error });
       }
       throw error;
     });
@@ -125,6 +125,7 @@ export class SearchService {
     const skipped = raw.omittedLines ?? 0;
     const delivery: SearchDelivery = {
       source: source.kind, deliveredCount: hits.length, scanIncomplete: nextHit !== undefined,
+      ...(raw.emptyScope ? { emptyScope: true } : {}),
       discoveryOmittedCount: Number(nextHit !== undefined), backendOmittedCount: skipped, budgetOmittedCount: 0,
       shortenedExcerpts: hits.filter(hit => hit.excerpt).length, backendContextStripped: false, budgetContextStripped: false,
       ...(raw.firstOmitted ? { nextRead: raw.firstOmitted } : {})
@@ -209,6 +210,7 @@ export class SearchService {
     );
     const searchDelivery: SearchDelivery | undefined = options.mention === undefined ? {
       source: source.kind,
+      ...(raw.emptyScope ? { emptyScope: true } : {}),
       deliveredCount: capped.results.length,
       scanIncomplete,
       discoveryOmittedCount,
