@@ -246,6 +246,38 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           maxResults: input.maxResults,
           source: input.source
         })));
+        if (result.results.length && result.positioning) {
+          const revision = input.source?.kind ?? "head";
+          const records = (includeContext: boolean) => result.results.map(hit => {
+            const total = result.positioning!.fileLengths[hit.path]!;
+            const before = includeContext ? hit.contextBefore ?? [] : [];
+            const after = includeContext ? (hit.contextAfter ?? []).slice(0, Math.max(0, total - hit.line)) : [];
+            const start = hit.line - before.length;
+            const end = hit.line + after.length;
+            const excerpt = hit.excerpt ? `Matching-line excerpt starts at column ${hit.excerptStartColumn ?? 1}; use read_range for the whole line.` : undefined;
+            return [renderSourceBlockHeader(hit.path, revision, [start, end], total),
+              ...(includeContext && hit.enclosingSymbol ? [`Enclosing ${hit.enclosingSymbol.name}, lines ${hit.enclosingSymbol.lineRange.join("-")}`] : []),
+              ...before.map((line, index) => numberSourceLine(line, start + index)),
+              ...(excerpt ? [excerpt] : []),
+              `${hit.line}:${hit.column ?? 1}\t${hit.matchText}`,
+              ...after.map((line, index) => numberSourceLine(line, hit.line + index + 1))].join("\n");
+          });
+          const next = result.positioning.next;
+          const render = (includeContext: boolean) => {
+            const firstContext = result.results.find(hit => hit.contextBefore?.length || hit.contextAfter?.length || hit.enclosingSymbol);
+            const contextLine = firstContext && (firstContext.contextBefore?.length ? firstContext.line - firstContext.contextBefore.length
+              : firstContext.contextAfter?.length ? firstContext.line + 1 : firstContext.enclosingSymbol?.lineRange[0] ?? firstContext.line);
+            const open = !includeContext && firstContext
+              ? `Context omitted to fit the result budget; next: ${firstContext.path}@${revision}:${contextLine} (omitted context; inspect with read_range).\n` : "";
+            const meta = !includeContext ? { ...result.meta, truncated: true, deliveryStatus: "truncated" as const } : result.meta;
+            return createPackableToolResult({ open, records: records(includeContext), separator: "\n", close: "",
+              labels: result.results.map(hit => `${hit.path}@${revision}:${hit.line - (includeContext ? hit.contextBefore?.length ?? 0 : 0)}`),
+              ...(next ? { nextPage: `${next.path}@${revision}:${next.line}; inspect with read_range or narrow the search` } : {})
+            }, meta);
+          };
+          const hasContext = result.results.some(hit => hit.contextBefore?.length || hit.contextAfter?.length || hit.enclosingSymbol);
+          return { ...render(true), searchResults: result.results, ...(hasContext ? { budgetFallback: render(false) } : {}) };
+        }
         return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
       })
     },

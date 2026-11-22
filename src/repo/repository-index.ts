@@ -684,7 +684,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   async findSymbolMentions(
     symbolName: string,
     options: SymbolMentionOptions = {}
-  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
+  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta; positioning?: { fileLengths: Record<string, number>; next?: { path: string; line: number } } }> {
     return this.measure(
       "find_symbol_mentions",
       {
@@ -699,8 +699,15 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const normalizedOptions = this.normalizeSearchOptions(options, "find_symbol_mentions");
         const execution = await this.search.findSymbolMentions(symbolName, normalizedOptions);
         const meta = metaFromSearch(execution);
+        const source = normalizedOptions.source ?? { kind: "head" as const };
+        const fileLengths: Record<string, number> = {};
+        for (const path of new Set(execution.results.map(result => result.path))) {
+          const content = await this.limit(() => this.opts.resolver.readFile(path, source));
+          if (!content) throw new CodegenieError("git_ref_missing", "A mention result could not be positioned in the pinned source.");
+          fileLengths[path] = content.content ? content.content.split("\n").length - Number(content.content.endsWith("\n")) : 0;
+        }
         return {
-          value: { results: execution.results, meta },
+          value: { results: execution.results, meta, positioning: { fileLengths, ...(execution.mentionNext ? { next: execution.mentionNext } : {}) } },
           meta,
           args: {
             symbolName,
