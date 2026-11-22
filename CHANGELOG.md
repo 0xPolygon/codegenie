@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.2
+
+- Preserve the original question for unresolved concerns when the composer supplies an extra rewording. This avoids a repair for that case. ([#230](https://github.com/0xPolygon/codegenie/pull/230))
+- Allow a supported fix for a testing finding in a recognized test file to appear in the Suggested test section. Source and support checks still apply. ([#232](https://github.com/0xPolygon/codegenie/pull/232))
+- **Stage 7:** Pending the Plan 132 readout and release decision.
+
 ## 0.9.1
 
 - **Breaking:** Remove `--depth` from CLI commands, `review.depth` from user and repository TOML and eval cases, and `depth` from GitHub Action inputs. Legacy provider `settings.json` files still load. Codegenie silently ignores `defaultDepth` and drops it on the next save. The `run.json` depth field still records `null`.
