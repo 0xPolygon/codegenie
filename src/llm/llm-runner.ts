@@ -26,6 +26,8 @@ export type LlmCallUsage = {
 };
 
 export type ToolExecutionResult = {
+  /** Canonical whole records for packing against each caller's result budget. */
+  packable?: { open: string; records: string[]; separator: string; close: string };
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
   definitions?: Array<{ symbol: import("../types.js").SymbolInfo; text?: string }>;

@@ -353,6 +353,9 @@ export type ToolResultMeta = {
   discoveryLimited?: boolean;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
+  totalLines?: number;
+  /** Inclusive source lines when each packable record is one consecutive line. */
+  deliveredLineRange?: [number, number];
   recovery?: {
     tool: "read_range";
     path: string;

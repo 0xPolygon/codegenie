@@ -1,6 +1,6 @@
 import { assertRepositoryToolArguments } from "./tool-definitions.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
-import { packFileListToolResult, packOutlineToolResult, packSearchToolResult } from "./search-result-packing.js";
+import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
@@ -914,8 +914,9 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               if (consumedCall) toolCallsUsed += 1;
               else rejectedToolCalls += 1;
               // Fixed budget-status messages are control information, not source content.
-              if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline)) {
-                outcome.result = outcome.result.outline ? packOutlineToolResult(outcome.result, remainingResultChars)
+              if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
+                outcome.result = outcome.result.packable ? packTextToolResult(outcome.result, remainingResultChars)
+                  : outcome.result.outline ? packOutlineToolResult(outcome.result, remainingResultChars)
                   : outcome.result.filePaths ? packFileListToolResult(outcome.result, remainingResultChars)
                   : packSearchToolResult(outcome.result, remainingResultChars);
                 if (outcome.result.isError) {
@@ -926,8 +927,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
               }
-              const searchBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
-              const resultText = !consumedCall || budgetRejected || searchBudgetRejected
+              const deliveryBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
+              const resultText = !consumedCall || budgetRejected || deliveryBudgetRejected
                 ? outcome.result.text
                 : fitToolResultText(outcome.result.text, remainingResultChars);
               if (resultText.length < outcome.result.text.length) {
@@ -937,7 +938,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   meta: markTruncated(outcome.result.meta)
                 };
               }
-              if (consumedCall && !budgetRejected && !searchBudgetRejected) {
+              if (consumedCall && !budgetRejected && !deliveryBudgetRejected) {
                 resultCharsUsed += resultText.length;
                 // Credit delivered source content toward the soft source target.
                 if (isSourceReadTool(toolCall.name)

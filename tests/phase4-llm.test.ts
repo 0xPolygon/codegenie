@@ -5628,6 +5628,55 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("not a zero-match result");
   });
 
+  it("keeps whole records through the runner and repacks cached results for a smaller budget", async () => {
+    const telemetry = fakeTelemetry();
+    const records = [
+      "\ts.regMu.Lock()",
+      "\tif _, dup := s.models[lm.name]; dup { // raced another load of the same name",
+      "\t\ts.regMu.Unlock()",
+      '\t\twriteErr(w, http.StatusConflict, fmt.Sprintf("model %q already loaded", lm.name))',
+      "\t\treturn",
+      "\t}"
+    ];
+    const text = records.join("\n") + "\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]";
+    const execute = vi.fn(async () => ({
+      text,
+      packable: { open: "", records, separator: "\n", close: "" },
+      meta: {
+        backend: "text" as const, precision: "exact" as const, degraded: false, lookupStatus: "found" as const,
+        requestedSource: "head" as const, sourceUsed: "head" as const, deliveryStatus: "full" as const,
+        deliveredLineRange: [76, 81] as [number, number]
+      }
+    }));
+    const args = { path: "cmd/serve/admin.go", startLine: 76, endLine: 81 };
+    const tool: ToolDefinition = { name: "read_range", description: "read range", execute,
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Integer(), endLine: Type.Integer() }) };
+    const adapter = scriptedAdapter(["full", "cut", "refused"].flatMap(id => [
+      assistant([{ type: "toolCall", id, name: tool.name, arguments: args }]),
+      assistant([validSubmitReviewCall(id + "-done")])
+    ]));
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+
+    for (const limit of [text.length, 205, 10]) {
+      await runner.runStructured({ ...submitReviewRequest("record-packing-" + limit), tools: [tool],
+        toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1000, maxSingleToolResultChars: limit } });
+    }
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const fullResult = JSON.parse(adapter.contexts[1]!).find((message: { role: string }) => message.role === "toolResult");
+    expect(fullResult.content[0].text).toContain(text);
+    expect(adapter.contexts[3]).toContain("continue with startLine=77");
+    expect(adapter.contexts[3]).not.toContain("raced another load");
+    expect(adapter.contexts[5]).toContain("Tool result cannot fit the remaining result budget.");
+    expect(telemetry.toolCalls).toMatchObject([
+      { cacheStatus: "write", status: "ok", deliveryStatus: "full" },
+      { cacheStatus: "hit", status: "ok", deliveryStatus: "truncated", omittedCount: 5 },
+      { cacheStatus: "hit", status: "rejected", deliveryStatus: "budget_rejected", errorCode: "budget_exhausted" }
+    ]);
+  });
+
   it.each(["tool_call_budget_exhausted", "investigation_round_budget_exhausted"])(
     "preserves required tool failures behind a completed packet's %s refusal", rejectionReason => {
       const refusal = { id: "refused", tool: "read_range", target: "a.ts", status: "rejected" as const,
