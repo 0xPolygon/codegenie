@@ -1,4 +1,6 @@
 import { assertRepositoryToolArguments } from "./tool-definitions.js";
+import { withMeta } from "./repository-tool-guidance.js";
+import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
@@ -922,8 +924,11 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
                   outcome.rejectionReason = "tool_result_budget_exhausted";
-                  if (outcome.result.meta) outcome.result.meta = { ...outcome.result.meta,
-                    degraded: !outcome.result.meta.pathListDelivery, degradationReason: "tool_result_budget_exhausted" };
+                  if (outcome.result.meta) {
+                    const meta = outcome.result.meta;
+                    outcome.result.meta = { ...meta,
+                      degraded: !(meta.searchDelivery || meta.pathListDelivery), degradationReason: "tool_result_budget_exhausted" };
+                  }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
               }
@@ -1221,15 +1226,23 @@ function submitCallHasFindings(toolCall: PiSubmitCall): boolean {
 function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, text: string,
   source: "head" | "base" | undefined): RepositoryEvidence[] | undefined {
   const meta = outcome.result.meta;
-  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || meta?.degraded
-    || meta?.deliveryStatus !== "full" || !text.trim() || text.length > 8_000) return;
+  const mixedDefinitionFallback = toolCall.name === "find_definition" && meta?.degraded === true
+    && /^\d+ definition candidate\(s\) used text fallback$/u.test(meta.degradationReason ?? "");
+  if (!source || outcome.status !== "ok" || outcome.result.isError || meta?.truncated || (meta?.degraded && !mixedDefinitionFallback)
+    || meta?.deliveryStatus !== "full" || !text.trim() || (toolCall.name !== "find_definition" && text.length > 8_000)) return;
   if (toolCall.name === "find_definition" && (meta.lookupStatus === "found" || meta.lookupStatus === "ambiguous")) {
     const hits = outcome.result.definitions;
-    if (hits) return hits.flatMap((hit, index) => hit.text?.trim() ? [{
-      id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
-      symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
-      lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
-    }] : []);
+    if (hits) {
+      // Keep the pre-numbering evidence-size boundary; display prefixes should not
+      // change which otherwise complete source bodies can become evidence.
+      const legacyBodies = hits.map(({ symbol, text }) => ({ symbol, ...(text !== undefined ? { text } : {}) }));
+      if (withMeta(JSON.stringify(legacyBodies, null, 2), meta).length > 8_000) return;
+      return hits.flatMap((hit, index) => hit.text?.trim() && !isTextFallbackHit(hit) ? [{
+        id: `${toolCall.id}/hit-${index}`, tool: toolCall.name, path: hit.symbol.path,
+        symbols: [hit.symbol.name], lineRange: hit.symbol.lineRange,
+        lookupStatus: meta.lookupStatus as "found" | "ambiguous", source, text: stripCredentials(hit.text)
+      }] : []);
+    }
   }
   if (meta.lookupStatus !== "found" || !["read_range", "read_symbol", "find_definition", "read_file_outline"].includes(toolCall.name)) return;
   return [{ id: toolCall.id, tool: toolCall.name,
@@ -2486,7 +2499,8 @@ function recordToolCall(
   outcome: ToolRunOutcome
 ): void {
   const meta = outcome.result.meta ?? defaultToolMeta();
-  const listBudgetRefusal = toolCall.name === "list_files" && outcome.errorCode === "budget_exhausted";
+  const searchOrListBudgetRefusal = outcome.errorCode === "budget_exhausted" &&
+    (toolCall.name === "search_files" || toolCall.name === "list_files");
   const preExecutionBudgetRefusal = outcome.errorCode === "budget_exhausted" && outcome.backendExecuted === false && outcome.cacheStatus === "disabled";
   const record = definedRecord({
     stage: request.stage,
@@ -2499,15 +2513,20 @@ function recordToolCall(
     args: toolArgsForRecord(outcome.args),
     backend: preExecutionBudgetRefusal ? undefined : meta.backend,
     precision: preExecutionBudgetRefusal ? undefined : meta.precision,
-    degraded: listBudgetRefusal ? false : meta.degraded,
+    degraded: searchOrListBudgetRefusal ? false : meta.degraded,
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
     omittedCount: meta.omittedCount,
     omittedCountIsLowerBound: meta.omittedCountIsLowerBound,
     discoveryLimited: meta.discoveryLimited,
+    searchDelivery: meta.searchDelivery,
     pathListDelivery: meta.pathListDelivery,
     lookupStatus: meta.lookupStatus,
-    deliveryStatus: meta.deliveryStatus,
+    lookupNote: meta.lookupNote,
+    unparsedCandidatePaths: meta.unparsedCandidatePaths,
+    incompleteCandidatePaths: meta.incompleteCandidatePaths,
+    candidateScans: meta.candidateScans,
+    deliveryStatus: searchOrListBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
     totalLines: meta.totalLines,
     deliveredLineRange: meta.deliveredLineRange,
     recovery: meta.recovery,
@@ -2516,7 +2535,7 @@ function recordToolCall(
     backendExecuted: outcome.backendExecuted,
     cacheHitKind: outcome.cacheHitKind,
     cacheEvictedEntries: outcome.cacheEvictedEntries,
-    resultCount: meta.pathListDelivery?.deliveredCount ?? (listBudgetRefusal ? 0 : undefined),
+    resultCount: meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,

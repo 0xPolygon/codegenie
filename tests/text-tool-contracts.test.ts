@@ -1,16 +1,29 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
-import { createPackableToolResult, packOutlineToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
+import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
+import { withMeta } from "../src/llm/repository-tool-guidance.js";
 import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
 describe("text tools: exact range and model-facing argument contracts", () => {
+  it("preserves definition lookup guidance in an uncut result", () => {
+    const meta: ToolResultMeta = { backend: "text", precision: "text", degraded: false,
+      lookupStatus: "unavailable", lookupNote: "Not checked: use find_symbol_mentions.", deliveryStatus: "empty" };
+    const text = withMeta("[]", meta);
+    expect(text).toBe("[]\n\n[tool meta: lookup: unavailable; Not checked: use find_symbol_mentions.; delivery: empty]");
+  });
   let fixture: Awaited<ReturnType<typeof textRepository>>;
   beforeAll(async () => {
     fixture = await textRepository({
       "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "blank-line.custom": "\n", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
+      "src/shared.ts": `export function SharedCall() {\n${Array.from({ length: 25 }, (_, i) => `  const value${i} = ${i};`).join("\n")}\n}\n`,
+      "pkg/shared.go": `package pkg\nfunc SharedCall() {\n${Array.from({ length: 20 }, (_, i) => `  value${i} := ${i}`).join("\n")}\n}\n`,
+      "src/long.ts": `export function LongDefinition() {\n${Array.from({ length: 300 }, (_, i) => `  const n${i} = ${i};`).join("\n")}\n}\n`,
+      "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
+      "src/whitespace.ts": "export function WhitespaceCase() {\n\n\treturn 1;\n}\n",
+      "schema/fallback.custom": "function UnverifiedLead() {\n  return 1;\n}\n",
       "terminated.custom": "one\r\n\tsecond\r\n" + "    rest of source\r\n".repeat(40),
       "character-cap.ts": ["const required = makeRequirements();", "x".repeat(15_000), "y".repeat(15_000), "return required;"].join("\n"),
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
@@ -19,6 +32,100 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     writeRepoFile(fixture.repo, "untracked.custom", "untracked-only");
   });
   afterAll(() => fixture?.dispose());
+
+  it("numbers definition bodies, keeps raw evidence, and resumes whole lines on a caller-budget cut", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "SharedCall", pathGlob: "src/shared.ts" });
+    expect(result.definitions).toHaveLength(1);
+    const raw = result.definitions![0]!;
+    expect(raw.symbol.path).toBe("src/shared.ts");
+    expect(raw.totalLines).toBe(27);
+    expect(raw.deliveredLineRange).toEqual([1, 27]);
+    expect(result.text).toContain("src/shared.ts@head declaration lines 1-27 of 27");
+    expect(result.text).toContain("1\texport function SharedCall() {");
+    expect(result.text).toContain("2\t  const value0 = 0;");
+    expect(raw.text).toContain("  const value0 = 0;");
+    expect(raw.text).not.toContain("2\t  const");
+    const delivered = result.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, "")).join("\n");
+    expect(delivered).toBe(raw.text);
+    expect(packTextToolResult(result, result.text.length)).toBe(result);
+    const cut = packTextToolResult(result, 550);
+    expect(cut.isError).not.toBe(true);
+    expect(cut.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
+    expect(cut.text).toMatch(/last delivered: src\/shared\.ts@head:\d+/u);
+    expect(cut.text).toMatch(/next: src\/shared\.ts@head:\d+/u);
+    const cutLines = cut.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
+    expect(cutLines).toEqual(raw.text!.split("\n").slice(0, cutLines.length));
+    const rest = await fixture.tools.readRange("src/shared.ts", cutLines.length + 1, 27, { kind: "head" });
+    expect([...cutLines, ...rest.text.split("\n")].join("\n")).toBe(raw.text);
+    expect(packTextToolResult(result, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    const headerOnlyBudget = result.text.indexOf("\n") + 1;
+    const refused = packTextToolResult(result, headerOnlyBudget);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    expect(refused.text).toContain("src/shared.ts@head:1");
+  });
+
+  it("labels text-only definition leads as unverified windows", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "UnverifiedLead", pathGlob: "schema/fallback.custom" });
+    expect(result.meta?.lookupStatus).toBe("unavailable");
+    expect(result.text).toContain("schema/fallback.custom@head unverified text window lines 1-3 of 3");
+    expect(result.text).toContain("1\tfunction UnverifiedLead() {");
+  });
+
+  it("labels multiple definition blocks and the exact next source location on a cut", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "SharedCall", source: { kind: "base" } });
+    expect(result.definitions).toHaveLength(2);
+    expect(result.text).toContain("Definition locations:");
+    expect(result.text).toContain("pkg/shared.go@base declaration lines 2-23 of 23");
+    expect(result.text).toContain("src/shared.ts@base declaration lines 1-27 of 27");
+    const cut = packTextToolResult(result, 750);
+    expect(cut.isError).not.toBe(true);
+    expect(cut.meta).toMatchObject({ truncated: true });
+    expect(cut.text).toMatch(/last delivered: (?:pkg\/shared\.go|src\/shared\.ts)@base:\d+/u);
+    expect(cut.text).toMatch(/next: (?:pkg\/shared\.go|src\/shared\.ts)@base:\d+/u);
+    const atBoundary = Array.from({ length: result.text.length }, (_, allowance) => allowance)
+      .map(allowance => packTextToolResult(result, allowance))
+      .find(packed => !packed.isError && packed.text.includes("next: src/shared.ts@base:1"));
+    expect(atBoundary?.text).toContain("last delivered: pkg/shared.go@base:23");
+    const cache = createToolResultCache();
+    const args = { symbolName: "SharedCall", source: { kind: "base" } };
+    const first = await cache.execute({ toolName: "find_definition", args, run: async () => result });
+    const smaller = packTextToolResult(first.result, 750);
+    const again = await cache.execute({ toolName: "find_definition", args, run: async () => result });
+    expect(again.status).toBe("hit");
+    expect(packTextToolResult(again.result, result.text.length).text).toBe(result.text);
+    expect(smaller.meta?.truncated).toBe(true);
+  });
+
+  it("reports the first unread source line for a backend-truncated definition", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "LongDefinition", pathGlob: "src/long.ts" });
+    const hit = result.definitions![0]!;
+    expect(result.meta).toMatchObject({ truncated: true, deliveryStatus: "truncated" });
+    expect(hit.nextLine).toBe((hit.deliveredLineRange?.[1] ?? 0) + 1);
+    expect(result.text).toContain(`source continues at src/long.ts@head:${hit.nextLine}`);
+    const callerCut = packTextToolResult(result, 700);
+    expect(callerCut.isError).not.toBe(true);
+    const firstUnread = Number(callerCut.text.match(/next: src\/long\.ts@head:(\d+)/u)?.[1]);
+    expect(firstUnread).toBeGreaterThan(1);
+    expect(firstUnread).toBeLessThan(hit.nextLine!);
+    expect(callerCut.text).not.toContain(`startLine=${hit.nextLine}`);
+    expect(callerCut.meta?.recovery).toBeUndefined();
+    const rest = await fixture.tools.readRange("src/long.ts", hit.nextLine!, hit.symbol.lineRange[1], { kind: "head" });
+    const source = (await fixture.tools.readRange("src/long.ts", 1, hit.symbol.lineRange[1], { kind: "head" })).text;
+    expect(`${hit.text}\n${rest.text}`).toBe(source);
+  });
+
+  it("refuses an oversized first definition line without claiming source delivery", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "HugeDefinition", pathGlob: "src/huge.ts" });
+    expect(result).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected" } });
+    expect(result.text).toContain("path=src/huge.ts startLine=1");
+  });
+
+  it("preserves blank lines and existing tabs after removing generated definition positions", async () => {
+    const result = await fixture.call("find_definition", { symbolName: "WhitespaceCase", pathGlob: "src/whitespace.ts" });
+    const sourceLines = result.text.split("\n").filter(line => /^\d+\t/u.test(line)).map(line => line.replace(/^\d+\t/u, ""));
+    expect(sourceLines.join("\n")).toBe(result.definitions![0]!.text);
+    expect(sourceLines).toEqual(["export function WhitespaceCase() {", "", "\treturn 1;", "}"]);
+  });
 
   it.each([
     [1, 1, "first"], [2, 2, "second"], [1, 2, "first\nsecond"], [2, 3, "second\nthird"],
@@ -266,6 +373,79 @@ const exactSource = {
   lookupStatus: "found",
   deliveryStatus: "full"
 } satisfies ToolResultMeta;
+
+describe("search delivery accounting over committed source", () => {
+  let fixture: Awaited<ReturnType<typeof textRepository>>;
+  beforeAll(async () => {
+    // Representative codegenie cg-04 and goinfer go-01 lines and Git paths.
+    fixture = await textRepository({
+      "src/pipeline/composition-repair.ts": [
+        "// " + "context ".repeat(100), "if (proofVisibilityDiagnostics.length > 0) {",
+        "  return buildCompositionRepair(proofVisibilityDiagnostics);", "}", "// " + "context ".repeat(100)
+      ].join("\n"),
+      "cmd/serve/admin.go": [
+        "s.regMu.Lock()", "if _, dup := s.models[lm.name]; dup { // raced another load of the same name",
+        "\ts.regMu.Unlock()", "\treturn", "}"
+      ].join("\n"),
+      "src/oversized.ts": ["// needle " + "x".repeat(33_000), "const needle = true;"].join("\n"),
+      "src/excerpt.ts": "// " + "x".repeat(600) + " needle"
+    });
+  });
+  afterAll(() => fixture?.dispose());
+
+  it("distinguishes an incomplete scan from exact line skips and true zero matches", async () => {
+    const search = (query: string, args = {}) => fixture.call("search_files", { query, ...args });
+    const incomplete = packSearchToolResult(await search("regMu", { maxResults: 1 }), 4000);
+    expect(incomplete.meta).toMatchObject({
+      degraded: false, deliveryStatus: "truncated", degradationReason: "search_discovery_limit", omittedCount: 1,
+      omittedCountIsLowerBound: true, searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1 }
+    });
+    expect(JSON.parse(incomplete.text).notice).toContain('Omitted at least 1 matching lines. Scan limited. Next read_range: "cmd/serve/admin.go"@head:3.');
+    const exact = packSearchToolResult(await search("needle", { pathGlob: "src/oversized.ts" }), 4000);
+    expect(exact.meta).toMatchObject({
+      degradationReason: "search_result_limit", omittedCount: 1, omittedCountIsLowerBound: false,
+      searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 0, backendOmittedCount: 1 }
+    });
+    expect(exact.meta?.discoveryLimited).not.toBe(true);
+    expect(JSON.parse(exact.text).results).toMatchObject([{ line: 2 }]);
+    expect(JSON.parse(exact.text).notice).toContain('Omitted 1 matching lines. Next read_range: "src/oversized.ts"@head:1.');
+    const mixed = packSearchToolResult(await search("needle", { pathGlob: "src/{excerpt,oversized}.ts", maxResults: 1 }), 4000);
+    expect(mixed.meta).toMatchObject({
+      degradationReason: "search_discovery_limit", discoveryLimited: true, omittedCount: 2, omittedCountIsLowerBound: true,
+      searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1, backendOmittedCount: 1 }
+    });
+    const excerpt = packSearchToolResult(await search("needle", { pathGlob: "src/excerpt.ts" }), 4000);
+    expect(excerpt.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 0, searchDelivery: { shortenedExcerpts: 1 } });
+    expect(JSON.parse(excerpt.text).notice).toContain('Next read_range: "src/excerpt.ts"@head:1.');
+    const empty = packSearchToolResult(await search("missingNeedle"), 4000);
+    expect(empty.meta).toMatchObject({ deliveryStatus: "empty", searchDelivery: { deliveredCount: 0, scanIncomplete: false } });
+    expect(JSON.parse(empty.text).results).toEqual([]);
+  });
+
+  it("repackages cached results per allowance and counts context or rows separately", async () => {
+    const args = { query: "proofVisibilityDiagnostics|regMu", contextMode: "lines" };
+    const cache = createToolResultCache();
+    const request = { toolName: "search_files", args, run: () => fixture.call("search_files", args) };
+    const first = await cache.execute(request);
+    const hit = await cache.execute(request);
+    expect(hit.status).toBe("hit");
+    const full = packSearchToolResult(first.result, 4000);
+    expect(full.meta).toMatchObject({ deliveryStatus: "full", searchDelivery: { deliveredCount: 4, budgetContextStripped: false } });
+    expect(full.text).not.toContain("searchDelivery");
+    const rows = packSearchToolResult(hit.result, 760);
+    expect(rows.meta).toMatchObject({
+      degraded: false, deliveryStatus: "truncated", degradationReason: "tool_result_budget", omittedCountIsLowerBound: false,
+      searchDelivery: { budgetContextStripped: true, scanIncomplete: false }
+    });
+    expect(rows.meta?.searchDelivery?.deliveredCount).toBe(JSON.parse(rows.text).results.length);
+    expect(rows.meta?.searchDelivery?.budgetOmittedCount).toBe(4 - JSON.parse(rows.text).results.length);
+    const refused = packSearchToolResult(hit.result, 128);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", searchDelivery: { deliveredCount: 0, budgetOmittedCount: 4 } } });
+    expect(refused.text).toContain('Next read_range: "cmd/serve/admin.go"@head:1.');
+    expect(packSearchToolResult((await cache.execute(request)).result, 4000)).toEqual(full);
+  });
+});
 
 describe("whole-record tool packing", () => {
   it("preserves a full Go source range and reports where a cut range ends", () => {

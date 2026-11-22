@@ -14,7 +14,7 @@ import {
   type GitCappedCommandOptions
 } from "./subprocess.js";
 
-export type GrepResults = SearchResult[] & { omittedLines?: number };
+export type GrepResults = SearchResult[] & { omittedLines?: number; firstOmitted?: Pick<SearchResult, "path" | "line"> };
 
 export interface GitClient {
   revParse(ref: string): Promise<string>;
@@ -181,7 +181,13 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
             maxBytes: Math.max(64 * 1024, (maxResults - results.length) * 1024),
             maxLines: maxResults - results.length,
             lineLimitBytes: 32 * 1024,
-            onOmittedLine: () => { omittedLines++; },
+            onOmittedLine: prefix => {
+              omittedLines++;
+              if (!results.firstOmitted) {
+                const hit = parseGrepLine(prefix, ref);
+                if (hit) results.firstOmitted = { path: hit.path, line: hit.line };
+              }
+            },
             allowedExitCodes: [0, 1], errorCode: "git_ref_missing"
           });
         } catch (error) {

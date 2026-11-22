@@ -36,8 +36,10 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
       path = listed.filePaths![0]!;
     } else {
       const definition = await fixture.call("find_definition", { symbolName: "AccessRule", pathGlob: "schema/*.ridl", source: { kind: "head" } });
-      expect(definition.definitions).toHaveLength(1);
-      path = definition.definitions![0]!.symbol.path;
+      expect(definition.meta?.lookupStatus).toBe("unavailable");
+      const mentions = await fixture.call("find_symbol_mentions", { symbolName: "AccessRule", pathGlob: "schema/*.ridl" });
+      expect(mentions.searchResults).toHaveLength(1);
+      path = mentions.searchResults![0]!.path;
     }
     const read = await fixture.call("read_range", { path, startLine: 2, endLine: 4 });
     expect(read.meta).toMatchObject({ lookupStatus: "found", deliveryStatus: "full", sourceUsed: "head" });
@@ -145,7 +147,9 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
   it("labels text-only definition and symbol lookups as text, then follows the location to exact source", async () => {
     const definition = await fixture.call("find_definition", { symbolName: "AccessRule", pathGlob: "schema/access.ridl" });
     expect(definition.meta).toMatchObject({ backend: "text", precision: "text", degraded: false, sourceUsed: "head" });
-    expect(definition.text).toContain('"nativeKind": "text match"');
+    expect(definition.meta?.lookupStatus).toBe("unavailable");
+    expect(definition.text).toContain("find_symbol_mentions");
+    expect(definition.definitions).toEqual([]);
     const symbol = await fixture.call("read_symbol", { path: "schema/access.ridl", symbolName: "AccessRule" });
     expect(symbol.meta).toMatchObject({ backend: "text", precision: "text", degraded: false });
     expect(symbol.text).toContain("permission = read");
@@ -174,7 +178,8 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     expect(payload.results.length).toBeGreaterThan(0);
     expect(payload.results.length).toBeLessThan(50);
     expect(payload.meta.truncated).toBe(true);
-    expect(payload.notice).toContain("not exhaustive");
+    expect(payload.notice).toContain(`Omitted ${50 - payload.results.length} matching lines.`);
+    expect(payload.notice).toMatch(/Next read_range: "many\/\d+\.custom"@head:1/);
     expect(small.text.length).toBeLessThanOrEqual(900);
     const hit = payload.results[0];
     expect((await fixture.call("read_range", { path: hit.path, startLine: hit.line, endLine: hit.line })).text).toContain("AccessRule");
@@ -187,16 +192,17 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     expect((await fixture.call("search_files", { query: "absent", pathGlob: "many/**" })).searchResults).toEqual([]);
   });
 
-  it("preserves individually located text candidates when a definition lookup is ambiguous", async () => {
+  it("routes unverified text mentions to mention search without claiming definitions", async () => {
     const result = await fixture.call("find_definition", { symbolName: "AccessRule", pathGlob: "schema/**" });
     expect(result.isError).not.toBe(true);
-    expect(result.meta).toMatchObject({ lookupStatus: "ambiguous", sourceUsed: "head", degraded: false });
-    expect(result.definitions!.length).toBeGreaterThan(1);
-    for (const hit of result.definitions!) {
-      expect(hit.symbol.path).toMatch(/^schema\//);
-      expect(hit.symbol.lineRange[0]).toBeGreaterThan(0);
-      expect(hit.text).toContain("AccessRule");
-      expect(result.text).toContain(hit.symbol.path);
+    expect(result.meta).toMatchObject({ lookupStatus: "unavailable", sourceUsed: "head", degraded: false });
+    expect(result.definitions).toEqual([]);
+    const mentions = await fixture.call("find_symbol_mentions", { symbolName: "AccessRule", pathGlob: "schema/**" });
+    expect(mentions.searchResults!.length).toBeGreaterThan(1);
+    for (const hit of mentions.searchResults!) {
+      expect(hit.path).toMatch(/^schema\//);
+      expect(hit.line).toBeGreaterThan(0);
+      expect(hit.matchText).toContain("AccessRule");
     }
   });
 

@@ -1,4 +1,4 @@
-import type { SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision } from "../types.js";
+import type { SearchDelivery, SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { containGlob } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
@@ -17,7 +17,64 @@ export type SearchExecution = {
   omittedCount?: number;
   discoveryLimited?: boolean;
   omittedCountIsLowerBound?: boolean;
+  searchDelivery?: SearchDelivery;
 };
+
+export function hasSearchContext(result: SearchResult): boolean {
+  return result.enclosingSymbol !== undefined || Boolean(result.contextBefore?.length || result.contextAfter?.length);
+}
+
+type SearchPosition = NonNullable<SearchDelivery["nextRead"]>;
+
+export function earlierSearchPosition(left?: SearchPosition, right?: SearchPosition): SearchPosition | undefined {
+  if (!left || !right) return left ?? right;
+  return left.path < right.path || (left.path === right.path && left.line <= right.line) ? left : right;
+}
+
+export function searchContextPosition(result: SearchResult): SearchPosition {
+  const line = result.contextBefore?.length ? result.line - result.contextBefore.length
+    : result.contextAfter?.length ? result.line + 1 : result.enclosingSymbol?.lineRange[0] ?? result.line;
+  return { path: result.path, line };
+}
+
+export function searchCutNotice(delivery: SearchDelivery): string {
+  const omitted = delivery.discoveryOmittedCount + delivery.backendOmittedCount + delivery.budgetOmittedCount;
+  const details = [`Omitted ${delivery.scanIncomplete ? "at least " : ""}${omitted} matching lines.`];
+  if (delivery.scanIncomplete) details.push("Scan limited.");
+  if (delivery.backendContextStripped || delivery.budgetContextStripped) details.push("Context shortened.");
+  if (delivery.shortenedExcerpts) details.push("Matching text shortened.");
+  if (delivery.nextRead) details.push(`Next read_range: ${JSON.stringify(delivery.nextRead.path)}@${delivery.source}:${delivery.nextRead.line}.`);
+  details.push("Narrow pathGlob to search again.");
+  return details.join(" ");
+}
+
+/** Report scan and delivery limits independently of the legacy rendered payload. */
+export function searchDeliveryMeta(meta: ToolResultMeta, delivery: SearchDelivery, refused = false): ToolResultMeta {
+  const omittedCount = delivery.discoveryOmittedCount + delivery.backendOmittedCount + delivery.budgetOmittedCount;
+  const truncated = refused || omittedCount > 0 || delivery.scanIncomplete
+    || delivery.backendContextStripped || delivery.budgetContextStripped || delivery.shortenedExcerpts > 0;
+  const degradationReason = refused || delivery.budgetOmittedCount > 0 || delivery.budgetContextStripped ? "tool_result_budget"
+    : delivery.scanIncomplete || delivery.discoveryOmittedCount > 0 ? "search_discovery_limit"
+      : truncated ? "search_result_limit" : undefined;
+  const { degradationReason: _legacyReason, ...base } = meta;
+  return {
+    ...base, searchDelivery: delivery, degraded: false, truncated,
+    ...(degradationReason ? { degradationReason } : {}),
+    deliveryStatus: refused ? "budget_rejected" : truncated ? "truncated" : delivery.deliveredCount ? "full" : "empty",
+    omittedCount,
+    omittedCountIsLowerBound: delivery.scanIncomplete
+  };
+}
+
+export class SearchBudgetError extends CodegenieError {
+  readonly meta: ToolResultMeta;
+
+  constructor(message: string, delivery: SearchDelivery) {
+    super("budget_exhausted", `${message} ${searchCutNotice(delivery)} This is not a zero-match result.`);
+    this.meta = { ...searchDeliveryMeta({ backend: "text", precision: "text", degraded: false }, delivery, true),
+      degradationReason: "search_result_limit" };
+  }
+}
 
 type RawSearchOptions = SearchOptions & {
   fixedString?: boolean;
@@ -54,24 +111,62 @@ export class SearchService {
     });
 
     const omittedLines = raw.omittedLines ?? 0;
-    if (!raw.length && omittedLines) throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
-    const discoveryLimited = raw.length > maxResults || omittedLines > 0;
+    if (!raw.length && omittedLines) {
+      if (options.mention !== undefined) {
+        throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+      }
+      throw new SearchBudgetError("No matching line fits the search output allowance.", {
+        source: source.kind, deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0,
+        backendOmittedCount: omittedLines, budgetOmittedCount: 0, shortenedExcerpts: 0,
+        backendContextStripped: false, budgetContextStripped: false,
+        ...(raw.firstOmitted ? { nextRead: raw.firstOmitted } : {})
+      });
+    }
+    const scanIncomplete = raw.length > maxResults;
+    const discoveryLimited = scanIncomplete || (options.mention !== undefined && omittedLines > 0);
     // The extra text match may be a comment, not a verified identifier mention.
-    const countOmitted = options.mention === undefined ? omittedLines + Number(raw.length > maxResults) : 0;
+    const discoveryOmittedCount = options.mention === undefined ? Number(scanIncomplete) : 0;
     const classified = options.mention === undefined ? undefined : await this.classifyMentions(raw.slice(0, maxResults), options.mention, source);
     const lineCapped = capMatchTexts(classified?.results ?? raw.slice(0, maxResults));
     await this.enrich(lineCapped.results, source, options.contextMode ?? "none");
-    const capped = capSearchResultsTotal(lineCapped.results, countOmitted);
-    if (lineCapped.results.length > 0 && capped.results.length === 0) throw new CodegenieError("budget_exhausted", "No complete search entry fits the result allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+    const capped = capSearchResultsTotal(lineCapped.results);
+    const backendOmittedCount = capped.omittedCount + (options.mention === undefined ? omittedLines : 0);
+    const omittedCount = discoveryOmittedCount + backendOmittedCount;
     const shortened = lineCapped.truncatedTextCount > 0 || capped.shortened;
-    const degraded = discoveryLimited || capped.omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
+    const degraded = discoveryLimited || omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
+    const shortenedHit = capped.results.find(result => result.excerpt);
+    const strippedHit = capped.shortened ? lineCapped.results.find(hasSearchContext) : undefined;
+    const nextRead = earlierSearchPosition(
+      earlierSearchPosition(raw.firstOmitted, raw[maxResults]),
+      earlierSearchPosition(capped.firstOmitted, earlierSearchPosition(
+        shortenedHit && { path: shortenedHit.path, line: shortenedHit.line },
+        strippedHit && searchContextPosition(strippedHit)
+      ))
+    );
+    const searchDelivery: SearchDelivery | undefined = options.mention === undefined ? {
+      source: source.kind,
+      deliveredCount: capped.results.length,
+      scanIncomplete,
+      discoveryOmittedCount,
+      backendOmittedCount,
+      budgetOmittedCount: 0,
+      shortenedExcerpts: capped.results.filter(result => result.excerpt).length,
+      backendContextStripped: capped.shortened && lineCapped.results.some(hasSearchContext),
+      budgetContextStripped: false,
+      ...(nextRead ? { nextRead: { path: nextRead.path, line: nextRead.line } } : {})
+    } : undefined;
+    if (lineCapped.results.length > 0 && capped.results.length === 0) {
+      if (searchDelivery) throw new SearchBudgetError("No complete search entry fits the result allowance.", searchDelivery);
+      throw new CodegenieError("budget_exhausted", "No complete search entry fits the result allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+    }
     return {
       results: capped.results, engine: "git-grep",
       backend: classified?.syntaxOnly ? "tree-sitter" : "text",
       precision: classified?.syntaxOnly ? "syntactic" : "text",
       degraded,
+      ...(searchDelivery ? { searchDelivery } : {}),
       ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
-      ...(discoveryLimited || capped.omittedCount > 0 || shortened ? { truncated: true, omittedCount: capped.omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
+      ...(discoveryLimited || omittedCount > 0 || shortened ? { truncated: true, omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };
   }
 
@@ -229,7 +324,7 @@ function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; trun
   };
 }
 
-function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: number): { results: SearchResult[]; omittedCount: number; shortened: boolean } {
+function capSearchResultsTotal(results: SearchResult[]) {
   const capped = results.map(result => ({ ...result }));
   // Optional context must never evict core match locations.
   const shortened = JSON.stringify(capped).length > MAX_TOTAL_RESULT_CHARS;
@@ -240,13 +335,17 @@ function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: num
       delete result.enclosingSymbol;
     }
   }
-  let omittedCount = initialOmittedCount;
+  let omittedCount = 0;
+  let firstOmitted: SearchPosition | undefined;
   const packed: SearchResult[] = [];
   for (const result of capped) {
     if (JSON.stringify([...packed, result]).length <= MAX_TOTAL_RESULT_CHARS) packed.push(result);
-    else omittedCount++;
+    else {
+      omittedCount++;
+      firstOmitted ??= { path: result.path, line: result.line };
+    }
   }
-  return { results: packed, omittedCount, shortened };
+  return { results: packed, omittedCount, shortened, firstOmitted };
 }
 
 function groupByPath(results: SearchResult[]): Map<string, SearchResult[]> {

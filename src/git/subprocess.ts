@@ -24,7 +24,7 @@ export type GitCappedCommandOptions = {
   gitEnv?: GitEnvironment;
   /** Skip complete oversized records, retaining other lines within the same allowance. */
   lineLimitBytes?: number;
-  onOmittedLine?: () => void;
+  onOmittedLine?: (prefix: string) => void;
   maxBytes: number;
   maxLines: number;
   timeoutMs?: number;
@@ -35,6 +35,7 @@ export type GitCappedCommandOptions = {
 const LOCAL_TIMEOUT_MS = 60_000;
 const NETWORK_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
+const OMITTED_LINE_PREFIX_BYTES = 8192;
 
 const SAFE_ENV = {
   GIT_TERMINAL_PROMPT: "0",
@@ -87,7 +88,7 @@ export async function runGitCapped(
 
     const finishLine = () => {
       if (oversized || collectedBytes + pending.length + 1 > opts.maxBytes) {
-        opts.onOmittedLine?.();
+        if (opts.onOmittedLine) opts.onOmittedLine(pending.toString("utf8", 0, OMITTED_LINE_PREFIX_BYTES));
       } else {
         chunks.push(pending, Buffer.from("\n"));
         collectedBytes += pending.length + 1;
@@ -121,7 +122,11 @@ export async function runGitCapped(
           if (!oversized) {
             if (pending.length + end - offset > opts.lineLimitBytes) {
               oversized = true;
-              pending = Buffer.alloc(0);
+              // Keep a bounded Git grep record prefix for path/line recovery.
+              pending = opts.onOmittedLine ? Buffer.concat([
+                pending.subarray(0, OMITTED_LINE_PREFIX_BYTES),
+                chunk.subarray(offset, Math.min(end, offset + Math.max(0, OMITTED_LINE_PREFIX_BYTES - pending.length)))
+              ]) : Buffer.alloc(0);
             } else pending = Buffer.concat([pending, chunk.subarray(offset, end)]);
           }
           if (newline >= 0) finishLine();
