@@ -7974,6 +7974,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).not.toContain("At most two followUpHints");
     expect(prompt).not.toContain("instead of continuing broad exploration");
     expect(prompt).toContain("A later verification stage filters false positives");
+    expect(prompt).toContain("Do not publish speculation as a finding. For each concrete concern that remains unsettled");
     expect(prompt).toContain("verifier-bound hint");
     expect(prompt).toContain("behavior-preserving refactors");
     expect(prompt).toContain("validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries");
