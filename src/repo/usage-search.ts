@@ -37,7 +37,15 @@ export async function findUsages(
   const cursor = options.cursor ? decodeCursor(options.cursor, binding) : undefined;
   // Prefer supported source files over text-only leads so documentation does not
   // consume the first pages before syntactic callers are offered.
-  const paths = (await resolver.grepFiles(normalizedName.split(".").at(-1)!, options.pathGlob, source)).filter(path => scope === "all" || isRepositoryTestPath(path))
+  const segments = [...new Set(normalizedName.split("."))];
+  let candidates = await resolver.grepFiles(segments.at(-1)!, options.pathGlob, source);
+  for (const segment of segments.slice(0, -1)) {
+    checkAbort(options.signal);
+    if (candidates.length === 0) break;
+    const containing = new Set(await resolver.grepFiles(segment, options.pathGlob, source));
+    candidates = candidates.filter(path => containing.has(path));
+  }
+  const paths = candidates.filter(path => scope === "all" || isRepositoryTestPath(path))
     .sort((a, b) => Number(!isSupportedSource(a)) - Number(!isSupportedSource(b)) || (a < b ? -1 : a > b ? 1 : 0));
   checkAbort(options.signal);
   const start = cursor ? paths.indexOf(cursor.path) : 0;

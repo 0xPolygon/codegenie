@@ -12,6 +12,22 @@ import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import type { RepositoryTools } from "../src/types.js";
 
 describe("pinned usage search", () => {
+  it("intersects dotted-name segments before the file-scan cap, including multiline chains", async () => {
+    const decoys = Object.fromEntries(Array.from({ length: 501 }, (_, index) =>
+      [`src/decoy-${String(index).padStart(3, "0")}.ts`, "export function unrelated() { cache.load(); }\n"]));
+    const fixture = await textRepository({ ...decoys,
+      "src/first.ts": "export function first() { lm.sessions.load(); }\n",
+      "src/second.ts": "export function second() { lm.sessions.\n  load(); }\n" });
+    try {
+      const page = (await fixture.tools.findUsages("sessions.load")).page;
+      expect(page).toMatchObject({ candidateFiles: 2, filesScanned: 2, filesParsed: 2, scanComplete: true, coverageComplete: true });
+      expect(page.rows.map(row => row.path)).toEqual(["src/first.ts", "src/second.ts"]);
+      expect(packUsagePage(page, "sessions.load", 4_000).text).toContain("candidate file 2 of 2");
+      const plain = (await fixture.tools.findUsages("load")).page;
+      expect(plain.candidateFiles).toBe(503);
+    } finally { fixture.dispose(); }
+  });
+
   it("reports an empty bounded scan as incomplete with a continuation", async () => {
     const paths = Array.from({ length: 501 }, (_, index) => `src/${String(index).padStart(3, "0")}.ts`);
     const source = { kind: "head" as const };
