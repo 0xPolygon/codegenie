@@ -31,6 +31,9 @@ export type DiffRecordGroups = {
   lineEnds: Array<[number | undefined, number | undefined]>;
   omittedLabels: string[];
   next?: string;
+  nextCursor?: string;
+  /** An omission unit is a declaration block, which may cover multiple hunks. */
+  groupedHunks?: boolean;
 };
 
 export type ToolResultRecords = {
@@ -123,6 +126,8 @@ export type ToolDefinition = {
   name: string;
   description: string;
   parameters: TSchema;
+  /** Include request-local context in the result cache without sending it as a model argument. */
+  resultCacheScope?(args: Record<string, unknown>): string | undefined;
   execute(args: unknown, signal: AbortSignal): Promise<ToolExecutionResult>;
 };
 

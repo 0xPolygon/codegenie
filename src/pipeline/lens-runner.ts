@@ -458,12 +458,16 @@ async function runPacket(
     packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId)),
     packet.language
   );
-  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
-  const passSkillIds = projectedSkillIds(prompt.projection);
   const toolSurface = config.review.toolSurface ?? "current";
-  const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
+  const hasTools = packet.reviewProfile !== "simple" && packet.toolBudget.maxToolCalls > 0;
+  const currentHunks = toolSurface === "six" ? packet.hunks.map(hunk => hunk.hunkId) : undefined;
+  const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
+  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
+  const passSkillIds = projectedSkillIds(prompt.projection);
+  const repositoryTools = !hasTools
     ? []
-    : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
+    : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
+      ...(currentHunks ? { currentHunks } : {}) });
   let toolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },

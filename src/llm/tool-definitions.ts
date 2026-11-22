@@ -9,6 +9,7 @@ import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
 import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
+import type { ReadChangeInput } from "../repo/read-change.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -34,10 +35,12 @@ const LIST_FILES_GUIDANCE = "List tracked files at the head revision using a rep
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
   toolSurface?: ReviewToolSurface;
+  currentHunks?: readonly string[];
 };
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
-const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
+const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools, options: RepositoryToolDefinitionOptions) => ToolDefinition>> = {
+  read_change: buildSixReadChangeTool,
   read_range: buildSixReadRangeTool,
   find_usages: buildFindUsagesTool,
   search_files: buildSixSearchTool,
@@ -71,7 +74,7 @@ export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
   assertRepositoryToolSurfaceAvailable(options.toolSurface);
   if (options.toolSurface === "six") {
-    return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools));
+    return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools, options));
   }
   const definitions: ToolDefinition[] = [
     buildBoundedReadRangeTool(tools),
@@ -372,6 +375,32 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
   return options.includeLikelyTests === false
     ? definitions.filter((tool) => tool.name !== "find_likely_tests")
     : definitions;
+}
+
+export function buildSixReadChangeTool(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition {
+  const currentHunks = options.currentHunks;
+  return {
+    name: "read_change",
+    description: "List changed files and stable hunk IDs with no selector, or read the numbered base/head diff using path or hunkId. Provide at most one selector. With a selector, context: \"function\" shows the enclosing declaration on both revisions when the syntax supports it. Continue a clipped result with the cursor and the same selector and context.",
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ minLength: 1 })),
+      hunkId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+      context: Type.Optional(Type.Literal("function")),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+    }, { additionalProperties: false }),
+    ...(currentHunks?.length ? {
+      resultCacheScope: (args: Record<string, unknown>) => args.path === undefined && args.hunkId === undefined
+        ? currentHunks.join(",") : undefined
+    } : {}),
+    execute: (args, signal) => wrapTool(signal, async () => {
+      if (!tools.readChange) throw new CodegenieError("config_error", "This repository cannot read changed hunks.");
+      const result = await tools.readChange(args as ReadChangeInput, currentHunks);
+      if (!result.packable) return { text: withMeta(result.text ?? "", result.meta), meta: result.meta };
+      const packed = createPackableToolResult(result.packable, result.meta);
+      return result.meta.deliveryStatus === "budget_rejected"
+        ? { text: packed.text, meta: packed.meta!, isError: true, errorCode: "budget_exhausted" } : packed;
+    })
+  };
 }
 
 async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
