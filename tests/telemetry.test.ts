@@ -1548,7 +1548,8 @@ describe("run telemetry", () => {
           enabled: true,
           retainRuns: 1
         },
-        idFactory: () => "20260103-000000-12345678"
+        idFactory: () => "20260103-000000-12345678",
+        clock: () => new Date("2026-01-03")
       });
       const attached = await run.attachRunDirectory(repoRoot);
 
