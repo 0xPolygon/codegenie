@@ -30,7 +30,8 @@ describe("six-tool discovery on pinned Git snapshots", () => {
 
       const rejected = await search.execute({ query: "track(" }, signal);
       expect(rejected).toMatchObject({ isError: true, errorCode: "invalid_args" });
-      expect(rejected.text).toContain("track\\(, or use mode=literal");
+      expect(rejected.text).toContain("name\\(");
+      expect(rejected.text).toContain("Use mode=literal to search for source text.");
       const regex = await search.execute({ query: "track\\(" }, signal);
       expect(regex.text).toContain("4:1\ttrack(3);");
       expect(regex.meta?.searchDelivery?.deliveredCount).toBe(1);

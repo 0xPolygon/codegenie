@@ -32,6 +32,8 @@ export async function readOutline(
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  totalLines?: number;
+  nextLine?: number;
 }> {
   const content = await resolver.readFile(filePath, source);
   if (!content) {
@@ -46,6 +48,8 @@ export async function readOutline(
     };
   }
   const adapter = registry.forPath(filePath);
+  const totalLines = content.content.length === 0 ? 0
+    : content.content.split("\n").length - Number(content.content.endsWith("\n"));
   const parsed = await adapter.parse({
     path: filePath,
     language: registry.languageForPath(filePath),
@@ -59,11 +63,14 @@ export async function readOutline(
       ? "tree-sitter unavailable; using text outline"
       : "text outline; no syntax adapter configured for this language";
     const fallback = fallbackOutline(filePath, registry.languageForPath(filePath), content.content, note);
-    const capped = capOutlineTotal(fallback.outline, fallback.omittedCount);
+    const capped = capOutlineTotal(fallback.outline, fallback.omittedCount,
+      fallback.omittedCount ? 1 : fallback.outline.sourceReadHint?.startLine);
     return {
       outline: capped.outline,
       parsed,
       degraded,
+      totalLines,
+      ...(capped.nextLine !== undefined ? { nextLine: capped.nextLine } : {}),
       ...(degraded ? { degradationReason: note } : {}),
       ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
     };
@@ -76,6 +83,9 @@ export async function readOutline(
     Math.max(0, imports.length - MAX_IMPORTS) +
     Math.max(0, symbols.length - MAX_TOP_LEVEL_SYMBOLS) +
     Math.max(0, testSymbolsAll.length - MAX_TEST_SYMBOLS);
+  const firstOmitted = Math.min(imports.length > MAX_IMPORTS ? 1 : Infinity,
+    symbols[MAX_TOP_LEVEL_SYMBOLS]?.lineRange[0] ?? Infinity,
+    testSymbolsAll[MAX_TEST_SYMBOLS]?.lineRange[0] ?? Infinity);
   const capped = capOutlineTotal(
     {
       path: filePath,
@@ -86,12 +96,14 @@ export async function readOutline(
       testSymbols: testSymbolsAll.slice(0, MAX_TEST_SYMBOLS),
       notes: parsed.hasErrors ? ["parse contained error or missing nodes"] : []
     },
-    omittedCount
+    omittedCount, Number.isFinite(firstOmitted) ? firstOmitted : undefined
   );
   return {
     outline: capped.outline,
     parsed,
     degraded: false,
+    totalLines,
+    ...(capped.nextLine !== undefined ? { nextLine: capped.nextLine } : {}),
     ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
   };
 }
@@ -208,7 +220,9 @@ function fallbackOutline(filePath: string, language: string, content: string | u
   };
 }
 
-function capOutlineTotal(outline: FileOutline, existingOmittedCount: number): { outline: FileOutline; omittedCount: number } {
+function capOutlineTotal(
+  outline: FileOutline, existingOmittedCount: number, firstOmitted?: number
+): { outline: FileOutline; omittedCount: number; nextLine?: number } {
   const capped: FileOutline = {
     ...outline,
     imports: [...outline.imports],
@@ -217,20 +231,23 @@ function capOutlineTotal(outline: FileOutline, existingOmittedCount: number): { 
     notes: [...outline.notes]
   };
   let omittedCount = existingOmittedCount;
+  let nextLine = firstOmitted ?? Infinity;
 
   while (JSON.stringify(capped).length > MAX_OUTLINE_CHARS) {
     if (capped.sourceText) {
+      nextLine = Math.min(nextLine, capped.sourceText.startLine);
       capped.sourceReadHint = { tool: "read_range", path: capped.path, startLine: 1, endLine: Math.min(capped.sourceText.endLine, 80) };
       delete capped.sourceText;
       omittedCount += 1;
     } else if (capped.topLevelSymbols.length > 0) {
-      capped.topLevelSymbols.pop();
+      nextLine = Math.min(nextLine, capped.topLevelSymbols.pop()!.lineRange[0]);
       omittedCount += 1;
     } else if (capped.testSymbols.length > 0) {
-      capped.testSymbols.pop();
+      nextLine = Math.min(nextLine, capped.testSymbols.pop()!.lineRange[0]);
       omittedCount += 1;
     } else if (capped.imports.length > 0) {
       capped.imports.pop();
+      nextLine = 1;
       omittedCount += 1;
     } else if (capped.notes.length > 0) {
       capped.notes.pop();
@@ -240,7 +257,7 @@ function capOutlineTotal(outline: FileOutline, existingOmittedCount: number): { 
     }
   }
 
-  return { outline: capped, omittedCount };
+  return { outline: capped, omittedCount, ...(Number.isFinite(nextLine) ? { nextLine } : {}) };
 }
 
 function findSymbolForFact(symbols: SymbolInfo[], fact: HunkSymbolFacts): SymbolInfo | undefined {

@@ -5623,6 +5623,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).not.toContain("Invalid arguments for find_definition: Invalid arguments for");
   });
 
+  it.each([7_900, 8_001])("uses raw symbol bytes for evidence and its 8k limit (%i)", async size => {
+    const rawSource = "x".repeat(size);
+    const tool: ToolDefinition = { name: "read_symbol", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: `src/file.ts@head lines 1-1 of 1\n1\t${rawSource}${" ".repeat(200)}`,
+        rawSource, sourceLineRange: [1, 1], meta: { backend: "tree-sitter", precision: "syntactic", degraded: false,
+          sourceUsed: "head", deliveryStatus: "full", lookupStatus: "found" } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "source", name: tool.name, arguments: { path: "src/file.ts" } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("symbol-raw"), tools: [tool], onToolResults: results => captured.push(...results),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 20_000, maxSingleToolResultChars: 12_000 } });
+    if (size <= 8_000) expect(captured[0]?.repositoryEvidence).toMatchObject([{ text: rawSource, lineRange: [1, 1] }]);
+    else expect(captured[0]?.repositoryEvidence).toBeUndefined();
+  });
+
   it.each([
     { requested: undefined, used: undefined, expected: "head" },
     { requested: "base", used: undefined, expected: "base" },
