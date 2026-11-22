@@ -57,6 +57,16 @@ export class CodegenieError extends Error {
   }
 }
 
+export class ReviewTargetUsageError extends CodegenieError {
+  constructor(error: CodegenieError) {
+    super(error.code, error.message, {
+      cause: error,
+      recoverable: error.recoverable,
+      ...(error.context !== undefined ? { context: error.context } : {})
+    });
+  }
+}
+
 export function isCodegenieError(error: unknown): error is CodegenieError {
   return error instanceof CodegenieError;
 }
