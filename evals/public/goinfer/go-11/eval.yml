@@ -8,8 +8,3 @@ review:
   verify: true
   debug: true
   cache: false
-should_not_find:
-  - id: in-process-transport-anchor
-    path: internal/inproc/transport.go
-    lineRange: [22, 139]
-    severityAtLeast: medium
