@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
+import { buildReadDefinitionTool } from "../src/llm/definition-tool.js";
+import { definitionCursor } from "../src/repo/definition-page.js";
+import { packDefinitionPage, packDefinitionToolResult } from "../src/llm/definition-result-packing.js";
+import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 
 describe("exact definition lookup", () => {
   it("parses a literal named path directly, distinguishes absent and missing, and never broadens", async () => {
@@ -23,16 +27,14 @@ describe("exact definition lookup", () => {
       expect((await fixture.tools.findDefinition("Quoted", { exactPath: "src/quoted.ts" })).definitions).toHaveLength(1);
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "src/missing.ts" })).meta.lookupStatus).toBe("file_missing");
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "data/example.custom" })).meta.lookupStatus).toBe("unavailable");
+      const unavailable = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "data/example.custom" }, new AbortController().signal);
+      expect(unavailable.meta?.lookupStatus).toBe("unavailable");
+      expect(packDefinitionToolResult(unavailable, 9)).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { lookupStatus: "unavailable" } });
       expect(grep).not.toHaveBeenCalled();
       await expect(fixture.tools.findDefinition("Widget", { exactPath: "../outside.ts" })).rejects.toMatchObject({ code: "path_outside_repo" });
     } finally { fixture.dispose(); }
   });
 });
-
-import { buildReadDefinitionTool } from "../src/llm/definition-tool.js";
-import { definitionCursor } from "../src/repo/definition-page.js";
-import { packDefinitionPage, packDefinitionToolResult } from "../src/llm/definition-result-packing.js";
-import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 
 describe("read_definition delivery", () => {
   it("pages declaration rows separately from body recovery, preserving source and cursors", async () => {
