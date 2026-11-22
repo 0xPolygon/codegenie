@@ -2386,8 +2386,8 @@ async function resolvePacketContextHints(
         const result = await withRepositoryToolCallContext(repoIndex.tools, { stage: 6, initiator: "harness" },
           () => repoIndex.tools.findDefinition(hint.symbol!, { source: { kind: "head" } }));
         const { definitions, meta } = result;
-        const definition = definitions.length === 1 && meta.deliveryStatus === "full" &&
-          !meta.truncated && !meta.degraded && !meta.discoveryLimited && meta.backend !== "text"
+        const definition = definitions.length === 1 && meta.precision === "syntactic" && meta.deliveryStatus === "full" &&
+          !meta.truncated && !meta.degraded && !meta.discoveryLimited
           ? definitions[0]
           : undefined;
         if (definition?.text?.trim()) {
