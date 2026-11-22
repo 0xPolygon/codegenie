@@ -940,8 +940,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
-                      degraded: !(meta.searchDelivery || meta.pathListDelivery || toolCall.name === "read_diff_blocks"),
-                      degradationReason: "tool_result_budget_exhausted" };
+                      degradationReason: (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" };
                   }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }

@@ -444,7 +444,7 @@ function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
       const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full"
         ? range ?? (text ? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)] : undefined)
         : undefined;
-      const placement = sourceLineRange ? { sourceLineRange } : {};
+      const placement = sourceLineRange ? { sourceLineRange, rawSource: text } : {};
       if (!range) {
         if (meta.requestedRange && meta.deliveryStatus === "empty") {
           return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
@@ -503,7 +503,9 @@ export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
           separator: "\n", close: map.smallSource.endsWith("\n") ? "\n" : ""
         }, meta);
         return sourceResult.text.length <= MAX_SMALL_SOURCE_CHARS
-          ? { ...sourceResult, ...(meta.deliveredLineRange ? { sourceLineRange: meta.deliveredLineRange } : {}), budgetFallback: fallback }
+          ? { ...sourceResult,
+            ...(meta.deliveredLineRange ? { sourceLineRange: meta.deliveredLineRange, rawSource: map.smallSource } : {}),
+            budgetFallback: fallback }
           : fallback;
       });
     }
