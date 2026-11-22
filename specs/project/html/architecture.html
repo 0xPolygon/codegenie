@@ -445,18 +445,17 @@ the flagship type crossing component boundaries; its member records use
 the bare <code>Packet</code> prefix.</p>
 <p>Pipeline stages are identified by the numeric stage ids from the
 functional spec:</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,</span></span>
+<div class="sourceCode" id="cb5"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 1 input resolution, 2 diff parsing and filtering, 3 classification, 4 symbol extraction,</span></span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co">// 5 planning, 6 packet construction, 7 lens review,</span></span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">// 8 optional targeted system follow-up for repeated scoped hints,</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">// 8 unused (targeted system follow-up, deleted in #114),</span></span>
 <span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co">// 9 verification, 10 composition, 11 publishing</span></span>
 <span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co">// Logging and telemetry additionally use stage 0 for pre-pipeline events</span></span>
 <span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co">// (CLI parse, config load, input validation).</span></span>
-<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewStage <span class="op">=</span> <span class="dv">1</span> <span class="op">|</span> <span class="dv">2</span> <span class="op">|</span> <span class="dv">3</span> <span class="op">|</span> <span class="dv">4</span> <span class="op">|</span> <span class="dv">5</span> <span class="op">|</span> <span class="dv">6</span> <span class="op">|</span> <span class="dv">7</span> <span class="op">|</span> <span class="dv">8</span> <span class="op">|</span> <span class="dv">9</span> <span class="op">|</span> <span class="dv">10</span> <span class="op">|</span> <span class="dv">11</span></span></code></pre></div>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewStage <span class="op">=</span> <span class="dv">1</span> <span class="op">|</span> <span class="dv">2</span> <span class="op">|</span> <span class="dv">3</span> <span class="op">|</span> <span class="dv">4</span> <span class="op">|</span> <span class="dv">5</span> <span class="op">|</span> <span class="dv">6</span> <span class="op">|</span> <span class="dv">7</span> <span class="op">|</span> <span class="dv">9</span> <span class="op">|</span> <span class="dv">10</span> <span class="op">|</span> <span class="dv">11</span></span></code></pre></div>
 <p>Stage ids are stable for telemetry and evals. Mentally the pipeline
-is six phases: Inventory (1-4), Plan (5), Review (6-7 plus optional
-Stage 8), Verify (9), Compose (10), Publish (11). Stage 8 is narrow: it
-runs only when repeated scoped follow-up hints justify a focused system
-task.</p>
+is six phases: Inventory (1-4), Plan (5), Review (6-7), Verify (9),
+Compose (10), Publish (11). Stage 8 (targeted system follow-up) was
+deleted in #114; the other ids are unchanged.</p>
 <h3 id="review-input">Review Input</h3>
 <div class="sourceCode" id="cb6"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewMode <span class="op">=</span> <span class="st">&quot;github_pr&quot;</span> <span class="op">|</span> <span class="st">&quot;branch&quot;</span> <span class="op">|</span> <span class="st">&quot;head&quot;</span> <span class="op">|</span> <span class="st">&quot;commit_range&quot;</span></span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a></span>
@@ -899,9 +898,7 @@ must report coverage counts.</p>
 tool calls and files read live in <code>tool-calls.jsonl</code>, and
 readers join on <code>workerId</code>.</p>
 <p>Packet <code>followUpHints</code> and <code>uncertainties</code> flow
-to telemetry, to coverage/report notes, and, when multiple packet
-reviewers raise the same scoped follow-up question, into the narrow
-Stage 8 targeted system follow-up. Single unresolved hints remain
+to telemetry and to coverage/report notes. Unresolved hints remain
 human-attention notes rather than review tasks. Planner-authored
 questions and proof obligations are intentionally not part of the
 packet-review contract.</p>
@@ -931,8 +928,7 @@ packets.</li>
 only same-file hunks that share an enclosing symbol or are very nearby
 and still fit strict size limits.</li>
 <li>Never coalesce across files in v1. Cross-file concerns are recorded
-as follow-up hints; repeated scoped hints may trigger the narrow Stage 8
-follow-up, while isolated hints remain telemetry/report notes.</li>
+as follow-up hints, which remain telemetry/report notes.</li>
 <li>Attach cheap deterministic surrounding context when available —
 enclosing symbol source, file outline, likely tests — rendered into
 <code>contextText</code> within <code>maxContextChars</code>, plus
@@ -940,7 +936,7 @@ planner-provided <code>surroundingContextHints</code>.</li>
 <li>Attach advisory hunk-scoped <code>attentionNotes</code> and bounded
 <code>relatedChangedContext</code> from mechanically related changed
 hunks/symbols. These may influence reviewer attention, but they are not
-findings, questions, obligations, or Stage 8 triggers.</li>
+findings, questions, or obligations.</li>
 <li>Enforce max hunks, patch chars, context chars, and skill/lens prompt
 caps. Split oversized packets back into smaller packets. When one hunk
 alone exceeds <code>maxPatchChars</code>, the packet carries a truncated
@@ -1094,9 +1090,10 @@ is passed), <code>--pr</code>, single positional branch shorthand,
 <code>--branch</code>,
 <code>--head &lt;head-ref&gt; --base &lt;base-ref&gt;</code>, the
 <code>&lt;base-ref&gt;...&lt;head-ref&gt;</code> shorthand, positional
-commit/range review, the deprecated and ignored <code>--depth</code> (#129), repeatable
-<code>--lens</code>, <code>--provider</code>, <code>--model</code>,
-<code>--reasoning</code>, <code>--format markdown|json</code>,
+commit/range review, the deprecated and ignored <code>--depth</code>
+(#129), repeatable <code>--lens</code>, <code>--provider</code>,
+<code>--model</code>, <code>--reasoning</code>,
+<code>--format markdown|json</code>,
 <code>--post-github-comments</code>, <code>--ci</code>,
 <code>--no-progress</code>, and
 <code>--cache</code>/<code>--no-cache</code> (overriding
@@ -1134,7 +1131,14 @@ layer:</p>
 <code>config.toml</code> because the dedicated
 <code>provider config set-*</code> commands write
 <code>settings.json</code>.</p>
-<p>Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as <code>normal</code>. For one release <code>--depth</code>, <code>review.depth</code> in either TOML file, a stored <code>defaultDepth</code> and an eval case's <code>depth</code> still accept <code>light</code>, <code>normal</code> or <code>deep</code>, and each such input is ignored with a config warning. The release after that rejects them.</p>
+<p>Review depth was removed in #129: codegenie runs one review mode,
+using the budgets, close nudge and planner input that the plan 128
+campaign measured as <code>normal</code>. For one release
+<code>--depth</code>, <code>review.depth</code> in either TOML file, a
+stored <code>defaultDepth</code> and an eval case’s <code>depth</code>
+still accept <code>light</code>, <code>normal</code> or
+<code>deep</code>, and each such input is ignored with a config warning.
+The release after that rejects them.</p>
 <p>Per-key config sources (normative; Trust Boundaries defers to this
 table):</p>
 <table>
@@ -1150,11 +1154,11 @@ table):</p>
 </thead>
 <tbody>
 <tr>
-<td><code>review.maxFindings</code>,
-<code>review.softCommentCap</code>, <code>review.budgetBoost</code>,
-<code>review.maxTime</code>, <code>git.baseBranch</code>,
-<code>lenses.enabled</code> / <code>lenses.disabled</code>,
-<code>classification.pathRules</code> (incl. labels)</td>
+<td><code>review.maxFindings</code>, <code>review.softCommentCap</code>,
+<code>review.budgetBoost</code>, <code>review.maxTime</code>,
+<code>git.baseBranch</code>, <code>lenses.enabled</code> /
+<code>lenses.disabled</code>, <code>classification.pathRules</code>
+(incl. labels)</td>
 <td>Repo <code>codegenie.toml</code>, user-scoped config, or CLI</td>
 </tr>
 <tr>
@@ -1193,67 +1197,67 @@ sources to enforce the trust partition and produces the single resolved
 runner — consume the resolved config only and never read user state
 directly.</p>
 <p>Default config:</p>
-<div class="sourceCode" id="cb17"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Providers exposing different reasoning scales map onto these four levels.</span></span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="co">// &quot;auto&quot; is CLI-only and clears the CLI layer; resolution then continues</span></span>
-<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co">// CODEGENIE_REASONING &gt; settings.json &gt; config.toml &gt; the built-in &quot;high&quot; default.</span></span>
-<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReasoningLevel <span class="op">=</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;xhigh&quot;</span></span>
-<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CodegenieConfig <span class="op">=</span> {</span>
-<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> {</span>
-<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    disabled<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    extraSkillPaths<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>  review<span class="op">:</span> {</span>
-<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>    minSeverity<span class="op">?:</span> Severity</span>
-<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a>    softCommentCap<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>    minConfidence<span class="op">:</span> Confidence</span>
-<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>    minInlineConfidence<span class="op">:</span> Confidence</span>
-<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    maxTimeMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>    perPassTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>    maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>  github<span class="op">:</span> {</span>
-<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a>    summaryWhenNoFindings<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>  git<span class="op">:</span> {</span>
-<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a>    baseBranch<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-32"><a href="#cb17-32" aria-hidden="true" tabindex="-1"></a>  classification<span class="op">:</span> {</span>
-<span id="cb17-33"><a href="#cb17-33" aria-hidden="true" tabindex="-1"></a>    pathRules<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
-<span id="cb17-34"><a href="#cb17-34" aria-hidden="true" tabindex="-1"></a>      pattern<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb17-35"><a href="#cb17-35" aria-hidden="true" tabindex="-1"></a>      processingMode<span class="op">?:</span> ProcessingMode</span>
-<span id="cb17-36"><a href="#cb17-36" aria-hidden="true" tabindex="-1"></a>      reviewPriority<span class="op">?:</span> ReviewPriority</span>
-<span id="cb17-37"><a href="#cb17-37" aria-hidden="true" tabindex="-1"></a>      labels<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb17-38"><a href="#cb17-38" aria-hidden="true" tabindex="-1"></a>      reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb17-39"><a href="#cb17-39" aria-hidden="true" tabindex="-1"></a>    }<span class="op">&gt;</span></span>
-<span id="cb17-40"><a href="#cb17-40" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-41"><a href="#cb17-41" aria-hidden="true" tabindex="-1"></a>  llm<span class="op">:</span> {</span>
-<span id="cb17-42"><a href="#cb17-42" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb17-43"><a href="#cb17-43" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb17-44"><a href="#cb17-44" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
-<span id="cb17-45"><a href="#cb17-45" aria-hidden="true" tabindex="-1"></a>    maxConcurrentCalls<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-46"><a href="#cb17-46" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-47"><a href="#cb17-47" aria-hidden="true" tabindex="-1"></a>  cache<span class="op">:</span> {</span>
-<span id="cb17-48"><a href="#cb17-48" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb17-49"><a href="#cb17-49" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb17-50"><a href="#cb17-50" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-51"><a href="#cb17-51" aria-hidden="true" tabindex="-1"></a>  telemetry<span class="op">:</span> {</span>
-<span id="cb17-52"><a href="#cb17-52" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb17-53"><a href="#cb17-53" aria-hidden="true" tabindex="-1"></a>    logLevel<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
-<span id="cb17-54"><a href="#cb17-54" aria-hidden="true" tabindex="-1"></a>    debugTrace<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb17-55"><a href="#cb17-55" aria-hidden="true" tabindex="-1"></a>    runDir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb17-56"><a href="#cb17-56" aria-hidden="true" tabindex="-1"></a>    retainRuns<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-57"><a href="#cb17-57" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-58"><a href="#cb17-58" aria-hidden="true" tabindex="-1"></a>  eval<span class="op">:</span> {</span>
-<span id="cb17-59"><a href="#cb17-59" aria-hidden="true" tabindex="-1"></a>    defaultEvalDir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb17-60"><a href="#cb17-60" aria-hidden="true" tabindex="-1"></a>    logsDir<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb17-61"><a href="#cb17-61" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb17-62"><a href="#cb17-62" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb16"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Providers exposing different reasoning scales map onto these four levels.</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="co">// &quot;auto&quot; is CLI-only and clears the CLI layer; resolution then continues</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="co">// CODEGENIE_REASONING &gt; settings.json &gt; config.toml &gt; the built-in &quot;high&quot; default.</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReasoningLevel <span class="op">=</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;xhigh&quot;</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CodegenieConfig <span class="op">=</span> {</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> {</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>    disabled<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>    extraSkillPaths<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>  review<span class="op">:</span> {</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    minSeverity<span class="op">?:</span> Severity</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    softCommentCap<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>    minConfidence<span class="op">:</span> Confidence</span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>    minInlineConfidence<span class="op">:</span> Confidence</span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>    maxTimeMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>    perPassTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>    maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a>  github<span class="op">:</span> {</span>
+<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>    summaryWhenNoFindings<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>  git<span class="op">:</span> {</span>
+<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a>    baseBranch<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-31"><a href="#cb16-31" aria-hidden="true" tabindex="-1"></a>  classification<span class="op">:</span> {</span>
+<span id="cb16-32"><a href="#cb16-32" aria-hidden="true" tabindex="-1"></a>    pathRules<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
+<span id="cb16-33"><a href="#cb16-33" aria-hidden="true" tabindex="-1"></a>      pattern<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-34"><a href="#cb16-34" aria-hidden="true" tabindex="-1"></a>      processingMode<span class="op">?:</span> ProcessingMode</span>
+<span id="cb16-35"><a href="#cb16-35" aria-hidden="true" tabindex="-1"></a>      reviewPriority<span class="op">?:</span> ReviewPriority</span>
+<span id="cb16-36"><a href="#cb16-36" aria-hidden="true" tabindex="-1"></a>      labels<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb16-37"><a href="#cb16-37" aria-hidden="true" tabindex="-1"></a>      reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-38"><a href="#cb16-38" aria-hidden="true" tabindex="-1"></a>    }<span class="op">&gt;</span></span>
+<span id="cb16-39"><a href="#cb16-39" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-40"><a href="#cb16-40" aria-hidden="true" tabindex="-1"></a>  llm<span class="op">:</span> {</span>
+<span id="cb16-41"><a href="#cb16-41" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb16-42"><a href="#cb16-42" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb16-43"><a href="#cb16-43" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
+<span id="cb16-44"><a href="#cb16-44" aria-hidden="true" tabindex="-1"></a>    maxConcurrentCalls<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-45"><a href="#cb16-45" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-46"><a href="#cb16-46" aria-hidden="true" tabindex="-1"></a>  cache<span class="op">:</span> {</span>
+<span id="cb16-47"><a href="#cb16-47" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-48"><a href="#cb16-48" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-49"><a href="#cb16-49" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-50"><a href="#cb16-50" aria-hidden="true" tabindex="-1"></a>  telemetry<span class="op">:</span> {</span>
+<span id="cb16-51"><a href="#cb16-51" aria-hidden="true" tabindex="-1"></a>    enabled<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-52"><a href="#cb16-52" aria-hidden="true" tabindex="-1"></a>    logLevel<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
+<span id="cb16-53"><a href="#cb16-53" aria-hidden="true" tabindex="-1"></a>    debugTrace<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb16-54"><a href="#cb16-54" aria-hidden="true" tabindex="-1"></a>    runDir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-55"><a href="#cb16-55" aria-hidden="true" tabindex="-1"></a>    retainRuns<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb16-56"><a href="#cb16-56" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-57"><a href="#cb16-57" aria-hidden="true" tabindex="-1"></a>  eval<span class="op">:</span> {</span>
+<span id="cb16-58"><a href="#cb16-58" aria-hidden="true" tabindex="-1"></a>    defaultEvalDir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb16-59"><a href="#cb16-59" aria-hidden="true" tabindex="-1"></a>    logsDir<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb16-60"><a href="#cb16-60" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb16-61"><a href="#cb16-61" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>GitHub posting is enabled only by the
 <code>--post-github-comments</code> flag in v1; it cannot be enabled
 from configuration. <code>summaryWhenNoFindings</code> is a flag-scoped
@@ -1318,21 +1322,21 @@ visibility remains distinct from tag/npm/GitHub release state.</li>
 <code>review.softCommentCap</code> suppresses verified critical/high
 findings.</p>
 <p>Example path classification config:</p>
-<div class="sourceCode" id="cb18"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[git]</span></span>
-<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="dt">baseBranch</span> <span class="op">=</span> <span class="st">&quot;main&quot;</span></span>
-<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="kw">[[classification.pathRules]]</span></span>
-<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a><span class="dt">pattern</span> <span class="op">=</span> <span class="st">&quot;lib/payments/**&quot;</span></span>
-<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a><span class="dt">reviewPriority</span> <span class="op">=</span> <span class="st">&quot;critical&quot;</span></span>
-<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="dt">labels</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;payments&quot;</span><span class="op">,</span> <span class="st">&quot;critical-path&quot;</span><span class="op">]</span></span>
-<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a><span class="dt">processingMode</span> <span class="op">=</span> <span class="st">&quot;per-hunk&quot;</span></span>
-<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a><span class="dt">reason</span> <span class="op">=</span> <span class="st">&quot;Payments code is business-critical and should receive deeper review.&quot;</span></span>
-<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a><span class="kw">[[classification.pathRules]]</span></span>
-<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a><span class="dt">pattern</span> <span class="op">=</span> <span class="st">&quot;generated/**&quot;</span></span>
-<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a><span class="dt">labels</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;generated&quot;</span><span class="op">]</span></span>
-<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a><span class="dt">processingMode</span> <span class="op">=</span> <span class="st">&quot;skip&quot;</span></span>
-<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a><span class="dt">reason</span> <span class="op">=</span> <span class="st">&quot;Generated files are not reviewed directly.&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb17"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[git]</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="dt">baseBranch</span> <span class="op">=</span> <span class="st">&quot;main&quot;</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="kw">[[classification.pathRules]]</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="dt">pattern</span> <span class="op">=</span> <span class="st">&quot;lib/payments/**&quot;</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="dt">reviewPriority</span> <span class="op">=</span> <span class="st">&quot;critical&quot;</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="dt">labels</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;payments&quot;</span><span class="op">,</span> <span class="st">&quot;critical-path&quot;</span><span class="op">]</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="dt">processingMode</span> <span class="op">=</span> <span class="st">&quot;per-hunk&quot;</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="dt">reason</span> <span class="op">=</span> <span class="st">&quot;Payments code is business-critical and should receive deeper review.&quot;</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a><span class="kw">[[classification.pathRules]]</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a><span class="dt">pattern</span> <span class="op">=</span> <span class="st">&quot;generated/**&quot;</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a><span class="dt">labels</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;generated&quot;</span><span class="op">]</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a><span class="dt">processingMode</span> <span class="op">=</span> <span class="st">&quot;skip&quot;</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a><span class="dt">reason</span> <span class="op">=</span> <span class="st">&quot;Generated files are not reviewed directly.&quot;</span></span></code></pre></div>
 <h3 id="providerauth-cli">Provider/Auth CLI</h3>
 <p>Responsibilities:</p>
 <ul>
@@ -1529,17 +1533,17 @@ test conventions.</li>
 <li>Generic fallback for unsupported files.</li>
 </ul>
 <p>Language adapter interface:</p>
-<div class="sourceCode" id="cb22"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> LanguageAdapter {</span>
-<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>  extensions<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">init</span>()<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span><span class="dt">void</span><span class="op">&gt;</span></span>
-<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">parse</span>(input<span class="op">:</span> ParseInput)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>ParsedFile<span class="op">&gt;</span></span>
-<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">listSymbols</span>(file<span class="op">:</span> ParsedFile)<span class="op">:</span> SymbolInfo[]</span>
-<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getEnclosingSymbol</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> line<span class="op">:</span> <span class="dt">number</span>)<span class="op">:</span> SymbolInfo <span class="op">|</span> <span class="dt">undefined</span></span>
-<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getImports</span>(file<span class="op">:</span> ParsedFile)<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getChangedSymbols</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> ChangedSymbol[]</span>
-<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>  getStaticSignals<span class="op">?</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> StaticSignal[]</span>
-<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb21"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> LanguageAdapter {</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>  extensions<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">init</span>()<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span><span class="dt">void</span><span class="op">&gt;</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">parse</span>(input<span class="op">:</span> ParseInput)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>ParsedFile<span class="op">&gt;</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">listSymbols</span>(file<span class="op">:</span> ParsedFile)<span class="op">:</span> SymbolInfo[]</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getEnclosingSymbol</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> line<span class="op">:</span> <span class="dt">number</span>)<span class="op">:</span> SymbolInfo <span class="op">|</span> <span class="dt">undefined</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getImports</span>(file<span class="op">:</span> ParsedFile)<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getChangedSymbols</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> ChangedSymbol[]</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>  getStaticSignals<span class="op">?</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> StaticSignal[]</span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Likely-test discovery is owned once by
 <code>src/repo/likely-tests.ts</code>, not by an adapter hook. Rust
 candidates are sibling <code>&lt;stem&gt;_test.rs</code> and nearest
@@ -1557,44 +1561,44 @@ subject languages. Same-file Rust discovery, arbitrary Rust integration
 scanning, and custom pytest collection configuration are explicit
 deferrals.</p>
 <p>Repository tool interface:</p>
-<div class="sourceCode" id="cb23"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolBackend <span class="op">=</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;text&quot;</span> <span class="op">|</span> <span class="st">&quot;language-analyzer&quot;</span></span>
-<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolPrecision <span class="op">=</span> <span class="st">&quot;exact&quot;</span> <span class="op">|</span> <span class="st">&quot;semantic&quot;</span> <span class="op">|</span> <span class="st">&quot;syntactic&quot;</span> <span class="op">|</span> <span class="st">&quot;heuristic&quot;</span> <span class="op">|</span> <span class="st">&quot;text&quot;</span></span>
-<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SourceSelector <span class="op">=</span></span>
-<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> { kind<span class="op">:</span> <span class="st">&quot;head&quot;</span> }</span>
-<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> { kind<span class="op">:</span> <span class="st">&quot;base&quot;</span> }</span>
-<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolResultMeta <span class="op">=</span> {</span>
-<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>  backend<span class="op">:</span> ToolBackend</span>
-<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>  precision<span class="op">:</span> ToolPrecision</span>
-<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>  degradationReason<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>  truncated<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>  omittedCount<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FileOutline <span class="op">=</span> {</span>
-<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>  language<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a>  imports<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a>  topLevelSymbols<span class="op">:</span> SymbolInfo[]</span>
-<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a>  testSymbols<span class="op">:</span> SymbolInfo[]</span>
-<span id="cb23-25"><a href="#cb23-25" aria-hidden="true" tabindex="-1"></a>  notes<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb23-26"><a href="#cb23-26" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb23-27"><a href="#cb23-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-28"><a href="#cb23-28" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> RepositoryTools {</span>
-<span id="cb23-29"><a href="#cb23-29" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readRange</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> startLine<span class="op">:</span> <span class="dt">number</span><span class="op">,</span> endLine<span class="op">:</span> <span class="dt">number</span><span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ text<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-30"><a href="#cb23-30" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readFileOutline</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ outline<span class="op">:</span> FileOutline<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-31"><a href="#cb23-31" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readSymbol</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> selector<span class="op">:</span> { symbolName<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> line<span class="op">?:</span> <span class="dt">number</span> }<span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ text<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> <span class="dt">symbol</span><span class="op">?:</span> SymbolInfo<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-32"><a href="#cb23-32" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readDiffBlocks</span>(input<span class="op">:</span> { packetId<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> path<span class="op">?:</span> <span class="dt">string</span> })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ blocks<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-33"><a href="#cb23-33" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findDefinition</span>(symbolName<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> { pathGlob<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ definitions<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ <span class="dt">symbol</span><span class="op">:</span> SymbolInfo<span class="op">;</span> text<span class="op">?:</span> <span class="dt">string</span> }<span class="op">&gt;;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-34"><a href="#cb23-34" aria-hidden="true" tabindex="-1"></a>  <span class="fu">searchFiles</span>(query<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> SearchOptions)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ results<span class="op">:</span> SearchResult[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-35"><a href="#cb23-35" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findSymbolMentions</span>(symbolName<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> { pathGlob<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ results<span class="op">:</span> SearchResult[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-36"><a href="#cb23-36" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findLikelyTests</span>(input<span class="op">:</span> { path<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> <span class="dt">symbol</span><span class="op">?:</span> SymbolRef<span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ tests<span class="op">:</span> SymbolRef[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-37"><a href="#cb23-37" aria-hidden="true" tabindex="-1"></a>  <span class="fu">listFiles</span>(glob<span class="op">:</span> <span class="dt">string</span>)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ paths<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
-<span id="cb23-38"><a href="#cb23-38" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb22"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolBackend <span class="op">=</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;text&quot;</span> <span class="op">|</span> <span class="st">&quot;language-analyzer&quot;</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolPrecision <span class="op">=</span> <span class="st">&quot;exact&quot;</span> <span class="op">|</span> <span class="st">&quot;semantic&quot;</span> <span class="op">|</span> <span class="st">&quot;syntactic&quot;</span> <span class="op">|</span> <span class="st">&quot;heuristic&quot;</span> <span class="op">|</span> <span class="st">&quot;text&quot;</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SourceSelector <span class="op">=</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> { kind<span class="op">:</span> <span class="st">&quot;head&quot;</span> }</span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> { kind<span class="op">:</span> <span class="st">&quot;base&quot;</span> }</span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolResultMeta <span class="op">=</span> {</span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>  backend<span class="op">:</span> ToolBackend</span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>  precision<span class="op">:</span> ToolPrecision</span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a>  degradationReason<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a>  truncated<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a>  omittedCount<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FileOutline <span class="op">=</span> {</span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a>  language<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a>  imports<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb22-23"><a href="#cb22-23" aria-hidden="true" tabindex="-1"></a>  topLevelSymbols<span class="op">:</span> SymbolInfo[]</span>
+<span id="cb22-24"><a href="#cb22-24" aria-hidden="true" tabindex="-1"></a>  testSymbols<span class="op">:</span> SymbolInfo[]</span>
+<span id="cb22-25"><a href="#cb22-25" aria-hidden="true" tabindex="-1"></a>  notes<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb22-26"><a href="#cb22-26" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb22-27"><a href="#cb22-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-28"><a href="#cb22-28" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> RepositoryTools {</span>
+<span id="cb22-29"><a href="#cb22-29" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readRange</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> startLine<span class="op">:</span> <span class="dt">number</span><span class="op">,</span> endLine<span class="op">:</span> <span class="dt">number</span><span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ text<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-30"><a href="#cb22-30" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readFileOutline</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ outline<span class="op">:</span> FileOutline<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-31"><a href="#cb22-31" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readSymbol</span>(path<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> selector<span class="op">:</span> { symbolName<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> line<span class="op">?:</span> <span class="dt">number</span> }<span class="op">,</span> source<span class="op">?:</span> SourceSelector)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ text<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> <span class="dt">symbol</span><span class="op">?:</span> SymbolInfo<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-32"><a href="#cb22-32" aria-hidden="true" tabindex="-1"></a>  <span class="fu">readDiffBlocks</span>(input<span class="op">:</span> { packetId<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> path<span class="op">?:</span> <span class="dt">string</span> })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ blocks<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-33"><a href="#cb22-33" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findDefinition</span>(symbolName<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> { pathGlob<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ definitions<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ <span class="dt">symbol</span><span class="op">:</span> SymbolInfo<span class="op">;</span> text<span class="op">?:</span> <span class="dt">string</span> }<span class="op">&gt;;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-34"><a href="#cb22-34" aria-hidden="true" tabindex="-1"></a>  <span class="fu">searchFiles</span>(query<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> SearchOptions)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ results<span class="op">:</span> SearchResult[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-35"><a href="#cb22-35" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findSymbolMentions</span>(symbolName<span class="op">:</span> <span class="dt">string</span><span class="op">,</span> options<span class="op">?:</span> { pathGlob<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ results<span class="op">:</span> SearchResult[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-36"><a href="#cb22-36" aria-hidden="true" tabindex="-1"></a>  <span class="fu">findLikelyTests</span>(input<span class="op">:</span> { path<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> <span class="dt">symbol</span><span class="op">?:</span> SymbolRef<span class="op">;</span> source<span class="op">?:</span> SourceSelector })<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ tests<span class="op">:</span> SymbolRef[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-37"><a href="#cb22-37" aria-hidden="true" tabindex="-1"></a>  <span class="fu">listFiles</span>(glob<span class="op">:</span> <span class="dt">string</span>)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>{ paths<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> meta<span class="op">:</span> ToolResultMeta }<span class="op">&gt;</span></span>
+<span id="cb22-38"><a href="#cb22-38" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Repository tools are stable contracts backed by pluggable
 implementations:</p>
 <ul>
@@ -1669,24 +1673,24 @@ summaries and source snippets, not raw AST dumps.</p>
 stages.</li>
 </ul>
 <p>Skill file shape:</p>
-<div class="sourceCode" id="cb24"><pre class="sourceCode md"><code class="sourceCode markdown"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
-<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="an">id:</span><span class="co"> lang/go</span></span>
-<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> Go correctness</span></span>
-<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="an">lenses:</span><span class="co"> [&quot;lang/go&quot;]</span></span>
-<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a><span class="an">languages:</span><span class="co"> [&quot;go&quot;]</span></span>
-<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="an">categories:</span><span class="co"> [&quot;correctness&quot;, &quot;performance&quot;]</span></span>
-<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="an">enabledByDefault:</span><span class="co"> true</span></span>
-<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
-<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a><span class="fu"># Purpose</span></span>
-<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a><span class="fu"># Checks</span></span>
-<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-14"><a href="#cb24-14" aria-hidden="true" tabindex="-1"></a><span class="fu"># False Positives</span></span>
-<span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a><span class="fu"># Safe Patterns</span></span>
-<span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a><span class="fu"># Examples (optional)</span></span></code></pre></div>
+<div class="sourceCode" id="cb23"><pre class="sourceCode md"><code class="sourceCode markdown"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="an">id:</span><span class="co"> lang/go</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> Go correctness</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="an">lenses:</span><span class="co"> [&quot;lang/go&quot;]</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="an">languages:</span><span class="co"> [&quot;go&quot;]</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="an">categories:</span><span class="co"> [&quot;correctness&quot;, &quot;performance&quot;]</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a><span class="an">enabledByDefault:</span><span class="co"> true</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a><span class="fu"># Purpose</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="fu"># Checks</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a><span class="fu"># False Positives</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a><span class="fu"># Safe Patterns</span></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a><span class="fu"># Examples (optional)</span></span></code></pre></div>
 <p><code>Examples</code> is a supported optional section for distinct
 worked cases, not a required ritual. A narrowly owned check may instead
 carry its unsafe and safe examples inline; bundled language skills use
@@ -1738,8 +1742,12 @@ submit tool. The stage’s output schema is exposed as a tool
 (e.g. <code>submit_plan</code>, <code>submit_review</code>,
 <code>submit_verdict</code>, <code>submit_composition</code>); the model
 finishes by calling it; the adapter validates the tool arguments against
-the schema. This composes with read-only repository tools attached to
-the same call. There is no reliance on a provider response_format.</p>
+the schema. Before validation, the production adapter consumes Pi’s
+public stream and accepts the named submit arguments only when the
+complete public event representation parses strictly (or through Pi’s
+narrow string repair) and deep-equals Pi’s final value. This composes
+with read-only repository tools attached to the same call. There is no
+reliance on a provider response_format.</p>
 <p>Schema system: LLM input/output schemas are authored in TypeBox
 (pi-ai’s native schema system), with static types derived via
 <code>Static&lt;typeof Schema&gt;</code>. zod remains for config
@@ -1759,19 +1767,19 @@ timeout).</p>
 <p>Retry rule: one repair attempt on a schema-invalid submit, using a
 repair prompt.</p>
 <p>Interface:</p>
-<div class="sourceCode" id="cb25"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> LlmRunner {</span>
-<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">runStructured</span><span class="op">&lt;</span>T<span class="op">&gt;</span>(request<span class="op">:</span> LlmStructuredRequest<span class="op">&lt;</span>T<span class="op">&gt;</span>)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>T<span class="op">&gt;</span></span>
-<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LlmStructuredRequest<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">=</span> {</span>
-<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage</span>
-<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>  prompt<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>  schema<span class="op">:</span> TSchema <span class="co">// TypeBox schema; T = Static&lt;typeof schema&gt;</span></span>
-<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>  tools<span class="op">?:</span> ToolDefinition[]</span>
-<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">?:</span> ToolBudget</span>
-<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>  timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>  telemetryContext<span class="op">:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
-<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb24"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> LlmRunner {</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">runStructured</span><span class="op">&lt;</span>T<span class="op">&gt;</span>(request<span class="op">:</span> LlmStructuredRequest<span class="op">&lt;</span>T<span class="op">&gt;</span>)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>T<span class="op">&gt;</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LlmStructuredRequest<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">=</span> {</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage</span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>  prompt<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>  schema<span class="op">:</span> TSchema <span class="co">// TypeBox schema; T = Static&lt;typeof schema&gt;</span></span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>  tools<span class="op">?:</span> ToolDefinition[]</span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">?:</span> ToolBudget</span>
+<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a>  timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a>  telemetryContext<span class="op">:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
+<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Pipeline code must depend on <code>LlmRunner</code>, not directly on
 Pi APIs.</p>
 <h3 id="local-review-cache">Local Review Cache</h3>
@@ -1827,24 +1835,24 @@ logs must record cache hit/miss/write events with the numeric stage.</p>
 <li>Emit telemetry events.</li>
 </ul>
 <p>Main algorithm:</p>
-<div class="sourceCode" id="cb26"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">async</span> <span class="kw">function</span> <span class="fu">runReview</span>(input<span class="op">:</span> ReviewInput<span class="op">,</span> config<span class="op">:</span> CodegenieConfig)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>ReviewResult<span class="op">&gt;</span> {</span>
-<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> run <span class="op">=</span> <span class="cf">await</span> <span class="fu">startRun</span>(config)</span>
-<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> resolved <span class="op">=</span> <span class="cf">await</span> <span class="fu">resolveReviewInput</span>(input<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> diff <span class="op">=</span> <span class="cf">await</span> <span class="fu">parseDiff</span>(resolved<span class="op">.</span><span class="at">rawDiff</span><span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> { kept<span class="op">:</span> filtered<span class="op">,</span> decisions } <span class="op">=</span> <span class="cf">await</span> <span class="fu">filterDiffFiles</span>(resolved<span class="op">,</span> diff<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> fileFacts <span class="op">=</span> <span class="cf">await</span> <span class="fu">classifyChangedFiles</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> decisions<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> repoIndex <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildRepositoryIndex</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> dossier <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildPlannerDossier</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> decisions<span class="op">,</span> repoIndex<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> plan <span class="op">=</span> <span class="cf">await</span> <span class="fu">runPlanner</span>(dossier<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> packets <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildReviewPackets</span>(plan<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> repoIndex<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> packetResults <span class="op">=</span> <span class="cf">await</span> <span class="fu">runLensPackets</span>(plan<span class="op">,</span> packets<span class="op">,</span> repoIndex<span class="op">.</span><span class="at">tools</span><span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> verified <span class="op">=</span> <span class="cf">await</span> <span class="fu">verifyFindings</span>({ packetResults<span class="op">,</span> packets }<span class="op">,</span> repoIndex<span class="op">.</span><span class="at">tools</span><span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> coverage <span class="op">=</span> <span class="fu">aggregateRunCoverage</span>(plan<span class="op">,</span> decisions<span class="op">,</span> packetResults<span class="op">,</span> verified<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> finalReview <span class="op">=</span> <span class="cf">await</span> <span class="fu">dedupeRankAndComposeReview</span>(verified<span class="op">,</span> plan<span class="op">,</span> resolved<span class="op">,</span> coverage<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> posting <span class="op">=</span> <span class="cf">await</span> <span class="fu">maybePublishToGitHub</span>(finalReview<span class="op">,</span> resolved<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a>  <span class="cf">await</span> <span class="fu">renderOutputs</span>(finalReview<span class="op">,</span> posting<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
-<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> finalReview</span>
-<span id="cb26-18"><a href="#cb26-18" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb25"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">async</span> <span class="kw">function</span> <span class="fu">runReview</span>(input<span class="op">:</span> ReviewInput<span class="op">,</span> config<span class="op">:</span> CodegenieConfig)<span class="op">:</span> <span class="bu">Promise</span><span class="op">&lt;</span>ReviewResult<span class="op">&gt;</span> {</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> run <span class="op">=</span> <span class="cf">await</span> <span class="fu">startRun</span>(config)</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> resolved <span class="op">=</span> <span class="cf">await</span> <span class="fu">resolveReviewInput</span>(input<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> diff <span class="op">=</span> <span class="cf">await</span> <span class="fu">parseDiff</span>(resolved<span class="op">.</span><span class="at">rawDiff</span><span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> { kept<span class="op">:</span> filtered<span class="op">,</span> decisions } <span class="op">=</span> <span class="cf">await</span> <span class="fu">filterDiffFiles</span>(resolved<span class="op">,</span> diff<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> fileFacts <span class="op">=</span> <span class="cf">await</span> <span class="fu">classifyChangedFiles</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> decisions<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> repoIndex <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildRepositoryIndex</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> dossier <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildPlannerDossier</span>(resolved<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> decisions<span class="op">,</span> repoIndex<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> plan <span class="op">=</span> <span class="cf">await</span> <span class="fu">runPlanner</span>(dossier<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> packets <span class="op">=</span> <span class="cf">await</span> <span class="fu">buildReviewPackets</span>(plan<span class="op">,</span> filtered<span class="op">,</span> fileFacts<span class="op">,</span> repoIndex<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> packetResults <span class="op">=</span> <span class="cf">await</span> <span class="fu">runLensPackets</span>(plan<span class="op">,</span> packets<span class="op">,</span> repoIndex<span class="op">.</span><span class="at">tools</span><span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> verified <span class="op">=</span> <span class="cf">await</span> <span class="fu">verifyFindings</span>({ packetResults<span class="op">,</span> packets }<span class="op">,</span> repoIndex<span class="op">.</span><span class="at">tools</span><span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> coverage <span class="op">=</span> <span class="fu">aggregateRunCoverage</span>(plan<span class="op">,</span> decisions<span class="op">,</span> packetResults<span class="op">,</span> verified<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> finalReview <span class="op">=</span> <span class="cf">await</span> <span class="fu">dedupeRankAndComposeReview</span>(verified<span class="op">,</span> plan<span class="op">,</span> resolved<span class="op">,</span> coverage<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> posting <span class="op">=</span> <span class="cf">await</span> <span class="fu">maybePublishToGitHub</span>(finalReview<span class="op">,</span> resolved<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a>  <span class="cf">await</span> <span class="fu">renderOutputs</span>(finalReview<span class="op">,</span> posting<span class="op">,</span> config<span class="op">,</span> run<span class="op">.</span><span class="at">telemetry</span>)</span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> finalReview</span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>renderOutputs</code> runs after
 <code>maybePublishToGitHub</code>: in posting mode the concise stdout
 summary renders from Stage 11’s results, and its schema is the
@@ -1854,31 +1862,31 @@ publisher’s posting record (owned by
 ordering.</p>
 <p><code>ReviewResult</code> is the <code>--format json</code> output
 shape:</p>
-<div class="sourceCode" id="cb27"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewResult <span class="op">=</span> {</span>
-<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  summary<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> RunCoverageStatus</span>
-<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>  runStats<span class="op">?:</span> {</span>
-<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> { provider<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> id<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> reasoning<span class="op">?:</span> ReasoningLevel }</span>
-<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>    elapsedMs<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>    git<span class="op">?:</span> { repo<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> base<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> head<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> headSha<span class="op">?:</span> <span class="dt">string</span> }</span>
-<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>    plannerCoverage<span class="op">?:</span> PlannerCoverageStats</span>
-<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;inline&quot; only; suppressed findings are artifact-only (final-findings.json / final-selection.json)</span></span>
-<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>  summaryOnlyFindings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;summary-only&quot;</span></span>
-<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a>  needsHumanAttention<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ question<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> files<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> symbols<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> }<span class="op">&gt;</span> <span class="co">// code-assembled notes from medium/high-confidence follow-up hints</span></span>
-<span id="cb27-13"><a href="#cb27-13" aria-hidden="true" tabindex="-1"></a>  noFindings<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb27-14"><a href="#cb27-14" aria-hidden="true" tabindex="-1"></a>  postingPlan<span class="op">?:</span> { <span class="co">// present only when --post-github-comments was passed</span></span>
-<span id="cb27-15"><a href="#cb27-15" aria-hidden="true" tabindex="-1"></a>    inline<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ findingId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> anchor<span class="op">:</span> DiffAnchor }<span class="op">&gt;</span></span>
-<span id="cb27-16"><a href="#cb27-16" aria-hidden="true" tabindex="-1"></a>    reviewBody<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb27-17"><a href="#cb27-17" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb27-18"><a href="#cb27-18" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb27-19"><a href="#cb27-19" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb27-20"><a href="#cb27-20" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PlannerCoverageStats <span class="op">=</span> {</span>
-<span id="cb27-21"><a href="#cb27-21" aria-hidden="true" tabindex="-1"></a>  submittedEntries<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb27-22"><a href="#cb27-22" aria-hidden="true" tabindex="-1"></a>  acceptedEntries<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb27-23"><a href="#cb27-23" aria-hidden="true" tabindex="-1"></a>  acceptedUniqueHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb27-24"><a href="#cb27-24" aria-hidden="true" tabindex="-1"></a>  rejectedUnknownHunk<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb27-25"><a href="#cb27-25" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb26"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewResult <span class="op">=</span> {</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  summary<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> RunCoverageStatus</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>  runStats<span class="op">?:</span> {</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> { provider<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> id<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> reasoning<span class="op">?:</span> ReasoningLevel }</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>    elapsedMs<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>    git<span class="op">?:</span> { repo<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> base<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> head<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> headSha<span class="op">?:</span> <span class="dt">string</span> }</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>    plannerCoverage<span class="op">?:</span> PlannerCoverageStats</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;inline&quot; only; suppressed findings are artifact-only (final-findings.json / final-selection.json)</span></span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>  summaryOnlyFindings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;summary-only&quot;</span></span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>  needsHumanAttention<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ question<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> files<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> symbols<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> }<span class="op">&gt;</span> <span class="co">// code-assembled notes from medium/high-confidence follow-up hints</span></span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a>  noFindings<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a>  postingPlan<span class="op">?:</span> { <span class="co">// present only when --post-github-comments was passed</span></span>
+<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a>    inline<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ findingId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> anchor<span class="op">:</span> DiffAnchor }<span class="op">&gt;</span></span>
+<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a>    reviewBody<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb26-18"><a href="#cb26-18" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb26-19"><a href="#cb26-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-20"><a href="#cb26-20" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PlannerCoverageStats <span class="op">=</span> {</span>
+<span id="cb26-21"><a href="#cb26-21" aria-hidden="true" tabindex="-1"></a>  submittedEntries<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb26-22"><a href="#cb26-22" aria-hidden="true" tabindex="-1"></a>  acceptedEntries<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb26-23"><a href="#cb26-23" aria-hidden="true" tabindex="-1"></a>  acceptedUniqueHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb26-24"><a href="#cb26-24" aria-hidden="true" tabindex="-1"></a>  rejectedUnknownHunk<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb26-25"><a href="#cb26-25" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Detection (generated/vendor/lock/binary) is a single shared
 deterministic detector library. The pipeline order matches the stage
 numbering: parse → Stage 2 filter (run the detectors the skip policy
@@ -1921,15 +1929,13 @@ lenses projected into that task.</li>
 <li>Do not run one model call per lens by default.</li>
 <li>Project and cap skill prompt sections so large skill files do not
 dominate prompts. Packet review receives Checks, False Positives, and
-optional Examples; targeted Stage 8 review receives Checks, False
-Positives, and Safe Patterns; verification receives False Positives and
-Safe Patterns; the planner receives one-line summaries only; the
-composer receives none. A per-skill projection cap and a total
-skill-content cap per prompt apply, with truncation recorded in
-telemetry. Defaults: 4000 chars per skill projection, 12000 chars total
-per prompt.</li>
+optional Examples; verification receives False Positives and Safe
+Patterns; the planner receives one-line summaries only; the composer
+receives none. A per-skill projection cap and a total skill-content cap
+per prompt apply, with truncation recorded in telemetry. Defaults: 4000
+chars per skill projection, 12000 chars total per prompt.</li>
 <li>Derive every produced item’s ordered skill provenance from its
-actual prompt projection. Direct Stage-7/8 findings store it in
+actual prompt projection. Direct Stage-7 findings store it in
 <code>producedBy.skillIds</code>; Stage-7 hints and uncertainties store
 it in <code>projectedSkillIds</code>, and promotions inherit the
 selected source item’s list. Stage 9 resolves only those recorded ids,
@@ -2003,48 +2009,95 @@ aggregates plan-time coverage, runtime failures, budget stops, and
 verification incompleteness into the final coverage summary from
 observed review work:</li>
 </ul>
+<p>Content-stage invalidity is binary: known-invalid model data is never
+used. A stage continues only from independently trusted work or an
+existing deterministic fallback.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Terminal condition after the one repair</th>
+<th>Trusted state that remains</th>
+<th>Required disposition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stage-5 planner invalid</td>
+<td>Parsed diff/hunk inventory and deterministic default coverage</td>
+<td>Discard every planner field; continue with
+<code>degradedPlanning: true</code>.</td>
+</tr>
+<tr>
+<td>Stage-7 packet invalid</td>
+<td>Successful packet results; failed packet hunks are known gaps</td>
+<td>Discard the failed packet; mark its hunks incomplete/partial.</td>
+</tr>
+<tr>
+<td>Stage-9 verdict invalid or semantic empty revise</td>
+<td>Other completed verdicts; this candidate is unverified</td>
+<td>Suppress the candidate and increment verification-incomplete
+coverage.</td>
+</tr>
+<tr>
+<td>Stage-10 composition invalid</td>
+<td>Already verified findings</td>
+<td>Use deterministic composition; do not drop verified findings.</td>
+</tr>
+<tr>
+<td>Diff/base/repository identity, authentication, provider-wide
+availability, or another non-isolatable foundation is untrusted</td>
+<td>No trustworthy review foundation</td>
+<td>Fail the run and leave the scrubbed failure artifact.</td>
+</tr>
+</tbody>
+</table>
 <p>Complete reviews publish normally. Planner recovery or fallback
 appears in a coverage disclosure line. Partial reviews carry a prominent
 incomplete banner and publish only trusted findings. Partial reviews
 with no findings conclude <code>Review Incomplete</code> and never use
 approval-equivalent wording such as <code>Everything looks good</code>.
 Foundational failures never render a normal review.</p>
-<div class="sourceCode" id="cb28"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RunCoverageStatus <span class="op">=</span> {</span>
-<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>  totalHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>  reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>  skippedHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>  failedHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>  coverageByLevel<span class="op">:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span><span class="op">,</span> number<span class="op">&gt;</span></span>
-<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>  degradedPlanning<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a>  budgetStopped<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a>  budgetStop<span class="op">?:</span> BudgetStop</span>
-<span id="cb28-10"><a href="#cb28-10" aria-hidden="true" tabindex="-1"></a>  unreviewedHunksByPath<span class="op">?:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ path<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> hunks<span class="op">:</span> <span class="dt">number</span><span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
-<span id="cb28-11"><a href="#cb28-11" aria-hidden="true" tabindex="-1"></a>  verificationIncompleteCount<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-12"><a href="#cb28-12" aria-hidden="true" tabindex="-1"></a>  partial<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb28-13"><a href="#cb28-13" aria-hidden="true" tabindex="-1"></a>  reasons<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb28-14"><a href="#cb28-14" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb28-15"><a href="#cb28-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb28-16"><a href="#cb28-16" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> BudgetStop <span class="op">=</span> {</span>
-<span id="cb28-17"><a href="#cb28-17" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="st">&quot;runtime_reserved_tail&quot;</span> <span class="op">|</span> <span class="st">&quot;max_model_calls&quot;</span> <span class="op">|</span> <span class="st">&quot;max_budget_tokens&quot;</span> <span class="op">|</span> <span class="st">&quot;hard_timeout&quot;</span></span>
-<span id="cb28-18"><a href="#cb28-18" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span></span>
-<span id="cb28-19"><a href="#cb28-19" aria-hidden="true" tabindex="-1"></a>  elapsedMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-20"><a href="#cb28-20" aria-hidden="true" tabindex="-1"></a>  timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-21"><a href="#cb28-21" aria-hidden="true" tabindex="-1"></a>  hardTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-22"><a href="#cb28-22" aria-hidden="true" tabindex="-1"></a>  remainingRuntimeMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-23"><a href="#cb28-23" aria-hidden="true" tabindex="-1"></a>  reservedTailRuntimeMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-24"><a href="#cb28-24" aria-hidden="true" tabindex="-1"></a>  modelCalls<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-25"><a href="#cb28-25" aria-hidden="true" tabindex="-1"></a>  inFlightModelCalls<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-26"><a href="#cb28-26" aria-hidden="true" tabindex="-1"></a>  projectedModelCalls<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-27"><a href="#cb28-27" aria-hidden="true" tabindex="-1"></a>  maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-28"><a href="#cb28-28" aria-hidden="true" tabindex="-1"></a>  remainingModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-29"><a href="#cb28-29" aria-hidden="true" tabindex="-1"></a>  reservedModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-30"><a href="#cb28-30" aria-hidden="true" tabindex="-1"></a>  totalTokens<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-31"><a href="#cb28-31" aria-hidden="true" tabindex="-1"></a>  inFlightTokens<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-32"><a href="#cb28-32" aria-hidden="true" tabindex="-1"></a>  projectedTokens<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-33"><a href="#cb28-33" aria-hidden="true" tabindex="-1"></a>  maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-34"><a href="#cb28-34" aria-hidden="true" tabindex="-1"></a>  remainingTokens<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-35"><a href="#cb28-35" aria-hidden="true" tabindex="-1"></a>  reservedTokens<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb28-36"><a href="#cb28-36" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb27"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RunCoverageStatus <span class="op">=</span> {</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  totalHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>  skippedHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>  failedHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>  coverageByLevel<span class="op">:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span><span class="op">,</span> number<span class="op">&gt;</span></span>
+<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>  degradedPlanning<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>  budgetStopped<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>  budgetStop<span class="op">?:</span> BudgetStop</span>
+<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>  unreviewedHunksByPath<span class="op">?:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ path<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> hunks<span class="op">:</span> <span class="dt">number</span><span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
+<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>  verificationIncompleteCount<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a>  partial<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb27-13"><a href="#cb27-13" aria-hidden="true" tabindex="-1"></a>  reasons<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb27-14"><a href="#cb27-14" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb27-15"><a href="#cb27-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-16"><a href="#cb27-16" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> BudgetStop <span class="op">=</span> {</span>
+<span id="cb27-17"><a href="#cb27-17" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="st">&quot;runtime_reserved_tail&quot;</span> <span class="op">|</span> <span class="st">&quot;max_model_calls&quot;</span> <span class="op">|</span> <span class="st">&quot;max_budget_tokens&quot;</span> <span class="op">|</span> <span class="st">&quot;hard_timeout&quot;</span></span>
+<span id="cb27-18"><a href="#cb27-18" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span></span>
+<span id="cb27-19"><a href="#cb27-19" aria-hidden="true" tabindex="-1"></a>  elapsedMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-20"><a href="#cb27-20" aria-hidden="true" tabindex="-1"></a>  timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-21"><a href="#cb27-21" aria-hidden="true" tabindex="-1"></a>  hardTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-22"><a href="#cb27-22" aria-hidden="true" tabindex="-1"></a>  remainingRuntimeMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-23"><a href="#cb27-23" aria-hidden="true" tabindex="-1"></a>  reservedTailRuntimeMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-24"><a href="#cb27-24" aria-hidden="true" tabindex="-1"></a>  modelCalls<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-25"><a href="#cb27-25" aria-hidden="true" tabindex="-1"></a>  inFlightModelCalls<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-26"><a href="#cb27-26" aria-hidden="true" tabindex="-1"></a>  projectedModelCalls<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-27"><a href="#cb27-27" aria-hidden="true" tabindex="-1"></a>  maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-28"><a href="#cb27-28" aria-hidden="true" tabindex="-1"></a>  remainingModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-29"><a href="#cb27-29" aria-hidden="true" tabindex="-1"></a>  reservedModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-30"><a href="#cb27-30" aria-hidden="true" tabindex="-1"></a>  totalTokens<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-31"><a href="#cb27-31" aria-hidden="true" tabindex="-1"></a>  inFlightTokens<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-32"><a href="#cb27-32" aria-hidden="true" tabindex="-1"></a>  projectedTokens<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-33"><a href="#cb27-33" aria-hidden="true" tabindex="-1"></a>  maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-34"><a href="#cb27-34" aria-hidden="true" tabindex="-1"></a>  remainingTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-35"><a href="#cb27-35" aria-hidden="true" tabindex="-1"></a>  reservedTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-36"><a href="#cb27-36" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>coverage.json</code> serializes this plus per-hunk records that
 include source (<code>planner</code>,
 <code>deterministic_default</code>, or <code>config</code>) so evals can
@@ -2177,7 +2230,7 @@ within ±5 lines of an existing codegenie-authored comment counts as a
 duplicate. Category is not part of the fuzzy rule; it is hashed inside
 the fingerprint and not recoverable from posted markers.</p>
 <p>Comment marker:</p>
-<div class="sourceCode" id="cb30"><pre class="sourceCode html"><code class="sourceCode html"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="co">&lt;!-- codegenie:fingerprint=&lt;fingerprint&gt;;run=&lt;run-id&gt; --&gt;</span></span></code></pre></div>
+<div class="sourceCode" id="cb29"><pre class="sourceCode html"><code class="sourceCode html"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co">&lt;!-- codegenie:fingerprint=&lt;fingerprint&gt;;run=&lt;run-id&gt; --&gt;</span></span></code></pre></div>
 <p>The marker must be appended to GitHub comment bodies and hidden from
 normal Markdown output where possible.</p>
 <h3 id="output-and-github-publishing">Output And GitHub Publishing</h3>
@@ -2234,8 +2287,8 @@ codegenie runs as. Markers in other users’ comments are ignored for
 duplicate suppression.</p>
 <p>Publishing rules:</p>
 <ul>
-<li>Inline findings require a changed-line anchor and confidence at or above
-<code>review.minInlineConfidence</code> (medium by default).</li>
+<li>Inline findings require a changed-line anchor and confidence at or
+above <code>review.minInlineConfidence</code> (medium by default).</li>
 <li>Broader system concerns go into the review summary.</li>
 <li>If no findings remain, do not post a GitHub summary by default
 unless <code>github.summaryWhenNoFindings</code> is true.</li>
@@ -2255,62 +2308,65 @@ unless <code>github.summaryWhenNoFindings</code> is true.</li>
 <li>Keep stdout clean.</li>
 </ul>
 <p>Run directory:</p>
-<pre class="text"><code>.codegenie/runs/&lt;yyyyMMdd-HHmmss&gt;-&lt;shortid&gt;/
+<pre class="text"><code>.codegenie/runs/&lt;yyyyMMdd-HHmmss&gt;-&lt;8-hex-digits&gt;/
   run.json
   run.log
   telemetry.json
   events.jsonl
   model-calls.jsonl
-  model-calls-summary.json
   tool-calls.jsonl
-  tool-calls-summary.json
-  planner-dossier.json
-  review-plan.json
-  coverage.json
-  packets/
-    &lt;packet-id&gt;.json
-  candidate-findings.json
-  verification.json
-  final-selection.json
-  final-findings.json
-  cost-profile.json
+  artifact-manifest.json
+  stages/
+    00-run/            # cost and model/tool summaries, errors
+    01-input/          # resolved input
+    02-diff/           # parsed diff and filter decisions
+    03-classify/       # file facts
+    05-planner/        # dossier, intent and plan
+    06-packets/        # hunk relationships and packets/&lt;packet-id&gt;.json
+    09-verification/   # candidates, promotions and verdicts
+    10-composition/    # coverage, selection, findings and budget summary
+    11-github-posting/ # posting artifact when applicable
   final-review.md
-  github-posting.json
+  final-review.json
   debug/
     llm-calls/
       &lt;call-id&gt;.json
     tool-calls/
       &lt;tool-call-id&gt;.json</code></pre>
+<p>The generated run ID uses the UTC timestamp and eight random
+hexadecimal digits. By default it is also the directory name; evals may
+supply a different artifact directory while retaining the independently
+generated run ID.</p>
 <p><code>debug/</code> is written only when
 <code>telemetry.debugTrace</code> is enabled. Debug artifacts may
 contain source snippets, prompts, and model outputs.</p>
 <p>Logger interface:</p>
-<div class="sourceCode" id="cb32"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LogLevel <span class="op">=</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
-<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LogEvent <span class="op">=</span> {</span>
-<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>  level<span class="op">:</span> LogLevel</span>
-<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb32-7"><a href="#cb32-7" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span> <span class="co">// 0 = pre-pipeline (CLI parse, config load, input validation)</span></span>
-<span id="cb32-8"><a href="#cb32-8" aria-hidden="true" tabindex="-1"></a>  event<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb32-9"><a href="#cb32-9" aria-hidden="true" tabindex="-1"></a>  message<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb32-10"><a href="#cb32-10" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-11"><a href="#cb32-11" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-12"><a href="#cb32-12" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-13"><a href="#cb32-13" aria-hidden="true" tabindex="-1"></a>  path<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-14"><a href="#cb32-14" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-15"><a href="#cb32-15" aria-hidden="true" tabindex="-1"></a>  findingId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-16"><a href="#cb32-16" aria-hidden="true" tabindex="-1"></a>  toolName<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-17"><a href="#cb32-17" aria-hidden="true" tabindex="-1"></a>  lensId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb32-18"><a href="#cb32-18" aria-hidden="true" tabindex="-1"></a>  data<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
-<span id="cb32-19"><a href="#cb32-19" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb32-20"><a href="#cb32-20" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb32-21"><a href="#cb32-21" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> Logger {</span>
-<span id="cb32-22"><a href="#cb32-22" aria-hidden="true" tabindex="-1"></a>  <span class="fu">debug</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
-<span id="cb32-23"><a href="#cb32-23" aria-hidden="true" tabindex="-1"></a>  <span class="fu">info</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
-<span id="cb32-24"><a href="#cb32-24" aria-hidden="true" tabindex="-1"></a>  <span class="fu">warn</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
-<span id="cb32-25"><a href="#cb32-25" aria-hidden="true" tabindex="-1"></a>  <span class="fu">error</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
-<span id="cb32-26"><a href="#cb32-26" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb31"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LogLevel <span class="op">=</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> LogEvent <span class="op">=</span> {</span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a>  level<span class="op">:</span> LogLevel</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span> <span class="co">// 0 = pre-pipeline (CLI parse, config load, input validation)</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a>  event<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a>  message<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>  path<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a>  findingId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a>  toolName<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a>  lensId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb31-18"><a href="#cb31-18" aria-hidden="true" tabindex="-1"></a>  data<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
+<span id="cb31-19"><a href="#cb31-19" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb31-20"><a href="#cb31-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-21"><a href="#cb31-21" aria-hidden="true" tabindex="-1"></a><span class="kw">interface</span> Logger {</span>
+<span id="cb31-22"><a href="#cb31-22" aria-hidden="true" tabindex="-1"></a>  <span class="fu">debug</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
+<span id="cb31-23"><a href="#cb31-23" aria-hidden="true" tabindex="-1"></a>  <span class="fu">info</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
+<span id="cb31-24"><a href="#cb31-24" aria-hidden="true" tabindex="-1"></a>  <span class="fu">warn</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
+<span id="cb31-25"><a href="#cb31-25" aria-hidden="true" tabindex="-1"></a>  <span class="fu">error</span>(event<span class="op">:</span> <span class="bu">Omit</span><span class="op">&lt;</span>LogEvent<span class="op">,</span> <span class="st">&quot;timestamp&quot;</span> <span class="op">|</span> <span class="st">&quot;level&quot;</span><span class="op">&gt;</span>)<span class="op">:</span> <span class="dt">void</span></span>
+<span id="cb31-26"><a href="#cb31-26" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>The logger writes timestamped structured lines to
 <code>run.log</code>. Human-facing stdout remains reserved for the final
 Markdown report or concise posting summary. Warnings and errors may also
@@ -2318,22 +2374,22 @@ be mirrored to stderr. Every pipeline log must include the numeric
 <code>stage</code> from the functional spec so evals and later LLM
 analysis can reconstruct stage behavior from the log.</p>
 <p>Telemetry event shape:</p>
-<div class="sourceCode" id="cb33"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> TelemetryEvent <span class="op">=</span> {</span>
-<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>  eventId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span> <span class="co">// 0 = pre-pipeline (CLI parse, config load, input validation)</span></span>
-<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>  level<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
-<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a>  message<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>  file<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
-<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a>  lensId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a>  durationMs<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a>  cacheStatus<span class="op">?:</span> <span class="st">&quot;hit&quot;</span> <span class="op">|</span> <span class="st">&quot;miss&quot;</span> <span class="op">|</span> <span class="st">&quot;disabled&quot;</span> <span class="op">|</span> <span class="st">&quot;write&quot;</span></span>
-<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a>  data<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
-<span id="cb33-16"><a href="#cb33-16" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb32"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> TelemetryEvent <span class="op">=</span> {</span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>  eventId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span> <span class="co">// 0 = pre-pipeline (CLI parse, config load, input validation)</span></span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>  level<span class="op">:</span> <span class="st">&quot;debug&quot;</span> <span class="op">|</span> <span class="st">&quot;info&quot;</span> <span class="op">|</span> <span class="st">&quot;warn&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span></span>
+<span id="cb32-7"><a href="#cb32-7" aria-hidden="true" tabindex="-1"></a>  message<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb32-8"><a href="#cb32-8" aria-hidden="true" tabindex="-1"></a>  file<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb32-9"><a href="#cb32-9" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
+<span id="cb32-10"><a href="#cb32-10" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb32-11"><a href="#cb32-11" aria-hidden="true" tabindex="-1"></a>  lensId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb32-12"><a href="#cb32-12" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb32-13"><a href="#cb32-13" aria-hidden="true" tabindex="-1"></a>  durationMs<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb32-14"><a href="#cb32-14" aria-hidden="true" tabindex="-1"></a>  cacheStatus<span class="op">?:</span> <span class="st">&quot;hit&quot;</span> <span class="op">|</span> <span class="st">&quot;miss&quot;</span> <span class="op">|</span> <span class="st">&quot;disabled&quot;</span> <span class="op">|</span> <span class="st">&quot;write&quot;</span></span>
+<span id="cb32-15"><a href="#cb32-15" aria-hidden="true" tabindex="-1"></a>  data<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
+<span id="cb32-16"><a href="#cb32-16" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>The sinks are the contract for these two types — <code>run.log</code>
 for <code>LogEvent</code>, <code>events.jsonl</code> for
 <code>TelemetryEvent</code> — and a single emit API may fan one call out
@@ -2346,41 +2402,40 @@ tool invocation — model-initiated inside an LLM tool loop or
 harness-initiated during deterministic stages — is recorded as one
 <code>ToolCallRecord</code> line in <code>tool-calls.jsonl</code>,
 regardless of debug settings:</p>
-<div class="sourceCode" id="cb34"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolCallRecord <span class="op">=</span> {</span>
-<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>  toolCallId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage</span>
-<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a>  initiator<span class="op">:</span> <span class="st">&quot;model&quot;</span> <span class="op">|</span> <span class="st">&quot;harness&quot;</span> <span class="co">// model = issued inside an LLM tool loop; harness = deterministic pipeline use</span></span>
-<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a>  taskId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// Stage 8 targeted system follow-up task id</span></span>
-<span id="cb34-10"><a href="#cb34-10" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// verifier-issued calls</span></span>
-<span id="cb34-11"><a href="#cb34-11" aria-hidden="true" tabindex="-1"></a>  modelCallId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// joins to model-calls.jsonl: the LLM call whose loop step issued this tool call</span></span>
-<span id="cb34-12"><a href="#cb34-12" aria-hidden="true" tabindex="-1"></a>  tool<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb34-13"><a href="#cb34-13" aria-hidden="true" tabindex="-1"></a>  args<span class="op">:</span> {</span>
-<span id="cb34-14"><a href="#cb34-14" aria-hidden="true" tabindex="-1"></a>    path<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-15"><a href="#cb34-15" aria-hidden="true" tabindex="-1"></a>    symbolName<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-16"><a href="#cb34-16" aria-hidden="true" tabindex="-1"></a>    line<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb34-17"><a href="#cb34-17" aria-hidden="true" tabindex="-1"></a>    startLine<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb34-18"><a href="#cb34-18" aria-hidden="true" tabindex="-1"></a>    endLine<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb34-19"><a href="#cb34-19" aria-hidden="true" tabindex="-1"></a>    query<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-20"><a href="#cb34-20" aria-hidden="true" tabindex="-1"></a>    glob<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-21"><a href="#cb34-21" aria-hidden="true" tabindex="-1"></a>    source<span class="op">?:</span> <span class="dt">string</span> <span class="co">// &quot;head&quot; | &quot;base&quot;</span></span>
-<span id="cb34-22"><a href="#cb34-22" aria-hidden="true" tabindex="-1"></a>    contextMode<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-23"><a href="#cb34-23" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb34-24"><a href="#cb34-24" aria-hidden="true" tabindex="-1"></a>  backend<span class="op">:</span> ToolBackend</span>
-<span id="cb34-25"><a href="#cb34-25" aria-hidden="true" tabindex="-1"></a>  precision<span class="op">:</span> ToolPrecision</span>
-<span id="cb34-26"><a href="#cb34-26" aria-hidden="true" tabindex="-1"></a>  engine<span class="op">?:</span> <span class="st">&quot;git-grep&quot;</span> <span class="co">// search-engine provenance for text-search-backed calls</span></span>
-<span id="cb34-27"><a href="#cb34-27" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb34-28"><a href="#cb34-28" aria-hidden="true" tabindex="-1"></a>  degradationReason<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb34-29"><a href="#cb34-29" aria-hidden="true" tabindex="-1"></a>  truncated<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb34-30"><a href="#cb34-30" aria-hidden="true" tabindex="-1"></a>  resultCount<span class="op">?:</span> <span class="dt">number</span> <span class="co">// matches/symbols/tests returned, when applicable</span></span>
-<span id="cb34-31"><a href="#cb34-31" aria-hidden="true" tabindex="-1"></a>  resultChars<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb34-32"><a href="#cb34-32" aria-hidden="true" tabindex="-1"></a>  durationMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb34-33"><a href="#cb34-33" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;ok&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span> <span class="op">|</span> <span class="st">&quot;rejected&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span> <span class="co">// rejected = budget or containment denial</span></span>
-<span id="cb34-34"><a href="#cb34-34" aria-hidden="true" tabindex="-1"></a>  errorCode<span class="op">?:</span> CodegenieErrorCode</span>
-<span id="cb34-35"><a href="#cb34-35" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb33"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolCallRecord <span class="op">=</span> {</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>  runId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>  toolCallId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>  timestamp<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage</span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>  initiator<span class="op">:</span> <span class="st">&quot;model&quot;</span> <span class="op">|</span> <span class="st">&quot;harness&quot;</span> <span class="co">// model = issued inside an LLM tool loop; harness = deterministic pipeline use</span></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a>  workerId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// verifier-issued calls</span></span>
+<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a>  modelCallId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// joins to model-calls.jsonl: the LLM call whose loop step issued this tool call</span></span>
+<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a>  tool<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a>  args<span class="op">:</span> {</span>
+<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a>    path<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a>    symbolName<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a>    line<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb33-16"><a href="#cb33-16" aria-hidden="true" tabindex="-1"></a>    startLine<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb33-17"><a href="#cb33-17" aria-hidden="true" tabindex="-1"></a>    endLine<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb33-18"><a href="#cb33-18" aria-hidden="true" tabindex="-1"></a>    query<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-19"><a href="#cb33-19" aria-hidden="true" tabindex="-1"></a>    glob<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-20"><a href="#cb33-20" aria-hidden="true" tabindex="-1"></a>    source<span class="op">?:</span> <span class="dt">string</span> <span class="co">// &quot;head&quot; | &quot;base&quot;</span></span>
+<span id="cb33-21"><a href="#cb33-21" aria-hidden="true" tabindex="-1"></a>    contextMode<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-22"><a href="#cb33-22" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb33-23"><a href="#cb33-23" aria-hidden="true" tabindex="-1"></a>  backend<span class="op">:</span> ToolBackend</span>
+<span id="cb33-24"><a href="#cb33-24" aria-hidden="true" tabindex="-1"></a>  precision<span class="op">:</span> ToolPrecision</span>
+<span id="cb33-25"><a href="#cb33-25" aria-hidden="true" tabindex="-1"></a>  engine<span class="op">?:</span> <span class="st">&quot;git-grep&quot;</span> <span class="co">// search-engine provenance for text-search-backed calls</span></span>
+<span id="cb33-26"><a href="#cb33-26" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb33-27"><a href="#cb33-27" aria-hidden="true" tabindex="-1"></a>  degradationReason<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb33-28"><a href="#cb33-28" aria-hidden="true" tabindex="-1"></a>  truncated<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb33-29"><a href="#cb33-29" aria-hidden="true" tabindex="-1"></a>  resultCount<span class="op">?:</span> <span class="dt">number</span> <span class="co">// matches/symbols/tests returned, when applicable</span></span>
+<span id="cb33-30"><a href="#cb33-30" aria-hidden="true" tabindex="-1"></a>  resultChars<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb33-31"><a href="#cb33-31" aria-hidden="true" tabindex="-1"></a>  durationMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb33-32"><a href="#cb33-32" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;ok&quot;</span> <span class="op">|</span> <span class="st">&quot;error&quot;</span> <span class="op">|</span> <span class="st">&quot;rejected&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span> <span class="co">// rejected = budget or containment denial</span></span>
+<span id="cb33-33"><a href="#cb33-33" aria-hidden="true" tabindex="-1"></a>  errorCode<span class="op">?:</span> CodegenieErrorCode</span>
+<span id="cb33-34"><a href="#cb33-34" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>tool-calls-summary.json</code> aggregates per tool and per
 stage: call counts, error/rejection/degradation rates, average duration,
 and average result size. Full result payloads still live only under
@@ -2417,69 +2472,69 @@ repeatable quality testing against real repositories, fixtures, and
 captured artifacts. Eval support reuses the normal review engine and run
 artifacts; it must not fork a separate review implementation.</p>
 <p>Eval command examples:</p>
-<div class="sourceCode" id="cb35"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
-<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
-<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
-<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
+<div class="sourceCode" id="cb34"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
 <p>Eval cases are YAML files. Private eval cases should live outside the
 codegenie repository and may point to external local repositories.
 Public eval cases may use fixtures.</p>
-<div class="sourceCode" id="cb36"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> EvalCase <span class="op">=</span> {</span>
-<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>  name<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>  repo<span class="op">?:</span> {</span>
-<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a>    external<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a>    fixture<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a>  command<span class="op">?:</span> {</span>
-<span id="cb36-8"><a href="#cb36-8" aria-hidden="true" tabindex="-1"></a>    pr<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-9"><a href="#cb36-9" aria-hidden="true" tabindex="-1"></a>    branch<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-10"><a href="#cb36-10" aria-hidden="true" tabindex="-1"></a>    base<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-11"><a href="#cb36-11" aria-hidden="true" tabindex="-1"></a>    target<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-12"><a href="#cb36-12" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-13"><a href="#cb36-13" aria-hidden="true" tabindex="-1"></a>  review<span class="op">?:</span> {</span>
-<span id="cb36-14"><a href="#cb36-14" aria-hidden="true" tabindex="-1"></a>    depth<span class="op">?:</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;deep&quot;</span><span class="co">   // deprecated (#129): accepted, ignored with a warning</span></span>
-<span id="cb36-15"><a href="#cb36-15" aria-hidden="true" tabindex="-1"></a>    lenses<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb36-16"><a href="#cb36-16" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-17"><a href="#cb36-17" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-18"><a href="#cb36-18" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb36-19"><a href="#cb36-19" aria-hidden="true" tabindex="-1"></a>    cache<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb36-20"><a href="#cb36-20" aria-hidden="true" tabindex="-1"></a>    cacheDir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-21"><a href="#cb36-21" aria-hidden="true" tabindex="-1"></a>    debug<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb36-22"><a href="#cb36-22" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-23"><a href="#cb36-23" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-24"><a href="#cb36-24" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
-<span id="cb36-25"><a href="#cb36-25" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-26"><a href="#cb36-26" aria-hidden="true" tabindex="-1"></a>  logs<span class="op">?:</span> {</span>
-<span id="cb36-27"><a href="#cb36-27" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb36-28"><a href="#cb36-28" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-29"><a href="#cb36-29" aria-hidden="true" tabindex="-1"></a>  artifacts<span class="op">?:</span> {</span>
-<span id="cb36-30"><a href="#cb36-30" aria-hidden="true" tabindex="-1"></a>    path<span class="op">:</span> <span class="dt">string</span> <span class="co">// artifact replay re-scores saved findings only</span></span>
-<span id="cb36-31"><a href="#cb36-31" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-32"><a href="#cb36-32" aria-hidden="true" tabindex="-1"></a>  expect<span class="op">?:</span> {</span>
-<span id="cb36-33"><a href="#cb36-33" aria-hidden="true" tabindex="-1"></a>    minFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-34"><a href="#cb36-34" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-35"><a href="#cb36-35" aria-hidden="true" tabindex="-1"></a>    maxDuplicateGroups<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-36"><a href="#cb36-36" aria-hidden="true" tabindex="-1"></a>    maxCostUSD<span class="op">?:</span> <span class="dt">number</span> <span class="co">// assertion on observed cost from cost-profile.json, not a run budget (cost-based run budgets are deferred)</span></span>
-<span id="cb36-37"><a href="#cb36-37" aria-hidden="true" tabindex="-1"></a>    maxElapsedSeconds<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-38"><a href="#cb36-38" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-39"><a href="#cb36-39" aria-hidden="true" tabindex="-1"></a>    maxToolCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb36-40"><a href="#cb36-40" aria-hidden="true" tabindex="-1"></a>    maxPromptCharsByStage<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span>ReviewStage <span class="op">|</span> <span class="dt">string</span><span class="op">,</span> <span class="dt">number</span><span class="op">&gt;</span> <span class="co">// keys are numeric stage ids</span></span>
-<span id="cb36-41"><a href="#cb36-41" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb36-42"><a href="#cb36-42" aria-hidden="true" tabindex="-1"></a>  should_find<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb36-43"><a href="#cb36-43" aria-hidden="true" tabindex="-1"></a>  should_find_candidate<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb36-44"><a href="#cb36-44" aria-hidden="true" tabindex="-1"></a>  should_not_find<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb36-45"><a href="#cb36-45" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb35"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> EvalCase <span class="op">=</span> {</span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>  name<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a>  repo<span class="op">?:</span> {</span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a>    external<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a>    fixture<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-7"><a href="#cb35-7" aria-hidden="true" tabindex="-1"></a>  command<span class="op">?:</span> {</span>
+<span id="cb35-8"><a href="#cb35-8" aria-hidden="true" tabindex="-1"></a>    pr<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-9"><a href="#cb35-9" aria-hidden="true" tabindex="-1"></a>    branch<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-10"><a href="#cb35-10" aria-hidden="true" tabindex="-1"></a>    base<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-11"><a href="#cb35-11" aria-hidden="true" tabindex="-1"></a>    target<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-12"><a href="#cb35-12" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-13"><a href="#cb35-13" aria-hidden="true" tabindex="-1"></a>  review<span class="op">?:</span> {</span>
+<span id="cb35-14"><a href="#cb35-14" aria-hidden="true" tabindex="-1"></a>    depth<span class="op">?:</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;deep&quot;</span>   <span class="co">// deprecated (#129): accepted, ignored with a warning</span></span>
+<span id="cb35-15"><a href="#cb35-15" aria-hidden="true" tabindex="-1"></a>    lenses<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb35-16"><a href="#cb35-16" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-17"><a href="#cb35-17" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-18"><a href="#cb35-18" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-19"><a href="#cb35-19" aria-hidden="true" tabindex="-1"></a>    cache<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-20"><a href="#cb35-20" aria-hidden="true" tabindex="-1"></a>    cacheDir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-21"><a href="#cb35-21" aria-hidden="true" tabindex="-1"></a>    debug<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-22"><a href="#cb35-22" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-23"><a href="#cb35-23" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-24"><a href="#cb35-24" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
+<span id="cb35-25"><a href="#cb35-25" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-26"><a href="#cb35-26" aria-hidden="true" tabindex="-1"></a>  logs<span class="op">?:</span> {</span>
+<span id="cb35-27"><a href="#cb35-27" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-28"><a href="#cb35-28" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-29"><a href="#cb35-29" aria-hidden="true" tabindex="-1"></a>  artifacts<span class="op">?:</span> {</span>
+<span id="cb35-30"><a href="#cb35-30" aria-hidden="true" tabindex="-1"></a>    path<span class="op">:</span> <span class="dt">string</span> <span class="co">// artifact replay re-scores saved findings only</span></span>
+<span id="cb35-31"><a href="#cb35-31" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-32"><a href="#cb35-32" aria-hidden="true" tabindex="-1"></a>  expect<span class="op">?:</span> {</span>
+<span id="cb35-33"><a href="#cb35-33" aria-hidden="true" tabindex="-1"></a>    minFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-34"><a href="#cb35-34" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-35"><a href="#cb35-35" aria-hidden="true" tabindex="-1"></a>    maxDuplicateGroups<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-36"><a href="#cb35-36" aria-hidden="true" tabindex="-1"></a>    maxCostUSD<span class="op">?:</span> <span class="dt">number</span> <span class="co">// assertion on observed cost from cost-profile.json, not a run budget (cost-based run budgets are deferred)</span></span>
+<span id="cb35-37"><a href="#cb35-37" aria-hidden="true" tabindex="-1"></a>    maxElapsedSeconds<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-38"><a href="#cb35-38" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-39"><a href="#cb35-39" aria-hidden="true" tabindex="-1"></a>    maxToolCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-40"><a href="#cb35-40" aria-hidden="true" tabindex="-1"></a>    maxPromptCharsByStage<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span>ReviewStage <span class="op">|</span> <span class="dt">string</span><span class="op">,</span> <span class="dt">number</span><span class="op">&gt;</span> <span class="co">// keys are numeric stage ids</span></span>
+<span id="cb35-41"><a href="#cb35-41" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-42"><a href="#cb35-42" aria-hidden="true" tabindex="-1"></a>  should_find<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-43"><a href="#cb35-43" aria-hidden="true" tabindex="-1"></a>  should_find_candidate<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-44"><a href="#cb35-44" aria-hidden="true" tabindex="-1"></a>  should_not_find<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-45"><a href="#cb35-45" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Expectation type (full matching detail delegated to
 <code>components/evals.md</code>):</p>
-<div class="sourceCode" id="cb37"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> EvalFindingExpectation <span class="op">=</span> {</span>
-<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a>  path<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
-<span id="cb37-5"><a href="#cb37-5" aria-hidden="true" tabindex="-1"></a>  category<span class="op">?:</span> FindingCategory</span>
-<span id="cb37-6"><a href="#cb37-6" aria-hidden="true" tabindex="-1"></a>  severityAtLeast<span class="op">?:</span> Severity</span>
-<span id="cb37-7"><a href="#cb37-7" aria-hidden="true" tabindex="-1"></a>  titlePattern<span class="op">?:</span> <span class="dt">string</span>      <span class="co">// regex</span></span>
-<span id="cb37-8"><a href="#cb37-8" aria-hidden="true" tabindex="-1"></a>  failureModePattern<span class="op">?:</span> <span class="dt">string</span> <span class="co">// regex</span></span>
-<span id="cb37-9"><a href="#cb37-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb36"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> EvalFindingExpectation <span class="op">=</span> {</span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>  path<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a>  category<span class="op">?:</span> FindingCategory</span>
+<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a>  severityAtLeast<span class="op">?:</span> Severity</span>
+<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a>  titlePattern<span class="op">?:</span> <span class="dt">string</span>      <span class="co">// regex</span></span>
+<span id="cb36-8"><a href="#cb36-8" aria-hidden="true" tabindex="-1"></a>  failureModePattern<span class="op">?:</span> <span class="dt">string</span> <span class="co">// regex</span></span>
+<span id="cb36-9"><a href="#cb36-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Matching semantics are deterministic field matching: a finding
 matches an expectation when all present fields match (path exact or
 glob, lineRange overlap, category equality, severity &gt;=
@@ -2530,31 +2585,31 @@ no-cache runs should both be supported so model-review quality and
 downstream deterministic behavior can be debugged separately.</p>
 <h2 id="error-handling">Error Handling</h2>
 <p>Use typed errors with stable codes:</p>
-<div class="sourceCode" id="cb39"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CodegenieErrorCode <span class="op">=</span></span>
-<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;not_git_worktree&quot;</span></span>
-<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;invalid_args&quot;</span></span>
-<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;config_error&quot;</span></span>
-<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;gh_missing&quot;</span></span>
-<span id="cb39-6"><a href="#cb39-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;gh_auth_failed&quot;</span></span>
-<span id="cb39-7"><a href="#cb39-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;pr_not_found&quot;</span></span>
-<span id="cb39-8"><a href="#cb39-8" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_ref_missing&quot;</span></span>
-<span id="cb39-9"><a href="#cb39-9" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_base_branch_unresolved&quot;</span></span>
-<span id="cb39-10"><a href="#cb39-10" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_fetch_failed&quot;</span></span>
-<span id="cb39-11"><a href="#cb39-11" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;diff_parse_failed&quot;</span></span>
-<span id="cb39-12"><a href="#cb39-12" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;parser_unavailable&quot;</span></span>
-<span id="cb39-13"><a href="#cb39-13" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;skill_invalid&quot;</span></span>
-<span id="cb39-14"><a href="#cb39-14" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;path_outside_repo&quot;</span></span>
-<span id="cb39-15"><a href="#cb39-15" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;llm_call_failed&quot;</span></span>
-<span id="cb39-16"><a href="#cb39-16" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;llm_schema_invalid&quot;</span></span>
-<span id="cb39-17"><a href="#cb39-17" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;github_post_failed&quot;</span></span>
-<span id="cb39-18"><a href="#cb39-18" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;budget_exhausted&quot;</span> <span class="co">// recoverable; drives the budget degradation ladder</span></span>
-<span id="cb39-19"><a href="#cb39-19" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;timeout&quot;</span> <span class="co">// fatal; the hard kill at 2x the runtime budget</span></span>
-<span id="cb39-20"><a href="#cb39-20" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb39-21"><a href="#cb39-21" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> CodegenieError <span class="kw">extends</span> <span class="bu">Error</span> {</span>
-<span id="cb39-22"><a href="#cb39-22" aria-hidden="true" tabindex="-1"></a>  code<span class="op">:</span> CodegenieErrorCode</span>
-<span id="cb39-23"><a href="#cb39-23" aria-hidden="true" tabindex="-1"></a>  recoverable<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb39-24"><a href="#cb39-24" aria-hidden="true" tabindex="-1"></a>  context<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
-<span id="cb39-25"><a href="#cb39-25" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb38"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb38-1"><a href="#cb38-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CodegenieErrorCode <span class="op">=</span></span>
+<span id="cb38-2"><a href="#cb38-2" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;not_git_worktree&quot;</span></span>
+<span id="cb38-3"><a href="#cb38-3" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;invalid_args&quot;</span></span>
+<span id="cb38-4"><a href="#cb38-4" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;config_error&quot;</span></span>
+<span id="cb38-5"><a href="#cb38-5" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;gh_missing&quot;</span></span>
+<span id="cb38-6"><a href="#cb38-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;gh_auth_failed&quot;</span></span>
+<span id="cb38-7"><a href="#cb38-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;pr_not_found&quot;</span></span>
+<span id="cb38-8"><a href="#cb38-8" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_ref_missing&quot;</span></span>
+<span id="cb38-9"><a href="#cb38-9" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_base_branch_unresolved&quot;</span></span>
+<span id="cb38-10"><a href="#cb38-10" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;git_fetch_failed&quot;</span></span>
+<span id="cb38-11"><a href="#cb38-11" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;diff_parse_failed&quot;</span></span>
+<span id="cb38-12"><a href="#cb38-12" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;parser_unavailable&quot;</span></span>
+<span id="cb38-13"><a href="#cb38-13" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;skill_invalid&quot;</span></span>
+<span id="cb38-14"><a href="#cb38-14" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;path_outside_repo&quot;</span></span>
+<span id="cb38-15"><a href="#cb38-15" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;llm_call_failed&quot;</span></span>
+<span id="cb38-16"><a href="#cb38-16" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;llm_schema_invalid&quot;</span></span>
+<span id="cb38-17"><a href="#cb38-17" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;github_post_failed&quot;</span></span>
+<span id="cb38-18"><a href="#cb38-18" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;budget_exhausted&quot;</span> <span class="co">// recoverable; drives the budget degradation ladder</span></span>
+<span id="cb38-19"><a href="#cb38-19" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;timeout&quot;</span> <span class="co">// fatal; the hard kill at 2x the runtime budget</span></span>
+<span id="cb38-20"><a href="#cb38-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb38-21"><a href="#cb38-21" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> CodegenieError <span class="kw">extends</span> <span class="bu">Error</span> {</span>
+<span id="cb38-22"><a href="#cb38-22" aria-hidden="true" tabindex="-1"></a>  code<span class="op">:</span> CodegenieErrorCode</span>
+<span id="cb38-23"><a href="#cb38-23" aria-hidden="true" tabindex="-1"></a>  recoverable<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb38-24"><a href="#cb38-24" aria-hidden="true" tabindex="-1"></a>  context<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span><span class="dt">string</span><span class="op">,</span> <span class="dt">unknown</span><span class="op">&gt;</span></span>
+<span id="cb38-25"><a href="#cb38-25" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Recoverable degradation:</p>
 <ul>
 <li>Unsupported language parser for a file.</li>
@@ -2615,6 +2670,24 @@ themselves be flagged as a finding (review-manipulation attempt).</p>
 deterministic sanitization (see Output And GitHub Publishing).
 Telemetry/debug artifacts contain untrusted content by design and are
 local-only.</p>
+<p>Final submit boundary: Pi stream fragments are ephemeral. Codegenie
+does not parse provider wire formats, accept Pi’s partial streaming
+parser as final provenance, or persist accumulated argument text/parser
+messages/value hashes. An untrusted named submit is represented locally
+without <code>arguments</code>; its assistant response never enters
+provider conversation history or cache. The runner retains the
+independently constructed conversation that preceded that response,
+appends bounded repair guidance, and may perform one forced-submit clean
+re-execution. This rare retry can resend more trusted input context, and
+its cost is measured by existing per-call telemetry. A normalized
+<code>stopReason: &quot;length&quot;</code> wins; provider-specific raw stop
+reasons are not reinterpreted.</p>
+<p>Public schema-failure diagnostics are safe-by-construction
+projections: stage, role, submit tool/schema version, attempt, a closed
+bounded classification, and schema-owned path/rule/limit fields only.
+Raw validator payloads, arbitrary error context, repository text,
+prompts, arguments, and original validator causes never cross into
+Action comments, logs, or failure artifacts.</p>
 <p>Repository tools path containment (single chokepoint in the
 RepositoryTools layer): all paths are canonicalized as
 repository-relative tree paths; absolute paths and <code>..</code>
@@ -2717,26 +2790,26 @@ Trigger: chunked planning measurably degrades plan quality (bad coverage
 decisions, missed risk areas) on large reviews.</p>
 <h3 id="broad-cross-file-system-review">Broad Cross-File System
 Review</h3>
-<p>The shipped Stage 8 is intentionally narrow: it builds at most a few
-focused system-review tasks only from repeated, scoped Stage 7 follow-up
-hints. A broader cross-file system review remains deferred. Deferred
+<p>A cross-file system review remains deferred. The narrow repeated-hint
+Stage 8 that shipped earlier was deleted in #114 after an archive review
+found no candidates and unreliable hint resolutions. Deferred
 shapes:</p>
-<div class="sourceCode" id="cb40"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb40-1"><a href="#cb40-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SystemFollowUpTask <span class="op">=</span> {</span>
-<span id="cb40-2"><a href="#cb40-2" aria-hidden="true" tabindex="-1"></a>  topic<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb40-3"><a href="#cb40-3" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb40-4"><a href="#cb40-4" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb40-5"><a href="#cb40-5" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb40-6"><a href="#cb40-6" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb40-7"><a href="#cb40-7" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
-<span id="cb40-8"><a href="#cb40-8" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb40-9"><a href="#cb40-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb40-10"><a href="#cb40-10" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SystemReviewResult <span class="op">=</span> {</span>
-<span id="cb40-11"><a href="#cb40-11" aria-hidden="true" tabindex="-1"></a>  taskId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb40-12"><a href="#cb40-12" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
-<span id="cb40-13"><a href="#cb40-13" aria-hidden="true" tabindex="-1"></a>  hintResolutions<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ source<span class="op">:</span> { kind<span class="op">:</span> <span class="st">&quot;planner&quot;</span> <span class="op">|</span> <span class="st">&quot;packet_hint&quot;</span> <span class="op">|</span> <span class="st">&quot;candidate&quot;</span> <span class="op">|</span> <span class="st">&quot;uncertainty&quot;</span><span class="op">;</span> packetId<span class="op">?:</span> <span class="dt">string</span> }<span class="op">;</span> outcome<span class="op">:</span> <span class="st">&quot;confirmed&quot;</span> <span class="op">|</span> <span class="st">&quot;rejected&quot;</span> <span class="op">|</span> <span class="st">&quot;unresolved&quot;</span><span class="op">;</span> note<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
-<span id="cb40-14"><a href="#cb40-14" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
-<span id="cb40-15"><a href="#cb40-15" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
-<span id="cb40-16"><a href="#cb40-16" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb39"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SystemFollowUpTask <span class="op">=</span> {</span>
+<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a>  topic<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb39-6"><a href="#cb39-6" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb39-7"><a href="#cb39-7" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
+<span id="cb39-8"><a href="#cb39-8" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb39-9"><a href="#cb39-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-10"><a href="#cb39-10" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SystemReviewResult <span class="op">=</span> {</span>
+<span id="cb39-11"><a href="#cb39-11" aria-hidden="true" tabindex="-1"></a>  taskId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb39-12"><a href="#cb39-12" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
+<span id="cb39-13"><a href="#cb39-13" aria-hidden="true" tabindex="-1"></a>  hintResolutions<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ source<span class="op">:</span> { kind<span class="op">:</span> <span class="st">&quot;planner&quot;</span> <span class="op">|</span> <span class="st">&quot;packet_hint&quot;</span> <span class="op">|</span> <span class="st">&quot;candidate&quot;</span> <span class="op">|</span> <span class="st">&quot;uncertainty&quot;</span><span class="op">;</span> packetId<span class="op">?:</span> <span class="dt">string</span> }<span class="op">;</span> outcome<span class="op">:</span> <span class="st">&quot;confirmed&quot;</span> <span class="op">|</span> <span class="st">&quot;rejected&quot;</span> <span class="op">|</span> <span class="st">&quot;unresolved&quot;</span><span class="op">;</span> note<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
+<span id="cb39-14"><a href="#cb39-14" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
+<span id="cb39-15"><a href="#cb39-15" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
+<span id="cb39-16"><a href="#cb39-16" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>With the broad stage, the following return:
 <code>ReviewPlan.systemFollowUpTasks</code> (planner-emitted tasks that
 must name files or symbols), richer promotion rules (packet hints,
@@ -2752,28 +2825,25 @@ needed, the <code>&quot;system_follow_up&quot;</code> value in
 <code>maxResultChars</code>, <code>taskTimeoutMs</code>). The
 cross-packet <code>ReviewSignal</code> index (next subsection) belongs
 to this same future. Trigger: hint-only eval losses show real cross-file
-misses that packet review plus the narrow repeated-hint Stage 8 do not
-surface.</p>
+misses that packet review does not surface.</p>
 <h3 id="cross-packet-reviewsignal-index">Cross-packet ReviewSignal
 index</h3>
 <p>Normalize planner tasks, packet hints, candidate findings, and
 uncertainties into typed signal records indexed by symbol, file,
-category, and configured labels, with graded promotion rules replacing
-the simple two-independent-mentions rule above:</p>
-<div class="sourceCode" id="cb41"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewSignal <span class="op">=</span> {</span>
-<span id="cb41-2"><a href="#cb41-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb41-3"><a href="#cb41-3" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;planner&quot;</span> <span class="op">|</span> <span class="st">&quot;packet_hint&quot;</span> <span class="op">|</span> <span class="st">&quot;candidate&quot;</span> <span class="op">|</span> <span class="st">&quot;uncertainty&quot;</span></span>
-<span id="cb41-4"><a href="#cb41-4" aria-hidden="true" tabindex="-1"></a>  packetIds<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb41-5"><a href="#cb41-5" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb41-6"><a href="#cb41-6" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb41-7"><a href="#cb41-7" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb41-8"><a href="#cb41-8" aria-hidden="true" tabindex="-1"></a>  category<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb41-9"><a href="#cb41-9" aria-hidden="true" tabindex="-1"></a>  question<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb41-10"><a href="#cb41-10" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb41-11"><a href="#cb41-11" aria-hidden="true" tabindex="-1"></a>  priority<span class="op">:</span> <span class="st">&quot;critical&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
-<span id="cb41-12"><a href="#cb41-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
-<p>Trigger: evals show missed cross-file findings or noisy/duplicated
-Stage 8 tasks under the simple repeated-hint rule.</p>
+category, and configured labels, with graded promotion rules:</p>
+<div class="sourceCode" id="cb40"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb40-1"><a href="#cb40-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewSignal <span class="op">=</span> {</span>
+<span id="cb40-2"><a href="#cb40-2" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb40-3"><a href="#cb40-3" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;planner&quot;</span> <span class="op">|</span> <span class="st">&quot;packet_hint&quot;</span> <span class="op">|</span> <span class="st">&quot;candidate&quot;</span> <span class="op">|</span> <span class="st">&quot;uncertainty&quot;</span></span>
+<span id="cb40-4"><a href="#cb40-4" aria-hidden="true" tabindex="-1"></a>  packetIds<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb40-5"><a href="#cb40-5" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb40-6"><a href="#cb40-6" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb40-7"><a href="#cb40-7" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb40-8"><a href="#cb40-8" aria-hidden="true" tabindex="-1"></a>  category<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb40-9"><a href="#cb40-9" aria-hidden="true" tabindex="-1"></a>  question<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb40-10"><a href="#cb40-10" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb40-11"><a href="#cb40-11" aria-hidden="true" tabindex="-1"></a>  priority<span class="op">:</span> <span class="st">&quot;critical&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
+<span id="cb40-12"><a href="#cb40-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>Trigger: evals show missed cross-file findings.</p>
 <h3 id="planner-scheduling-groups">Planner scheduling groups</h3>
 <p>Planner-emitted hunk groups carrying ordering and parallelism intent
 (<code>hunkGroups</code> with <code>groupId</code>,
@@ -2783,18 +2853,18 @@ sharing or genuinely dependent review ordering is introduced.</p>
 <h3 id="changed-symbol-graph">Changed-symbol graph</h3>
 <p>Relationship edges over changed symbols, precomputed at index
 time:</p>
-<div class="sourceCode" id="cb42"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb42-1"><a href="#cb42-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SymbolEdge <span class="op">=</span> {</span>
-<span id="cb42-2"><a href="#cb42-2" aria-hidden="true" tabindex="-1"></a>  from<span class="op">:</span> SymbolRef</span>
-<span id="cb42-3"><a href="#cb42-3" aria-hidden="true" tabindex="-1"></a>  to<span class="op">:</span> SymbolRef</span>
-<span id="cb42-4"><a href="#cb42-4" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> <span class="st">&quot;calls&quot;</span> <span class="op">|</span> <span class="st">&quot;implements&quot;</span> <span class="op">|</span> <span class="st">&quot;extends&quot;</span> <span class="op">|</span> <span class="st">&quot;imports&quot;</span> <span class="op">|</span> <span class="st">&quot;tests&quot;</span> <span class="op">|</span> <span class="st">&quot;references&quot;</span></span>
-<span id="cb42-5"><a href="#cb42-5" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;syntactic&quot;</span> <span class="op">|</span> <span class="st">&quot;heuristic&quot;</span> <span class="op">|</span> <span class="st">&quot;semantic&quot;</span></span>
-<span id="cb42-6"><a href="#cb42-6" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;git-grep&quot;</span> <span class="op">|</span> <span class="st">&quot;lsp&quot;</span> <span class="op">|</span> <span class="st">&quot;compiler&quot;</span> <span class="op">|</span> <span class="st">&quot;custom&quot;</span></span>
-<span id="cb42-7"><a href="#cb42-7" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb42-8"><a href="#cb42-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb42-9"><a href="#cb42-9" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ChangedSymbolGraph <span class="op">=</span> {</span>
-<span id="cb42-10"><a href="#cb42-10" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> ChangedSymbol[]</span>
-<span id="cb42-11"><a href="#cb42-11" aria-hidden="true" tabindex="-1"></a>  edges<span class="op">:</span> SymbolEdge[]</span>
-<span id="cb42-12"><a href="#cb42-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb41"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SymbolEdge <span class="op">=</span> {</span>
+<span id="cb41-2"><a href="#cb41-2" aria-hidden="true" tabindex="-1"></a>  from<span class="op">:</span> SymbolRef</span>
+<span id="cb41-3"><a href="#cb41-3" aria-hidden="true" tabindex="-1"></a>  to<span class="op">:</span> SymbolRef</span>
+<span id="cb41-4"><a href="#cb41-4" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> <span class="st">&quot;calls&quot;</span> <span class="op">|</span> <span class="st">&quot;implements&quot;</span> <span class="op">|</span> <span class="st">&quot;extends&quot;</span> <span class="op">|</span> <span class="st">&quot;imports&quot;</span> <span class="op">|</span> <span class="st">&quot;tests&quot;</span> <span class="op">|</span> <span class="st">&quot;references&quot;</span></span>
+<span id="cb41-5"><a href="#cb41-5" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;syntactic&quot;</span> <span class="op">|</span> <span class="st">&quot;heuristic&quot;</span> <span class="op">|</span> <span class="st">&quot;semantic&quot;</span></span>
+<span id="cb41-6"><a href="#cb41-6" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;git-grep&quot;</span> <span class="op">|</span> <span class="st">&quot;lsp&quot;</span> <span class="op">|</span> <span class="st">&quot;compiler&quot;</span> <span class="op">|</span> <span class="st">&quot;custom&quot;</span></span>
+<span id="cb41-7"><a href="#cb41-7" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb41-8"><a href="#cb41-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-9"><a href="#cb41-9" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ChangedSymbolGraph <span class="op">=</span> {</span>
+<span id="cb41-10"><a href="#cb41-10" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> ChangedSymbol[]</span>
+<span id="cb41-11"><a href="#cb41-11" aria-hidden="true" tabindex="-1"></a>  edges<span class="op">:</span> SymbolEdge[]</span>
+<span id="cb41-12"><a href="#cb41-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>V1 ships <code>HunkSymbolFacts</code> and outlines; relationship
 questions are answered on demand by <code>find_symbol_mentions</code>
 and <code>find_likely_tests</code>. Trigger: evals show
@@ -2870,11 +2940,11 @@ evidence for reviewers, never automatic findings.</p>
 reasoning tiering</h3>
 <p><code>llm.roleModels</code> and <code>llm.roleReasoning</code> maps
 keyed by role (<code>planner</code>, <code>packetReview</code>,
-<code>systemReview</code>, <code>verifier</code>, <code>composer</code>)
-overriding the single <code>llm.model</code>/<code>llm.reasoning</code>
-per role. They remain provider-routing keys under the config trust
-partition (user-scoped sources only). Trigger: evals identify roles
-where cheaper models or lower reasoning hold review quality.</p>
+<code>verifier</code>, <code>composer</code>) overriding the single
+<code>llm.model</code>/<code>llm.reasoning</code> per role. They remain
+provider-routing keys under the config trust partition (user-scoped
+sources only). Trigger: evals identify roles where cheaper models or
+lower reasoning hold review quality.</p>
 <h3 id="rich-pre-attached-packet-context">Rich pre-attached packet
 context</h3>
 <p><code>PacketContext</code> regains
@@ -2882,12 +2952,12 @@ context</h3>
 <code>importsUsedNearby: string[]</code>, and
 <code>nearbySiblingFunctions: SymbolInfo[]</code>, pre-attached at
 packet construction:</p>
-<div class="sourceCode" id="cb43"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> AstNodeSummary <span class="op">=</span> {</span>
-<span id="cb43-2"><a href="#cb43-2" aria-hidden="true" tabindex="-1"></a>  type<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb43-3"><a href="#cb43-3" aria-hidden="true" tabindex="-1"></a>  name<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb43-4"><a href="#cb43-4" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
-<span id="cb43-5"><a href="#cb43-5" aria-hidden="true" tabindex="-1"></a>  summary<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb43-6"><a href="#cb43-6" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb42"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb42-1"><a href="#cb42-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> AstNodeSummary <span class="op">=</span> {</span>
+<span id="cb42-2"><a href="#cb42-2" aria-hidden="true" tabindex="-1"></a>  type<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb42-3"><a href="#cb42-3" aria-hidden="true" tabindex="-1"></a>  name<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb42-4"><a href="#cb42-4" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
+<span id="cb42-5"><a href="#cb42-5" aria-hidden="true" tabindex="-1"></a>  summary<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb42-6"><a href="#cb42-6" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Trigger: tool-call telemetry shows packet reviewers repeatedly
 refetching the same local context (imports, sibling symbols,
 changed-node summaries) that pre-attachment would cover.</p>
@@ -2908,15 +2978,15 @@ pricing is reliable.</p>
 <h3 id="fine-grained-eval-attribution-and-replay">Fine-grained eval
 attribution and replay</h3>
 <p>Verifier and merge expectations plus stage-level replay modes:</p>
-<div class="sourceCode" id="cb44"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerifierExpectation <span class="op">=</span> {</span>
-<span id="cb44-2"><a href="#cb44-2" aria-hidden="true" tabindex="-1"></a>  expectationId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb44-3"><a href="#cb44-3" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
-<span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> MergeExpectation <span class="op">=</span> {</span>
-<span id="cb44-7"><a href="#cb44-7" aria-hidden="true" tabindex="-1"></a>  expectationIds<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb44-8"><a href="#cb44-8" aria-hidden="true" tabindex="-1"></a>  intoOne<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb44-9"><a href="#cb44-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb43"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerifierExpectation <span class="op">=</span> {</span>
+<span id="cb43-2"><a href="#cb43-2" aria-hidden="true" tabindex="-1"></a>  expectationId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb43-3"><a href="#cb43-3" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
+<span id="cb43-4"><a href="#cb43-4" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb43-5"><a href="#cb43-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-6"><a href="#cb43-6" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> MergeExpectation <span class="op">=</span> {</span>
+<span id="cb43-7"><a href="#cb43-7" aria-hidden="true" tabindex="-1"></a>  expectationIds<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb43-8"><a href="#cb43-8" aria-hidden="true" tabindex="-1"></a>  intoOne<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb43-9"><a href="#cb43-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>EvalCase</code> regains <code>verifier.should_decide</code>,
 <code>merge.should_keep</code> / <code>should_drop</code> /
 <code>should_merge</code> / <code>should_not_merge</code>, and

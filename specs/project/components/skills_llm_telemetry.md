@@ -591,7 +591,7 @@ Loader, registry, and projection machinery do not make reviews good — skill co
 - `lang/solidity`: concrete reentrancy before invariant security, unchecked `send`/low-level calls, named unit mismatches, missing access control for privileged effects, actual narrowing/truncation, repeated full `msg.value`, delegatecall storage-context violations, invalid oracle data, and event omissions only where an external correctness/audit contract requires them. CEI/guards, checked calls, typed reverting calls, explicit units, deliberate permissionless effects, compatible documented layouts, validated oracle data, and optional events are required safe cases.
 - `lang/typescript`: floating promises, `any`-casts erasing type safety, non-null assertions, missing exhaustiveness checks, async error handling (unawaited rejections), equality/coercion pitfalls, mutation of shared references.
 
-Every retained language check must name an observable failure, a reachability/materiality and severity rule, a concrete unsafe example, a contract-preserving safe counterexample, and a mitigation. Syntax alone is evidence, not a finding. `False Positives` and `Safe Patterns` must read standalone because Stage 9 does not receive Checks. `BUNDLED_SKILL_WHY_LEDGER` carries evidence-bearing entries for every materially revised bundled language surface. Every matrix field is independently asserted per check. Each bundled skill, and each canonical language-plus-core composite, must project without truncation and within the 4000-character per-skill / 12000-character total caps at Stages 7, 8, and 9. Arbitrary many-lens combinations retain the deterministic, telemetry-visible total-cap degradation path.
+Every retained language check must name an observable failure, a reachability/materiality and severity rule, a concrete unsafe example, a contract-preserving safe counterexample, and a mitigation. Syntax alone is evidence, not a finding. `False Positives` and `Safe Patterns` must read standalone because Stage 9 does not receive Checks. `BUNDLED_SKILL_WHY_LEDGER` carries evidence-bearing entries for every materially revised bundled language surface. Every matrix field is independently asserted per check. Each bundled skill, and each canonical language-plus-core composite, must project without truncation and within the 4000-character per-skill / 12000-character total caps at Stages 7 and 9. Arbitrary many-lens combinations retain the deterministic, telemetry-visible total-cap degradation path.
 
 ### Lens Resolution Algorithm
 
@@ -805,7 +805,7 @@ Directory creation (`attachRunDirectory`):
 
 1. Resolve `telemetry.runDir` (default `.codegenie/runs`; out-of-repo values require user-level opt-in, enforced by the config loader).
 2. First-run provisioning: when creating `.codegenie/` itself, write `.codegenie/.gitignore` containing `runs/` and `cache/` (architecture law: provisioning happens only on creation; an existing `.codegenie/` is never modified).
-3. Create `<runDir>/<yyyyMMdd-HHmmss>-<shortid>/` where `shortid` is 6 random base36 chars; the directory name is the `runId`. Uniqueness comes from the timestamp + shortid; concurrent runs are supported because each run owns its directory exclusively.
+3. Create `<runDir>/<yyyyMMdd-HHmmss>-<8-hex-digits>/` using a UTC timestamp and four random bytes. By default the directory name is the `runId`; an eval may supply its own artifact directory while the run ID remains independently generated.
 4. Prune: list sibling run directories, sort by mtime descending, delete those beyond the newest `telemetry.retainRuns` (default 20), never touching the active run. Pruning failures are `warn`-level, never fatal. Pruning emits a stage-`0` telemetry event with deleted run ids.
 5. Flush stage-`0` buffers into `run.log` / `events.jsonl`.
 
@@ -970,7 +970,7 @@ Credential stripping:
 
 Run artifacts and lifecycle:
 
-- `artifacts_run_dir_layout_and_naming`: `attachRunDirectory` creates `<runDir>/<yyyyMMdd-HHmmss>-<shortid>/`; `runId` equals the directory name.
+- `artifacts_run_dir_layout_and_naming`: by default `attachRunDirectory` creates `<runDir>/<yyyyMMdd-HHmmss>-<8-hex-digits>/` named for the run ID; explicit eval artifact directories can have a different name.
 - `artifacts_gitignore_provisioned_on_create_only`: creating `.codegenie/` writes `.gitignore` with `runs/` and `cache/`; a pre-existing `.codegenie/` without `.gitignore` is left untouched.
 - `artifacts_retain_runs_pruning`: with `retainRuns: 2` and three prior runs, the oldest is deleted, the active run is never deleted, and a stage-0 telemetry event lists the pruned ids.
 - `artifacts_write_atomic_known_names_only`: `writeArtifact` accepts the architecture-named artifacts and `packets/<id>.json`, writes temp-then-rename, and rejects unknown names as a programming error.

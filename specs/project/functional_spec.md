@@ -200,7 +200,7 @@ codegenie should use a staged review pipeline:
 5. Run the planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
-8. Run optional cross-file/system follow-up review only for repeated scoped follow-up hints from Stage 7; skip otherwise.
+8. Unused: the targeted system follow-up stage was deleted in #114.
 9. Verify candidate findings, with only minimal duplicate suppression needed to avoid repeated verifier calls.
 10. Deduplicate, rank, and compose final output.
 11. Optionally post verified inline comments and a PR summary through GitHub.
@@ -843,6 +843,8 @@ Stage 10 should:
 - Preserve lineage back to verified candidates, packets, lenses, and source evidence.
 
 Published findings retain open verification conditions through deterministic rendering and include selected supporting evidence. The separate composition-sources artifact retains the original assessments and supporting evidence when telemetry is enabled. Ordinary reviews with telemetry disabled do not retain those originals separately.
+
+The inline confidence floor demotes ineligible inline findings before the soft inline cap is applied. After selection, reports group findings by severity and order each severity by file and line, with anchorless findings last for a file; the displayed order within a severity is not an importance ranking.
 
 The final composer should prefer no comments over weak comments. The default target is roughly 3-7 high-signal comments per PR, but this is a soft cap: verified critical and high-severity findings should not be hidden only to satisfy the default limit.
 
