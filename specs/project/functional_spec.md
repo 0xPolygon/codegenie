@@ -35,9 +35,13 @@ codegenie review --branch feature-branch [--base main]
 codegenie review --head <head-ref> --base <base-ref>
 codegenie review <base-ref>...<head-ref>
 codegenie review <commit> [end-commit]
+codegenie review --staged
+codegenie review --uncommitted
 ```
 
-With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target. Reviewing uncommitted working-tree changes is out of scope for v1.
+With no target arguments, `codegenie review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codegenie should fail with a clear error asking for an explicit review target.
+
+`--staged` compares HEAD to the index. `--uncommitted` compares HEAD to a tracked working-tree snapshot, including staged and unstaged changes. Each flag is a standalone target without GitHub posting. On an unborn branch both use an empty base. The working-tree mode reports the number of omitted nonignored untracked files. `git add -N <path>` makes a new file eligible for this mode.
 
 Common review options:
 
@@ -1052,7 +1056,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 ## Out Of Scope For V1
 
 - GitLab support.
-- Reviewing uncommitted working-tree changes.
 - Approving or requesting changes through GitHub reviews.
 - Auto-fixing or editing code.
 - Executable TypeScript skill packages from users.

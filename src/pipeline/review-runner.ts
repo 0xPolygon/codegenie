@@ -6,7 +6,8 @@ import { createRunTelemetry, provisionCodegenieGitignore } from "../telemetry/ru
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
-import { createGitClient } from "../git/git-client.js";
+import { createGitClient, type InternalGitClient } from "../git/git-client.js";
+import { captureLocalReview } from "../git/local-review.js";
 import { SourceResolver } from "../repo/source-resolver.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
@@ -92,6 +93,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
+  setReviewRefs(baseRef: string, headRef: string): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
 
@@ -129,8 +131,16 @@ export async function runReview(
       message: "stage_started",
       data: { name: "input_resolution" }
     });
-    const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
+    const { resolved, git } = await resolveInput(input, config, run, repoRoot, overrides);
+    const gitOptions = git !== undefined ? { git } : {};
     throwIfHardAborted(run);
+    const untrackedNotice = localUntrackedNotice(resolved);
+    if (untrackedNotice !== undefined) {
+      run.logger.warn({
+        runId: run.runId, stage: 1, event: "local_review_untracked_files",
+        message: untrackedNotice, data: { count: resolved.untrackedFiles }
+      });
+    }
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
     run.telemetry.event({
       stage: 1,
@@ -160,7 +170,7 @@ export async function runReview(
       }
     });
 
-    const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-filter-decisions.json", decisions);
     run.telemetry.event({
@@ -189,7 +199,7 @@ export async function runReview(
       message: "stage_started",
       data: { name: "file_classification", keptFiles: kept.length }
     });
-    const fileFacts = await classifyChangedFiles(resolved, kept, decisions, config, run.telemetry);
+    const fileFacts = await classifyChangedFiles(resolved, kept, decisions, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-facts.json", fileFacts);
     run.telemetry.event({
@@ -204,7 +214,7 @@ export async function runReview(
           .length
       }
     });
-    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry);
+    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
     if (services.runner.stageModels) {
@@ -287,6 +297,7 @@ export async function runReview(
       budgetStopped,
       ...(budgetStopped && budgetStop !== undefined ? { budgetStop } : {})
     });
+    if (untrackedNotice !== undefined) coverage.reasons.push(untrackedNotice);
     run.telemetry.event({
       stage: 9,
       level: "info",
@@ -305,7 +316,7 @@ export async function runReview(
       }
     });
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
-    const repositoryPaths = await (await SourceResolver.create(resolved)).listFiles();
+    const repositoryPaths = await (await SourceResolver.create(resolved, git)).listFiles();
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
@@ -500,6 +511,7 @@ async function startRun(
     addCleanupTask: (task) => {
       cleanupTasks.push(task);
     },
+    setReviewRefs: run.setReviewRefs,
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
@@ -935,11 +947,32 @@ function throwIfHardAborted(run: RunContext): void {
 async function resolveInput(
   input: ReviewInput | ReviewCommandTarget,
   config: CodegenieConfig,
-  telemetry: TelemetryRecorder,
+  run: RunContext,
   repoRoot: string,
   overrides: RunReviewOverrides
-): Promise<ResolvedReviewInput> {
-  return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
+): Promise<{ resolved: ResolvedReviewInput; git?: InternalGitClient }> {
+  if (input.mode === "staged" || input.mode === "uncommitted") {
+    if (overrides.postGithubComments === true) {
+      throw new CodegenieError("invalid_args", "local review targets do not support GitHub posting");
+    }
+    const runsRoot = overrides.runArtifactDir !== undefined
+      ? path.dirname(path.resolve(overrides.runArtifactDir))
+      : path.resolve(repoRoot, config.telemetry.runDir);
+    const captured = await captureLocalReview(input, { repoRoot, runsRoot, onCleanup: run.addCleanupTask });
+    const { baseRefName, headRefName } = captured.resolved;
+    run.setReviewRefs(baseRefName, headRefName);
+    return captured;
+  }
+  const resolved = await resolveReviewCommandTarget(input, config, run.telemetry, {
+    repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {})
+  });
+  return { resolved };
+}
+
+function localUntrackedNotice(resolved: ResolvedReviewInput): string | undefined {
+  const count = resolved.untrackedFiles ?? 0;
+  if (count === 0) return undefined;
+  return `Omitted ${count} untracked file${count === 1 ? "" : "s"}. Run \`git add -N <path>\` to include a new file in an uncommitted review.`;
 }
 
 async function maybeZeroWork(
@@ -956,6 +989,8 @@ async function maybeZeroWork(
   }
   const totalHunks = allFiles.reduce((sum, file) => sum + file.hunks.length, 0);
   const reasons = zeroWorkReasons(allFiles, decisions);
+  const untrackedNotice = localUntrackedNotice(resolved);
+  if (untrackedNotice !== undefined) reasons.push(untrackedNotice);
   const coverage: RunCoverageStatus = {
     totalHunks,
     reviewedHunks: 0,
@@ -1386,6 +1421,7 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
     ...(resolved.endCommit !== undefined ? { endCommit: resolved.endCommit } : {}),
     ...(resolved.mergeBase !== undefined ? { mergeBase: resolved.mergeBase } : {}),
     ...(resolved.headSha !== undefined ? { headSha: resolved.headSha } : {}),
+    ...(resolved.untrackedFiles !== undefined ? { untrackedFiles: resolved.untrackedFiles } : {}),
     ...(resolved.pr !== undefined ? { pr: resolved.pr } : {}),
     commits: resolved.commits,
     rawDiffChars: resolved.rawDiff.length

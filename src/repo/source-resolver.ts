@@ -120,6 +120,12 @@ export async function deriveRevisionBinding(
   resolved: ResolvedReviewInput,
   git: InternalGitClient = createGitClient(resolved.repoRoot)
 ): Promise<RevisionBinding> {
+  if (resolved.mode === "staged" || resolved.mode === "uncommitted") {
+    if (resolved.baseRef === undefined || resolved.headRef === undefined) {
+      throw new CodegenieError("git_ref_missing", "the local review snapshot is missing a tree");
+    }
+    return { headCommit: containRef(resolved.headRef), baseCommit: containRef(resolved.baseRef) };
+  }
   const headCommit = await resolveHeadCommit(resolved, git);
   const baseCommit = await resolveBaseCommit(resolved, git);
   return { headCommit, baseCommit };
