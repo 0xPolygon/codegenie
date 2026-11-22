@@ -50,7 +50,7 @@ import {
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
 } from "../src/llm/schemas.js";
-import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
+import { buildRepositoryToolDefinitions, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
@@ -1697,6 +1697,34 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         }
       }
     });
+  });
+
+  it("records the complete cursor from a six-tool file map page request", async () => {
+    const telemetry = fakeTelemetry();
+    const cursor = "eyJ2ZXJzaW9uIjoxLCJwb3NpdGlvbiI6NjB9";
+    const readSourceFileMap = vi.fn(async (path: string) => ({
+      path, offset: 60, declarations: [], totalDeclarations: 60,
+      meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, totalLines: 76 }
+    }));
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "read-page-two", name: "read_range", arguments: { path: "decoder/model.go", cursor } }]),
+      assistant([validSubmitReviewCall("submit-page-two")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({
+      ...submitReviewRequest("read-map-page-two"),
+      tools: [buildSixReadRangeTool({ ...fakeRepositoryTools(), readSourceFileMap })],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 }
+    });
+    expect(readSourceFileMap).toHaveBeenCalledWith("decoder/model.go", undefined, cursor);
+    expect(telemetry.toolCalls.map(call => call.args)).toEqual([{ path: "decoder/model.go", cursor }]);
   });
 
   it("reuses identical deterministic repository tool results within one runner", async () => {

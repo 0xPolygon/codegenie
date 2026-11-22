@@ -1818,6 +1818,7 @@ export type ToolCallRecord = {
     glob?: string;
     source?: string;
     contextMode?: string;
+    cursor?: string;
   };
   backend?: ToolBackend;
   precision?: ToolPrecision;

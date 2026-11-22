@@ -438,7 +438,8 @@ export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
           ...(totalLines ? { deliveredLineRange: [1, totalLines] as [number, number] } : {})
         };
         const sourceResult = createPackableToolResult({
-          open: "", records: lines.map((line, index) => numberSourceLine(line, index + 1)), separator: "\n", close: ""
+          open: "", records: lines.map((line, index) => numberSourceLine(line, index + 1)),
+          separator: "\n", close: map.smallSource.endsWith("\n") ? "\n" : ""
         }, meta);
         return sourceResult.text.length <= MAX_SMALL_SOURCE_CHARS
           ? { ...sourceResult, ...(meta.deliveredLineRange ? { sourceLineRange: meta.deliveredLineRange } : {}), budgetFallback: fallback }

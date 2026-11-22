@@ -10,7 +10,9 @@ describe("six-tool read_range file maps", () => {
       "src/policy.ts": "// " + "existing context ".repeat(100) + "\nexport function authorize() { return true; }\n",
       "decoder/model.go": "package decoder\n" + Array.from({ length: 75 }, (_, i) =>
         `func DecodeLayer${i}(input int) int { return input + ${i} }\n`).join(""),
-      "docs/raw.txt": "x".repeat(5000)
+      "docs/raw.txt": "x".repeat(5000),
+      "src/with-eof.ts": "export {};\n\n\t// keep indentation\n\n",
+      "src/without-eof.ts": "export {};\n\n\t// keep indentation"
     }, { "src/policy.ts": "// " + "changed context ".repeat(100) + "\nexport function authorize() { return false; }\n" });
   });
   afterAll(() => fixture?.dispose());
@@ -52,6 +54,19 @@ describe("six-tool read_range file maps", () => {
     expect(await read({ ...args, cursor, source: { kind: "base" } })).toMatchObject({ isError: true, errorCode: "invalid_args" });
     expect(await read({ path: "src/policy.ts", cursor })).toMatchObject({ isError: true, errorCode: "invalid_args" });
     expect(await read({ ...args, cursor, startLine: 1, endLine: 8 })).toMatchObject({ isError: true, errorCode: "invalid_args" });
+  });
+
+  it("preserves blank lines, tabs, and EOF bytes when delivering complete source", async () => {
+    for (const [path, source] of [
+      ["src/with-eof.ts", "export {};\n\n\t// keep indentation\n\n"],
+      ["src/without-eof.ts", "export {};\n\n\t// keep indentation"]
+    ] as const) {
+      const result = await read({ path });
+      expect(result.meta?.deliveryStatus).toBe("full");
+      const [body] = result.text.split("\n\n[tool meta:", 1);
+      const numbered = body!.slice(body!.indexOf("\n") + 1);
+      expect(numbered.replace(/^\d+\t/gmu, "")).toBe(source);
+    }
   });
 
   it("distinguishes an unsupported map from a missing file and reports the pinned length", async () => {
