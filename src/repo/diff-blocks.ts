@@ -41,6 +41,7 @@ export class DiffBlockRenderer {
     const records: string[] = [];
     const labels: string[] = [];
     const keepWithNext: boolean[] = [];
+    const deliveredFiles = new Set<DiffFile>();
     const diffGroups: DiffRecordGroups = { rendered: [], lineEnds: [], omittedLabels: [] };
     let omittedCount = 0;
     let totalChars = 0;
@@ -52,7 +53,7 @@ export class DiffBlockRenderer {
       const blockGap = blocks.length > 0 ? 2 : 0;
       if (!windowDelivered && blocks.length < MAX_BLOCKS && first &&
           totalChars + blockGap + hunkLabel.length + renderDiffLine(first).length < MAX_CHARS) {
-        const header = `${hunkLabel}\n${await this.fileHeader(file)}`;
+        const header = deliveredFiles.has(file) ? hunkLabel : `${hunkLabel}\n${await this.fileHeader(file)}`;
         const rendered: string[] = [];
         let nextTotal = totalChars + blockGap + header.length;
         for (const line of hunk.lines) {
@@ -63,6 +64,7 @@ export class DiffBlockRenderer {
         }
         const next = hunk.lines[rendered.length];
         if (rendered.length && (!next || exceedsResultLimit(header.length, hunk.lines))) {
+          deliveredFiles.add(file);
           diffGroups.rendered.push({ firstRecord: records.length, label: hunkLabel, baseStart: hunk.oldStart, headStart: hunk.newStart });
           records.push((blockGap ? "\n" : "") + header, ...rendered);
           labels.push(firstLabel);

@@ -72,19 +72,21 @@ describe("positioned diff delivery", () => {
     const oldPath = "internal/kvmgr/slots.go";
     const path = "internal/kvmgr/tier.go";
     const unchanged = Array.from({ length: 20 }, (_, i) => `// existing selection step ${i}\n`).join("");
-    const fixture = await diffFixture({ [oldPath]: `package kvmgr\n${unchanged}const threshold = 12\n` }, repo => {
+    const fixture = await diffFixture({ [oldPath]: `package kvmgr\nconst floor = 2\n${unchanged}const threshold = 12\n` }, repo => {
       renameSync(join(repo, oldPath), join(repo, path));
-      writeRepoFile(repo, path, `package kvmgr\n${unchanged}const threshold = 16\n`);
+      writeRepoFile(repo, path, `package kvmgr\nconst floor = 4\n${unchanged}const threshold = 16\n`);
     });
     try {
       const file = fixture.diff.files[0]!;
       expect(file.status).toBe("renamed");
+      expect(file.hunks).toHaveLength(2);
       const packetId = "packet-from-frozen-plan";
-      fixture.tools.bindPackets([{ id: packetId, hunks: [{ hunkId: file.hunks[0]!.id }] } as ReviewPacket]);
+      fixture.tools.bindPackets([{ id: packetId, hunks: file.hunks.map(hunk => ({ hunkId: hunk.id })) } as ReviewPacket]);
       const result = await fixture.call({ packetId });
       expect(result.meta?.deliveryStatus).toBe("full");
-      expect(result.text).toContain(`${oldPath}@base: 22 lines | ${path}@head: 22 lines`);
-      expect(result.text).toContain("22 - - const threshold = 12\n- 22 + const threshold = 16");
+      expect(result.text.split(`${oldPath}@base: 23 lines | ${path}@head: 23 lines`)).toHaveLength(2);
+      expect(result.text).toContain("2 - - const floor = 2\n- 2 + const floor = 4");
+      expect(result.text).toContain("23 - - const threshold = 12\n- 23 + const threshold = 16");
       await fixture.tools.readDiffBlocks({ packetId });
       expect(fixture.calls).toContainEqual(expect.objectContaining({ tool: "read_diff_blocks", args: { packetId } }));
       expect(await fixture.call({ path: oldPath })).toEqual(result);
