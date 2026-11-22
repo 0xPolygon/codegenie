@@ -927,7 +927,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
-                      degraded: !(meta.searchDelivery || meta.pathListDelivery), degradationReason: "tool_result_budget_exhausted" };
+                      degraded: !(meta.searchDelivery || meta.pathListDelivery || toolCall.name === "read_diff_blocks"),
+                      degradationReason: "tool_result_budget_exhausted" };
                   }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
@@ -4270,6 +4271,7 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
     path: typeof args.path === "string" ? args.path : undefined,
+    packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     symbolName: typeof args.symbolName === "string" ? args.symbolName : undefined,
     line: typeof args.line === "number" ? args.line : undefined,
     startLine: typeof args.startLine === "number" ? args.startLine : undefined,

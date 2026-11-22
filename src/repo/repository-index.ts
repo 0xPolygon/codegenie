@@ -63,6 +63,7 @@ type ToolMeasurement<T> = {
 
 type ToolArgs = {
   path?: string | undefined;
+  packetId?: string | undefined;
   symbolName?: string | undefined;
   line?: number | undefined;
   startLine?: number | undefined;
@@ -76,6 +77,7 @@ type ToolArgs = {
 
 type RecordedToolArgs = {
   path?: string;
+  packetId?: string;
   symbolName?: string;
   line?: number;
   startLine?: number;
@@ -150,7 +152,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       telemetry: TelemetryRecorder;
     }
   ) {
-    this.diffBlocks = new DiffBlockRenderer(opts.diff);
+    this.diffBlocks = new DiffBlockRenderer(opts.diff, opts.resolver);
     this.search = new SearchService(opts.resolver, opts.registry, this.limit);
   }
 
@@ -398,10 +400,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     };
   }
 
-  async readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }> {
+  async readDiffBlocks(input: { packetId?: string; path?: string }): ReturnType<RepositoryTools["readDiffBlocks"]> {
     return this.measure(
       "read_diff_blocks",
-      { path: input.path },
+      input,
       7,
       async () => {
         if ((input.path === undefined) === (input.packetId === undefined)) {
@@ -411,11 +413,11 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           input.path !== undefined
             ? { path: containPath(this.opts.resolver.repoRoot, input.path, this.guardTelemetry("read_diff_blocks")) }
             : input;
-        const value = this.diffBlocks.read(normalizedInput);
+        const value = await this.diffBlocks.read(normalizedInput);
         return {
           value,
           meta: value.meta,
-          args: { path: normalizedInput.path },
+          args: normalizedInput,
           resultCount: value.blocks.length,
           resultChars: value.blocks.join("\n").length
         };

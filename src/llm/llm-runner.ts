@@ -25,6 +25,14 @@ export type LlmCallUsage = {
   providerCalls: 1;
 };
 
+export type DiffRecordGroups = {
+  rendered: Array<{ firstRecord: number; label: string; baseStart: number; headStart: number }>;
+  /** Last line on each revision seen so far within this record's hunk. */
+  lineEnds: Array<[number | undefined, number | undefined]>;
+  omittedLabels: string[];
+  next?: string;
+};
+
 export type ToolResultRecords = {
   open: string;
   records: string[];
@@ -34,6 +42,7 @@ export type ToolResultRecords = {
   labels?: string[];
   /** True for an index or block header that cannot be the last delivered record. */
   keepWithNext?: boolean[];
+  diffGroups?: DiffRecordGroups;
 };
 
 export type ToolExecutionResult = {
