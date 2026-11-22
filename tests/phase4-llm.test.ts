@@ -38,6 +38,7 @@ import {
   modelCallCacheEntryPath
 } from "../src/llm/model-call-cache.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
+import { createPackableToolResult } from "../src/llm/search-result-packing.js";
 import {
   SCHEMA_VERSIONS,
   SubmitCompositionSchema,
@@ -5639,14 +5640,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       "\t}"
     ];
     const text = records.join("\n") + "\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]";
-    const execute = vi.fn(async () => ({
-      text,
-      packable: { open: "", records, separator: "\n", close: "" },
-      meta: {
-        backend: "text" as const, precision: "exact" as const, degraded: false, lookupStatus: "found" as const,
-        requestedSource: "head" as const, sourceUsed: "head" as const, deliveryStatus: "full" as const,
-        deliveredLineRange: [76, 81] as [number, number]
-      }
+    const execute = vi.fn(async () => createPackableToolResult({ open: "", records, separator: "\n", close: "" }, {
+      backend: "text", precision: "exact", degraded: false, lookupStatus: "found",
+      requestedSource: "head", sourceUsed: "head", deliveryStatus: "full", deliveredLineRange: [76, 81]
     }));
     const args = { path: "cmd/serve/admin.go", startLine: 76, endLine: 81 };
     const tool: ToolDefinition = { name: "read_range", description: "read range", execute,

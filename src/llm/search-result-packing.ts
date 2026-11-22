@@ -1,13 +1,22 @@
-import type { ToolExecutionResult } from "./llm-runner.js";
+import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
 import { MISSING_FILE_GUIDANCE, withMeta } from "./repository-tool-guidance.js";
+
+function renderRecords({ open, records, separator, close }: ToolResultRecords): string {
+  return open + records.join(separator) + close;
+}
+
+/** Derive the canonical text and its packable representation together. */
+export function createPackableToolResult(packable: ToolResultRecords, meta: ToolResultMeta): ToolExecutionResult {
+  return { text: withMeta(renderRecords(packable), meta), packable, meta };
+}
 
 /** Keep the longest prefix of whole records that fits with its closing text and status. */
 export function packTextToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
 
   const { packable, sourceLineRange, ...result } = input;
-  const { open, records, separator, close } = packable;
+  const { open, records, separator, close, labels } = packable;
   const { deliveredLineRange, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
   const lineRange = deliveredLineRange ?? sourceLineRange;
   const firstLine = lineRange && lineRange[1] - lineRange[0] + 1 === records.length ? lineRange[0] : undefined;
@@ -27,15 +36,21 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     if (range) {
       const total = meta.totalLines === undefined ? "" : ` of ${meta.totalLines}`;
       notes.push(`delivered lines ${range[0]}-${range[1]}${total}`, `continue with startLine=${range[1] + 1}`);
+    } else {
+      const last = labels?.[count - 1];
+      const next = labels?.[count];
+      if (last) notes.push(`last delivered: ${last}`);
+      if (next) notes.push(`next: ${next}`);
     }
     const footer = withMeta("", meta, notes);
     const bodyLength = open.length + recordChars + (count - 1) * separator.length + close.length;
     if (bodyLength + footer.length <= allowance) {
-      const kept = records.slice(0, count);
+      const kept = { open, records: records.slice(0, count), separator, close,
+        ...(labels ? { labels: labels.slice(0, count) } : {}) };
       return {
         ...result,
-        text: open + kept.join(separator) + close + footer,
-        packable: { ...packable, records: kept },
+        text: renderRecords(kept) + footer,
+        packable: kept,
         meta,
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})
       };
