@@ -1,9 +1,13 @@
 import { z } from "zod";
 import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 
-export const reviewDepthSchema = z.enum(["light", "normal", "deep"]);
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
 export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
+const stageModelSchema = z.string().regex(/^[^/\s]+\/[^\s]+$/u).refine(value => !/:(?:minimal|low|medium|high|xhigh|max|auto)$/u.test(value),
+  "stage model must be provider/model without a reasoning suffix");
+const stageSelectionSchema = z.object({ model: stageModelSchema.optional(), reasoning: reasoningLevelSchema.optional() }).strict();
+export const stageSelectionsSchema = z.object({ plan: stageSelectionSchema.optional(), review: stageSelectionSchema.optional(),
+  verify: stageSelectionSchema.optional(), compose: stageSelectionSchema.optional() }).strict();
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
@@ -37,7 +41,6 @@ export const rawConfigSchema = z
       .optional(),
     review: z
       .object({
-        depth: reviewDepthSchema.optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
@@ -79,6 +82,7 @@ export const rawConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema.optional(),
         forceSubmitToolChoice: z.boolean().optional()
       })
@@ -125,7 +129,6 @@ export const codegenieConfigSchema = z
       .strict(),
     review: z
       .object({
-        depth: reviewDepthSchema,
         verify: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
         skipSvgReview: z.boolean(),
@@ -163,6 +166,7 @@ export const codegenieConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema,
         forceSubmitToolChoice: z.boolean().optional()
       })
@@ -198,7 +202,6 @@ export const defaultConfig: CodegenieConfig = {
     extraSkillPaths: []
   },
   review: {
-    depth: "normal",
     verify: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,

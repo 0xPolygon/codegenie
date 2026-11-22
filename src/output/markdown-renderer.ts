@@ -1,21 +1,29 @@
 import { healthForResult, renderReviewHealth, factualReviewSummary } from "../util/review-health.js";
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
-import { renderBudgetStopNotice, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
-import { inlineCode, severityBadge } from "../util/markdown.js";
+import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { FINDING_ORDER_NOTE, inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const health = healthForResult(result);
   const sections = [
     "# 🧞 Codegenie Review",
     "",
-    renderReviewHealth(health, result.composition),
-    ...(health.status === "completed" ? [renderCoverageTrustBanner(result.coverage)] : []),
+    renderReviewHealth(health, result.composition, {
+      shown: result.needsHumanAttention.length,
+      omitted: result.needsHumanAttentionOmittedCount ?? 0,
+      verificationIncompleteCount: result.coverage.verificationIncompleteCount
+    }),
     renderBudgetStopNotice(result.coverage),
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
     "",
     renderCoverage(result.coverage),
-    renderFindings("⚠️ Findings", result.findings, result.runStats?.git),
-    renderFindings("Summary-Only Findings", result.summaryOnlyFindings, result.runStats?.git),
+    renderFindings("⚠️ Findings", result.findings, result.runStats?.git, result.findings.length > 1),
+    renderFindings(
+      "Summary-Only Findings",
+      result.summaryOnlyFindings,
+      result.runStats?.git,
+      result.findings.length <= 1 && result.summaryOnlyFindings.length > 1
+    ),
     renderNeedsHumanAttention(result),
     renderStats(result.runStats, result.budgetSummary, result.posting),
     renderNoFindings(result)
@@ -41,12 +49,12 @@ function renderCoverage(coverage: RunCoverageStatus): string {
   return ["## Coverage", "", ...renderCoverageSummaryLines(coverage)].join("\n");
 }
 
-function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRunStats["git"]): string {
+function renderFindings(title: string, findings: FinalFinding[], git: ReviewRunStats["git"] | undefined, showOrderNote: boolean): string {
   if (findings.length === 0) {
     return "";
   }
 
-  const lines = [`## ${title}`];
+  const lines = [`## ${title}`, ...(showOrderNote ? ["", FINDING_ORDER_NOTE] : [])];
   for (const finding of findings) {
     const link = githubFileLink(git, finding.path, finding.anchor?.line);
     lines.push("", `### ${severityBadge(finding.severity)}: ${finding.title}`);
@@ -58,8 +66,7 @@ function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRun
 }
 
 function renderNeedsHumanAttention(result: ReviewResult): string {
-  const omittedCount = result.needsHumanAttentionOmittedCount ?? 0;
-  if (result.needsHumanAttention.length === 0 && omittedCount === 0) {
+  if (result.needsHumanAttention.length === 0) {
     return "";
   }
 
@@ -71,9 +78,6 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
       lines.push(`  - **Symbols:** ${note.symbols.map((symbol) => inlineCode(symbol)).join(", ")}`);
     }
     lines.push(`  - **Reason:** ${note.reason}`);
-  }
-  if (omittedCount > 0) {
-    lines.push("", `Additional unresolved notes suppressed: ${omittedCount}.`);
   }
   return lines.join("\n");
 }
@@ -112,7 +116,10 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   const lines: string[] = [];
   const model = renderModel(stats.model);
   if (model !== undefined) {
-    lines.push(`- 🤖 **Model:** ${model}`);
+    lines.push(`- 🤖 **${stats.stageModels ? "Default model" : "Model"}:** ${model}`);
+  }
+  if (stats.stageModels !== undefined) {
+    lines.push(`- **Stage models (base reasoning):** ${Object.entries(stats.stageModels).map(([stage, selected]) => `${stage}: ${renderModel(selected)}`).join(" · ")}`);
   }
   if (stats.codegenie !== undefined) {
     lines.push(`- 🧞 **Codegenie:** v${stats.codegenie.version}${stats.codegenie.commit !== undefined ? ` (${inlineCode(stats.codegenie.commit.slice(0, 10))})` : ""}`);

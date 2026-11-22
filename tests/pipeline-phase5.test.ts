@@ -10,11 +10,13 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
+import { maybePublishToGitHub } from "../src/github/publisher.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
+import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
-import { runLensPackets } from "../src/pipeline/lens-runner.js";
+import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
@@ -24,7 +26,7 @@ import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/r
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
 import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
-import { renderPostingSummaryForStdout } from "../src/output/stdout-renderer.js";
+import { renderPostingSummaryForStdout, renderReviewForStdout } from "../src/output/stdout-renderer.js";
 import {
   createPromptBuilder,
   plannerDossierPromptProjection,
@@ -34,6 +36,10 @@ import {
 import { buildLensRegistry } from "../src/skills/lens-registry.js";
 import type { Skill } from "../src/skills/skill-loader.js";
 import { canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
+import { RepositoryToolsFacade } from "../src/repo/repository-index.js";
+import { SourceResolver } from "../src/repo/source-resolver.js";
+import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
 import type {
   CandidateFinding,
@@ -41,14 +47,17 @@ import type {
   CoverageLevel,
   DiffFile,
   FileFacts,
+  GitHubClient,
   HunkSymbolFacts,
   PacketReviewResult,
   PlannerDossier,
   RepositoryIndex,
   RepositoryTools,
   RepositoryToolsHost,
+  ResolvedReviewInput,
   ReviewPacket,
   ReviewPlan,
+  ReviewResult,
   RunCoverageStatus,
   StaticSignal,
   SymbolMentionOptions,
@@ -92,7 +101,7 @@ describe("phase 5 pipeline regressions", () => {
     if (!exhaust) expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections[0]!.text);
   });
 
-  it.each(["resolved", "assessment", "narrowed", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
+  it.each(["resolved", "assessment", "narrowed", "unchanged", "reworded", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
     // Supplied semantic decisions exercise plumbing, not model inference.
     const fixture = authorizationComposition();
     const finding = fixture.findings[0]!;
@@ -114,14 +123,17 @@ describe("phase 5 pipeline regressions", () => {
       status: "completed", adaptiveReview: { outcome: "timed_out", attempts: 1, trigger: "concrete_hint" } }])!;
     const artifacts = new Map<string, unknown>();
     let calls = 0;
-    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" ? "narrowed" : "resolved",
+    const events: Array<{ message: string; data?: unknown }> = [];
+    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "reworded" ? "unresolved" : mode === "narrowed" || mode === "unchanged" ? "narrowed" : "resolved",
       supportingRefs: [mode === "unknown" ? "absent-source" : mode === "assessment" ? "authorization/suggestedTest" : "authorization/evidence/relatedCode/0"],
       rationale: "Supplied policy makes current membership authoritative; production exposure is separate.",
-      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}) };
+      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}),
+      ...(mode === "unchanged" ? { remainingQuestion: ` ${firstQuestion} ` } : {}),
+      ...(mode === "reworded" ? { remainingQuestion: "Is the session test present?" } : {}) };
     const promptBuilder = createPromptBuilder(fakeLensRegistry());
     const result = await dedupeRankAndComposeReview({ verified: mode === "no-findings" ? [] : fixture.findings, verdicts }, fakePlan(),
       { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, coverage, config(),
-      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
+      { ...nullTelemetry(), event: event => { events.push(event); }, writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
         postGithubComments: true, promptBuilder,
         runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
           calls++;
@@ -152,6 +164,10 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(calls).toBe(1);
     expect(verdicts).toEqual(before);
+    expect(events.filter(event => event.message === "attention_unchanged_question_canonicalized").map(event => event.data))
+      .toEqual(mode === "unchanged" ? [{ concernIds: ["policy-question/assumptions/0"], disposition: "unresolved" }] : []);
+    expect(events.filter(event => event.message === "attention_unresolved_rewording_discarded").map(event => event.data))
+      .toEqual(mode === "reworded" ? [{ count: 1, concernIds: ["policy-question/assumptions/0"] }] : []);
     expect(coverage.partial).toBe(false);
     const expected = mode === "resolved" || mode === "assessment" ? secondQuestion : mode === "narrowed"
       ? `Does the deployed policy match this repository policy?; ${secondQuestion}` : original.question;
@@ -162,7 +178,7 @@ describe("phase 5 pipeline regressions", () => {
     }
     expect(renderMarkdownReview(result)).toContain(expected);
     expect(renderMarkdownReview(result)).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 3,
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 4,
       outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
     if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
@@ -580,6 +596,87 @@ describe("phase 5 pipeline regressions", () => {
         })
       ])
     );
+  });
+
+  it.each([1, 3])("caches independent adaptive draws and replays them with concurrency %i", async concurrency => {
+    const repoRoot = initRepo();
+    const telemetry = nullTelemetry();
+    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-draw-test", logger: fakeLogger(), telemetry });
+    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
+    const finding = { title: "Zero-decimal origin token truncates the fee result", severity: "medium", confidence: "medium", path: "app.ts",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }, category: "correctness", evidence: { changedCode: "+bad" },
+      failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.", whyThisMatters: "matters", verification: "test" };
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
+    ]);
+    let attempts = 0;
+    const adapter: PiAiAdapter = { ...scripted, complete: async (...args) => {
+      attempts++;
+      if (concurrency === 1 && attempts === 2) {
+        const error = new Error("rate limited") as Error & { status: number; headers: Record<string, string> };
+        error.status = 429;
+        error.headers = { "retry-after": "0" };
+        throw error;
+      }
+      return scripted.complete(...args);
+    } };
+    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const packet = fakePacket();
+    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency } };
+    const run = (adaptive = true) => runLensPackets(fakePlan(), [packet], fakeTools(),
+      { ...cfg, review: { ...cfg.review, adaptiveSecondPass: adaptive } }, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    const primary = await run(false);
+    expect(scripted.calls).toBe(1);
+    expect(primary[0]?.findings).toEqual([]);
+    expect(primary[0]?.passesRun).toBe(1);
+    const cold = await run();
+    expect(scripted.calls).toBe(2);
+    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
+    expect(cold[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+    expect(cold[0]?.passesRun).toBe(2);
+    const warm = await run();
+    expect(scripted.calls).toBe(2);
+    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
+    expect(warm[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+    expect(warm[0]?.passesRun).toBe(2);
+    const uncachedAdapter = scriptedPiAdapter([
+      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
+    ]);
+    const uncachedRunner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter: uncachedAdapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const uncached = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, telemetry,
+      { runner: uncachedRunner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    expect(uncachedAdapter.calls).toBe(2);
+    expect(uncached[0]?.findings.map(item => item.title)).toEqual([finding.title]);
+  });
+
+  it("keeps adaptive cache identity through identical tool continuations", async () => {
+    const repoRoot = initRepo();
+    const telemetry = nullTelemetry();
+    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-continuation", logger: fakeLogger(), telemetry });
+    const read = () => assistantMessage([toolCall("read-1", "read_range", { path: "app.ts", startLine: 1, endLine: 1 })]);
+    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
+    const adapter = scriptedPiAdapter([read(), assistantMessage([toolCall("submit-1", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
+      read(), assistantMessage([toolCall("submit-2", "submit_review", { findings: [], followUpHints: [], uncertainties: [] })])]);
+    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }, telemetry,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } };
+    const run = () => runLensPackets(fakePlan(), [fakePacket()], fakeTools("line"), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+    const cold = await run();
+    expect(adapter.calls).toBe(4);
+    expect(cold[0]?.passesRun).toBe(2);
+    expect(cold[0]?.followUpHints).toHaveLength(1);
+    const warm = await run();
+    expect(adapter.calls).toBe(4);
+    expect(warm[0]?.passesRun).toBe(2);
+    expect(warm[0]?.followUpHints).toHaveLength(1);
   });
 
   it("runs an adaptive second pass when the first pass emits a concrete near-miss hint (plan 92 T1)", async () => {
@@ -1770,6 +1867,48 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain('"kind": "whole-file"');
     expect(prompt).toContain('"fileContext"');
     expect(prompt).toContain("export const value = 1;");
+  });
+
+  it.each([
+    { name: "matching whole-file source", mode: "whole-file", large: false, deletionOnly: false, loss: false },
+    { name: "without whole-file context", mode: "per-hunk", large: false, deletionOnly: false, loss: true },
+    { name: "outline omitted the source", mode: "whole-file", large: true, deletionOnly: false, loss: true },
+    { name: "outline used base while the packet used head", mode: "whole-file", large: false, deletionOnly: true, loss: true }
+  ] as const)("counts no-tree outline loss by delivered source (#189): $name", async ({ mode, large, deletionOnly, loss }) => {
+    const repo = initRepo();
+    const filePath = "app.ts";
+    const unchanged = "// Unchanged line\n".repeat(5) + "// Outside the patch\n" + (large ? `// ${"x".repeat(3_000)}\n` : "");
+    const baseText = `export const original = 0;\n${unchanged}`;
+    const headText = (deletionOnly ? "" : "export const changed = 1;\n") + unchanged;
+    writeRepoFile(repo, filePath, baseText);
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, filePath, headText);
+    const head = commitAll(repo, "head");
+    const rawDiff = git(repo, ["diff", base, head]);
+    const diff = parseDiff(rawDiff);
+    const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: base,
+      endCommit: head, mergeBase: base, headSha: head, commits: [], rawDiff });
+    const telemetry = nullTelemetry();
+    const registry = new LanguageAdapterRegistry(new TreeSitterService({ loadLanguage: async () => { throw new Error("grammar unavailable"); } }));
+    const tools = new RepositoryToolsFacade({ diff, resolver, registry, telemetry });
+    const outline = await tools.readFileOutline(filePath, { kind: deletionOnly ? "base" : "head" });
+    const reason = "tree-sitter unavailable; using text outline";
+    expect(outline.meta).toMatchObject({ backend: "text", degraded: true, degradationReason: reason });
+    expect(outline.outline.sourceText?.text).toBe(large ? undefined : deletionOnly ? baseText : headText);
+
+    const file = diff.files[0]!;
+    const packets = await buildReviewPackets(fakePlanForHunks(file.hunks.map(hunk => hunk.id)), [file], [fakeFacts(filePath, mode)],
+      fakeRepositoryIndex(tools), telemetry, { config: config(), enabledLenses: ["core/code-review"] });
+    expect(packets).toHaveLength(1);
+    const packet = packets[0]!;
+    expect(packet.degraded?.reason).toBe(reason);
+    expect(packet.contextDegradationReasons).toContain(reason);
+    expect(packet.contextText.includes(headText)).toBe(mode === "whole-file");
+    expect(packet.contextLoss).toEqual(loss ? [reason] : undefined);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    expect(promptBuilder.buildPacketReviewPrompt({ packet, skills: [] }).prompt).toBe(
+      promptBuilder.buildPacketReviewPrompt({ packet: { ...packet, contextLoss: [reason] }, skills: [] }).prompt
+    );
   });
 
   it("uses base content for configured whole-file deleted files", async () => {
@@ -3343,10 +3482,61 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.degraded?.reason).toContain("enclosing symbol source truncated");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts"
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "warn",
+      message: "packet_truncation_summary",
+      data: { total: 1, packetContexts: 0, patchHunks: 0, symbolSources: 1 }
+    }));
+  });
+
+  it.each([
+    { name: "designed slice", truncated: false, excerpts: "all", changed: [12, 300], coverage: "normal" as const, loss: undefined },
+    { name: "capped symbol read with exact excerpts", truncated: true, excerpts: "all", changed: [12], coverage: "normal" as const, loss: undefined },
+    { name: "excerpts unavailable", truncated: true, excerpts: "none", changed: [12], coverage: "normal" as const, loss: "enclosing symbol excerpts unavailable" },
+    { name: "one of two excerpts unread", truncated: false, excerpts: "first", changed: [12, 300], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 2 unread" },
+    { name: "fifth excerpt range past the cap", truncated: false, excerpts: "all", changed: [12, 80, 160, 240, 320], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 5 unread" },
+    { name: "slice with no review tools", truncated: false, excerpts: "all", changed: [12], coverage: "light" as const, loss: "enclosing symbol source sliced with no review tools" }
+  ])("separates designed symbol slicing from real context loss without changing the prompt (#175): $name", async ({ truncated, excerpts, changed, coverage, loss }) => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, ...(truncated ? { truncated: true } : {}) };
+    const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async () => ({
+        text: longSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [10, 420] as [number, number] },
+        meta
+      }),
+      readRange: async (_path: string, startLine: number, endLine: number) => ({
+        text: excerpts === "all" || (excerpts === "first" && startLine < 200) ? Array.from({ length: endLine - startLine + 1 }, () => "  doWork();").join("\n") : "",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }),
+      buildPacketContext: async (file: DiffFile) => ({ context: { path: file.path }, relevantTests: [] })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [{ path: "app.ts", hunkId: "h1", enclosingSymbol: "changed", symbolKind: "function", symbolRange: [10, 420],
+        changedLines: changed, changedLinesSide: "new", source: "tree-sitter", confidence: "syntactic" }]
+    };
+    const plan = { ...fakePlan(), coverage: [{ ...fakePlan().coverage[0]!, coverage }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], repoIndex,
+      nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+    const packet = packets[0]!;
+    expect(packet.reviewProfile).toBe(coverage === "light" ? "simple" : "standard");
+    expect(packet.contextQuality).toBe("sliced");
+    // The model still sees the existing degraded marker; only the internal loss signal is new.
+    expect(packet.degraded?.reason).toContain("enclosing symbol source truncated");
+    expect(packet.contextLoss).toEqual(loss === undefined ? undefined : [loss]);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const { contextLoss: _internal, ...withoutLoss } = packet;
+    const prompt = promptBuilder.buildPacketReviewPrompt({ packet, skills: [] }).prompt;
+    expect(prompt).toBe(promptBuilder.buildPacketReviewPrompt({ packet: withoutLoss, skills: [] }).prompt);
+    expect(prompt).toContain("enclosing symbol source truncated");
+    expect(prompt).not.toContain("contextLoss");
   });
 
   it("lets deep single-symbol packets use adaptive enclosing symbol budget", async () => {
@@ -3513,7 +3703,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextText).toContain("symbol source sliced around changed lines");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts",
       data: expect.objectContaining({
@@ -3737,7 +3927,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextQuality).toBe("sliced");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts",
       data: expect.objectContaining({
@@ -4142,7 +4332,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("caps combined non-whole-file packet context and records degradation", async () => {
+  it.each([false, true])("summarizes Stage 6 truncation once per build, truncation=%s", async truncated => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -4150,7 +4340,7 @@ describe("phase 5 pipeline regressions", () => {
         events.push(event);
       }
     };
-    const hugeSymbols = Array.from({ length: 700 }, (_, index) => ({
+    const hugeSymbols = Array.from({ length: truncated ? 700 : 0 }, (_, index) => ({
       path: "app.ts",
       name: `veryLongSymbolName${String(index).padStart(3, "0")}_${"x".repeat(20)}`,
       kind: "function" as const,
@@ -4172,24 +4362,39 @@ describe("phase 5 pipeline regressions", () => {
       })
     };
 
+    const files = [fakeDiffFile("app.ts", truncated ? "x".repeat(13_000) : undefined), fakeDiffFile("other.ts")];
+    files[1]!.hunks[0]!.id = "h2";
     const packets = await buildReviewPackets(
       fakePlan(),
-      [fakeDiffFile("app.ts")],
-      [fakeFacts("app.ts", "per-hunk")],
+      files,
+      files.map(file => fakeFacts(file.path, "per-hunk")),
       fakeRepositoryIndex(tools),
       telemetry,
       { config: config(), enabledLenses: ["core/code-review"] }
     );
 
-    expect(packets[0]?.kind).toBe("hunk");
-    expect((packets[0]?.contextText ?? "").length).toBeLessThanOrEqual(8000);
-    expect(packets[0]?.contextText).toContain("content truncated to fit packet context budget");
-    expect(packets[0]?.degraded?.reason).toContain("packet context truncated to 8000 chars");
+    expect(packets).toHaveLength(2);
+    const warnings = events.filter(event => event.stage === 6 && event.level === "warn" && event.message.includes("truncat"));
+    if (!truncated) {
+      expect(warnings).toEqual([]);
+      return;
+    }
+    for (const packet of packets) {
+      expect(packet.kind).toBe("hunk");
+      expect(packet.contextText.length).toBeLessThanOrEqual(8000);
+      expect(packet.contextText).toContain("content truncated to fit packet context budget");
+      expect(packet.degraded?.reason).toContain("packet context truncated to 8000 chars");
+      expect(packet.contextLoss).toContainEqual("packet context truncated to 8000 chars");
+    }
+    expect(warnings).toEqual([expect.objectContaining({
+      message: "packet_truncation_summary",
+      data: { total: 3, packetContexts: 2, patchHunks: 1, symbolSources: 0 }
+    })]);
+    expect(events.filter(event => event.message === "packet_context_truncated")).toEqual(
+      files.map(file => expect.objectContaining({ stage: 6, level: "debug", file: file.path }))
+    );
     expect(events).toContainEqual(expect.objectContaining({
-      stage: 6,
-      level: "warn",
-      message: "packet_context_truncated",
-      file: "app.ts"
+      stage: 6, level: "debug", message: "packet_hunk_truncated", file: "app.ts"
     }));
   });
 
@@ -4315,6 +4520,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(packets[0]?.kind).toBe("hunk");
     expect(packets[0]?.degraded?.reason).toContain("whole-file downgraded: combined patch exceeds 12000 chars");
+    expect(packets[0]?.contextLoss).toContainEqual(expect.stringContaining("whole-file downgraded"));
     const coverage = aggregateRunCoverage(
       fakePlan(),
       [],
@@ -4584,12 +4790,15 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
-    expect(toolBudget("light", "normal", "investigate")).toEqual({
+  it("derives packet tool budgets from coverage and profile, scaled only by budget boost (#129)", async () => {
+    expect(toolBudget("light", "investigate")).toEqual({
       maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 4_000,
       maxDiscoveryResultChars: 2_000, reservedSourceResultChars: 2_000,
     });
-    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetBoost = 1) => {
+    // The single review mode keeps the budgets the plan 128 campaign measured
+    // as "normal" depth; no depth scale or rounding remains.
+    expect(toolBudget("light", "standard")).toMatchObject({ maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4_000 });
+    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, budgetBoost = 1) => {
       const plan = {
         ...fakePlan(),
         coverage: [{ ...fakePlan().coverage[0]!, coverage }]
@@ -4600,46 +4809,33 @@ describe("phase 5 pipeline regressions", () => {
         [fakeFacts("app.ts", "per-hunk")],
         fakeRepositoryIndex(),
         nullTelemetry(),
-        { config: { ...config(), review: { ...config().review, depth, budgetBoost } }, enabledLenses: ["core/code-review"] }
+        { config: { ...config(), review: { ...config().review, budgetBoost } }, enabledLenses: ["core/code-review"] }
       );
       return packets[0]?.toolBudget;
     };
 
-    await expect(budgetFor("deep", "light")).resolves.toEqual({
-      maxToolCalls: 10,
-      maxInvestigationRounds: 3,
-      maxResultChars: 24_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
-    });
-    await expect(budgetFor("deep", "normal")).resolves.toEqual({
+    await expect(budgetFor("deep")).resolves.toEqual({
       maxToolCalls: 20, maxInvestigationRounds: 6, maxResultChars: 48_000,
       maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
     });
-    await expect(budgetFor("deep", "deep")).resolves.toEqual({
-      maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
-    });
-    await expect(budgetFor("deep", "normal", 1.5)).resolves.toEqual({
+    await expect(budgetFor("deep", 1.5)).resolves.toEqual({
       maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
       maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000,
     });
-    await expect(budgetFor("light", "light")).resolves.toEqual({
-      maxToolCalls: 0,
-      maxInvestigationRounds: 0,
-      maxResultChars: 0
-    });
-    await expect(budgetFor("normal", "deep")).resolves.toEqual({
-      maxToolCalls: 6,
-      maxInvestigationRounds: 3,
-      maxResultChars: 15_000,
-      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000
-    });
-    await expect(budgetFor("normal", "normal", 1.5)).resolves.toEqual({
+    await expect(budgetFor("normal", 1.5)).resolves.toEqual({
       maxToolCalls: 6,
       maxInvestigationRounds: 3,
       maxResultChars: 15_000,
       maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000
     });
+  });
+
+  it("sets the Stage 7 close nudge from coverage and profile alone (#129)", () => {
+    expect(closeNudgeThreshold({ coverage: "light", reviewProfile: "investigate" })).toBe(1);
+    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "simple" })).toBe(1);
+    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "standard" })).toBe(3);
+    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "investigate" })).toBe(3);
+    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "standard" })).toBe(2);
   });
 
   it("keeps synthetic large import-only PRs on the simple no-tool budget profile", async () => {
@@ -4686,6 +4882,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(hunk?.contentWithLineNumbers).toContain("chars truncated");
     expect(hunk?.contentWithLineNumbers.length).toBeLessThanOrEqual(12_000);
     expect(packets[0]?.degraded?.reason).toContain("patch truncated");
+    expect(packets[0]?.contextLoss).toContainEqual(expect.stringContaining("patch truncated"));
   });
 
   it("applies verifier revisedAnchor when no finalFinding is returned", async () => {
@@ -5325,6 +5522,98 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it.each([
+    { name: "clean sparse" },
+    { name: "missing reason only", missingReason: true },
+    { name: "missing reason, misplaced root and nested bookkeeping", missingReason: true, misplacedRoot: true },
+    { name: "missing reason and invalid coverage", missingReason: true, invalidCoverage: true },
+    { name: "present invalid reason", invalidReason: true }
+  ])("preserves planner validation and safety coverage for $name", async ({ missingReason, misplacedRoot, invalidCoverage, invalidReason }) => {
+    const plan = fakePlan();
+    const { reason, ...decision } = plan.coverage[0]!;
+    const focusNotes = ["Inspect the caller's input guard."];
+    const initial = {
+      diffUnderstanding: { ...plan.diffUnderstanding, ...(misplacedRoot ? { totalHunks: 5 } : {}) },
+      coverage: [{ ...decision, focusNotes, ...(missingReason ? {} : { reason: invalidReason ? "" : reason }),
+        ...(invalidCoverage ? { coverage: "wrong" } : {}) }],
+      ...(misplacedRoot ? { reason: "misplaced reason" } : {})
+    };
+    const messages = [assistantMessage([toolCall("initial", "submit_plan", initial)])];
+    const needsRepair = invalidCoverage || invalidReason;
+    if (needsRepair) {
+      messages.push(assistantMessage([toolCall("repair", "submit_plan", { coverage: [{ coverage: "normal", reason }] })]));
+    }
+    const adapter = { ...scriptedPiAdapter(messages), validateToolCall };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: (typeof events)[number]) => { events.push(event); } };
+    const cfg = config();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const paths = ["app.ts", "b.ts", "c.ts", "d.ts", "e.ts"];
+    const dossier = fakeDossier(paths);
+    const result = await runPlanner(dossier, cfg, telemetry, {
+      runner, promptBuilder: fakePromptBuilder(), skills: [],
+      lenses: [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+        enabledByDefault: true, enabled: true, languages: [] }]
+    });
+
+    expect(events.filter(event => event.message === "model_call_started" && event.stage === 5)).toHaveLength(needsRepair ? 2 : 1);
+    expect(events.some(event => event.message === "planner_schema_repair_scheduled")).toBe(Boolean(needsRepair));
+    expect(events.filter(event => event.message === "planner_recovery_missing_reasons_defaulted").map(event => event.data))
+      .toEqual(missingReason ? [{ count: 1 }] : []);
+    expect(result.plan.diffUnderstanding).toEqual(plan.diffUnderstanding);
+    expect(result.plan.coverage[0]).toMatchObject({ hunkId: "h1", coverage: "normal", focusNotes,
+      reason: missingReason && !needsRepair ? "default_coverage_missing_planner_reason" : reason });
+    const recoveredSparsePlan = missingReason || invalidReason;
+    expect(result.degradedPlanning).toBe(Boolean(recoveredSparsePlan));
+    expect(result.plan.coverage.slice(1).map(entry => [entry.hunkId, entry.coverage])).toEqual(recoveredSparsePlan
+      ? dossier.hunkIndex.slice(1).map(entry => [entry.hunkIds[0], "deep"]) : []);
+    if (missingReason && !needsRepair) {
+      expect(result.plan.plannerRecovery).toMatchObject({ usedDeterministicRecovery: true, usedSchemaRepair: false,
+        strippedRootKeys: misplacedRoot ? ["reason"] : [], safetyCoverageApplied: { upgradedHunks: 4 } });
+    }
+    const files = paths.map((path, index) => {
+      const file = fakeDiffFile(path);
+      file.hunks[0]!.id = dossier.hunkIndex[index]!.hunkIds[0]!;
+      return file;
+    });
+    const packets = await buildReviewPackets(result.plan, files, [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: [] });
+    expect(packets.flatMap(packet => packet.hunks.map(hunk => hunk.hunkId)).sort()).toEqual(dossier.hunkIndex.flatMap(entry => entry.hunkIds));
+    expect(packets.flatMap(packet => packet.attentionNotes)).not.toContain("default_coverage_missing_planner_reason");
+  });
+
+  it.each([false, true])("keeps authored duplicate attention without the placeholder (missing reason first: %s)", async (missingFirst) => {
+    const plan = fakePlan();
+    const { reason, ...decision } = plan.coverage[0]!;
+    const incomplete = { ...decision, coverage: "deep", focusNotes: ["Inspect the caller."] };
+    const authored = { ...decision, reason };
+    const rawPlan = { diffUnderstanding: plan.diffUnderstanding,
+      coverage: missingFirst ? [incomplete, authored] : [authored, incomplete] };
+    const runner: LlmRunner = {
+      async runStructured<T>(request: LlmStructuredRequest<T>) {
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({ stage: 5, submitTool: "submit_plan",
+          error: "missing coverage reason", submitCalls: [{ id: "initial", arguments: rawPlan }],
+          extraToolNames: [], schemaRepairUsed: false });
+        expect(recovered).toBeDefined();
+        return recovered as T;
+      }
+    };
+    const cfg = config();
+    const telemetry = nullTelemetry();
+    const lenses = [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+      enabledByDefault: true, enabled: true, languages: [] }];
+    const { plan: recovered } = await runPlanner(fakeDossier(["app.ts"]), cfg, telemetry, {
+      runner, promptBuilder: fakePromptBuilder(), skills: [], lenses
+    });
+    expect(recovered.coverage[0]).toMatchObject({ coverage: "deep", reason: expect.stringContaining(reason) });
+    const [packet] = await buildReviewPackets(recovered, [fakeDiffFile("app.ts")], [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: lenses.map(lens => lens.id) });
+    expect(packet!.attentionNotes.some(note => note.includes(reason))).toBe(true);
+    expect(packet!.attentionNotes.join("\n")).not.toContain("default_coverage_missing_planner_reason");
+  });
+
   it("recovers a root plan string wrapper before planner schema repair", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const wrappedPlan = fakePlan("app.ts");
@@ -5837,6 +6126,108 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ status: "review_failed", reason: "budget_stopped before dispatch" }),
       expect.objectContaining({ status: "review_failed", reason: "budget_stopped before dispatch" })
     ]));
+  });
+
+  it.each([
+    { name: "positive empty reason", reason: "", acceptedReason: undefined, hasFindings: true, repair: false },
+    { name: "positive nonempty reason", reason: "Context for the packet.", acceptedReason: "Context for the packet.", hasFindings: true, repair: false },
+    { name: "no findings with an empty reason", reason: "", acceptedReason: "No issue in the changed branch.", hasFindings: false, repair: true },
+    { name: "positive empty reason and invalid severity", reason: "", acceptedReason: undefined, hasFindings: true, repair: true }
+  ])("preserves Stage 7 submission validation for $name", async ({ reason, acceptedReason, hasFindings, repair }) => {
+    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+    const initial = {
+      reviewStatus: hasFindings ? "findings" : "no_findings", noFindingReason: reason,
+      findings: hasFindings ? [{ ...finding, ...(repair ? { severity: "bogus" } : {}) }] : [],
+      followUpHints: [], uncertainties: []
+    };
+    const messages = [assistantMessage([toolCall("initial", "submit_review", initial)])];
+    if (repair) {
+      messages.push(assistantMessage([toolCall("repair", "submit_review", hasFindings
+        ? { findings: [{ severity: finding.severity }] }
+        : { noFindingReason: acceptedReason })]));
+    }
+    const adapter = { ...scriptedPiAdapter(messages), validateToolCall };
+    const events: Array<Pick<TelemetryEvent, "stage" | "message" | "data">> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: (typeof events)[number]) => { events.push(event); } };
+    const cfg = config();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+
+    expect(result!.status).toBe("completed");
+    expect(result!.findings).toEqual(hasFindings ? [expect.objectContaining(finding)] : []);
+    if (acceptedReason === undefined) expect(result).not.toHaveProperty("noFindingReason");
+    else expect(result!.noFindingReason).toBe(acceptedReason);
+    expect(events.filter(event => event.message === "model_call_started" && event.stage === 7)).toHaveLength(repair ? 2 : 1);
+    expect(events.some(event => event.message === "schema_repair_scheduled")).toBe(repair);
+    if (hasFindings && !repair && reason === "") {
+      expect(events).toContainEqual(expect.objectContaining({
+        stage: 7, message: "submit_semantic_canonicalization_accepted",
+        data: expect.objectContaining({ removedFields: ["noFindingReason"] })
+      }));
+    }
+  });
+
+  it.each([
+    { incomplete: false, confidence: "medium", health: "unresolved" },
+    { incomplete: false, confidence: "low", health: "completed" },
+    { incomplete: true, confidence: "medium", health: "incomplete" }
+  ])("reports $health after a packet result budget refusal", async ({ incomplete, confidence, health }) => {
+    const packet = fakePacket();
+    const plan = fakePlan();
+    const question = "Does the caller validate the input before calling the changed function?";
+    const adapter = scriptedPiAdapter([
+      assistantMessage([
+        toolCall("fill", "read_range", { path: packet.path, startLine: 1, endLine: 1 }),
+        toolCall("refused", "read_range", { path: packet.path, startLine: 2, endLine: 2 })
+      ]),
+      assistantMessage([toolCall("submit", "submit_review", {
+        reviewStatus: incomplete ? "incomplete" : "no_findings",
+        noFindingReason: "Caller evidence could not be retrieved.",
+        findings: [],
+        followUpHints: [{ question, files: [packet.path], symbols: [], suggestedLenses: [],
+          reason: "The requested caller evidence was unavailable.", confidence }],
+        uncertainties: []
+      })])
+    ]);
+    const events: Array<Pick<TelemetryEvent, "stage" | "message" | "data">> = [];
+    const cfg = config();
+    const { recorder } = createRunTelemetry({ telemetryConfig: cfg.telemetry });
+    const telemetry = { ...recorder, event: (event: (typeof events)[number]) => { events.push(event); } };
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const packets = [packet];
+    const packetResults = await runLensPackets(plan, packets, fakeTools("x".repeat(20_000)), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    const verified = { verified: [], incompleteCount: 0, verdicts: [] };
+    const coverage = aggregateRunCoverage(plan, [], packetResults, verified, telemetry, { packets });
+    const result = await dedupeRankAndComposeReview(verified, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, telemetry, { packets, packetResults, promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        runner: { runStructured: async request => {
+          expect(extractPromptJson<RunCoverageStatus>(request.prompt, "coverage-status")?.diagnostics)
+            .toEqual([expect.objectContaining({ stage: 7, code: "budget_exhausted", kind: "incomplete" })]);
+          throw composerTransientError();
+        } } });
+    refreshReviewHealth(result);
+
+    expect(events).toContainEqual(expect.objectContaining({ stage: 7, message: "tool_call_rejected",
+      data: expect.objectContaining({ reason: "tool_result_budget_exhausted" }) }));
+    expect(telemetry.snapshotContextPressure?.()).toMatchObject({
+      toolBudgetRejections: 1, toolBudgetRejectionsByStage: { 7: 1 },
+      rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 1 }]
+    });
+    expect(packetResults[0]!.status).toBe(incomplete ? "incomplete" : "completed");
+    expect(result.coverage).toMatchObject({
+      totalHunks: 1, reviewedHunks: incomplete ? 0 : 1, failedHunks: incomplete ? 1 : 0,
+      verificationIncompleteCount: 0, budgetStopped: false, partial: incomplete
+    });
+    expect(result.health).toMatchObject({ status: health, diagnostics: incomplete
+      ? [expect.objectContaining({ stage: 7, kind: "incomplete", code: "budget_exhausted", origin: "tool" })] : [] });
+    if (confidence === "low") expect(renderMarkdownReview(result)).not.toContain(question);
+    else expect(renderMarkdownReview(result)).toContain(question);
   });
 
   it("persists local tool-budget pressure from recorded tool calls into budget artifacts", async () => {
@@ -7145,35 +7536,108 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown.indexOf("**Review incomplete.**")).toBeLessThan(markdown.indexOf("0 confirmed findings"));
   });
 
-  it("renders planner degradation prominently without inventing partial coverage", () => {
-    const coverage: RunCoverageStatus = {
-      totalHunks: 1,
-      reviewedHunks: 1,
-      skippedHunks: 0,
-      failedHunks: 0,
-      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
-      degradedPlanning: true,
-      budgetStopped: false,
-      verificationIncompleteCount: 0,
-      partial: false,
-      reasons: []
-    };
-    const markdown = renderMarkdownReview({
-      summary: "Review completed.",
-      coverage,
-      findings: [],
-      summaryOnlyFindings: [],
-      needsHumanAttention: [],
-      noFindings: true
-    });
+  it.each([
+    { incomplete: 12, total: 12, packetFailed: false, status: "incomplete" },
+    { incomplete: 1, total: 12, packetFailed: true, status: "failed" },
+    { incomplete: 0, total: 0, packetFailed: true, status: "failed" },
+    { incomplete: 1, total: undefined, packetFailed: false, status: "incomplete" }
+  ])("reports verification progress with health $status for $incomplete/$total incomplete", async ({ incomplete, total, packetFailed, status }) => {
+    const coverage = { ...fakeCoverage(), verificationIncompleteCount: incomplete, partial: true,
+      ...(packetFailed ? { failedHunks: 1, reviewedHunks: 0, diagnostics: [{ stage: 7, kind: "failure" as const,
+        code: "llm_call_failed", reason: "Packet review exhausted its retries.", recoveryExhausted: true }] } : {}) };
+    const cfg = { ...config(), github: { ...defaultConfig.github, summaryWhenNoFindings: true } };
+    const verified = { verified: [], verdicts: [], ...(total !== undefined ? { verificationCandidateCount: total } : {}) };
+    const coverageForComposer = structuredClone(coverage);
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      expect(extractPromptJson(request.prompt, "coverage-status")).toEqual(coverageForComposer);
+      return { summary: "Review completed.", composedFindings: [] } as T;
+    } };
+    const result = await dedupeRankAndComposeReview(verified, fakePlan(), { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, nullTelemetry(), { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), postGithubComments: true });
+    refreshReviewHealth(result);
+    const report = renderMarkdownReview(result);
+    const body = result.postingPlan!.reviewBody;
+    const posting = renderPostingSummaryForStdout(result, "markdown");
+    expect(result.health?.status).toBe(status);
+    expect(result.health?.verificationCandidateCount).toBe(incomplete > 0 ? total : undefined);
+    for (const text of [report, body, posting]) {
+      const general = "Required work did not complete reliably. Findings below are partial results.";
+      if (incomplete > 0 && total !== undefined) {
+        expect(text).toContain(`${general} Verification did not finish for ${incomplete} of ${total} candidates selected for verification.`);
+      } else {
+        expect(text).toContain(general);
+        expect(text).not.toContain("candidates selected for verification");
+      }
+      if (packetFailed) expect(text).toContain("Stage 7: llm_call_failed — Packet review exhausted its retries.");
+    }
+    if (incomplete > 0) expect(report).toContain(`- Verification incomplete for ${incomplete} candidate${incomplete === 1 ? "" : "s"}.`);
+  });
 
-    expect(markdown).toContain("**Degraded run: planner fallback.**");
-    expect(markdown.indexOf("**Degraded run: planner fallback.**")).toBeLessThan(markdown.indexOf("Review completed."));
-    expect(markdown).toContain("## ✅ No Findings");
-    expect(markdown).toContain("No credible findings were found within the reviewed scope");
-    expect(markdown).not.toContain("**Review incomplete.**");
-    expect(markdown).not.toContain("**Review incomplete.");
-    expect(markdown).not.toContain("**Partial review:**");
+  it.each([
+    { scenario: "complete recovered plan", fallback: false, incomplete: false },
+    { scenario: "complete default fallback", fallback: true, incomplete: false },
+    { scenario: "recovered plan with incomplete evidence", fallback: false, incomplete: true }
+  ])("discloses planning separately from incomplete work: $scenario", async ({ fallback, incomplete }) => {
+    const cfg = { ...config(), github: { ...defaultConfig.github, summaryWhenNoFindings: true } };
+    const telemetry = nullTelemetry();
+    const dossier = fakeDossier(["app.ts", "b.ts", "c.ts", "d.ts", "e.ts"]);
+    const { reason: _reason, ...decision } = fakePlan().coverage[0]!;
+    const rawPlan = { diffUnderstanding: fakePlan().diffUnderstanding, coverage: [decision] };
+    const lenses = [{ id: "core/code-review", title: "Core", description: "core", skillIds: [],
+      enabledByDefault: true, enabled: true, languages: [] }];
+    const { plan, degradedPlanning } = await runPlanner(dossier, cfg, telemetry, {
+      runner: { async runStructured<T>(request: LlmStructuredRequest<T>) {
+        if (fallback) throw new CodegenieError("llm_schema_invalid", "Planner could not submit a valid plan");
+        return request.schemaRepair?.recoverInvalidSubmit?.({ stage: 5, submitTool: "submit_plan", error: "missing reason",
+          submitCalls: [{ id: "submit", arguments: rawPlan }], extraToolNames: [], schemaRepairUsed: false }) as T;
+      } },
+      promptBuilder: fakePromptBuilder(), skills: [], lenses
+    });
+    expect(degradedPlanning).toBe(true);
+    expect(plan.plannerRecovery?.sparseRecoveredPlan).toBe(fallback ? undefined : true);
+    const files = dossier.hunkIndex.map(({ path, hunkIds }) => {
+      const file = fakeDiffFile(path);
+      file.hunks[0]!.id = hunkIds[0]!;
+      return file;
+    });
+    const packets = await buildReviewPackets(plan, files, [], fakeRepositoryIndex(), telemetry,
+      { config: cfg, enabledLenses: ["core/code-review"] });
+    const evidenceFailure = "Required evidence read timed out.";
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => ({
+      packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "completed",
+      ...(incomplete && index === 0 ? { diagnostics: [{ stage: 7, kind: "incomplete", code: "timeout",
+        reason: evidenceFailure, origin: "tool", workItem: packet.id, recoveryExhausted: true }] } : {})
+    }));
+    const verified = { verified: [], verdicts: [], incompleteCount: 0 };
+    const coverage = aggregateRunCoverage(plan, [], packetResults, verified, telemetry, { allFiles: files, packets, degradedPlanning });
+    const legacyReason = "planner degraded; deterministic default plan used";
+    expect(coverage.reasons).toContain(legacyReason);
+    expect(coverage).toMatchObject({ degradedPlanning: true, reviewedHunks: 5, failedHunks: 0, partial: false });
+    const coverageForComposer = structuredClone(coverage);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const expectedPrompt = promptBuilder.buildComposerPrompt({ groupedFindingsJson: "[]", coverage: coverageForComposer,
+      intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\nNo explicit intent signals were detected from PR or commit text.`,
+      followUpHintNotes: [] }).prompt;
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      expect(request.prompt).toBe(expectedPrompt);
+      return { summary: "Review completed.", composedFindings: [] } as T;
+    } };
+    const result = await dedupeRankAndComposeReview(verified, plan, { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, telemetry, { runner, promptBuilder, packets, packetResults, postGithubComments: true });
+    refreshReviewHealth(result);
+    const budget = new BudgetLedger(cfg).summary(result.coverage);
+
+    expect(result.coverage).toMatchObject({ degradedPlanning: true, partial: incomplete, reasons: [legacyReason] });
+    expect(budget.completeness).toBe(incomplete ? "partial" : "complete");
+    expect(budget.partialReasons).toEqual(incomplete ? [`Stage 7: ${evidenceFailure}`] : []);
+    const disclosure = "Planning needed deterministic recovery or fallback. This changes how review attention is allocated while keeping every eligible hunk in scope.";
+    for (const output of [renderMarkdownReview(result), result.postingPlan!.reviewBody]) {
+      expect(output.split(disclosure)).toHaveLength(2);
+      expect(output).not.toMatch(/planner failed|default plan used|review completed with degraded planning/iu);
+      expect(output.includes("**Review incomplete.**")).toBe(incomplete);
+      if (incomplete) expect(output).toContain("required evidence gathering remains incomplete");
+      else expect(output).toContain("Reviewed 5/5 hunks.");
+    }
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {
@@ -7469,7 +7933,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const packet = packets[0] as ReviewPacket;
     expect(packet).toMatchObject({ coverage: "deep", reviewProfile: "investigate", coverageEscalation: { rule: "test_coverage_delta" } });
-    expect(packet.toolBudget).toEqual(toolBudget("deep", config().review.depth, "investigate"));
+    expect(packet.toolBudget).toEqual(toolBudget("deep", "investigate"));
     expect(events).toContainEqual(expect.objectContaining({
       message: "coverage_escalated",
       packetId: packet.id,
@@ -8221,6 +8685,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; duplicateOf?: string; verdict: { candidateId: string; verificationIncomplete?: boolean } }>;
     expect(verified.incompleteCount).toBe(2);
+    expect(verified.verificationCandidateCount).toBe(records.length);
     expect(verified.verified).toEqual([]);
     expect(records.map((record) => record.candidateId).sort()).toEqual(["finding-1", "finding-2"]);
     expect(records.find((record) => record.candidateId === "finding-2")).toMatchObject({
@@ -8507,6 +8972,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(coverage.verificationSkipped).toBe(true);
+    expect(verifyDisabled.verificationCandidateCount).toBe(0);
     expect(coverage.reasons).toContain("verification disabled by config; candidates were not independently verified");
   });
 
@@ -8933,6 +9399,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.stopSnapshot()).toMatchObject({ reason: "max_model_calls", stage: 9 });
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; incompleteReason?: string; verdict?: { verificationIncomplete?: boolean } }>;
+    expect(verified.verificationCandidateCount).toBe(records.filter(record => record.verdict).length);
+    expect(verified.verificationCandidateCount).toBe(2);
     expect(records.find((record) => record.candidateId === "finding-low")).toMatchObject({
       incompleteReason: "budget_limited",
       verdict: { verificationIncomplete: true }
@@ -10371,21 +10839,37 @@ describe("phase 5 pipeline regressions", () => {
     ] });
   });
 
-  it("writes run artifacts for explicit runArtifactDir even when telemetry config is disabled", async () => {
+  it("writes explicit run artifacts without pruning sibling runs when telemetry config is disabled", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "forced-artifacts");
+    const parent = mkdtempSync(path.join(tmpdir(), "codegenie-run-"));
+    const runArtifactDir = path.join(parent, "forced-artifacts");
+    const priorRuns = [];
+    for (const day of [1, 2]) {
+      const prior = createRunTelemetry({
+        telemetryConfig: { ...defaultConfig.telemetry, enabled: true, runDir: parent },
+        clock: () => new Date(Date.UTC(2026, 0, day))
+      });
+      const { runDir } = await prior.attachRunDirectory(repo);
+      priorRuns.push(runDir);
+    }
 
+    const cfg = config();
+    cfg.telemetry.retainRuns = 1;
     await runReview(
       { mode: "branch", branchName: "feature" },
-      config(),
+      cfg,
       { repoRoot: repo, runArtifactDir }
     );
 
+    for (const runDir of priorRuns) {
+      expect(existsSync(path.join(runDir, "run.log"))).toBe(true);
+    }
+    expect(existsSync(path.join(runArtifactDir, ".codegenie-run"))).toBe(false);
     expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);
@@ -13004,66 +13488,130 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summaryOnlyFindings).toEqual([]);
   });
 
-  it("publishes verified low-confidence changed-line behavior deltas with concrete evidence", async () => {
-    const finding: CandidateFinding = {
-      ...fakeFinding(),
-      confidence: "low",
-      category: "correctness",
-      evidence: {
-        changedCode: "+ return calculateAmountFromUSD(price, decimals)",
-        relatedCode: [{
-          path: "src/caller.ts",
-          lines: "42: calculateAmountFromUSD(price, decimals)",
-          whyRelevant: "The caller still reaches the changed conversion path."
-        }]
-      },
-      failureMode: "The changed conversion path rejects a concrete token-decimal case that the previous implementation accepted.",
-      whyThisMatters: "A reachable caller can now fail a request that previously succeeded.",
-      suggestedTest: "Add a regression test for the changed conversion path with the affected decimal case.",
-      verification: "Verifier confirmed the changed line and related caller path; reachability should remain explicit in the final review."
+  it.each([
+    { name: "default inline floor" },
+    { name: "deterministic fallback", fallback: true },
+    { name: "explicit low inline floor", allowLowInline: true },
+    { name: "withheld representative anchor", anchorless: true },
+    { name: "unqualified exception", unqualified: true },
+    { name: "binding soft cap", cap: true },
+    { name: "binding soft cap with a prior inline comment", cap: true, duplicate: true }
+  ])("enforces the inline floor through GitHub posting ($name)", async ({ fallback, allowLowInline, anchorless, unqualified, cap, duplicate }) => {
+    const { suggestedTest: _suggestedTest, ...exception } = lowConfidenceDeltaFinding("exception", {
+      title: "Supported conversion can reject",
+      severity: "high",
+      ...(anchorless ? { anchorSource: "backfill_packet_representative" as const } : {})
+    });
+    const eligible = {
+      ...fakeFinding(), id: "eligible", title: "Index can exceed the bound", path: "index.ts",
+      anchor: { path: "index.ts", line: 1, side: "RIGHT" as const, hunkId: "h2" },
+      failureMode: "The lookup can use an index beyond the final element."
+    };
+    const findings = cap ? [exception, eligible] : [exception];
+    const diff = fakeChangedLineDiff(findings.map(finding => ({
+      path: finding.path, hunkId: finding.anchor!.hunkId, line: finding.anchor!.line, content: finding.evidence.changedCode
+    })));
+    const baseConfig = config();
+    const cfg = {
+      ...baseConfig,
+      review: {
+        ...baseConfig.review,
+        minInlineConfidence: allowLowInline ? "low" as const : baseConfig.review.minInlineConfidence,
+        softCommentCap: cap ? 1 : baseConfig.review.softCommentCap
+      }
+    };
+    const resolved: ResolvedReviewInput = {
+      mode: "github_pr", repoRoot: "/tmp/repo", commits: [], rawDiff: "",
+      pr: {
+        owner: "example", repo: "demo", number: 1, title: "Review", body: "",
+        url: "https://github.com/example/demo/pull/1", baseRefName: "main", baseSha: "a".repeat(40),
+        headRefName: "feature", headSha: "b".repeat(40)
+      }
     };
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-
+    const artifacts = new Map<string, unknown>();
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => { events.push(event); },
+      writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); }
+    };
     const result = await dedupeRankAndComposeReview(
       {
-        verified: [finding],
+        verified: findings,
         verdicts: [{
-          candidateId: finding.id,
+          ...qualifiedLowConfidenceVerdict(exception.id),
           verdict: "revise",
-          reason: "Concrete behavior delta confirmed, reachability remains narrow.",
-          requiredEvidencePresent: true,
-          falsePositiveRisk: "medium"
+          requiredEvidencePresent: !unqualified
         }]
       },
-      fakePlan(),
-      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
-      fakeCoverage(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
+      fakePlan(), resolved, fakeCoverage(), cfg, telemetry,
       {
         runner: {
-          runStructured: async () => {
-            throw composerTransientError();
+          runStructured: async <T>() => {
+            if (fallback) throw composerTransientError();
+            return {
+              summary: "Review finished.",
+              composedFindings: findings.map(finding => ({
+                findingIds: [finding.id], publication: "inline",
+                ...attributedSources([finding], finding.failureMode)
+              }))
+            } as T;
           }
         },
-        promptBuilder: fakePromptBuilder(),
-        diff: fakeDiff()
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), diff, postGithubComments: true
       }
     );
 
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]).toMatchObject({ id: finding.id, confidence: "low", publication: "inline" });
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 10,
-      message: "low_confidence_verified_delta_published",
-      file: finding.path,
-      data: expect.objectContaining({ findingId: finding.id, anchorless: false, publication: "inline" })
-    }));
+    const report = renderMarkdownReview(result);
+    const json = JSON.parse(renderReviewForStdout(result, "json")) as ReviewResult;
+    const outgoing: Array<Parameters<GitHubClient["createReview"]>[1]> = [];
+    const github: GitHubClient = {
+      viewPr: async () => resolved.pr!,
+      listOwnComments: async () => duplicate ? [{
+        id: "previous", author: "bot", isCodegenie: true, path: eligible.path, side: "RIGHT", line: 1
+      }] : [],
+      createReview: async (_number, payload) => { outgoing.push(payload); }
+    };
+    const posting = await maybePublishToGitHub(result, resolved, cfg, telemetry, { github, diff });
+
+    const inlineIds = allowLowInline ? [exception.id] : cap ? [eligible.id] : [];
+    const summaryIds = allowLowInline || unqualified ? [] : [exception.id];
+    const postedPaths = allowLowInline ? [exception.path] : cap && !duplicate ? [eligible.path] : [];
+    expect(result.composition?.mode).toBe(fallback ? "deterministic_fallback" : "llm");
+    expect(json.findings.map(finding => finding.id)).toEqual(inlineIds);
+    expect(json.summaryOnlyFindings.map(finding => finding.id)).toEqual(summaryIds);
+    expect(json.postingPlan?.inline.map(item => item.findingId) ?? []).toEqual(inlineIds);
+    expect(outgoing.flatMap(payload => payload.comments.map(comment => comment.path))).toEqual(postedPaths);
+    expect(posting?.demotedToBody ?? 0).toBe(0);
+    expect(posting?.skippedDuplicates ?? 0).toBe(duplicate ? 1 : 0);
+    if (duplicate) {
+      expect(posting?.duplicateDecisions).toEqual([expect.objectContaining({
+        findingId: eligible.id, action: "skip_fuzzy_proximity", matchedCommentId: "previous"
+      })]);
+    }
+    expect(outgoing.some(payload => payload.body.includes(exception.title))).toBe(summaryIds.length > 0);
+    expect(outgoing.some(payload => payload.body.includes(eligible.title))).toBe(false);
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find(finding => finding.id === exception.id);
+    expect(published?.anchor).toEqual(anchorless || unqualified ? undefined : exception.anchor);
+    expect(report.includes(exception.title)).toBe(!unqualified);
+    if (summaryIds.length > 0) expect(report.split("## Summary-Only Findings")[1]).toContain(exception.title);
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: expect.arrayContaining([expect.objectContaining({
+        findingId: exception.id,
+        decision: unqualified ? "suppressed" : "published",
+        reason: unqualified ? "confidence-threshold" : anchorless ? "low-confidence-anchorless" :
+          allowLowInline ? "composer-selected" : "min-inline-confidence"
+      })])
+    });
+    const event = events.find(event => event.message === "low_confidence_verified_delta_published");
+    if (unqualified) {
+      expect(event).toBeUndefined();
+    } else {
+      expect(event?.data).toMatchObject({
+        findingId: exception.id, anchorless: anchorless === true, publication: allowLowInline ? "inline" : "summary-only"
+      });
+    }
   });
 
   it("publishes a qualified promotion after withholding its gate-only anchor as summary-only", async () => {
@@ -13195,7 +13743,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       );
 
       expect(result.noFindings, testCase.name).toBe(!testCase.published);
-      expect(result.findings, testCase.name).toHaveLength(testCase.published ? 1 : 0);
+      expect(result.findings, testCase.name).toEqual([]);
+      expect(result.summaryOnlyFindings, testCase.name).toHaveLength(testCase.published ? 1 : 0);
     }
   });
 
@@ -13231,7 +13780,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       );
 
       expect(result.noFindings, name).toBe(!published);
-      expect(result.findings, name).toEqual(published
+      expect(result.findings, name).toEqual([]);
+      expect(result.summaryOnlyFindings, name).toEqual(published
         ? [expect.objectContaining({ id: representative.id, mergedCandidateIds: expect.arrayContaining([representative.id, sibling.id]) })]
         : []);
     }
@@ -13274,7 +13824,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       }
     );
 
-    expect(result.findings).toEqual([expect.objectContaining({ id: first.id, publication: "inline" })]);
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([expect.objectContaining({ id: first.id, publication: "summary-only" })]);
     expect(artifacts.get("final-selection.json")).toMatchObject({
       records: expect.arrayContaining([
         expect.objectContaining({ findingId: second.id, decision: "suppressed", reason: "report-cap" })
@@ -14160,7 +14711,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
         partial: false,
         reasons: []
       },
-      config(),
+      { ...config(), github: { ...config().github, summaryWhenNoFindings: true } },
       {
         ...nullTelemetry(),
         event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
@@ -14172,7 +14723,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
           runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
         },
         promptBuilder: fakePromptBuilder(),
-        packetResults
+        packetResults,
+        postGithubComments: true
       }
     );
 
@@ -14180,6 +14732,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     expect(result.needsHumanAttention[0]?.question).toBe("Should retry cancellation be checked against the worker shutdown path?");
     expect(result.needsHumanAttention.some((note) => note.reason.includes("Grouped from 2 related hints"))).toBe(true);
     expect(result.needsHumanAttentionOmittedCount).toBe(5);
+    expect(result.postingPlan?.reviewBody).toContain("5 shown, 5 omitted.");
+    expect(result.postingPlan?.reviewBody).toContain(result.needsHumanAttention[0]?.question);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
       message: "human_attention_hints_grouped",
@@ -14261,7 +14815,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       })
     ]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       notes: [
         expect.objectContaining({
           source: "uncertainty",
@@ -14416,12 +14970,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       records: [expect.objectContaining({ findingId: candidate.id, decision: "suppressed", reason: "confidence-threshold" })]
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })],
-      fallbackGroupCount: 0,
-      omittedFallbackCount: 0,
-      publicationFallbacks: []
+      outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })]
     });
-    expect(events.some(event => event.message === "human_attention_publication_fallback")).toBe(false);
   });
 
   it("publishes a concrete keep without implicitly deleting its outstanding question", async () => {
@@ -14479,9 +15029,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
       records: [expect.objectContaining({ findingId: candidate.id, decision: "published", reason: "low-confidence-anchorless" })]
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      outputNotes: [expect.objectContaining({ question: expect.any(String) })],
-      fallbackGroupCount: 0,
-      omittedFallbackCount: 0
+      outputNotes: [expect.objectContaining({ question: expect.any(String) })]
     });
   });
 
@@ -14539,7 +15087,6 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     expect(composerNotes).toHaveLength(1);
     expect(result.needsHumanAttention).toHaveLength(1);
     expect(result.health?.status).toBe("unresolved");
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ suppressedByVerification: [] });
   });
 
   it("does not suppress unrelated human-attention notes through weak same-file verifier overlap", async () => {
@@ -14745,8 +15292,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
           files: [],
           droppedPaths: [{ path: "billing/quotes.ts", reason: "unknown_path" }]
         })
-      ],
-      suppressedByVerification: []
+      ]
     });
   });
 
@@ -14849,7 +15395,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     });
 
     expect(output).toContain("## 🙋 Needs Human Attention");
-    expect(output).toContain("Additional unresolved notes suppressed: 3.");
+    expect(output).toContain("1 shown, 3 omitted.");
+    expect(output).not.toContain("Additional unresolved notes suppressed");
   });
 });
 

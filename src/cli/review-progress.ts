@@ -11,6 +11,7 @@ type ProgressOptions = {
 
 export type ReviewProgress = {
   onTelemetryEvent(event: ProgressEvent): void;
+  writeLine(text: string): void;
   stop(): void;
 };
 
@@ -49,6 +50,17 @@ export function createReviewProgress(options: ProgressOptions): ReviewProgress |
   render();
 
   return {
+    writeLine(text) {
+      if (stopped) return;
+      try {
+        clearLine(stream);
+        stream.write(text.endsWith("\n") ? text : `${text}\n`);
+        render();
+      } catch {
+        stopped = true;
+        clearInterval(timer);
+      }
+    },
     onTelemetryEvent(event) {
       if (event.message === "stage_started") {
         currentText = `Reviewing (stage ${event.stage}: ${stageLabel(event)}) ...`;

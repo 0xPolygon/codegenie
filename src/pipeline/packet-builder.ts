@@ -101,6 +101,7 @@ type RelatedContextTarget = {
 type PacketBuildMetrics = {
   relatedContextBudgetNudges: number;
   relatedContextBudgetNudgeSources: Set<string>;
+  packetContextTruncations: number;
 };
 
 type RelationshipAttentionCandidate = {
@@ -126,6 +127,7 @@ const MAX_CONTEXT_CHARS = 8_000;
 const DEFAULT_SYMBOL_CONTEXT_CHARS = 3_000;
 const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
 const SYMBOL_EXCERPT_WINDOW = 8;
+const MAX_SYMBOL_EXCERPT_RANGES = 4;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
@@ -157,7 +159,8 @@ export async function buildReviewPackets(
   const symbolContextMetrics = emptySymbolContextMetrics();
   const packetBuildMetrics: PacketBuildMetrics = {
     relatedContextBudgetNudges: 0,
-    relatedContextBudgetNudgeSources: new Set()
+    relatedContextBudgetNudgeSources: new Set(),
+    packetContextTruncations: 0
   };
   const plannedByFile = new Map<string, PlannedHunk[]>();
   const effectiveByHunk = new Map<string, EffectiveDecision>();
@@ -200,6 +203,14 @@ export async function buildReviewPackets(
     await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
   }
   await telemetry.writeArtifact("hunk-relationships.json", relationshipGraphArtifact(relationshipGraph));
+  const packetContexts = packetBuildMetrics.packetContextTruncations;
+  const patchHunks = packets.reduce((count, packet) => count + packet.hunks.filter(hunk => hunk.truncated).length, 0);
+  const symbolSources = symbolContextMetrics.materialOmission;
+  const total = packetContexts + patchHunks + symbolSources;
+  if (total > 0) {
+    telemetry.event({ stage: 6, level: "warn", message: "packet_truncation_summary",
+      data: { total, packetContexts, patchHunks, symbolSources } });
+  }
   telemetry.event({
     stage: 6,
     level: "info",
@@ -322,7 +333,7 @@ async function buildPacket(
     lenses: decisions.flatMap((decision) => decision.lenses),
     attentionNotes,
     labels: first.facts.labels
-  }, symbolContextMetrics);
+  }, symbolContextMetrics, group.wholeFileText);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
@@ -342,9 +353,10 @@ async function buildPacket(
     ...(contextTruncationReason !== undefined ? [contextTruncationReason] : [])
   ];
   if (contextTruncationReason !== undefined) {
+    packetBuildMetrics.packetContextTruncations += 1;
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_context_truncated",
       file: first.file.path,
       data: { maxContextChars: MAX_CONTEXT_CHARS }
@@ -403,6 +415,17 @@ async function buildPacket(
     reviewProfile,
     telemetry
   });
+  // #175: count only context the reviewer lost and cannot recover. A designed
+  // symbol slice keeps the changed lines and leaves the rest to review tools,
+  // except in the simple profile, which has none.
+  const contextLoss = [
+    ...context.contextLoss,
+    truncationReason,
+    contextDropReason,
+    contextTruncationReason,
+    group.degradationReason,
+    context.symbolSliced === true && reviewProfile === "simple" ? "enclosing symbol source sliced with no review tools" : undefined
+  ].filter((reason): reason is string => reason !== undefined && reason.length > 0);
   const packet: ReviewPacket = {
     id: packetId,
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
@@ -431,19 +454,20 @@ async function buildPacket(
     labels: first.facts.labels,
     attentionNotes,
     relatedChangedContext,
-    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetBoost),
+    toolBudget: scaleToolBudget(toolBudget(coverage, reviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
       ? { degraded: { reason: [context.degradation, truncationReason, contextDropReason, contextTruncationReason, group.degradationReason].filter(Boolean).join("; ") } }
       : {}),
+    ...(contextLoss.length > 0 ? { contextLoss } : {}),
     ...(group.fileContext !== undefined
       ? { fileContext: group.fileContext }
       : kind === "file-diff"
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
-  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.degraded !== undefined);
+  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.contextLoss !== undefined);
   return packet;
 }
 
@@ -1365,7 +1389,7 @@ function renderPacketHunk(
   if (window.truncated) {
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_hunk_truncated",
       file: hunk.path,
       data: { hunkId: hunk.id, omittedLineCount: window.omittedLineCount, maxPatchChars: MAX_PATCH_CHARS }
@@ -1577,12 +1601,17 @@ type PacketContextBuildResult = {
   contextDegradationReasons: string[];
   packetSymbols: SymbolInfo[];
   degradation?: string;
+  /** Real context loss only; a designed symbol slice is not loss (#175). */
+  contextLoss: string[];
+  symbolSliced?: boolean;
 };
 
 type SymbolSourceContext = {
   text: string;
   quality?: Extract<PacketContextQuality, "full" | "sliced">;
   degradation?: string;
+  /** Set when source the packet needed could not be read in full (#175). */
+  loss?: string;
   reasons: string[];
 };
 
@@ -1652,7 +1681,8 @@ async function buildContext(
   symbolFacts: HunkSymbolFacts[],
   telemetry: TelemetryRecorder,
   symbolContextInput: PacketSymbolContextInput,
-  symbolContextMetrics: SymbolContextMetrics
+  symbolContextMetrics: SymbolContextMetrics,
+  wholeFileText: string | undefined
 ): Promise<PacketContextBuildResult> {
   if (!isToolsHost(repoIndex.tools)) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1662,7 +1692,8 @@ async function buildContext(
       relevantTests: [],
       contextQuality: "path_only",
       contextDegradationReasons: ["repository tools do not provide packet context"],
-      packetSymbols: []
+      packetSymbols: [],
+      contextLoss: []
     };
   }
   try {
@@ -1675,6 +1706,10 @@ async function buildContext(
       ...((result.noSymbolHunkIds ?? []).length > 0 ? [`no_enclosing_symbol: ${(result.noSymbolHunkIds ?? []).join(", ")}`] : [])
     ];
     const degradation = [result.degradation, symbolSource.degradation].filter(Boolean).join("; ");
+    // The fallback outline's source isn't rendered. Compare the delivered whole-file
+    // text with the outline source, which can come from base for a deletion-only hunk.
+    const fallbackSourceDelivered = wholeFileText !== undefined && result.outline?.symbolExtraction === "unavailable"
+      && result.outline.sourceText?.text === wholeFileText;
     return {
       context: result.context,
       text: contextText,
@@ -1682,7 +1717,10 @@ async function buildContext(
       contextQuality: contextQualityFor(result, symbolSource, contextText),
       contextDegradationReasons: reasons,
       packetSymbols: result.packetSymbols ?? (result.primarySymbol !== undefined ? [result.primarySymbol] : []),
-      ...(degradation.length > 0 ? { degradation } : {})
+      ...(degradation.length > 0 ? { degradation } : {}),
+      contextLoss: [fallbackSourceDelivered ? undefined : result.degradation, symbolSource.loss]
+        .filter((reason): reason is string => reason !== undefined && reason.length > 0),
+      ...(symbolSource.quality === "sliced" ? { symbolSliced: true } : {})
     };
   } catch (error) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1695,7 +1733,8 @@ async function buildContext(
       contextQuality: "path_only",
       contextDegradationReasons: [message],
       packetSymbols: [],
-      degradation: message
+      degradation: message,
+      contextLoss: [message]
     };
   }
 }
@@ -1724,8 +1763,9 @@ async function readEnclosingSymbolSource(
     );
     if (result.text === undefined || result.text.trim().length === 0) {
       symbolContextMetrics.outlineOnly += 1;
+      const unavailable = result.meta.degradationReason ?? "enclosing symbol source unavailable";
       return result.meta.degraded
-        ? { text: "", reasons: [result.meta.degradationReason ?? "enclosing symbol source unavailable"], degradation: result.meta.degradationReason ?? "enclosing symbol source unavailable" }
+        ? { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable }
         : { text: "", reasons: ["enclosing symbol source empty"] };
     }
     const label = result.symbol?.name ?? fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
@@ -1777,7 +1817,7 @@ async function readEnclosingSymbolSource(
       return { text: block, quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = renderSlicedSymbolContext(readPath, label, fact, sliced, result.text, budget.maxChars);
+    const text = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -1793,7 +1833,7 @@ async function readEnclosingSymbolSource(
     });
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: file.path,
       data: {
@@ -1823,7 +1863,12 @@ async function readEnclosingSymbolSource(
       text,
       quality: "sliced",
       reasons: ["enclosing symbol source sliced"],
-      degradation: "enclosing symbol source truncated"
+      degradation: "enclosing symbol source truncated",
+      // A designed slice keeps exact excerpts around the changed lines, even when
+      // readSymbol's own text was capped. A missing excerpt drops changed lines;
+      // with none, the fallback is the head of the symbol.
+      ...(sliced.excerpts.length === 0 ? { loss: "enclosing symbol excerpts unavailable" }
+        : sliced.missing > 0 ? { loss: `enclosing symbol excerpts incomplete: ${sliced.missing} of ${sliced.missing + sliced.excerpts.length} unread` } : {})
     };
   } catch (error) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1835,7 +1880,8 @@ async function readEnclosingSymbolSource(
       file: file.path,
       data: { hunkId: fact.hunkId, path: readPath, error: message }
     });
-    return { text: "", reasons: [`enclosing symbol source unavailable: ${message}`], degradation: `enclosing symbol source unavailable: ${message}` };
+    const unavailable = `enclosing symbol source unavailable: ${message}`;
+    return { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable };
   }
 }
 
@@ -2183,9 +2229,12 @@ async function readChangedLineExcerpts(
   fact: HunkSymbolFacts,
   source: { kind: "base" } | { kind: "head" },
   telemetry: TelemetryRecorder
-): Promise<string[]> {
-  const ranges = excerptRanges(fact);
+): Promise<{ excerpts: string[]; missing: number }> {
+  const allRanges = excerptRanges(fact);
+  const ranges = allRanges.slice(0, MAX_SYMBOL_EXCERPT_RANGES);
   const excerpts: string[] = [];
+  // Ranges past the cap are changed lines the slice cannot show (#175).
+  let missing = allRanges.length - ranges.length;
   for (const range of ranges) {
     const normalized = normalizeStage6ReadRange({
       startLine: range[0],
@@ -2208,12 +2257,15 @@ async function readChangedLineExcerpts(
       );
       if (result.text.trim().length > 0) {
         excerpts.push(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${result.text.trimEnd()}`);
+      } else {
+        missing += 1;
       }
     } catch {
       // Best-effort debug context; readSymbol output remains the fallback.
+      missing += 1;
     }
   }
-  return excerpts;
+  return { excerpts, missing };
 }
 
 function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
@@ -2234,7 +2286,7 @@ function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
       ranges.push([start, end]);
     }
   }
-  return ranges.slice(0, 4);
+  return ranges;
 }
 
 function compactLineRanges(lines: number[]): string[] {
@@ -2910,7 +2962,7 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, profile: ReviewProfile): ToolBudget {
   if (profile === "simple") {
     return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
   }
@@ -2926,12 +2978,10 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
         deep: { maxToolCalls: 10, maxInvestigationRounds: 3, maxResultChars: 20000 }
       };
   const base = baseByProfile[coverage];
-  const scale = depth === "deep" ? 1.5 : depth === "light" ? 0.5 : 1;
-  const round = depth === "light" ? Math.floor : Math.ceil;
-  const maxResultChars = Math.max(4000, round(base.maxResultChars * scale));
+  const maxResultChars = Math.max(4000, base.maxResultChars);
   return {
-    maxToolCalls: Math.max(1, round(base.maxToolCalls * scale)),
-    maxInvestigationRounds: Math.max(1, round(base.maxInvestigationRounds * scale)),
+    maxToolCalls: base.maxToolCalls,
+    maxInvestigationRounds: base.maxInvestigationRounds,
     maxResultChars,
     maxDiscoveryResultChars: Math.min(4000, Math.floor(maxResultChars / 2)),
     reservedSourceResultChars: Math.min(4000, Math.floor(maxResultChars / 2))

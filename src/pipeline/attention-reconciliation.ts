@@ -306,21 +306,53 @@ function citableEvidence(input: AttentionReconciliation) {
     ...input.inventory.evidence].map(source => [source.id, source]));
 }
 
+export type ReconcileAttentionOptions = {
+  /** Candidate ids represented by a published (inline or summary-only) final finding. */
+  publishedCandidateIds?: ReadonlySet<string>;
+};
+
 export function reconcileAttention(
   input: AttentionReconciliation,
   proposals: Resolution[] | undefined,
-  enabled: boolean
+  enabled: boolean,
+  opts?: ReconcileAttentionOptions
 ) {
   const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
   const concerns = new Map(input.groups.flatMap(group => group.concerns).filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern]));
+  // An unresolved decision retains the original concern. A narrowing identical
+  // to that concern also answers nothing and is therefore unresolved.
+  const canonicalizedConcernIds: string[] = [];
+  const discardedRewordedConcernIds: string[] = [];
+  const submitted = (proposals ?? []).map(proposal => {
+    const concern = concerns.get(proposal.concernId);
+    if (!concern || proposal.remainingQuestion === undefined ||
+      (proposal.disposition !== "unresolved" && !(proposal.disposition === "narrowed" && proposal.remainingQuestion.trim() === concern.question.trim()))) return proposal;
+    if (proposal.remainingQuestion.trim() === concern.question.trim()) canonicalizedConcernIds.push(proposal.concernId);
+    else discardedRewordedConcernIds.push(proposal.concernId);
+    const { remainingQuestion: _unchanged, ...decision } = proposal;
+    return { ...decision, disposition: "unresolved" as const };
+  });
   // sourceRef exists only when the full observation is already supplied in
   // published finding components. It remains usable when its duplicate registry
   // entry was omitted from the separate attention inventory's size cap.
   const evidence = citableEvidence(input);
+  const verdictByRef = new Map(input.allEvidence.map(source => [source.id, source.verdict]));
+  const verdictByCandidate = new Map(input.inventory.evidenceContexts.map(context => [context.candidateId, context.verdict]));
+  const publishedCandidateIds = opts?.publishedCandidateIds;
+  const isSuppressedFindingRef = (ref: string) => {
+    if (publishedCandidateIds === undefined) return false;
+    const entry = evidence.get(ref);
+    if (!entry) return false;
+    const verdict = verdictByRef.get(ref) ?? verdictByCandidate.get(entry.candidateId);
+    return (verdict === "keep" || verdict === "revise") && !publishedCandidateIds.has(entry.candidateId);
+  };
+  const citesSuppressedFinding = (refs: string[]) => refs.some(isSuppressedFindingRef);
   const counts = new Map<string, number>();
-  for (const proposal of proposals ?? []) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);
+  for (const proposal of submitted) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);
   const accepted = new Map<string, Resolution>();
-  const decisions = (proposals ?? []).map(proposal => {
+  let restoredForSuppressedFindingCount = 0;
+  let restoredWithSurvivingRefCount = 0;
+  const decisions = submitted.map(proposal => {
     const concern = concerns.get(proposal.concernId);
     const refs = proposal.supportingRefs;
     const reason = !enabled ? "composition_unavailable"
@@ -332,8 +364,13 @@ export function reconcileAttention(
       : refs.some(ref => evidence.get(ref)!.candidateId === concern.candidateId) ? "self_support"
       : proposal.disposition === "narrowed" && (!proposal.remainingQuestion?.trim() || proposal.remainingQuestion.trim() === concern.question.trim()) ? "missing_or_unchanged_remaining_question"
       : proposal.disposition !== "narrowed" && proposal.remainingQuestion !== undefined ? "conflicting_remaining_question"
+      : proposal.disposition !== "unresolved" && citesSuppressedFinding(refs) ? "suppressed_finding_evidence"
       : undefined;
     if (!reason) accepted.set(proposal.concernId, proposal);
+    else if (reason === "suppressed_finding_evidence") {
+      restoredForSuppressedFindingCount += 1;
+      if (refs.some(ref => !isSuppressedFindingRef(ref))) restoredWithSurvivingRefCount += 1;
+    }
     return { ...proposal, accepted: !reason, ...(reason ? { rejectionReason: reason } : {}) };
   });
   const notes: NeedsHumanAttentionNote[] = [];
@@ -351,7 +388,7 @@ export function reconcileAttention(
     return { candidateId: group.candidateId, original: group.original, remainingQuestion: remaining,
       concernIds: group.concerns.map(concern => concern.id), ...(group.ineligibleReason ? { ineligibleReason: group.ineligibleReason } : {}) };
   });
-  return { notes, decisions, outcomes };
+  return { notes, decisions, outcomes, canonicalizedConcernIds, discardedRewordedConcernIds, restoredForSuppressedFindingCount, restoredWithSurvivingRefCount };
 }
 
 /** Require coverage only for concerns actually delivered within the inventory cap. */
@@ -381,11 +418,15 @@ export function attentionResolutionErrors(input: AttentionReconciliation, propos
 // source accounting untouched. Index merging cannot remove duplicate decisions.
 export function createAttentionResolutionRepair(schema: TSchema, original: SubmitComposition, input: AttentionReconciliation): FieldRepair | undefined {
   const errors = attentionResolutionErrors(input, original.attentionResolutions);
-  if (!errors.length || submissionIssues(schema, original).some(issue => !issue.path.startsWith("attentionResolutions"))) return;
+  // Unexpected keys are dropped by shape cleanup; they must not divert an
+  // attention-only failure to index-merging field repair, whose partial lists
+  // cannot meet the pinned decision count.
+  const cleaned = cleanupSubmitShape(schema, original);
+  if (!errors.length || cleaned.unusablePaths.length || submissionIssues(schema, cleaned.arguments).some(issue => !issue.path.startsWith("attentionResolutions"))) return;
   const patchSchema = Type.Object({ attentionResolutions: structuredClone((schema as typeof SubmitCompositionSchema).properties.attentionResolutions) }, { additionalProperties: false, required: ["attentionResolutions"] });
-  const baseline = structuredClone(original) as unknown as Record<string, unknown>;
+  const baseline = structuredClone(cleaned.arguments) as Record<string, unknown>;
   return {
-    schema: patchSchema, baseline, paths: ["attentionResolutions"], diagnostics: focusedRepairDiagnostics(schema, original),
+    schema: patchSchema, baseline, paths: ["attentionResolutions"], diagnostics: focusedRepairDiagnostics(schema, cleaned.arguments),
     prompt: `Repair only attentionResolutions; return the complete replacement list. Assess every supplied concern exactly once. Compare with supplied evidence and published findings; use unresolved with a reason and empty supportingRefs when evidence cannot answer it. Resolved/narrowed decisions require independent supporting references. Preserve unanswered parts in narrowed remainingQuestion. All findings and their sources are retained unchanged.\n${errors.join("\n")}`,
     merge(values) {
       const cleaned = cleanupSubmitShape(patchSchema, values);

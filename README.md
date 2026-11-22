@@ -55,9 +55,15 @@ codegenie review --branch feat --base main
 codegenie review master...49f4645b          # shorthand for --base master --head 49f4645b
 codegenie review abc1234                    # one commit
 codegenie review abc1234 def5678            # a commit range
+codegenie review --staged                   # HEAD vs the Git index
+codegenie review --uncommitted              # HEAD vs tracked working-tree files
 ```
 
 A single positional target is branch-first: if it resolves as a branch, codegenie reviews it against its base; otherwise it is treated as a single commit.
+
+Use `--staged` to review the next commit, or `--uncommitted` to review staged and unstaged tracked changes together. Both options capture the code in a temporary Git snapshot and prohibit GitHub posting. On an unborn branch the base is empty. These reviews have no commit messages for inferring intent.
+
+`--uncommitted` reports the number of omitted untracked files and skips ignored files. Run `git add -N <path>` to include a new file without staging its contents. Git applies configured clean filters when capturing tracked working-tree files.
 
 First-class syntax context and default language guidance currently cover Go, TypeScript, JavaScript, Rust, Python, and Solidity. JavaScript has its own `lang/javascript` guidance for runtime semantics; `.js`, `.jsx`, `.mjs`, and `.cjs` share the proven ECMAScript adapter implementation without inheriting TypeScript-only checks. JavaScript CommonJS export inference, Flow/JSDoc semantic typing, unsupported proposal syntax, and framework/bundler semantics remain deferred. Solidity packets include contract-owned methods/types/events/errors/state values, source-only imports, overload-safe declaration identity, and deterministic default Foundry test links only when a nearest `foundry.toml` exists. File-level constants are not value symbols. Solidity storage-layout, generated-getter, ABI/export analysis, custom Foundry directories, and Hardhat TypeScript linking remain deferred; Solidity symbols intentionally leave `exported` unset. Python `.pyi` stubs/custom collection and Rust same-file/arbitrary integration-test discovery also remain deferred.
 
@@ -68,7 +74,6 @@ The dedicated JavaScript skill and narrowed TypeScript skill create a second int
 Common options:
 
 ```bash
-codegenie review --depth light|normal|deep         # review budget & planner bias
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
 codegenie review --provider anthropic --model claude-opus-5   # one-run model override
 codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
@@ -107,7 +112,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.8.0
+      - uses: 0xPolygon/codegenie@v0.9.1
         with:
           # Works with any model!
           model: "openrouter/openai/gpt-6-luna:xhigh"
@@ -128,7 +133,7 @@ The `model` input is one spec: `provider/model[:reasoning]` — any model in [mo
 List named models once. `model` stays the default for automatic reviews and a bare `codegenie review`. A collaborator can comment `codegenie review opus` to run that one review with the `opus` entry instead.
 
 ```yaml
-      - uses: 0xPolygon/codegenie@v0.8.0
+      - uses: 0xPolygon/codegenie@v0.9.1
         env:
           # one credential env var per provider in the list (see Credentials below)
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -149,6 +154,27 @@ List named models once. `model` stays the default for automatic reviews and a ba
 - **One status comment.** A `codegenie review opus` comment supersedes an in-flight run on the same PR (newest event wins), and the PR's single status comment shows the newest report.
 - **A mistyped name still cancels.** `codegenie review opsu` starts a run that supersedes the running review, then only posts the reply — the same "any comment supersedes" trade-off described below.
 - **Inline comments accumulate across models.** A `codegenie review opus` run after an automatic review posts its own inline findings. Duplicate suppression only matches unchanged wording, so two models reporting the same issue both appear. That is expected for a second opinion.
+
+### Advanced: per-stage Action models
+
+Use `stage-models` with the Action's global `model` on a release that documents this input. Each of `plan`, `review`, `verify`, and `compose` can set `model` (a `provider/model` ID) or `reasoning`. Omitted fields inherit the global choice independently.
+
+```yaml
+        with:
+          model: openrouter/openai/gpt-6-luna:high
+          stage-models: |
+            plan:
+              reasoning: medium
+            compose:
+              reasoning: low
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+The workflow map supplies the stage settings for automatic reviews and bare trigger comments. A comment that explicitly selects a configured alias applies that choice across all stages and logs that the workflow map was skipped. Explicit `compose.reasoning` disables the usual composition step-down.
+
+Models, credentials, and reasoning support are checked before model calls. With `llm-api-key`, the global model, every alias, and every explicit stage model must read the same credential variable. Use native provider credentials for a workflow that needs different keys.
+
+Mixed-model review quality is unmeasured. There is no recommended mix.
 
 ### Credentials
 
@@ -193,7 +219,6 @@ Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a t
 baseBranch = "main"
 
 [review]
-depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
@@ -215,9 +240,29 @@ processingMode = "skip"
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
 - **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
 
+### Advanced: per-stage models
+
+Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.
+
+For example, put the following in `~/.codegenie/config.toml`:
+
+```toml
+[llm.stages.plan] # also review, verify and compose
+model = "provider/model-id"
+reasoning = "low"
+```
+
+- Each field is optional and inherits the global setting when omitted.
+- A stage model must include the provider and cannot include a reasoning suffix.
+- These settings are user-scoped; repo configuration cannot set them.
+- Per-run CLI, environment or eval-case model and reasoning settings override matching fields for every stage, with a warning. Stored provider defaults remain fallbacks.
+- The Action's selected `model` is a per-run setting and overrides matching stage fields. Action-specific stage mappings are not yet available.
+- Explicit composition reasoning is used as written. Inherited composition reasoning may run one supported level lower by default; repairs and location clarification use the selected model's lowest supported level.
+- Every selected model and reasoning level is validated before model calls. Smaller models may lack the context window for large prompts.
+
 ## How a review runs
 
-Eleven stages, each with a telemetry and artifact boundary. Five make LLM calls (shaded); everything else is deterministic code — and the deterministic stages own the guarantees.
+Ten active stages, each with a telemetry and artifact boundary. Four stages make LLM calls (shaded); everything else is deterministic code. Stage 8 was removed and its ID remains unused.
 
 ```mermaid
 flowchart TB
@@ -228,35 +273,36 @@ flowchart TB
     S5(["5 · Plan (LLM)<br/>intent, coverage depth, lenses"])
     S6["6 · Build review packets<br/>hunks + symbols + tests + context"]
     S7(["7 · Review packets (LLM × packet)<br/>parallel, read-only repo tools"])
-    S8(["8 · Follow-up (LLM, usually skipped)"])
     S9(["9 · Verify (LLM × candidate)<br/>fresh context, never sees reviewer reasoning"])
     S10(["10 · Compose (LLM)<br/>merge, rank, cap, phrase"])
     S11["11 · Publish<br/>stdout / JSON / optional GitHub comments"]
 
     S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
     S7 --> S9
-    S7 -. "repeated scoped questions only" .-> S8 --> S9
     S9 --> S10 --> S11
 
     classDef llm fill:#fdf3d8,stroke:#c8963e,color:#5b4a1e;
-    class S5,S7,S8,S9,S10 llm;
+    class S5,S7,S9,S10 llm;
 ```
 
 | # | Stage | What it does | LLM calls |
 |---|-------|--------------|-----------|
-| 1 | Resolve input | Turn `--pr` / branch / commit args into trusted base+head revisions and the raw diff. | — |
+| 1 | Resolve input | Resolve a PR, branch, commit or local snapshot to the base and head used for the diff. | — |
 | 2 | Parse & filter | Parse the unified diff; skip generated/vendor/lock/binary files; short-circuit zero-work runs. | — |
 | 3 | Classify | Assign language, test-vs-source status, review priority, and path-rule labels. | — |
 | 4 | Index | Build the symbol index (tree-sitter), extract changed-symbol facts and static risk signals. | — |
-| 5 | Plan | Decide intent framing, per-hunk coverage depth, and lenses. Doesn't hunt bugs. | 1 |
+| 5 | Plan | Decide intent framing, per-hunk coverage and lenses. Doesn't hunt bugs. | 1 or more for chunked plans |
 | 6 | Build packets | Assemble focused packets: changed hunks, enclosing symbols, file outline, likely tests, bounded related context. | — |
-| 7 | Review | Parallel reviewers examine each packet with read-only repo tools (`read_symbol`, `find_definition`, …) and return candidate findings + uncertainties. | 1 per packet |
-| 8 | Follow up | Runs only when several packets independently raise the same scoped question; most runs skip it. | 0–few |
+| 7 | Review | Parallel reviewers examine each packet with read-only repo tools (`read_symbol`, `find_definition`, …) and return candidate findings + uncertainties. An opt-in adaptive pass can add reviews. | 1 per packet, plus optional adaptive passes |
 | 9 | Verify | Every candidate is independently re-examined in a fresh context that never saw the reviewer's reasoning. | 1 per candidate |
 | 10 | Compose | Dedupe and merge same-root-cause findings, rank, cap, and phrase the final review. | 1 |
 | 11 | Publish | Write stdout/JSON; post GitHub comments only with the explicit flag. | — |
 
 The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet plus tools to pull exactly what a concern depends on, within per-packet budgets.
+
+There is one review mode. When upgrading from 0.9.0, remove `--depth` from CLI invocations, `review.depth` from either TOML file and from eval cases, and `depth` from GitHub Action inputs. Existing provider `settings.json` files still load. Codegenie silently ignores a stored `defaultDepth` and drops it the next time it saves the file.
+
+Published findings are grouped by severity, then listed by file and line within each severity. The inline confidence floor is applied before the inline comment cap.
 
 ## Design and philosophy
 
@@ -305,7 +351,7 @@ For optional judge calibration, `scripts/calibrate-recommendations.ts` loads one
 
 **Fail honestly, degrade predictably.** The planner ranks attention across all hunks kept by the deterministic file filter. Omitted hunks get normal coverage. A failed planner falls back to a deterministic plan; a failed packet marks its hunks in coverage; budget exhaustion stops future dispatch without discarding completed work. Partial reviews exit `0` and *say they're partial*.
 
-**Build when evidence demands it.** Richer designs (hierarchical planning, per-role model tiering, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
+**Build when evidence demands it.** Richer designs (hierarchical planning, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
 
 Eval cases can opt into stricter reliability checks:
 
@@ -320,7 +366,7 @@ The planning check rejects degraded plans even when every hunk was reviewed. The
 
 SVG files are skipped by default. Set `[review] skipSvgReview = false` in `codegenie.toml`, or run `codegenie review --no-skip-svg-review`, to include them subject to other exclusion rules. `--skip-svg-review` enables the skip explicitly. This controls changed-file review; repository evidence searches can still find SVG content and disclose oversized matches they omit.
 
-Local investigation budgets are soft targets, with hard ceilings of **2×** the target for aggregate tool calls, investigation rounds, and result characters. This applies to packet review and verification. At normal depth with `budgetBoost = 1`, investigate packets target 20 calls / 6 rounds / 48,000 characters for deep coverage, 6 / 2 / 12,000 for normal coverage, and 4 / 2 / 4,000 for light coverage. Verification targets 8 / 3 / 32,000. Depth and budget scaling apply before deriving the ceilings. Zero budgets remain disabled. Existing source extensions are subsumed by this allowance and cannot add capacity beyond it. Per-result caps, explicit spending limits, provider context limits, stage deadlines, and repair budgets are unchanged.
+Local investigation budgets are soft targets, with hard ceilings of **2×** the target for aggregate tool calls, investigation rounds, and result characters. This applies to packet review and verification. With `budgetBoost = 1`, investigate packets target 20 calls / 6 rounds / 48,000 characters for deep coverage, 6 / 2 / 12,000 for normal coverage, and 4 / 2 / 4,000 for light coverage. Verification targets 8 / 3 / 32,000. Budget scaling applies before deriving the ceilings. Zero budgets remain disabled. Existing source extensions are subsumed by this allowance and cannot add capacity beyond it. Per-result caps, explicit spending limits, provider context limits, stage deadlines, and repair budgets are unchanged.
 
 Before the first request and after each repository-tool batch, models receive remaining soft targets and a nudge to finish or resolve concrete remaining questions when a target is reached. Traces record soft targets, hard ceilings, and remaining capacity in `tool_budget_initial` / `tool_budget_remaining`, plus a single `tool_budget_soft_target_reached` event per investigation. Crossing a target alone is not a refusal or an incomplete-review diagnostic. Executed calls and cache hits each count; invalid arguments and pre-execution refusals do not consume those calls, but a separate refusal limit and the round ceiling bound repeated invalid requests. Source allocations are guidance within the shared character allowance. Discovery results retain their per-result cap of 4,000 characters (2,000 for light investigations), subject to existing budget scaling. Searches and file lists keep whole entries and disclose omissions. Invalid raw tool arguments receive correction feedback before SDK coercion. `read_range` requires both inclusive 1-based bounds; requests entirely beyond EOF return empty text, not a different line.
 

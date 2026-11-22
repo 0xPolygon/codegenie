@@ -17,12 +17,20 @@ function groups(value: unknown): Group[] | undefined {
   return value.composedFindings as Group[];
 }
 
-// Pure bookkeeping: remove redundant occurrences and retain omitted sources
-// belonging to explicitly, uniquely assigned findings. Never infer prose links.
+// Component names compositionSources can produce for a finding.
+const SOURCE_COMPONENT = /^(?:failureMode|whyThisMatters|verification|suggestedFix|suggestedTest|proofAssessment|originalSuggestions\/(?:suggestedFix|suggestedTest)|evidence\/changedCode|evidence\/relatedCode\/\d+)$/u;
+
+// Pure bookkeeping: remove redundant occurrences, drop provenance references to
+// components a supplied finding does not have (they retain nothing), and retain
+// omitted sources belonging to explicitly, uniquely assigned findings. Never
+// infer prose links.
 export function normalizeCompositionReferences(value: unknown, findings: CandidateFinding[]) {
   const draft = structuredClone(value);
   const entries = groups(draft);
   if (!entries) return;
+  const supplied = new Set(compositionSources(findings).map(source => source.id));
+  const absentComponent = (ref: string) => !supplied.has(ref) && findings.some(finding =>
+    ref.startsWith(finding.id + "/") && SOURCE_COMPONENT.test(ref.slice(finding.id.length + 1)));
   const removedFields: string[] = [];
   const addedFields: string[] = [];
   const assignments = entries.flatMap(group => group.findingIds);
@@ -36,6 +44,12 @@ export function normalizeCompositionReferences(value: unknown, findings: Candida
       const seen = new Set<string>();
       const kept = list.refs.filter((ref, item) => {
         const source = byId.get(ref);
+        // Only provenance may shed such a reference; in a section or evidenceRefs
+        // it stands behind published prose and still needs repair.
+        if (!source && list.kind === undefined && absentComponent(ref)) {
+          removedFields.push(`${list.path}.${item}`);
+          return false;
+        }
         if (!source) return true;
         const redundant = seen.has(ref) || (list.kind !== undefined && source.kind !== list.kind
           && lists.some(other => other !== list && (other.kind === source.kind || other.kind === undefined) && other.refs.includes(ref)));
@@ -60,7 +74,7 @@ export function normalizeCompositionReferences(value: unknown, findings: Candida
     }
   });
   return removedFields.length || addedFields.length ? { value: draft, removedFields, addedFields,
-    reason: "Removed redundant references and retained omitted sources under their explicit finding ownership without changing prose. Full validation is still required." } : undefined;
+    reason: "Removed redundant references and provenance references to components the finding does not have, and retained omitted sources under their explicit finding ownership, without changing prose. Full validation is still required." } : undefined;
 }
 
 // Literal path patches replace reference lists. Unsupported recommendation

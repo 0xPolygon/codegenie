@@ -10,11 +10,11 @@ review:
   debug: true
   cache: false
 should_find:
-- id: update-check-uses-inequality
+- id: ranged-npm-update-allows-downgrade
   path: packages/coding-agent/src/core/package-manager.ts
   lineRange: [1119, 1130]
   severityAtLeast: low
-- id: update-check-uses-inequality-second-site
+- id: ranged-npm-update-allows-downgrade-second-site
   tier: optional
   path: packages/coding-agent/src/core/package-manager.ts
   lineRange: [1436, 1448]

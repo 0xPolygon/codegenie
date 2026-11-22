@@ -185,7 +185,7 @@ User-local provider/auth state:
 ~/.codegenie/             # overridable with CODEGENIE_HOME
   auth.json               # Pi provider credentials, chmod 0600
   models.json             # Pi custom provider/model registry data when supported
-  settings.json           # default provider/model/depth/reasoning, chmod 0600
+  settings.json           # default provider/model/reasoning, chmod 0600
   config.toml             # optional user-level CodegenieConfig overrides and trust opt-ins
   sessions/               # provider/session state when Pi needs it
 ```
@@ -201,7 +201,7 @@ Naming convention: type-name prefixes mark the scope a record describes. `Diff*`
 Pipeline stages are identified by the numeric stage ids from the functional spec:
 
 ```ts
-// 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,
+// 1 input resolution, 2 diff parsing and filtering, 3 classification, 4 symbol extraction,
 // 5 planning, 6 packet construction, 7 lens review,
 // 8 unused (targeted system follow-up, deleted in #114),
 // 9 verification, 10 composition, 11 publishing
@@ -756,7 +756,7 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codegenie.toml`.
@@ -779,17 +779,13 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
 
-Review depth also has no environment layer; stored `defaultDepth` in `settings.json` participates as user-scoped config:
-
-```text
---depth > repo codegenie.toml > settings.json defaultDepth > config.toml > built-in normal
-```
+Codegenie runs one review mode using the budgets, close nudge and planner input that plan 128 measured as `normal`. The CLI rejects `--depth`, strict validation rejects `review.depth` in TOML and eval cases, and the GitHub Action has no `depth` input. Before validating provider `settings.json`, the loader silently strips a legacy `defaultDepth` field.
 
 Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
+| `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
 | `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
@@ -814,7 +810,6 @@ type CodegenieConfig = {
     extraSkillPaths: string[]
   }
   review: {
-    depth: "light" | "normal" | "deep"
     verify: boolean
     minSeverity?: Severity
     maxFindings: number
@@ -846,6 +841,7 @@ type CodegenieConfig = {
     provider?: string
     model?: string
     reasoning?: ReasoningLevel
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>
     maxConcurrentCalls: number
   }
   cache: {
@@ -872,7 +868,6 @@ Provider/model defaults are user-level state, not repo policy. Repo `codegenie.t
 
 Chosen defaults:
 
-- `review.depth = "normal"`
 - `review.verify = true`
 - `review.maxFindings = 25` (report cap)
 - `review.softCommentCap = 7` (inline target)
@@ -941,7 +936,6 @@ codegenie provider models [provider-or-search] [--all]
 codegenie provider config
 codegenie provider config set-provider <provider>
 codegenie provider config set-model <provider> <model>
-codegenie provider config set-depth <light|normal|deep>
 codegenie provider config set-reasoning <low|medium|high|xhigh|auto>
 ```
 
@@ -1194,8 +1188,8 @@ Responsibilities:
 
 - Wrap `@earendil-works/pi-ai`.
 - Execute model calls with prompt, tools, timeout, and schema expectations.
-- Resolve the model once from the resolved `llm.provider`/`llm.model` (already merged from CLI, environment, and user-level settings by the config loader); a single model serves all roles: `llm.model ?? Pi/provider default`.
-- Resolve reasoning effort the same way for all roles: `llm.reasoning ?? "high"`. The runner never reads user state directly.
+- Resolve the global model from `llm.provider`/`llm.model`, then resolve optional user-scoped `llm.stages` model and reasoning selections for plan, review, verify and compose before any model calls. Missing stage fields inherit the resolved global values. Per-run CLI, environment and eval-case settings override matching stage fields with a warning; stored provider defaults remain fallbacks. The runner never reads user state directly.
+- Validate every effective stage model and reasoning level before calls. Use one runner, concurrency limiter and budget ledger. Explicit compose reasoning is used as configured; inherited compose reasoning steps down by default on the selected model. Repairs and location clarification use that model's lowest supported level.
 - Record per-call telemetry: model, provider, duration, token usage, prompt hash, output hash, and schema validation result.
 - Enforce `llm.maxConcurrentCalls`.
 
@@ -1379,7 +1373,7 @@ Content-stage invalidity is binary: known-invalid model data is never used. A st
 | Stage-10 composition invalid | Already verified findings | Use deterministic composition; do not drop verified findings. |
 | Diff/base/repository identity, authentication, provider-wide availability, or another non-isolatable foundation is untrusted | No trustworthy review foundation | Fail the run and leave the scrubbed failure artifact. |
 
-Publication is equally explicit: normal complete reviews publish normally; complete reviews using planner fallback carry a prominent degraded banner; partial reviews carry a prominent incomplete banner and publish only trusted findings; partial reviews with no findings say `Review Incomplete`, never `Everything looks good`; foundational failures never render a normal review.
+Complete reviews publish normally. Planner recovery or fallback appears in a coverage disclosure line. Partial reviews carry a prominent incomplete banner and publish only trusted findings. Partial reviews with no findings conclude `Review Incomplete` and never use approval-equivalent wording such as `Everything looks good`. Foundational failures never render a normal review.
 
 ```ts
 type RunCoverageStatus = {
@@ -1541,7 +1535,7 @@ A fingerprint marker counts as codegenie-authored only when the comment's author
 
 Publishing rules:
 
-- Inline only verified medium/high-confidence findings with changed-line anchors.
+- Inline findings require a changed-line anchor and confidence at or above `review.minInlineConfidence` (medium by default).
 - Broader system concerns go into the review summary.
 - If no findings remain, do not post a GitHub summary by default unless `github.summaryWhenNoFindings` is true.
 - Posting failures are fatal only when `--post-github-comments` was explicitly requested.
@@ -1561,33 +1555,34 @@ Responsibilities:
 Run directory:
 
 ```text
-.codegenie/runs/<yyyyMMdd-HHmmss>-<shortid>/
+.codegenie/runs/<yyyyMMdd-HHmmss>-<8-hex-digits>/
   run.json
   run.log
   telemetry.json
   events.jsonl
   model-calls.jsonl
-  model-calls-summary.json
   tool-calls.jsonl
-  tool-calls-summary.json
-  planner-dossier.json
-  review-plan.json
-  coverage.json
-  packets/
-    <packet-id>.json
-  candidate-findings.json
-  verification.json
-  final-selection.json
-  final-findings.json
-  cost-profile.json
+  artifact-manifest.json
+  stages/
+    00-run/            # cost and model/tool summaries, errors
+    01-input/          # resolved input
+    02-diff/           # parsed diff and filter decisions
+    03-classify/       # file facts
+    05-planner/        # dossier, intent and plan
+    06-packets/        # hunk relationships and packets/<packet-id>.json
+    09-verification/   # candidates, promotions and verdicts
+    10-composition/    # coverage, selection, findings and budget summary
+    11-github-posting/ # posting artifact when applicable
   final-review.md
-  github-posting.json
+  final-review.json
   debug/
     llm-calls/
       <call-id>.json
     tool-calls/
       <tool-call-id>.json
 ```
+
+The generated run ID uses the UTC timestamp and eight random hexadecimal digits. By default it is also the directory name; evals may supply a different artifact directory while retaining the independently generated run ID.
 
 `debug/` is written only when `telemetry.debugTrace` is enabled. Debug artifacts may contain source snippets, prompts, and model outputs.
 
@@ -1694,7 +1689,7 @@ The telemetry recorder must support redaction before any future external export.
 
 Run lifecycle:
 
-- Run pruning: at run start, the telemetry recorder prunes `.codegenie/runs/` to the newest `retainRuns` directories (by mtime), never touching the active run.
+- Run pruning: in recorder-managed roots, the telemetry recorder keeps the active run, the newest `retainRuns` authenticated prior runs (minimum one, ordered by run ID), and any authenticated runs still within their lease. Only expired sealed directories qualify for deletion. Caller-selected artifact directories skip retention.
 - First-run provisioning: codegenie writes `.codegenie/.gitignore` (containing `runs/` and `cache/`) when creating `.codegenie/`.
 - Concurrent runs: run directories are unique per run id; cache writes use write-temp-then-rename; an advisory lock file under `.codegenie/` guards ref cleanup. Concurrent runs are otherwise supported.
 
@@ -1727,7 +1722,6 @@ type EvalCase = {
     target?: string
   }
   review?: {
-    depth?: "light" | "normal" | "deep"
     lenses?: string[]
     maxFindings?: number
     concurrency?: number
@@ -2053,9 +2047,9 @@ V1 fetches only codegenie's own prior comments (`listOwnComments`) for rerun dup
 
 Opt-in execution of configured test/typecheck commands (`tools.testCommands` plus a timeout, honored only with user-level opt-in, never from repo config), with command output becoming evidence for reviewers, never automatic findings.
 
-### Per-role model and reasoning tiering
+### Mixed-model review measurement
 
-`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `verifier`, `composer`) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
+The user-scoped `llm.stages` map and the GitHub Action's `stage-models` input support optional model and reasoning overrides for plan, review, verify and compose. Mixed-model quality requires measurement before recommending a particular mapping.
 
 ### Rich pre-attached packet context
 

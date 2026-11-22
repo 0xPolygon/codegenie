@@ -9,7 +9,6 @@ review:
   provider: anthropic
   model: claude-sonnet-4-6
   reasoning: high
-  depth: deep
   verify: true
   cache: false
   concurrency: 1

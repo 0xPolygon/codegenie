@@ -17,15 +17,13 @@ import type {
   CodegeniePaths,
   ConfigSource,
   ConfigWarning,
-  ReasoningLevel,
-  ReviewDepth
+  ReasoningLevel
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 
 type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>["pathRules"]>[number];
 
 export type CliConfigOverrides = {
-  depth?: ReviewDepth;
   budgetBoost?: number;
   compositionReasoningStepDown?: boolean;
   skipSvgReview?: boolean;
@@ -42,6 +40,7 @@ export type LoadConfigOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   cli?: CliConfigOverrides;
+  actionStageModels?: NonNullable<CodegenieConfig["llm"]["stages"]>;
   loadRepoConfig?: boolean;
 };
 
@@ -57,7 +56,6 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.disabled",
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
-  "review.depth",
   "review.verify",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
@@ -84,7 +82,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -113,10 +111,6 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     config.llm.reasoning = providerSettings.defaultReasoning;
     sources["llm.reasoning"] = "provider-settings";
   }
-  if (providerSettings.defaultDepth !== undefined) {
-    config.review.depth = providerSettings.defaultDepth;
-    sources["review.depth"] = "provider-settings";
-  }
 
   if (opts.loadRepoConfig !== false) {
     const repoConfigPath = path.join(repoRoot, "codegenie.toml");
@@ -129,6 +123,19 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
   applyEnvironment(config, env, sources);
   applyCliOverrides(config, opts.cli ?? {}, sources);
+  const cliModelOverride = opts.cli?.provider !== undefined || opts.cli?.model !== undefined;
+  const cliReasoningOverride = opts.cli?.reasoning !== undefined && opts.cli.reasoning !== "auto";
+  const cliOverridesStage = Object.values(config.llm.stages ?? {}).some(selection =>
+    cliModelOverride && selection.model !== undefined || cliReasoningOverride && selection.reasoning !== undefined);
+  clearStageOverridesForRun(config, {
+    model: Boolean(env.CODEGENIE_PROVIDER || env.CODEGENIE_MODEL || cliModelOverride),
+    reasoning: Boolean(env.CODEGENIE_REASONING || cliReasoningOverride)
+  }, warnings, cliOverridesStage ? "cli" : "environment");
+
+  if (opts.actionStageModels !== undefined) {
+    config.llm.stages = structuredClone(opts.actionStageModels);
+    sources["llm.stages"] = "github-action";
+  }
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
@@ -215,10 +222,6 @@ function applyRawConfig(
     sources["lenses.extraSkillPaths"] = source;
   }
 
-  if (raw.review?.depth !== undefined) {
-    config.review.depth = raw.review.depth;
-    sources["review.depth"] = source;
-  }
   if (raw.review?.verify !== undefined) {
     config.review.verify = raw.review.verify;
     sources["review.verify"] = source;
@@ -307,6 +310,10 @@ function applyRawConfig(
     config.llm.reasoning = raw.llm.reasoning;
     sources["llm.reasoning"] = source;
   }
+  if (raw.llm?.stages !== undefined) {
+    config.llm.stages = structuredClone(raw.llm.stages) as NonNullable<CodegenieConfig["llm"]["stages"]>;
+    sources["llm.stages"] = source;
+  }
   if (raw.llm?.maxConcurrentCalls !== undefined) {
     config.llm.maxConcurrentCalls = raw.llm.maxConcurrentCalls;
     sources["llm.maxConcurrentCalls"] = source;
@@ -362,9 +369,6 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
       }
     }
     safe.review = {};
-    if (raw.review.depth !== undefined) {
-      safe.review.depth = raw.review.depth;
-    }
     if (raw.review.maxFindings !== undefined) {
       safe.review.maxFindings = raw.review.maxFindings;
     }
@@ -446,6 +450,19 @@ function warnIgnoredRepoKey(warnings: ConfigWarning[], key: string): void {
   });
 }
 
+export function clearStageOverridesForRun(config: CodegenieConfig, fields: { model: boolean; reasoning: boolean },
+  warnings: ConfigWarning[], source: ConfigSource): void {
+  if (!config.llm.stages) return;
+  const ignored = new Set<string>();
+  for (const [name, selection] of Object.entries(config.llm.stages)) {
+    if (fields.model && selection.model !== undefined) { delete selection.model; ignored.add("model"); }
+    if (fields.reasoning && selection.reasoning !== undefined) { delete selection.reasoning; ignored.add("reasoning"); }
+    if (Object.keys(selection).length === 0) delete config.llm.stages[name as keyof typeof config.llm.stages];
+  }
+  if (Object.keys(config.llm.stages).length === 0) delete config.llm.stages;
+  if (ignored.size) warnings.push({ source, key: "llm.stages", message: `Per-run ${[...ignored].join(" and ")} overrides ignore matching stage settings.` });
+}
+
 function applyEnvironment(
   config: CodegenieConfig,
   env: NodeJS.ProcessEnv,
@@ -480,10 +497,6 @@ function applyCliOverrides(
   cli: CliConfigOverrides,
   sources: Record<string, ConfigSource>
 ): void {
-  if (cli.depth !== undefined) {
-    config.review.depth = cli.depth;
-    sources["review.depth"] = "cli";
-  }
   if (cli.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = "cli";

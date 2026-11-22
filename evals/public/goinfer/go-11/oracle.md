@@ -1,26 +1,19 @@
 ---
 repo: goinfer
 case: go-11
-role: negative-control
+role: contaminated-control
 intro: 9383547fcbbb5c37dee7c7177babe2e751948449
 base: a9297c9b571a368c1aa2b1e19731d04c2dc8314f
 introDate: 2026-10-12
 kind: control/in-process-http-streaming
-severity: medium
 ---
 
-## Expected result
+## Exclusion rationale
 
-No defect is expected in the in-process HTTP transport. Response bytes stream through a pipe and closing the body cancels the handler context and unblocks writes. A panic before headers returns a transport error, while a panic after headers surfaces on the response body. Adjudicate any reported issue against the transport contract and the pinned source.
+The base has no in-process transport. The head adds a transport that defers closing the request body until its handler returns. Request cancellation before headers can return from `RoundTrip` while the handler is still blocked reading that body. After headers, request cancellation leaves the response pipe open. Client reads and handler writes use the pipe directly. An explicit `Body.Close` closes it. Go's outgoing request contract applies cancellation to response body reads too. [Go request context documentation](https://pkg.go.dev/net/http#NewRequestWithContext)
 
-## Anchor
+The two deadline methods acknowledge success without enforcing a deadline, as documented in the new code. The new streaming test also has an acknowledgement send with no timeout of its own. Keep this pin for exploratory review and exclude it from the clean-control and required-detection denominators.
 
-`internal/inproc/transport.go:22-139` at [the introducing commit](https://github.com/townsendmerino/goinfer/commit/9383547fcbbb5c37dee7c7177babe2e751948449).
+## Source
 
-## Severity floor
-
-Medium. The location matcher flags reports for adjudication.
-
-## Control evidence
-
-The introduction tests ordinary requests, streaming, cancellation and panics before and after headers. The implementation and tests were moved byte-for-byte to `internal/app/inproc` and stayed unchanged through goinfer main `36dbfbaf149aabdff43dce5766b49a65183113a7`.
+The cancellation and deadline paths are in `internal/inproc/transport.go:26-139`. Separate tests cover explicit body closure and cancellation before the reply. The streaming test's acknowledgement wait and send are in `internal/inproc/transport_test.go:62-84`. [Pinned change](https://github.com/townsendmerino/goinfer/commit/9383547fcbbb5c37dee7c7177babe2e751948449)

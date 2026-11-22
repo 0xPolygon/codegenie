@@ -105,7 +105,10 @@ export async function judgeRecommendations(
 }
 
 /** Optional judge never changes deterministic pass/fail or review cost metrics. */
-export async function addRecommendationJudgment(evalCase: EvalCase, score: EvalScore, runDir: string, execute: boolean, adapter?: PiAiAdapter): Promise<void> {
+export async function addRecommendationJudgment(
+  evalCase: EvalCase, score: EvalScore, runDir: string, execute: boolean,
+  options: { adapter?: PiAiAdapter; codegenieHome?: string } = {}
+): Promise<void> {
   const config = evalCase.recommendationJudge;
   if (!config) return;
   const { checks: _, ...judge } = config;
@@ -113,6 +116,9 @@ export async function addRecommendationJudgment(evalCase: EvalCase, score: EvalS
   if (!execute) return;
   try {
     const report = await readFile(path.join(runDir, "codegenie-review.out.md"), "utf8");
+    const adapter = options.adapter ?? createRealPiAiAdapter(options.codegenieHome !== undefined
+      ? { codegenieHome: options.codegenieHome }
+      : {});
     const result = await judgeRecommendations(config, report, adapter);
     score.recommendationQuality = result.judgment;
     await writeFile(path.join(runDir, "recommendation-judge.json"), JSON.stringify(stripCredentials(result), null, 2) + "\n");

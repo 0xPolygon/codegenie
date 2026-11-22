@@ -3,8 +3,8 @@ name: public-pi-12
 repo:
   external: ~/.cache/codegenie/public-evals/pi/pi-12
 command:
-  base: 1a4d153d7af76a636d67567d30ba705b1320a06d
-  head: 4f81c3c28db28c089c5571aab68a8624ae99abd6
+  base: 754e745b1fbd268f3c287fd0b5779992d900ee7a
+  head: a61eca5dee7f13a31c07fd20f7517aaa572b7ade
 review:
   verify: true
   debug: true
@@ -12,5 +12,5 @@ review:
 should_find:
 - id: single-segment-fd-query-unescaped
   path: packages/tui/src/autocomplete.ts
-  lineRange: [17, 37]
+  lineRange: [13, 20]
   severityAtLeast: low

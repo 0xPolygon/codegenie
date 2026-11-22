@@ -121,7 +121,12 @@ describe("evidence-backed attention reconciliation", () => {
     expect(submissionIssues(schema, { ...original, attentionResolutions: [f.proposal, unresolved] })).toEqual([]);
     expect(reconcileAttention(input, [f.proposal, unresolved], true).notes[0]!.question).toBe("Is this endpoint deployed?");
     expect(attentionResolutionErrors(input, [{ ...f.proposal, supportingRefs: [] }, unresolved])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
-    expect(attentionResolutionErrors(input, [f.proposal, { ...unresolved, remainingQuestion: "Silently rewritten" }])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    const extraQuestion = { ...unresolved, remainingQuestion: "Silently rewritten" };
+    expect(attentionResolutionErrors(input, [f.proposal, extraQuestion])).toEqual([]);
+    const reconciled = reconcileAttention(input, [f.proposal, extraQuestion], true);
+    expect(reconciled.notes[0]!.question).toBe("Is this endpoint deployed?");
+    expect(reconciled.canonicalizedConcernIds).not.toContain(unresolved.concernId);
+    expect(reconciled.discardedRewordedConcernIds).toEqual([unresolved.concernId]);
     expect(reconcileAttention(input, [f.proposal, unresolved], false).notes).toEqual([f.concern.unresolvedConcern]);
   });
 
@@ -144,6 +149,23 @@ describe("evidence-backed attention reconciliation", () => {
     const omitted = { ...input, inventory: { ...input.inventory, concerns: input.inventory.concerns.slice(0, 1) }, omittedConcernIds: [input.inventory.concerns[1]!.id] };
     expect(attentionResolutionErrors(omitted, [f.proposal])).toEqual([]);
     expect(attentionResolutionErrors({ ...omitted, inventory: { ...omitted.inventory, concerns: [] } }, undefined)).toEqual([]);
+  });
+
+  it("repairs attention-only failures atomically even when the draft carries an unexpected top-level key (#155)", () => {
+    const f = fixture();
+    const input = f.build();
+    const schema = composerSubmissionSchema([], input);
+    const original = { summary: "Keep the finding.", composedFindings: [], publication: "inline", attentionResolutions: [f.proposal, f.proposal] };
+    expect(submissionIssues(schema, original)).toContainEqual({ path: "publication", kind: "unknown" });
+    const repair = createAttentionResolutionRepair(schema, original, input)!;
+    expect(repair.paths).toEqual(["attentionResolutions"]);
+    expect(repair.prompt).toContain("return the complete replacement list");
+    const values = { attentionResolutions: [f.proposal, { concernId: input.inventory.concerns[1]!.id,
+      disposition: "unresolved" as const, supportingRefs: [], rationale: "Deployment cannot be established." }] };
+    const merged = repair.merge(values);
+    expect(merged).toEqual({ summary: original.summary, composedFindings: [], ...values });
+    expect(submissionIssues(schema, merged)).toEqual([]);
+    expect(original.publication).toBe("inline");
   });
 
   it("retains verifier answers before large matching tables consume the inventory", () => {
@@ -277,6 +299,29 @@ describe("evidence-backed attention reconciliation", () => {
     expect(result.decisions[0]!.accepted).toBe(true);
   });
 
+  it("treats a remaining question identical to the concern as unresolved instead of rejecting it (#155)", () => {
+    const f = fixture();
+    const input = f.build();
+    const [first, second] = input.inventory.concerns;
+    const unchanged = { ...f.proposal, disposition: "narrowed" as const, remainingQuestion: `  ${first!.question} ` };
+    const repeated = { concernId: second!.id, disposition: "unresolved" as const, supportingRefs: [], rationale: "No deployment evidence.", remainingQuestion: second!.question };
+    expect(attentionResolutionErrors(input, [unchanged, repeated])).toEqual([]);
+    const result = reconcileAttention(input, [unchanged, repeated], true);
+    expect(result.canonicalizedConcernIds).toEqual([first!.id, second!.id]);
+    expect(result.decisions.map(decision => [decision.disposition, decision.accepted, "remainingQuestion" in decision])).toEqual([["unresolved", true, false], ["unresolved", true, false]]);
+    expect(result.decisions[0]!.supportingRefs).toEqual(f.proposal.supportingRefs);
+    expect(result.notes).toEqual([f.concern.unresolvedConcern]);
+    // Only exact identity after trimming is canonicalized; invalid references and
+    // a resolved decision that repeats its question are still rejected.
+    expect(reconcileAttention(input, [{ ...unchanged, remainingQuestion: first!.question + "?" }], true).decisions[0]).toMatchObject({ disposition: "narrowed", accepted: true });
+    expect(attentionResolutionErrors(input, [{ ...unchanged, supportingRefs: ["invented/source"] }, repeated])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
+    expect(attentionResolutionErrors(input, [{ ...f.proposal, remainingQuestion: first!.question }, repeated])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    expect(attentionResolutionErrors(input, [{ ...repeated, concernId: "unknown", remainingQuestion: "Different" }])).toContainEqual(expect.stringContaining("unknown_or_ineligible_concern"));
+    expect(attentionResolutionErrors(input, [{ ...repeated, supportingRefs: ["invented/source"], remainingQuestion: "Different" }])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
+    const { remainingQuestion: _repeated, ...plain } = repeated;
+    expect(reconcileAttention(input, [f.proposal, plain], true).canonicalizedConcernIds).toEqual([]);
+  });
+
   it("removes a fully answered concern while preserving its original and supporting evidence in the outcome", () => {
     const f = fixture(["Does head include a revoked-session test?"]);
     const result = reconcileAttention(f.build(), [f.proposal], true);
@@ -285,16 +330,15 @@ describe("evidence-backed attention reconciliation", () => {
     expect(result.decisions[0]).toMatchObject({ accepted: true, supportingRefs: f.proposal.supportingRefs });
   });
 
-  it.each(["unknown-concern", "unknown-evidence", "self-support", "blank-rationale", "duplicate", "empty-narrowing", "unchanged-narrowing", "conflicting-question"])("rejects %s without dropping the concern", mode => {
+  it.each(["unknown-concern", "unknown-evidence", "self-support", "blank-rationale", "duplicate", "empty-narrowing", "conflicting-question"])("rejects %s without dropping the concern", mode => {
     const f = fixture();
     const input = f.build();
-    let proposal: NonNullable<Parameters<typeof reconcileAttention>[1]>[number] = { ...f.proposal };
+    const proposal: NonNullable<Parameters<typeof reconcileAttention>[1]>[number] = { ...f.proposal };
     if (mode === "unknown-concern") proposal.concernId = "missing";
     if (mode === "unknown-evidence") proposal.supportingRefs = ["missing"];
     if (mode === "self-support") proposal.supportingRefs = ["attention/question/proofAssessment"];
     if (mode === "blank-rationale") proposal.rationale = " ";
     if (mode === "empty-narrowing") proposal.disposition = "narrowed";
-    if (mode === "unchanged-narrowing") proposal = { ...proposal, disposition: "narrowed", remainingQuestion: input.inventory.concerns[0]!.question };
     if (mode === "conflicting-question") proposal.remainingQuestion = "Still open?";
     const result = reconcileAttention(input, mode === "duplicate" ? [proposal, proposal] : [proposal], true);
     expect(result.notes).toEqual([f.concern.unresolvedConcern]);
@@ -543,4 +587,92 @@ it("selects context around a cited line instead of a cheaper window ending at it
   expect(input.inventory.evidence).toContainEqual(expect.objectContaining({ id: "repository/auth/body" }));
   expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
   expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
+});
+
+it("rejects resolutions or narrowings backed by suppressed keep/revise findings while keeping reject, source-read, and published-finding resolutions (#52)", () => {
+  const f = fixture(["Does head include a revoked-session test?"]);
+  f.observation.verdict = "keep";
+  const published = structuredClone(f.candidate);
+  published.id = "published-peer";
+  const publishedVerdict: VerificationVerdict = {
+    ...structuredClone(f.observation),
+    candidateId: published.id,
+    verdict: "revise"
+  };
+  const refuted = structuredClone(f.candidate);
+  refuted.id = "refuted-peer";
+  const refutedVerdict: VerificationVerdict = {
+    ...structuredClone(f.observation),
+    candidateId: refuted.id,
+    verdict: "reject"
+  };
+  f.packet.findings.push(published, refuted);
+  f.packet.repositoryEvidence = [{
+    id: "head-test",
+    tool: "read_range",
+    path: "documents.test.ts",
+    source: "head",
+    text: "revoke(session); expect(readDocument(session)).toDeny();"
+  }];
+  const input = buildAttentionReconciliation(
+    [f.concern, f.observation, publishedVerdict, refutedVerdict],
+    [f.candidate, published],
+    [f.packet],
+    { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", baseRef: "base", headSha: "head" },
+    [{
+      id: "hint-1",
+      source: "follow_up_hint",
+      question: "Does head include a revoked-session test?",
+      files: ["documents.test.ts"],
+      originalFiles: ["documents.test.ts"],
+      droppedPaths: [],
+      symbols: ["readDocument"],
+      suggestedLenses: [],
+      reason: "Needs head test confirmation.",
+      confidence: "medium",
+      packetId: "auth"
+    }]
+  );
+
+  const suppressedRef = `${f.candidate.id}/evidence/relatedCode/0`;
+  const publishedRef = `${published.id}/evidence/relatedCode/0`;
+  const refutedRef = `attention/${refuted.id}/evidence/relatedCode/0`;
+  const repoRef = "repository/auth/head-test";
+  const publishedSet = new Set([published.id]);
+
+  // Suppressed keep finding cannot resolve or narrow either a packet concern or a verifier concern.
+  const suppressedResolved = reconcileAttention(input, [
+    { concernId: "packet/hint-1", disposition: "resolved", supportingRefs: [suppressedRef], rationale: "Suppressed keep finding answered it." },
+    { concernId: "question/assumptions/0", disposition: "narrowed", supportingRefs: [suppressedRef], rationale: "Suppressed keep finding narrowed it.", remainingQuestion: "Is this deployed?" }
+  ], true, { publishedCandidateIds: publishedSet });
+  expect(suppressedResolved.decisions).toEqual([
+    expect.objectContaining({ concernId: "packet/hint-1", accepted: false, rejectionReason: "suppressed_finding_evidence" }),
+    expect.objectContaining({ concernId: "question/assumptions/0", accepted: false, rejectionReason: "suppressed_finding_evidence" })
+  ]);
+  expect(suppressedResolved.restoredForSuppressedFindingCount).toBe(2);
+  expect(suppressedResolved.restoredWithSurvivingRefCount).toBe(0);
+  expect(suppressedResolved.notes.map(note => note.question)).toContain("Does head include a revoked-session test?");
+
+  // Mixed [suppressedKeep, published] is rejected conservatively and counted as having a surviving ref.
+  const mixed = reconcileAttention(input, [
+    { concernId: "packet/hint-1", disposition: "resolved", supportingRefs: [suppressedRef, publishedRef], rationale: "Cited both." }
+  ], true, { publishedCandidateIds: publishedSet });
+  expect(mixed.decisions[0]).toMatchObject({ accepted: false, rejectionReason: "suppressed_finding_evidence" });
+  expect(mixed.restoredForSuppressedFindingCount).toBe(1);
+  expect(mixed.restoredWithSurvivingRefCount).toBe(1);
+
+  // Published finding, rejected candidate, and repository source read all remain accepted.
+  for (const ref of [publishedRef, refutedRef, repoRef]) {
+    const ok = reconcileAttention(input, [
+      { concernId: "packet/hint-1", disposition: "resolved", supportingRefs: [ref], rationale: "Valid independent support." }
+    ], true, { publishedCandidateIds: publishedSet });
+    expect(ok.decisions[0], ref).toMatchObject({ accepted: true });
+  }
+
+  // Structural errors take precedence over suppressed_finding_evidence so invalid
+  // proposals are not promoted as suppressed-evidence fallbacks.
+  const invalidNarrow = reconcileAttention(input, [
+    { concernId: "packet/hint-1", disposition: "narrowed", supportingRefs: [suppressedRef], rationale: "Missing question." }
+  ], true, { publishedCandidateIds: publishedSet });
+  expect(invalidNarrow.decisions[0]).toMatchObject({ accepted: false, rejectionReason: "missing_or_unchanged_remaining_question" });
 });

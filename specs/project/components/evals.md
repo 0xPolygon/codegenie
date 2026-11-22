@@ -440,7 +440,6 @@ command:
   head: 49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c
   base: main
 review:
-  depth: normal
   lenses: ["core/code-review", "lang/go"]
   verify: true
   cache: true
@@ -478,7 +477,6 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 
 | Case field | Engine setting | Notes |
 | --- | --- | --- |
-| `depth` | `review.depth` | |
 | `lenses` | run lens set | Same semantics as repeated `--lens`: restricts the run to the named lenses and may enable default-disabled lenses; the planner still routes lenses per hunk. |
 | `maxFindings` | `review.maxFindings` | Engine report cap, distinct from the `expect.maxFindings` assertion. |
 | `concurrency` | `review.concurrency` | |
@@ -543,7 +541,7 @@ Scoring and attribution read the following artifacts. The expectation-bearing fo
 | Artifact | Evals reads | Writer (owner) |
 | --- | --- | --- |
 | `candidate-findings.json` | `CandidateFinding[]`: every structurally valid candidate from Stage 7 plus bounded Stage-9 uncertainty promotions, with `id`, matching fields, `producedBy`, `clusterId?`, `duplicateOf?`; promoted provenance may carry up to eight explicitly non-authoritative `relatedSignals` and `crossPacketRelatedCount`, which do not change expectation matching, confidence, or evidence | `components/review_pipeline.md` |
-| `verification.json` | Per candidate id: either a pre-verification-gate record `{ candidateId, gate: "suppressed", gateReason }` or `{ candidateId, gate: "passed", verdict: VerificationVerdict }`; revised findings carry `verdict.finalFinding`. Pre-clustered duplicate members carry no record of their own — the reader resolves them through the candidate's `duplicateOf` chain to the representative's record | `components/review_pipeline.md` |
+| `verification.json` | Per candidate id: either a pre-verification-gate record `{ candidateId, gate: "suppressed", gateReason }` or `{ candidateId, gate: "passed", verdict: VerificationVerdict }`; revised findings carry `verdict.finalFinding`. When a representative receives a verdict, its duplicate members have records with inherited verdicts and a `duplicateOf` link to the representative. | `components/review_pipeline.md` |
 | `final-selection.json` | Per verified-kept finding: `{ findingId, decision: "published" \| "merged" \| "suppressed", reason, mergedIntoFingerprint? }` — the telemetry requirement "final-selection decisions and reasons for omitted verified findings" in artifact form | `components/review_pipeline.md` |
 | `final-findings.json` | `FinalFinding[]` including suppressed entries, with `publication`, `fingerprint`, `mergedCandidateIds` | `components/review_pipeline.md` |
 | `review-plan.json` | `ReviewPlan` (coverage decisions per hunk, skip reasons) | `components/review_pipeline.md` |

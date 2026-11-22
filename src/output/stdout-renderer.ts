@@ -13,7 +13,12 @@ export function renderPostingSummaryForStdout(
   opts: { postRequested?: boolean } = {}
 ): string {
   const health = healthForResult(result);
-  const notice = renderReviewHealth(health, result.composition);
+  const notice = renderReviewHealth(health, result.composition, {
+    shown: result.needsHumanAttention.length,
+    omitted: result.needsHumanAttentionOmittedCount ?? 0,
+    verificationIncompleteCount: result.coverage.verificationIncompleteCount,
+    inFullReview: true
+  });
   if (result.posting !== undefined) {
     if (format === "json") {
       return `${JSON.stringify({ ...result.posting, health, composition: result.composition }, null, 2)}\n`;

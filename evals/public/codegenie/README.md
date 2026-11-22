@@ -23,7 +23,7 @@ logLevel = "debug"
 debugTrace = true
 ```
 
-The comparison config pins provider, model, reasoning and depth. Keep every per-run artifact under the case's `logs/`, which is not committed. Never pass `--post-github-comments`.
+The comparison config pins provider, model and reasoning. Keep every per-run artifact under the case's `logs/`, which is not committed. Never pass `--post-github-comments`.
 
 ## Scoring
 

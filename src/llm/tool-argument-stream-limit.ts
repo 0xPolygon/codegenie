@@ -1,7 +1,11 @@
 import type { ReviewStage } from "../types.js";
 
-const VERIFIER_TOOL_ARGUMENT_LIMIT_CHARS = 64_000;
-const COMPOSER_TOOL_ARGUMENT_LIMIT_CHARS = 128_000;
+const TOOL_ARGUMENT_LIMIT_CHARS: Partial<Record<ReviewStage, number>> = {
+  5: 128_000,
+  7: 64_000,
+  9: 64_000,
+  10: 128_000
+};
 const CONSECUTIVE_WHITESPACE_LIMIT_CHARS = 4_096;
 
 export type ToolArgumentStreamLimit = {
@@ -15,8 +19,7 @@ export type ToolArgumentStreamLimit = {
 export function createToolArgumentStreamGuard(
   stage: ReviewStage
 ): ((contentIndex: number, delta: string, toolArgumentChars: number) => ToolArgumentStreamLimit | undefined) | undefined {
-  const totalLimit = stage === 9 ? VERIFIER_TOOL_ARGUMENT_LIMIT_CHARS
-    : stage === 10 ? COMPOSER_TOOL_ARGUMENT_LIMIT_CHARS : undefined;
+  const totalLimit = TOOL_ARGUMENT_LIMIT_CHARS[stage];
   if (totalLimit === undefined) return undefined;
 
   // Pi can interleave deltas for different tool calls. Whitespace only forms

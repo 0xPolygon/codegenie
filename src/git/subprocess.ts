@@ -5,7 +5,12 @@ import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 
+export type GitEnvironment = Partial<Record<
+  "GIT_INDEX_FILE" | "GIT_OBJECT_DIRECTORY" | "GIT_ALTERNATE_OBJECT_DIRECTORIES" | "GIT_NO_LAZY_FETCH", string
+>>;
+
 export type GitCommandOptions = {
+  gitEnv?: GitEnvironment;
   stripFinalNewline?: boolean;
   timeoutMs?: number;
   network?: boolean;
@@ -16,6 +21,7 @@ export type GitCommandOptions = {
 };
 
 export type GitCappedCommandOptions = {
+  gitEnv?: GitEnvironment;
   /** Skip complete oversized records, retaining other lines within the same allowance. */
   lineLimitBytes?: number;
   onOmittedLine?: () => void;
@@ -65,7 +71,7 @@ export async function runGitCapped(
     const allowedExitCodes = new Set(opts.allowedExitCodes ?? [0]);
     const child = spawn("git", args, {
       cwd: repoRoot,
-      env: { ...process.env, ...SAFE_ENV },
+      env: { ...process.env, ...SAFE_ENV, ...opts.gitEnv },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -188,7 +194,7 @@ async function runCommand(
   try {
     const result = await execa(command, args, {
       cwd: repoRoot,
-      env: SAFE_ENV,
+      env: { ...SAFE_ENV, ...opts.gitEnv },
       shell: false,
       reject: false,
       stripFinalNewline: opts.stripFinalNewline ?? true,

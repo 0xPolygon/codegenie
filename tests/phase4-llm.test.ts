@@ -1,7 +1,7 @@
 import { buildAttentionReconciliation, attentionResolutionErrors, createAttentionResolutionRepair } from "../src/pipeline/attention-reconciliation.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { defaultConfig } from "../src/config/schema.js";
-import { unresolvedToolDiagnostic } from "../src/util/review-health.js";
+import { requiredDiagnosticsAfterComposition, unresolvedToolDiagnostic } from "../src/util/review-health.js";
 import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
@@ -517,6 +517,145 @@ describe("Phase 4 schemas and repository tool definitions", () => {
 });
 
 describe("Phase 4 Pi runner and model-call cache", () => {
+  it("reports unresolved inherited global models with the original global diagnostic", () => {
+    const adapter: PiAiAdapter = { resolveModel: () => undefined, complete: vi.fn(), validateToolCall };
+    const opts = { llmConfig: { provider: "missing", model: "missing", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok" as const, onUsage() {} } };
+    const capture = (stages?: { plan: { reasoning: "low" } }) => {
+      try { createPiRunner({ ...opts, llmConfig: { ...opts.llmConfig, ...(stages ? { stages } : {}) } }); }
+      catch (error) { return error as CodegenieError; }
+      throw new Error("expected model resolution failure");
+    };
+    const baseline = capture();
+    const inherited = capture({ plan: { reasoning: "low" } });
+    expect(inherited.message).toBe(baseline.message);
+    expect(inherited.context).toEqual(baseline.context);
+    expect(inherited.context?.hint).toContain("provider login");
+    expect(adapter.complete).not.toHaveBeenCalled();
+    const reasoningAdapter: PiAiAdapter = { ...adapter, resolveModel: () => ({ provider: "one", id: "base", raw: { id: "base", reasoning: true } }) };
+    const unsupported = { ...opts, adapter: reasoningAdapter, llmConfig: { provider: "one", model: "base", reasoning: "max" as const, maxConcurrentCalls: 1 } };
+    let globalError: CodegenieError | undefined;
+    try { createPiRunner(unsupported); } catch (error) { globalError = error as CodegenieError; }
+    expect(globalError).toBeDefined();
+    expect(() => createPiRunner({ ...unsupported, llmConfig: { ...unsupported.llmConfig, stages: { plan: { reasoning: "low" } } } }))
+      .toThrow(globalError!.message);
+  });
+
+  it("routes stage models with explicit compose reasoning and per-model protocol records", async () => {
+    const telemetry = fakeTelemetry();
+    const seen: Array<{ model: string; reasoning: unknown }> = [];
+    const adapter: PiAiAdapter = {
+      resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux", reasoning: true } }),
+      complete: async (model, _context, options) => {
+        seen.push({ model: `${model.provider}/${model.id}`, reasoning: options.reasoning });
+        const name = ["submit_review", "submit_plan", "submit_composition"][seen.length - 1]!;
+        return assistant([{ type: "toolCall", id: `s${seen.length}`, name, arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+      }, validateToolCall
+    };
+    const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
+      stages: { review: { model: "two/special", reasoning: "low" }, compose: { model: "two/special", reasoning: "medium" } } },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await runner.runStructured(submitReviewRequest("stage-review"));
+    await runner.runStructured({ ...submitReviewRequest("stage-plan"), stage: 5 });
+    await runner.runStructured({ ...submitReviewRequest("stage-compose"), stage: 10, compositionReasoningStepDown: true });
+    expect(seen).toEqual([{ model: "two/special", reasoning: "low" }, { model: "one/base", reasoning: "high" }, { model: "two/special", reasoning: "medium" }]);
+    expect(telemetry.modelCalls.map(call => [call.provider, call.model])).toEqual([["two", "special"], ["one", "base"], ["two", "special"]]);
+    expect(telemetry.events.filter(event => event.message === "provider_protocol")).toHaveLength(2);
+  });
+
+  it("steps down inherited composition reasoning using the composition model's levels", async () => {
+    const scripted = scriptedAdapter([assistant([{ type: "toolCall", id: "submit", name: "submit_composition", arguments: { findings: [], followUpHints: [], uncertainties: [] } }])]);
+    const adapter: PiAiAdapter = { ...scripted, resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux", reasoning: true } }) };
+    const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1, stages: { compose: { model: "two/other" } } },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await runner.runStructured({ ...submitReviewRequest("compose"), stage: 10, compositionReasoningStepDown: true });
+    expect(scripted.options[0]?.reasoning).toBe("medium");
+  });
+
+  it("separates cached calls by the actual stage model and replays each", async () => {
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({ dir: path.join(repoRoot, ".codegenie", "cache"), repoRoot,
+      runFingerprint: "stage-models", logger: fakeLogger(), telemetry: telemetry.recorder });
+    const complete = vi.fn(async () => assistant([{ type: "toolCall", id: "submit", name: "submit_review",
+      arguments: { findings: [], followUpHints: [], uncertainties: [] } }]));
+    const adapter: PiAiAdapter = { resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux" } }), complete, validateToolCall };
+    const runner = (model: string) => createPiRunner({ llmConfig: { provider: "one", model: "base", maxConcurrentCalls: 1, stages: { review: { model } } },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const a = runner("one/first");
+    const b = runner("two/second");
+    await a.runStructured(submitReviewRequest("same"));
+    await b.runStructured(submitReviewRequest("same"));
+    await a.runStructured(submitReviewRequest("same"));
+    await b.runStructured(submitReviewRequest("same"));
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map(call => [call.provider, call.model, call.cacheStatus])).toEqual([
+      ["one", "first", "write"], ["two", "second", "write"], ["one", "first", "hit"], ["two", "second", "hit"]
+    ]);
+  });
+
+  it("shares one provider concurrency limit across different stage models", async () => {
+    let active = 0;
+    let maximum = 0;
+    const adapter: PiAiAdapter = { resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux" } }),
+      complete: async (_model, context) => {
+        maximum = Math.max(maximum, ++active);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        active--;
+        const name = (context.tools as Array<{ name: string }>).find(tool => tool.name.startsWith("submit_"))!.name;
+        return assistant([{ type: "toolCall", id: "submit", name, arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+      }, validateToolCall };
+    const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", maxConcurrentCalls: 1, stages: { plan: { model: "two/other" } } },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await Promise.all([runner.runStructured({ ...submitReviewRequest("plan"), stage: 5 }), runner.runStructured(submitReviewRequest("review"))]);
+    expect(maximum).toBe(1);
+  });
+
+  it("validates inherited reasoning on every stage before any call", () => {
+    const complete = vi.fn();
+    const adapter: PiAiAdapter = { resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base",
+      raw: { id: request.model ?? "base", reasoning: true, ...(request.model === "base" ? { thinkingLevelMap: { max: "max" } } : {}) } }),
+      complete, validateToolCall };
+    expect(() => createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "max", maxConcurrentCalls: 1,
+      stages: { verify: { model: "two/special" } } }, telemetry: fakeTelemetry().recorder, logger: fakeLogger(),
+      runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } })).toThrow(/llm\.stages\.verify.*does not support reasoning max/);
+    expect(complete).not.toHaveBeenCalled();
+    const unknown: PiAiAdapter = { ...adapter, resolveModel: request => request.model === "missing" ? undefined : adapter.resolveModel(request) };
+    expect(() => createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
+      stages: { plan: { model: "two/missing" } } }, telemetry: fakeTelemetry().recorder, logger: fakeLogger(),
+      runSignal: new AbortController().signal, adapter: unknown, hooks: { checkpoint: () => "ok", onUsage() {} } })).toThrow(/llm\.stages\.plan/);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("keeps local draw identity out of token reservations while separating cache entries", async () => {
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({ dir: path.join(repoRoot, ".codegenie", "cache"), repoRoot,
+      runFingerprint: "draw-reservation", logger: fakeLogger(), telemetry: telemetry.recorder });
+    const response = () => assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+    const adapter = scriptedAdapter([response(), response()]);
+    const reservations: number[] = [];
+    let available: number | undefined;
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", reserve: (_stage, tokens) => {
+        reservations.push(tokens);
+        return available !== undefined && tokens > available ? "exhausted" : "ok";
+      }, onUsage() {} } });
+    const request = submitReviewRequest("same-packet");
+    await runner.runStructured(request);
+    available = reservations[0];
+    await runner.runStructured({ ...request, cacheDraw: "stage7-adaptive-2" });
+    expect(reservations).toEqual([available, available]);
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map(call => call.cacheStatus)).toEqual(["write", "write"]);
+    await runner.runStructured(request);
+    await runner.runStructured({ ...request, cacheDraw: "stage7-adaptive-2" });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map(call => call.cacheStatus)).toEqual(["write", "write", "hit", "hit"]);
+  });
+
   it("rejects a configured reasoning level the resolved model does not advertise", () => {
     const build = (reasoning: "high" | "xhigh", raw: Record<string, unknown>): LlmRunner =>
       createPiRunner({
@@ -1042,6 +1181,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   });
 
   it("uses a separate investigation signal while tools and finalization share the hard deadline", async () => {
+    const timeoutMs = 100;
+    // At this test-sized timeout, the grace period equals the investigation budget.
+    const hardDeadlineMs = timeoutMs * 2;
     const providerSignals: AbortSignal[] = [];
     const toolSignals: AbortSignal[] = [];
     const tool: ToolDefinition = {
@@ -1063,6 +1205,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           throw new Error("missing abort signal");
         }
         providerSignals.push(options.signal);
+        if (providerSignals.length === 2) {
+          vi.advanceTimersByTime(hardDeadlineMs - 1);
+          expect(options.signal.aborted).toBe(false);
+          expect(toolSignals[0]?.aborted).toBe(false);
+          vi.advanceTimersByTime(1);
+        }
         return providerSignals.length === 1
           ? assistant([
               {
@@ -1085,15 +1233,23 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
     });
 
-    await runner.runStructured({
-      ...submitReviewRequest("packet-timeout-signal"),
-      tools: [tool],
-      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
-    });
+    vi.useFakeTimers();
+    try {
+      await expect(runner.runStructured({
+        ...submitReviewRequest("packet-timeout-signal"),
+        timeoutMs,
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
+      })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "timeout" } });
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(providerSignals).toHaveLength(2);
-    expect(new Set(providerSignals).size).toBe(2);
-    expect(toolSignals).toEqual([providerSignals[1]]);
+    expect(providerSignals[0]).not.toBe(providerSignals[1]);
+    expect(providerSignals[1]?.aborted).toBe(true);
+    expect(toolSignals).toHaveLength(1);
+    expect(toolSignals[0]?.aborted).toBe(true);
   });
 
   it("times out provider calls even when the adapter ignores the abort signal", async () => {
@@ -2630,6 +2786,33 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.some(event => event.message === "schema_repair_scheduled")).toBe(false);
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
       data: expect.objectContaining({ addedFields: [expect.stringContaining("retainedSourceRefs")], validation: "complete_schema_and_semantics_passed" }) }));
+  });
+
+  it("drops invented provenance components before the schema enum check, with no model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const absent = `${findings[0]!.id}/originalSuggestions/suggestedTest`;
+    const original = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs,
+      ...presentation, retainedSourceRefs: [absent], publication: "inline" }] };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "compose", name: "submit_composition", arguments: original }])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    expect(() => validateToolCall([{ name: "submit_composition", description: "", parameters: schema }],
+      { type: "toolCall", id: "raw", name: "submit_composition", arguments: original })).toThrow(/expected one of/);
+    const result = await runner.runStructured({ stage: 10, prompt: "compose", templateVersion: "test", timeoutMs: 600_000, schema,
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value as typeof original, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      }
+    }) as typeof original;
+    expect(result.composedFindings[0]!.retainedSourceRefs).toEqual([]);
+    expect(adapter.complete).toHaveBeenCalledOnce();
+    expect(telemetry.events.some(event => event.message === "schema_repair_scheduled")).toBe(false);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
+      data: expect.objectContaining({ removedFields: ["composedFindings.0.retainedSourceRefs.0"], validation: "complete_schema_and_semantics_passed" }) }));
   });
 
   it.each([false, true])("repairs attribution in fresh constrained contexts and validates the assembled report (exhaust=%s)", async exhaust => {
@@ -5445,6 +5628,22 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("not a zero-match result");
   });
 
+  it.each(["tool_call_budget_exhausted", "investigation_round_budget_exhausted"])(
+    "preserves required tool failures behind a completed packet's %s refusal", rejectionReason => {
+      const refusal = { id: "refused", tool: "read_range", target: "a.ts", status: "rejected" as const,
+        resultChars: 0, errorCode: "budget_exhausted" as const, rejectionReason };
+      const timedOut = { id: "timed-out", tool: "read_range", target: "b.ts", status: "error" as const,
+        resultChars: 0, errorCode: "timeout" as const, preview: "Source read timed out." };
+      const composerDiagnostic = unresolvedToolDiagnostic(7, [refusal, timedOut], "packet", true)!;
+      expect(composerDiagnostic.code).toBe("budget_exhausted");
+      expect(requiredDiagnosticsAfterComposition(composerDiagnostic)).toEqual([
+        expect.objectContaining({ code: "timeout", reason: timedOut.preview, kind: "incomplete" })
+      ]);
+      const verifierDiagnostic = unresolvedToolDiagnostic(9, [refusal, timedOut], "candidate")!;
+      expect(requiredDiagnosticsAfterComposition(verifierDiagnostic)).toEqual([verifierDiagnostic]);
+    }
+  );
+
   it("packs cached search data into complete JSON under each caller cap and records its scope", async () => {
     const telemetry = fakeTelemetry();
     const matches = Array.from({ length: 20 }, (_, index) => ({ path: "src/a.ts", line: index + 1, matchText: "needle " + "x".repeat(100) }));
@@ -6581,6 +6780,44 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it.each([
+    "Connection closed.",
+    "read ECONNRESET",
+    "write EPIPE",
+    "connection reset by peer",
+    "Responses websocket connection limit reached",
+    "websocket_connection_limit_reached"
+  ])("retries text-only connection failures: %s", async (message) => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([
+        assistantError(message), assistantError(message), assistantError(message),
+        assistant([validSubmitReviewCall("submit-after-reconnect")])
+      ]);
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      const result = runner.runStructured({ ...submitReviewRequest("packet-reconnect"), timeoutMs: 60_000 });
+      void result.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toMatchObject({ findings: [] });
+
+      expect(telemetry.modelCalls.map(call => call.retryReason)).toEqual([
+        "network_error", "network_error", "network_error", undefined
+      ]);
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({ status: "ok", attempt: 4 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats persistent retryable provider errors as recoverable task failures", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
@@ -7267,12 +7504,15 @@ describe("Pi tool argument stream limits", () => {
     expect(onUsage.mock.calls[1]?.[0]).not.toHaveProperty("costUSD");
   });
 
-  it.each([{ stage: 9, limit: 64_000 }, { stage: 10, limit: 128_000 }] as const)(
+  it.each([
+    { stage: 5, limit: 128_000 }, { stage: 7, limit: 64_000 },
+    { stage: 9, limit: 64_000 }, { stage: 10, limit: 128_000 }
+  ] as const)(
     "accepts exactly $limit argument characters in Stage $stage and cuts the next character",
     async ({ stage, limit }) => {
       const submit = (chars: number): PiToolCall => ({
         type: "toolCall", id: "submit", name: submitToolNameForStage(stage),
-        arguments: { text: "x".repeat(chars - '{"text":""}'.length) }
+        arguments: { text: "xy".repeat(Math.ceil(chars / 2)).slice(0, chars - '{"text":""}'.length) }
       });
       const accepted = submit(limit);
       const oversized = submit(limit + 1);
@@ -7283,8 +7523,10 @@ describe("Pi tool argument stream limits", () => {
       };
       const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
       const request = { stage, schema: Type.Object({ text: Type.String() }), prompt: "submit text", templateVersion: "test", timeoutMs: 2_000 };
-      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
-      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
+      for (let i = 0; i < 2; i += 1) {
+        const submitted = await runner.runStructured<{ text: string }>(request);
+        expect(JSON.stringify(submitted)).toHaveLength(limit);
+      }
 
       expect(signals.map(signal => signal.aborted)).toEqual([false, true, false]);
       expect(telemetry.events.filter(event => event.message === "model_tool_argument_stream_limit")).toEqual([
@@ -7298,7 +7540,40 @@ describe("Pi tool argument stream limits", () => {
     }
   );
 
-  it.each([9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
+  it("accepts a large planner response with schema-valid coverage entries", async () => {
+    const call = validSubmitPlanCall("large-plan");
+    call.arguments.coverage = Array.from({ length: 150 }, (_, index) => ({
+      hunkId: `hunk-${index}`, path: `src/file-${index}.ts`, coverage: "deep", lenses: ["core/code-review"],
+      reason: "Inspect the changed guards and the callers that depend on their behavior. ".repeat(7)
+    }));
+    const chars = JSON.stringify(call.arguments).length;
+    expect(chars).toBeGreaterThan(64_000);
+    expect(chars).toBeLessThan(128_000);
+    const { runner, telemetry } = scriptedPiStreamRunner(() => streamForMessage(assistant([call])));
+    await expect(runner.runStructured({
+      stage: 5, schema: SubmitPlanSchema, prompt: "plan coverage", templateVersion: "test", timeoutMs: 2_000
+    })).resolves.toMatchObject(call.arguments);
+    expect(telemetry.modelCalls).toHaveLength(1);
+  });
+
+  it("cuts a runaway planner repair without adding a provider attempt", async () => {
+    const invalid = { type: "toolCall", id: "initial", name: "submit_plan", arguments: {} } satisfies PiToolCall;
+    const repair = validSubmitPlanCall("repair");
+    const periodic = '{"text":"' + "abcde".repeat(32_000) + '"}';
+    const streamSimple = vi.fn<PiStreamSimpleForTest>().mockImplementationOnce(() => streamForMessage(assistant([invalid])))
+      .mockImplementationOnce(() => streamForMessage(assistant([repair]), periodic));
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({
+      stage: 5, schema: SubmitPlanSchema, prompt: "plan coverage", templateVersion: "test", timeoutMs: 2_000
+    })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "tool_argument_stream_limit", trigger: "total_chars" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 5, message: "model_tool_argument_stream_limit",
+      data: expect.objectContaining({ kind: "repair", limitChars: 128_000, retryScheduled: false })
+    }));
+  });
+
+  it.each([5, 7, 9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
     const call = { type: "toolCall", id: "submit", name: submitToolNameForStage(stage), arguments: { text: "ok" } } satisfies PiToolCall;
     const response = assistant([call]);
     response.usage = { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } };
@@ -7346,7 +7621,7 @@ describe("Pi tool argument stream limits", () => {
     expect(guard(0, "\t", 9_102)).toMatchObject({
       trigger: "whitespace_run", limitChars: 4_096, observedChars: 4_097, contentIndex: 0
     });
-    expect(createToolArgumentStreamGuard(7)).toBeUndefined();
+    expect(createToolArgumentStreamGuard(6)).toBeUndefined();
   });
 });
 

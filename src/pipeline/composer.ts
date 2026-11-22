@@ -1,4 +1,4 @@
-import { deriveReviewHealth, factualReviewSummary, renderReviewHealth } from "../util/review-health.js";
+import { deriveReviewHealth, factualReviewSummary, renderReviewHealth, requiredDiagnosticsAfterComposition } from "../util/review-health.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
@@ -24,8 +24,8 @@ import type {
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
-import { coverageDisclosureLines, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
-import { codeBlock, fenceLanguageForPath, inlineCode, severityBadge } from "../util/markdown.js";
+import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { codeBlock, fenceLanguageForPath, FINDING_ORDER_NOTE, inlineCode, presentationOrder, severityBadge } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -36,7 +36,6 @@ import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "
 import {
   buildHumanAttentionNotes,
   humanAttentionArtifact,
-  selectHumanAttentionForOutput,
   selectHumanAttentionGroups,
   MAX_HUMAN_ATTENTION_NOTES
 } from "./human-attention.js";
@@ -81,7 +80,7 @@ const MAX_COMPOSER_SUMMARY_CHARS = 4000;
 const CROSS_FILE_EVIDENCE_LINK_SIMILARITY = 0.42;
 
 export async function dedupeRankAndComposeReview(
-  verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
+  verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[]; verificationCandidateCount?: number },
   plan: ReviewPlan,
   resolved: ResolvedReviewInput,
   coverage: RunCoverageStatus,
@@ -265,26 +264,64 @@ export async function dedupeRankAndComposeReview(
     }
   }
   const selection = buildSelectionRecords(capped.findings, baseSelection, capped.suppressedReasons, capped.downgradeReasons);
-  const findings = capped.findings.filter((finding) => finding.publication === "inline");
-  const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
+  // Reader order is applied only here, after the caps (#104).
+  const findings = presentationOrder(capped.findings.filter((finding) => finding.publication === "inline"));
+  const summaryOnlyFindings = presentationOrder(capped.findings.filter((finding) => finding.publication === "summary-only"));
   const publishableCount = findings.length + summaryOnlyFindings.length;
+  // Post-cap publication-aware reconciliation (#52): Stage 10 inputs stay
+  // unchanged; resolutions citing a suppressed keep/revise finding are rejected
+  // so at least one of the finding or its source concern remains visible.
+  const publishedCandidateIds = new Set(
+    [...findings, ...summaryOnlyFindings].flatMap((finding) => [finding.id, ...finding.mergedCandidateIds])
+  );
   const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
-    compositionMode === "llm");
+    compositionMode === "llm", { publishedCandidateIds });
+  if (reconciledAttention.canonicalizedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unchanged_question_canonicalized",
+    data: { concernIds: reconciledAttention.canonicalizedConcernIds, disposition: "unresolved" } });
+  if (reconciledAttention.discardedRewordedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unresolved_rewording_discarded",
+    data: { count: reconciledAttention.discardedRewordedConcernIds.length, concernIds: reconciledAttention.discardedRewordedConcernIds } });
   const decisionsByHint = new Map(reconciledAttention.decisions.filter(decision => decision.accepted).map(decision => [decision.concernId, decision]));
+  const suppressedEvidenceConcernIds = new Set(
+    reconciledAttention.decisions
+      .filter(decision => decision.rejectionReason === "suppressed_finding_evidence")
+      .map(decision => decision.concernId)
+  );
   const regroupedAttention = buildHumanAttentionNotes([], { packets: opts.packets ?? [], rawHints: attention.raw.flatMap(hint => {
     const decision = decisionsByHint.get(`packet/${hint.id}`);
     return decision?.disposition === "resolved" ? [] : [{ ...hint, question: decision?.remainingQuestion ?? hint.question }];
   }) });
-  const humanAttention = selectHumanAttentionForOutput(
-    regroupedAttention.groups,
-    [], // Finding overlap alone does not establish that every question was answered.
-    packetsById,
-    [], // Packet questions require explicit evidence-backed reconciliation, not verdict/word similarity.
-    telemetry
+  const isSuppressedEvidencePacketGroup = (group: (typeof regroupedAttention.groups)[number]) =>
+    [...group.rawNoteIds].some(id => suppressedEvidenceConcernIds.has(`packet/${id}`));
+  const prioritizedPacketGroups = suppressedEvidenceConcernIds.size > 0
+    ? [
+        ...regroupedAttention.groups.filter(isSuppressedEvidencePacketGroup),
+        ...regroupedAttention.groups.filter(group => !isSuppressedEvidencePacketGroup(group))
+      ]
+    : regroupedAttention.groups;
+  const humanAttention = selectHumanAttentionGroups(prioritizedPacketGroups);
+  const prioritizedPacketNotes = new Set(
+    humanAttention.groups.filter(isSuppressedEvidencePacketGroup).map(group => group.representative.question)
   );
-  const verifierQuestions = new Set(reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:")).map(outcome => outcome.remainingQuestion));
+  const verifierOutcomes = reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:") && outcome.remainingQuestion.length > 0);
+  const verifierQuestions = new Set(verifierOutcomes.map(outcome => outcome.remainingQuestion));
+  const prioritizedVerifierQuestions = new Set(
+    verifierOutcomes
+      .filter(outcome => outcome.concernIds.some(id => suppressedEvidenceConcernIds.has(id)))
+      .map(outcome => outcome.remainingQuestion)
+  );
+  const prioritizedVerifierNotes: NeedsHumanAttentionNote[] = [];
+  const ordinaryVerifierNotes: NeedsHumanAttentionNote[] = [];
   for (const note of reconciledAttention.notes.filter(note => verifierQuestions.has(note.question))) {
-    if (!humanAttention.notes.some(existing => existing.question === note.question)) humanAttention.notes.push(note);
+    if (humanAttention.notes.some(existing => existing.question === note.question)) continue;
+    if (prioritizedVerifierQuestions.has(note.question)) prioritizedVerifierNotes.push(note);
+    else ordinaryVerifierNotes.push(note);
+  }
+  if (prioritizedVerifierNotes.length > 0) {
+    const priorityPacketNotes = humanAttention.notes.filter(note => prioritizedPacketNotes.has(note.question));
+    const ordinaryPacketNotes = humanAttention.notes.filter(note => !prioritizedPacketNotes.has(note.question));
+    humanAttention.notes = [...priorityPacketNotes, ...prioritizedVerifierNotes, ...ordinaryPacketNotes, ...ordinaryVerifierNotes];
+  } else {
+    humanAttention.notes.push(...ordinaryVerifierNotes);
   }
   telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
     suppliedConcerns: attentionReconciliation.inventory.concerns.length,
@@ -297,6 +334,8 @@ export async function dedupeRankAndComposeReview(
     assessedUnresolved: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "unresolved").length,
     missingDecisions: attentionReconciliation.inventory.concerns.filter(concern => !reconciledAttention.decisions.some(decision => decision.concernId === concern.id)).length,
     rejected: reconciledAttention.decisions.filter(decision => !decision.accepted).length,
+    restoredForSuppressedFinding: reconciledAttention.restoredForSuppressedFindingCount,
+    restoredWithSurvivingRef: reconciledAttention.restoredWithSurvivingRefCount,
     resolvedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "resolved").map(decision => decision.concernId).slice(0, 30),
     narrowedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "narrowed").map(decision => decision.concernId).slice(0, 30)
   } });
@@ -316,13 +355,13 @@ export async function dedupeRankAndComposeReview(
     const answered = groups.length > 0 && groups.every(group => !group.ineligibleReason && group.concerns.length > 0 && group.concerns.every(concern => decisionsByHint.get(concern.id)?.disposition === "resolved"));
     if (answered) telemetry.event({ stage: 10, level: "info", message: "tool_evidence_limitation_reconciled", data: { diagnostic, concernIds: groups.flatMap(group => group.concerns.map(concern => concern.id)) } });
     return !answered;
-  });
+  }).flatMap(requiredDiagnosticsAfterComposition);
   const unresolvedCount = humanAttention.notes.length + humanAttention.omittedCount;
   if (humanAttention.notes.length > MAX_HUMAN_ATTENTION_NOTES) {
     humanAttention.omittedCount += humanAttention.notes.length - MAX_HUMAN_ATTENTION_NOTES;
     humanAttention.notes = humanAttention.notes.slice(0, MAX_HUMAN_ATTENTION_NOTES);
   }
-  const health = deriveReviewHealth(coverage, unresolvedCount, verified.verified.length > 0);
+  const health = deriveReviewHealth(coverage, unresolvedCount, verified.verified.length > 0, verified.verificationCandidateCount);
   const summary = health.status !== "completed" ? factualReviewSummary(health, publishableCount) : publishableCount === 0
     ? coverage.partial
       ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
@@ -398,7 +437,7 @@ export async function dedupeRankAndComposeReview(
       }))
     });
     await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
+      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, prioritizedPacketGroups, regroupedAttention),
         // These records deliberately share original scope/evidence objects.
         // Serialize to a tree before the scrubber's repeated-object protection
         // so shared provenance is not mistaken for circular data and redacted.
@@ -1709,40 +1748,39 @@ function applyCaps(
       suppressedReasons.set(finding.id, "severity-threshold");
       return { ...finding, publication: "suppressed" as const };
     }
-    if (belowConfidence(finding.confidence, config.review.minConfidence)) {
-      const outcome = lowConfidenceBehaviorDeltaOutcome(finding, opts.lowConfidencePublishableIds);
-      if (outcome !== "suppress") {
-        const published = outcome === "publish_summary_only"
-          ? { ...finding, publication: "summary-only" as const }
-          : finding;
-        if (outcome === "publish_summary_only") {
-          downgradeReasons.set(finding.id, "low-confidence-anchorless");
-        }
-        opts.telemetry.event({
-          stage: 10,
-          level: "info",
-          message: "low_confidence_verified_delta_published",
-          file: finding.path,
-          data: {
-            findingId: finding.id,
-            mergedCandidateIds: finding.mergedCandidateIds,
-            category: finding.category,
-            confidence: finding.confidence,
-            severity: finding.severity,
-            anchorless: outcome === "publish_summary_only",
-            publication: published.publication
-          }
-        });
-        return published;
-      }
+    const exception = belowConfidence(finding.confidence, config.review.minConfidence)
+      ? lowConfidenceBehaviorDeltaOutcome(finding, opts.lowConfidencePublishableIds)
+      : undefined;
+    if (exception === "suppress") {
       suppressedReasons.set(finding.id, "confidence-threshold");
       return { ...finding, publication: "suppressed" as const };
     }
-    if (belowConfidence(finding.confidence, config.review.minInlineConfidence) && finding.publication === "inline") {
+    let publication = finding.publication;
+    if (exception === "publish_summary_only") {
+      publication = "summary-only";
+      downgradeReasons.set(finding.id, "low-confidence-anchorless");
+    } else if (publication === "inline" && belowConfidence(finding.confidence, config.review.minInlineConfidence)) {
+      publication = "summary-only";
       downgradeReasons.set(finding.id, "min-inline-confidence");
-      return { ...finding, publication: "summary-only" as const };
     }
-    return finding;
+    if (exception !== undefined) {
+      opts.telemetry.event({
+        stage: 10,
+        level: "info",
+        message: "low_confidence_verified_delta_published",
+        file: finding.path,
+        data: {
+          findingId: finding.id,
+          mergedCandidateIds: finding.mergedCandidateIds,
+          category: finding.category,
+          confidence: finding.confidence,
+          severity: finding.severity,
+          anchorless: exception === "publish_summary_only",
+          publication
+        }
+      });
+    }
+    return publication === finding.publication ? finding : { ...finding, publication };
   });
 
   let inlineCount = 0;
@@ -1881,11 +1919,13 @@ function renderReviewBody(
   summaryOnly: FinalFinding[],
   notes: NeedsHumanAttentionNote[],
   coverage: RunCoverageStatus,
-  omittedNoteCount = 0,
-  health?: import("../types.js").ReviewHealth,
+  omittedNoteCount: number | undefined,
+  health: import("../types.js").ReviewHealth,
   composition?: ReviewResult["composition"]
 ): string {
-  const trustBanner = health ? renderReviewHealth(health, composition) || renderCoverageTrustBanner(coverage) : renderCoverageTrustBanner(coverage);
+  const trustBanner = renderReviewHealth(health, composition, {
+    shown: notes.length, omitted: omittedNoteCount ?? 0, verificationIncompleteCount: coverage.verificationIncompleteCount
+  });
   const lines = [
     "### 🧞 Codegenie Review",
     "",
@@ -1900,6 +1940,9 @@ function renderReviewBody(
   }
   if (summaryOnly.length > 0) {
     lines.push("", "**Summary-only findings:**");
+    if (summaryOnly.length > 1) {
+      lines.push("", FINDING_ORDER_NOTE);
+    }
     for (const finding of summaryOnly) {
       lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
       lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));
@@ -1909,9 +1952,6 @@ function renderReviewBody(
     lines.push("", "**🙋 Needs human attention:**");
     for (const note of notes) {
       lines.push(`- ${note.question}`);
-    }
-    if (omittedNoteCount > 0) {
-      lines.push(`- Additional unresolved notes suppressed: ${omittedNoteCount}`);
     }
   }
   return lines.join("\n");
@@ -2193,7 +2233,7 @@ function normalize(input: string): string {
 export function refreshReviewHealth(result: ReviewResult): void {
   if (result.health?.status === "failed" || result.health?.status === "incomplete") result.coverage.partial = true;
   result.health = deriveReviewHealth(result.coverage, result.health?.unresolvedCount ?? result.needsHumanAttention.length + (result.needsHumanAttentionOmittedCount ?? 0),
-    result.findings.length + result.summaryOnlyFindings.length > 0);
+    result.findings.length + result.summaryOnlyFindings.length > 0, result.health?.verificationCandidateCount);
   if (result.health.status === "failed" || result.health.status === "incomplete") result.coverage.partial = true;
   if (result.health.status !== "completed") result.summary = factualReviewSummary(result.health, result.findings.length + result.summaryOnlyFindings.length);
   if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health, result.composition);

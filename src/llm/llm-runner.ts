@@ -1,6 +1,6 @@
 import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "typebox";
-import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
+import type { CodegenieConfig, RepositoryTools, ReviewRunStats, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
@@ -102,6 +102,8 @@ export type LlmStructuredRequest<T> = {
   /** Type-only link between the request and the expected submit payload. */
   readonly responseType?: T;
   stage: ReviewStage;
+  /** Stable logical draw identity for local model-call caching, never sent to the provider. */
+  cacheDraw?: "stage7-adaptive-2";
   /** Optional placement repair: lowest reasoning, one provider attempt, no follow-up loop. */
   purpose?: "location_clarification";
   /** Stage 10 only: step down one supported reasoning level; repairs keep their own policy. */
@@ -139,6 +141,7 @@ export type LlmStructuredRequest<T> = {
 };
 
 export interface LlmRunner {
+  stageModels?: ReviewRunStats["stageModels"];
   runStructured<T>(request: LlmStructuredRequest<T>): Promise<T>;
 }
 
@@ -220,6 +223,7 @@ export type CreateRunnerHooks = {
 
 export type CreateRunnerOptions = {
   llmConfig: CodegenieConfig["llm"];
+  codegenieHome?: string;
   telemetry: TelemetryRecorder;
   logger: Logger;
   cache?: ModelCallCache;

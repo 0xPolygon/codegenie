@@ -21,7 +21,7 @@ logLevel = "debug"
 debugTrace = true
 ```
 
-The comparison config pins provider, model, reasoning and depth. Keep every per-run artifact under the case's `logs/`, which is not committed. Never pass `--post-github-comments`.
+The comparison config pins provider, model and reasoning. Keep every per-run artifact under the case's `logs/`, which is not committed. Never pass `--post-github-comments`.
 
 ## Scoring
 
@@ -29,3 +29,4 @@ The matchers are deliberately conservative pre-filters: path, line range where t
 - **Expected severity:** a detection rated below the oracle's expected severity is a calibration note, not a miss.
 - **Optional expectations:** `tier: optional` marks a second anchor for the same defect. Count a hit on either anchor as one detection.
 - **Negative controls:** `role: negative-control` cases carry a `should_not_find` on the changed source at medium severity or higher. Adjudicate any hit before counting it as a false positive.
+- **Contaminated controls:** `pi-n2` and `pi-n3` contain introduced behavior that violates their contracts. Keep them out of the clean-control and required-detection denominators.

@@ -1,5 +1,7 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CodegenieConfig } from "../src/types.js";
+import { applyRepoConfigLayer } from "../src/config/config-loader.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../src/git/file-classifier.js";
@@ -8,6 +10,51 @@ import { resolveReviewInput } from "../src/git/review-input-resolver.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("file filtering and classification", () => {
+  it.each([
+    {
+      label: "a mixed eval diff",
+      reviewable: [
+        "evals/public/pi/setup.sh",
+        "evals/public/README.md",
+        "evals/synthetics/docs-comment-identity.test.ts",
+        "scripts/check-workflows.sh",
+        "tests/public-evals.test.ts"
+      ],
+      excluded: [
+        "evals/fixtures/artifacts/history.json",
+        "evals/fixtures/go.yml",
+        "evals/fixtures/repos/go/feature/service/main.go",
+        "evals/public/pi/pi-01/eval.yml",
+        "evals/public/pi/pi-01/oracle.md",
+        "evals/public/pi/pi-02/eval.yaml",
+        "evals/skill-semantics/typescript.yml",
+        "evals/skill-semantics/repos/typescript/feature/src/config.ts",
+        "specs/project/components/evals.md",
+        "specs/reviews/example.md",
+        "tests/fixtures/project/src/example.ts"
+      ]
+    },
+    { label: "a one-hunk plan-only diff", reviewable: ["specs/plans/131-example.md"], excluded: [] }
+  ])("applies the repository review policy to $label", async ({ reviewable, excluded }) => {
+    const { config } = applyRepoConfigLayer(defaultConfig, path.resolve(import.meta.dirname, ".."));
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "# Review fixture\n");
+    const baseRef = commitAll(repo, "base");
+    for (const filePath of [...reviewable, ...excluded]) {
+      writeRepoFile(repo, filePath, "# Proposed change\n");
+    }
+    const headRef = commitAll(repo, "changes");
+    const telemetry = nullTelemetry();
+    const resolved = await resolveReviewInput({ mode: "head", baseRef, headRef }, config, telemetry, { repoRoot: repo });
+    const { kept, decisions } = await filterDiffFiles(resolved, parseDiff(resolved.rawDiff), config, telemetry);
+
+    expect(kept.map(file => file.path).sort()).toEqual([...reviewable].sort());
+    expect(kept.flatMap(file => file.hunks)).toHaveLength(reviewable.length);
+    const skipped = decisions.filter(decision => decision.action === "skip");
+    expect(skipped.map(decision => decision.path).sort()).toEqual([...excluded].sort());
+    expect(skipped.every(decision => decision.reason === "configured skip rule")).toBe(true);
+  });
+
   it("skips SVGs by default, permits opt-in, and retains explicit exclusions", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "README.md", "base\n");
@@ -208,6 +255,26 @@ describe("file filtering and classification", () => {
         action: "skip",
         reason: "ignored path"
       })
+    ]);
+  });
+
+  it("finds package roots with non-ASCII directory names in the head tree", async () => {
+    const repo = initRepo();
+    git(repo, ["config", "core.quotePath", "true"]);
+    const packageRoot = "packages/café";
+    const file = `${packageRoot}/src/index.ts`;
+    writeRepoFile(repo, "package.json", "{}\n");
+    writeRepoFile(repo, `${packageRoot}/package.json`, "{}\n");
+    writeRepoFile(repo, file, "export const value = 1;\n");
+    const baseRef = commitAll(repo, "base");
+    writeRepoFile(repo, file, "export const value = 2;\n");
+    const headRef = commitAll(repo, "change nested package");
+    const telemetry = nullTelemetry();
+    const resolved = await resolveReviewInput({ mode: "head", baseRef, headRef }, defaultConfig, telemetry, { repoRoot: repo });
+    const { kept, decisions } = await filterDiffFiles(resolved, parseDiff(resolved.rawDiff), defaultConfig, telemetry);
+
+    await expect(classifyChangedFiles(resolved, kept, decisions, defaultConfig, telemetry)).resolves.toEqual([
+      expect.objectContaining({ path: file, packageRoot })
     ]);
   });
 

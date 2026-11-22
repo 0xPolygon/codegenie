@@ -1049,7 +1049,6 @@ describe("Phase 4 provider commands", () => {
     await runProviderCommand(["provider", "auth-status", "fake"], { services, writeOut });
     await runProviderCommand(["provider", "models", "--all"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-model", "fake", "fake-large"], { services, writeOut });
-    await runProviderCommand(["provider", "config", "set-depth", "deep"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-reasoning", "medium"], { services, writeOut });
     await runProviderCommand(["provider", "config"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-reasoning", "auto"], { services, writeOut });
@@ -1066,9 +1065,11 @@ describe("Phase 4 provider commands", () => {
     expect(printed).not.toContain("super-secret-provider-key");
     expect(loadProviderSettings(services.paths)).toEqual({
       defaultProvider: "fake",
-      defaultModel: "fake-large",
-      defaultDepth: "deep"
+      defaultModel: "fake-large"
     });
+    // #129: the depth setting and its provider command were removed.
+    expect(printed).not.toMatch(/depth/u);
+    await expect(runProviderCommand(["provider", "config", "set-depth", "deep"], { services, writeOut })).rejects.toThrow();
   });
 
   it("reports provider config fallbacks from user config.toml", async () => {
@@ -1077,9 +1078,6 @@ describe("Phase 4 provider commands", () => {
     writeFileSync(
       services.paths.configTomlPath,
       `
-[review]
-depth = "deep"
-
 [llm]
 provider = "fake"
 model = "fake-large"
@@ -1099,9 +1097,8 @@ reasoning = "medium"
     expect(printed).toMatch(/Stored defaults:[\s\S]*provider\s+unset/u);
     expect(printed).toMatch(/provider\s+fake \(user config\)/u);
     expect(printed).toMatch(/model\s+fake-large \(user config\)/u);
-    expect(printed).toMatch(/depth\s+deep \(user config\)/u);
     expect(printed).toMatch(/reasoning\s+medium \(user config\)/u);
-    expect(printed).toContain("Depth controls review budget and investigation intensity.");
+    expect(printed).not.toMatch(/depth/u);
   });
 
   it("reports provider config effective env overrides through the shared config loader", async () => {
@@ -1110,9 +1107,6 @@ reasoning = "medium"
     writeFileSync(
       services.paths.configTomlPath,
       `
-[review]
-depth = "deep"
-
 [llm]
 provider = "fake"
 model = "fake-large"
@@ -1135,7 +1129,6 @@ reasoning = "medium"
     expect(printed).toContain("⭐ 🧞 You're using other other-large xhigh\n\nProvider configuration:");
     expect(printed).toMatch(/provider\s+other \(environment\)/u);
     expect(printed).toMatch(/model\s+other-large \(environment\)/u);
-    expect(printed).toMatch(/depth\s+deep \(user config\)/u);
     expect(printed).toMatch(/reasoning\s+xhigh \(environment\)/u);
   });
 

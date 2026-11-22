@@ -19,7 +19,6 @@ import type {
   ReviewPacket,
   ReviewPlan,
   ReviewPriority,
-  ReviewDepth,
   ReviewStage,
   UnifiedDiff
 } from "../types.js";
@@ -30,7 +29,7 @@ import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
-import { stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
+import { normalizeStage7Submit, stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 
@@ -468,6 +467,7 @@ async function runPacket(
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
+    ...(adaptivePass !== undefined ? { cacheDraw: "stage7-adaptive-2" as const } : {}),
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
     signal,
@@ -476,6 +476,7 @@ async function runPacket(
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: packet.id },
+    normalizeSubmit: normalizeStage7Submit,
     // Plan 95: stage 7's deterministic submit cleanup rides the shared
     // recoverInvalidSubmit seam like every other stage; the engine and its
     // telemetry live in stage7-submit-repair.ts.
@@ -484,7 +485,7 @@ async function runPacket(
     },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
-      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, config.review.depth, input)
+      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input)
     }
   });
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
@@ -518,7 +519,7 @@ async function runPacket(
   const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, telemetry, workerId);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, telemetry, workerId);
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
-    ? unresolvedToolDiagnostic(7, toolResults, packet.id) : undefined;
+    ? unresolvedToolDiagnostic(7, toolResults, packet.id, reviewStatus !== "incomplete") : undefined;
   const result: PacketReviewResult = {
     repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ?? []),
     ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
@@ -818,19 +819,19 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
   "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
 
-function buildPostToolCloseNudge(packet: ReviewPacket, depth: ReviewDepth, input: LlmPostToolNudgeInput): string | undefined {
-  const threshold = closeNudgeThreshold(packet, depth);
+function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput): string | undefined {
+  const threshold = closeNudgeThreshold(packet);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
   return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
 }
 
-function closeNudgeThreshold(packet: ReviewPacket, depth: ReviewDepth): number {
-  if (depth === "light" || packet.coverage === "light" || packet.reviewProfile === "simple") {
+export function closeNudgeThreshold(packet: Pick<ReviewPacket, "coverage" | "reviewProfile">): number {
+  if (packet.coverage === "light" || packet.reviewProfile === "simple") {
     return 1;
   }
-  if (depth === "deep" || packet.coverage === "deep" || packet.reviewProfile === "investigate") {
+  if (packet.coverage === "deep" || packet.reviewProfile === "investigate") {
     return 3;
   }
   return 2;

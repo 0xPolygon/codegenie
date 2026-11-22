@@ -24,7 +24,7 @@ A successful review finds real correctness, security, and design issues; explain
 
 codegenie will use `pnpm` for package management and `@earendil-works/pi-ai` as the LLM/agent library. It may also use tools such as `web-tree-sitter` and custom repository-inspection tools to query source structure, symbols, references, and relationships between changed code and surrounding code.
 
-codegenie should include a `codegenie provider` CLI namespace for model-provider setup: listing Pi-known providers and models, logging in or out of a provider, checking auth status, and setting user-level default provider/model/depth/reasoning preferences. Credentials and model defaults should live in user-scoped codegenie state, such as `~/.codegenie/`, not in repo configuration.
+codegenie should include a `codegenie provider` CLI namespace for model-provider setup: listing Pi-known providers and models, logging in or out of a provider, checking auth status, and setting user-level default provider/model/reasoning preferences. Credentials and model defaults should live in user-scoped codegenie state, such as `~/.codegenie/`, not in repo configuration.
 
 The implementation should use deterministic preprocessing wherever practical. The diff parser, syntax parser, changed-symbol extraction, hunk-to-line mapping, and review-packet construction should produce structured artifacts before the LLM reviews anything. Tree-sitter should be treated as the common cross-language syntax substrate: useful for finding enclosing symbols, changed AST nodes, imports, nearby declarations, and syntax-specific signals across languages such as Go, TypeScript, Rust, Solidity, and others. It should not be treated as perfect semantic truth. When a language has a stronger optional analyzer, such as `gopls`, `go/packages`, TypeScript compiler APIs, or Rust Analyzer, codegenie may use it to enrich the same common symbol/tool interface, but the product should remain useful with tree-sitter-only support.
 
@@ -32,8 +32,7 @@ The preferred review design is a staged pipeline:
 
 1. Whole-PR planning pass: understand intent, changed files, changed symbols, risk areas, architecture boundaries, and tests touched or missing. This pass chooses the review order and selects relevant lenses based on risk tags, language, changed symbols, and touched subsystems; codegenie should not run every lens on every hunk by default.
 2. Parallel hunk/file review passes: generate precise inline candidate findings anchored to changed lines.
-3. Optional cross-file/system follow-up: resolve repeated scoped follow-up questions from packet reviewers. The broad system pass that proactively inspects interactions across changed files, call sites, interfaces, migrations, tests, and architecture is deferred; the shipped stage only runs when repeated hints justify it.
-4. Verifier/deduper pass: reject speculative comments using the exact skill guidance recorded by the producing review item, merge duplicates, and publish only high-signal findings.
+3. Verifier/deduper pass: reject speculative comments using the exact skill guidance recorded by the producing review item, merge duplicates, and publish only high-signal findings. The former targeted system follow-up was removed; a broader system pass remains deferred.
 
 The unit of review should be the changed hunk, but the unit of understanding should be the affected system. The review flow should look like:
 
@@ -46,7 +45,6 @@ PR diff
   -> selected lenses + targeted repo tools
   -> candidate findings
   -> cross-file follow-up hints recorded
-  -> optional repeated-hint system follow-up
   -> independent verifier
   -> deduped staff-level review
 ```
