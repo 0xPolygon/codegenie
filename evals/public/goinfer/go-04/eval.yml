@@ -13,4 +13,4 @@ should_find:
     path: decoder/blockspec.go
     lineRange: [434, 436]
     severityAtLeast: medium
-    failureModePattern: '^(?=[\s\S]*\b(?:trail\w*|last|final|pending)\b)(?=[\s\S]*\b(?:unwritten|stale|(?:never|not|without)[^.\n]*(?:forward|writ)\w*)\b)'
+    failureModePattern: '^(?=[\s\S]*\b(?:trail\w*|last|final|pending|anchor|seed|token\w*)\b)(?=[\s\S]*\b(?:unwritten|unforwarded|unprefilled|stale|incomplete|absent|(?:never|not|without)[^.\n]*(?:forward|writ|fed|prefill|present)\w*|only[^.\n]*(?:prefill|writ)\w*|no\s+kv\s+row)\b)'

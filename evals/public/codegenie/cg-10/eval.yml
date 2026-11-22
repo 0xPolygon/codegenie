@@ -14,12 +14,15 @@ should_find:
   path: src/pipeline/composer.ts
   lineRange: [346, 406]
   severityAtLeast: low
+  failureModePattern: '(?:\b(?:artifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b)'
 - id: write-failure-loses-verified-output-runner
   tier: optional
   path: src/pipeline/review-runner.ts
   lineRange: [400, 416]
   severityAtLeast: low
+  failureModePattern: '(?:\b(?:artifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b)'
 - id: primitive-composer-rejection
   path: src/pipeline/composer.ts
   lineRange: [400, 408]
   severityAtLeast: low
+  failureModePattern: '\b(?:primitive\w*|undefined|null|string)\b'
