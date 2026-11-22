@@ -1,8 +1,6 @@
 import { z } from "zod";
 import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 
-// #129: input-only for one release; the loaders warn and ignore it.
-export const deprecatedReviewDepthSchema = z.enum(["light", "normal", "deep"]);
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
 export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
 const stageModelSchema = z.string().regex(/^[^/\s]+\/[^\s]+$/u).refine(value => !/:(?:minimal|low|medium|high|xhigh|max|auto)$/u.test(value),
@@ -43,7 +41,6 @@ export const rawConfigSchema = z
       .optional(),
     review: z
       .object({
-        depth: deprecatedReviewDepthSchema.optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),

@@ -17,7 +17,6 @@ import type {
   CodegeniePaths,
   ConfigSource,
   ConfigWarning,
-  DeprecatedReviewDepth,
   ReasoningLevel
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
@@ -25,8 +24,6 @@ import { CodegenieError } from "../util/errors.js";
 type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>["pathRules"]>[number];
 
 export type CliConfigOverrides = {
-  /** Deprecated (#129): warned and ignored. */
-  depth?: DeprecatedReviewDepth;
   budgetBoost?: number;
   compositionReasoningStepDown?: boolean;
   skipSvgReview?: boolean;
@@ -85,7 +82,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -98,7 +95,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
   const userConfig = readConfigIfPresent(paths.configTomlPath, "user-config");
   if (userConfig) {
-    applyRawConfig(config, userConfig, "user-config", sources, warnings);
+    applyRawConfig(config, userConfig, "user-config", sources);
   }
 
   const providerSettings = loadProviderSettings(paths);
@@ -114,21 +111,18 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     config.llm.reasoning = providerSettings.defaultReasoning;
     sources["llm.reasoning"] = "provider-settings";
   }
-  if (providerSettings.defaultDepth !== undefined) {
-    warnings.push(ignoredReviewDepthWarning("provider-settings", providerSettings.defaultDepth));
-  }
 
   if (opts.loadRepoConfig !== false) {
     const repoConfigPath = path.join(repoRoot, "codegenie.toml");
     const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
     if (repoConfig) {
       const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-      applyRawConfig(config, safeRepoConfig, "repo-config", sources, warnings);
+      applyRawConfig(config, safeRepoConfig, "repo-config", sources);
     }
   }
 
   applyEnvironment(config, env, sources);
-  applyCliOverrides(config, opts.cli ?? {}, sources, warnings);
+  applyCliOverrides(config, opts.cli ?? {}, sources);
   const cliModelOverride = opts.cli?.provider !== undefined || opts.cli?.model !== undefined;
   const cliReasoningOverride = opts.cli?.reasoning !== undefined && opts.cli.reasoning !== "auto";
   const cliOverridesStage = Object.values(config.llm.stages ?? {}).some(selection =>
@@ -168,7 +162,7 @@ export function applyRepoConfigLayer(
   const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codegenie.toml"), "repo-config");
   if (repoConfig) {
     const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-    applyRawConfig(config, safeRepoConfig, "repo-config", sources, warnings);
+    applyRawConfig(config, safeRepoConfig, "repo-config", sources);
   }
 
   const validated = codegenieConfigSchema.safeParse(config);
@@ -213,8 +207,7 @@ function applyRawConfig(
   config: CodegenieConfig,
   raw: RawCodegenieConfig,
   source: ConfigSource,
-  sources: Record<string, ConfigSource>,
-  warnings: ConfigWarning[]
+  sources: Record<string, ConfigSource>
 ): void {
   if (raw.lenses?.enabled !== undefined) {
     config.lenses.enabled = [...raw.lenses.enabled];
@@ -229,9 +222,6 @@ function applyRawConfig(
     sources["lenses.extraSkillPaths"] = source;
   }
 
-  if (raw.review?.depth !== undefined) {
-    warnings.push(ignoredReviewDepthWarning(source, raw.review.depth));
-  }
   if (raw.review?.verify !== undefined) {
     config.review.verify = raw.review.verify;
     sources["review.verify"] = source;
@@ -379,9 +369,6 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
       }
     }
     safe.review = {};
-    if (raw.review.depth !== undefined) {
-      safe.review.depth = raw.review.depth;
-    }
     if (raw.review.maxFindings !== undefined) {
       safe.review.maxFindings = raw.review.maxFindings;
     }
@@ -455,26 +442,6 @@ function warnTopLevelRepoSection(
   }
 }
 
-const DEPTH_SETTING_ORIGIN: Partial<Record<ConfigSource, string>> = {
-  "user-config": "user config.toml sets review.depth",
-  "repo-config": "repo codegenie.toml sets review.depth",
-  "provider-settings": "the stored provider default (settings.json) sets depth",
-  "eval-case": "the eval case sets review.depth",
-  cli: "--depth is"
-};
-
-/** #129: codegenie has one review mode; a depth input is ignored for one release, then rejected. */
-export function ignoredReviewDepthWarning(source: ConfigSource, value: DeprecatedReviewDepth): ConfigWarning {
-  const removal = source === "provider-settings"
-    ? "It is ignored, and codegenie drops it the next time it saves provider settings. To stop this warning now, delete \"defaultDepth\" from settings.json or run `codegenie provider config set-reasoning <level>`."
-    : "It is ignored. Remove it: the next release rejects it.";
-  return {
-    source,
-    key: "review.depth",
-    message: `${DEPTH_SETTING_ORIGIN[source] ?? "review.depth is"} "${value}", but review depth was removed and codegenie has one review mode. ${removal}`
-  };
-}
-
 function warnIgnoredRepoKey(warnings: ConfigWarning[], key: string): void {
   warnings.push({
     source: "repo-config",
@@ -528,12 +495,8 @@ function applyEnvironment(
 function applyCliOverrides(
   config: CodegenieConfig,
   cli: CliConfigOverrides,
-  sources: Record<string, ConfigSource>,
-  warnings: ConfigWarning[]
+  sources: Record<string, ConfigSource>
 ): void {
-  if (cli.depth !== undefined) {
-    warnings.push(ignoredReviewDepthWarning("cli", cli.depth));
-  }
   if (cli.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = "cli";

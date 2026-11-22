@@ -756,7 +756,7 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, the deprecated and ignored `--depth` (#129), repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codegenie.toml`.
@@ -779,7 +779,7 @@ CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/co
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
 
-Review depth was removed in #129: codegenie runs one review mode, using the budgets, close nudge and planner input that the plan 128 campaign measured as `normal`. For one release `--depth`, `review.depth` in either TOML file, a stored `defaultDepth` and an eval case's `depth` still accept `light`, `normal` or `deep`, and each such input is ignored with a config warning. The release after that rejects them.
+Codegenie runs one review mode using the budgets, close nudge and planner input that plan 128 measured as `normal`. The CLI rejects `--depth`, strict validation rejects `review.depth` in TOML and eval cases, and the GitHub Action has no `depth` input. Before validating provider `settings.json`, the loader silently strips a legacy `defaultDepth` field.
 
 Per-key config sources (normative; Trust Boundaries defers to this table):
 
@@ -1722,7 +1722,6 @@ type EvalCase = {
     target?: string
   }
   review?: {
-    depth?: "light" | "normal" | "deep"   // deprecated (#129): accepted, ignored with a warning
     lenses?: string[]
     maxFindings?: number
     concurrency?: number

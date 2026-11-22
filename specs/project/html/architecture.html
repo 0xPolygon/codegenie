@@ -1090,9 +1090,8 @@ is passed), <code>--pr</code>, single positional branch shorthand,
 <code>--branch</code>,
 <code>--head &lt;head-ref&gt; --base &lt;base-ref&gt;</code>, the
 <code>&lt;base-ref&gt;...&lt;head-ref&gt;</code> shorthand, positional
-commit/range review, the deprecated and ignored <code>--depth</code>
-(#129), repeatable <code>--lens</code>, <code>--provider</code>,
-<code>--model</code>, <code>--reasoning</code>,
+commit/range review, repeatable <code>--lens</code>,
+<code>--provider</code>, <code>--model</code>, <code>--reasoning</code>,
 <code>--format markdown|json</code>,
 <code>--post-github-comments</code>, <code>--ci</code>,
 <code>--no-progress</code>, and
@@ -1131,14 +1130,13 @@ layer:</p>
 <code>config.toml</code> because the dedicated
 <code>provider config set-*</code> commands write
 <code>settings.json</code>.</p>
-<p>Review depth was removed in #129: codegenie runs one review mode,
-using the budgets, close nudge and planner input that the plan 128
-campaign measured as <code>normal</code>. For one release
-<code>--depth</code>, <code>review.depth</code> in either TOML file, a
-stored <code>defaultDepth</code> and an eval case’s <code>depth</code>
-still accept <code>light</code>, <code>normal</code> or
-<code>deep</code>, and each such input is ignored with a config warning.
-The release after that rejects them.</p>
+<p>Codegenie runs one review mode using the budgets, close nudge and
+planner input that plan 128 measured as <code>normal</code>. The CLI
+rejects <code>--depth</code>, strict validation rejects
+<code>review.depth</code> in TOML and eval cases, and the GitHub Action
+has no <code>depth</code> input. Before validating provider
+<code>settings.json</code>, the loader silently strips a legacy
+<code>defaultDepth</code> field.</p>
 <p>Per-key config sources (normative; Trust Boundaries defers to this
 table):</p>
 <table>
@@ -2500,38 +2498,37 @@ Public eval cases may use fixtures.</p>
 <span id="cb35-11"><a href="#cb35-11" aria-hidden="true" tabindex="-1"></a>    target<span class="op">?:</span> <span class="dt">string</span></span>
 <span id="cb35-12"><a href="#cb35-12" aria-hidden="true" tabindex="-1"></a>  }</span>
 <span id="cb35-13"><a href="#cb35-13" aria-hidden="true" tabindex="-1"></a>  review<span class="op">?:</span> {</span>
-<span id="cb35-14"><a href="#cb35-14" aria-hidden="true" tabindex="-1"></a>    depth<span class="op">?:</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;deep&quot;</span>   <span class="co">// deprecated (#129): accepted, ignored with a warning</span></span>
-<span id="cb35-15"><a href="#cb35-15" aria-hidden="true" tabindex="-1"></a>    lenses<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb35-16"><a href="#cb35-16" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-17"><a href="#cb35-17" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-18"><a href="#cb35-18" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb35-19"><a href="#cb35-19" aria-hidden="true" tabindex="-1"></a>    cache<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb35-20"><a href="#cb35-20" aria-hidden="true" tabindex="-1"></a>    cacheDir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb35-21"><a href="#cb35-21" aria-hidden="true" tabindex="-1"></a>    debug<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb35-22"><a href="#cb35-22" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb35-23"><a href="#cb35-23" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb35-24"><a href="#cb35-24" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
-<span id="cb35-25"><a href="#cb35-25" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb35-26"><a href="#cb35-26" aria-hidden="true" tabindex="-1"></a>  logs<span class="op">?:</span> {</span>
-<span id="cb35-27"><a href="#cb35-27" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb35-28"><a href="#cb35-28" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb35-29"><a href="#cb35-29" aria-hidden="true" tabindex="-1"></a>  artifacts<span class="op">?:</span> {</span>
-<span id="cb35-30"><a href="#cb35-30" aria-hidden="true" tabindex="-1"></a>    path<span class="op">:</span> <span class="dt">string</span> <span class="co">// artifact replay re-scores saved findings only</span></span>
-<span id="cb35-31"><a href="#cb35-31" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb35-32"><a href="#cb35-32" aria-hidden="true" tabindex="-1"></a>  expect<span class="op">?:</span> {</span>
-<span id="cb35-33"><a href="#cb35-33" aria-hidden="true" tabindex="-1"></a>    minFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-34"><a href="#cb35-34" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-35"><a href="#cb35-35" aria-hidden="true" tabindex="-1"></a>    maxDuplicateGroups<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-36"><a href="#cb35-36" aria-hidden="true" tabindex="-1"></a>    maxCostUSD<span class="op">?:</span> <span class="dt">number</span> <span class="co">// assertion on observed cost from cost-profile.json, not a run budget (cost-based run budgets are deferred)</span></span>
-<span id="cb35-37"><a href="#cb35-37" aria-hidden="true" tabindex="-1"></a>    maxElapsedSeconds<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-38"><a href="#cb35-38" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-39"><a href="#cb35-39" aria-hidden="true" tabindex="-1"></a>    maxToolCalls<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb35-40"><a href="#cb35-40" aria-hidden="true" tabindex="-1"></a>    maxPromptCharsByStage<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span>ReviewStage <span class="op">|</span> <span class="dt">string</span><span class="op">,</span> <span class="dt">number</span><span class="op">&gt;</span> <span class="co">// keys are numeric stage ids</span></span>
-<span id="cb35-41"><a href="#cb35-41" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb35-42"><a href="#cb35-42" aria-hidden="true" tabindex="-1"></a>  should_find<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb35-43"><a href="#cb35-43" aria-hidden="true" tabindex="-1"></a>  should_find_candidate<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb35-44"><a href="#cb35-44" aria-hidden="true" tabindex="-1"></a>  should_not_find<span class="op">?:</span> EvalFindingExpectation[]</span>
-<span id="cb35-45"><a href="#cb35-45" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb35-14"><a href="#cb35-14" aria-hidden="true" tabindex="-1"></a>    lenses<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb35-15"><a href="#cb35-15" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-16"><a href="#cb35-16" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-17"><a href="#cb35-17" aria-hidden="true" tabindex="-1"></a>    verify<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-18"><a href="#cb35-18" aria-hidden="true" tabindex="-1"></a>    cache<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-19"><a href="#cb35-19" aria-hidden="true" tabindex="-1"></a>    cacheDir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-20"><a href="#cb35-20" aria-hidden="true" tabindex="-1"></a>    debug<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb35-21"><a href="#cb35-21" aria-hidden="true" tabindex="-1"></a>    provider<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-22"><a href="#cb35-22" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-23"><a href="#cb35-23" aria-hidden="true" tabindex="-1"></a>    reasoning<span class="op">?:</span> ReasoningLevel</span>
+<span id="cb35-24"><a href="#cb35-24" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-25"><a href="#cb35-25" aria-hidden="true" tabindex="-1"></a>  logs<span class="op">?:</span> {</span>
+<span id="cb35-26"><a href="#cb35-26" aria-hidden="true" tabindex="-1"></a>    dir<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb35-27"><a href="#cb35-27" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-28"><a href="#cb35-28" aria-hidden="true" tabindex="-1"></a>  artifacts<span class="op">?:</span> {</span>
+<span id="cb35-29"><a href="#cb35-29" aria-hidden="true" tabindex="-1"></a>    path<span class="op">:</span> <span class="dt">string</span> <span class="co">// artifact replay re-scores saved findings only</span></span>
+<span id="cb35-30"><a href="#cb35-30" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-31"><a href="#cb35-31" aria-hidden="true" tabindex="-1"></a>  expect<span class="op">?:</span> {</span>
+<span id="cb35-32"><a href="#cb35-32" aria-hidden="true" tabindex="-1"></a>    minFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-33"><a href="#cb35-33" aria-hidden="true" tabindex="-1"></a>    maxFindings<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-34"><a href="#cb35-34" aria-hidden="true" tabindex="-1"></a>    maxDuplicateGroups<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-35"><a href="#cb35-35" aria-hidden="true" tabindex="-1"></a>    maxCostUSD<span class="op">?:</span> <span class="dt">number</span> <span class="co">// assertion on observed cost from cost-profile.json, not a run budget (cost-based run budgets are deferred)</span></span>
+<span id="cb35-36"><a href="#cb35-36" aria-hidden="true" tabindex="-1"></a>    maxElapsedSeconds<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-37"><a href="#cb35-37" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-38"><a href="#cb35-38" aria-hidden="true" tabindex="-1"></a>    maxToolCalls<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb35-39"><a href="#cb35-39" aria-hidden="true" tabindex="-1"></a>    maxPromptCharsByStage<span class="op">?:</span> <span class="bu">Record</span><span class="op">&lt;</span>ReviewStage <span class="op">|</span> <span class="dt">string</span><span class="op">,</span> <span class="dt">number</span><span class="op">&gt;</span> <span class="co">// keys are numeric stage ids</span></span>
+<span id="cb35-40"><a href="#cb35-40" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb35-41"><a href="#cb35-41" aria-hidden="true" tabindex="-1"></a>  should_find<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-42"><a href="#cb35-42" aria-hidden="true" tabindex="-1"></a>  should_find_candidate<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-43"><a href="#cb35-43" aria-hidden="true" tabindex="-1"></a>  should_not_find<span class="op">?:</span> EvalFindingExpectation[]</span>
+<span id="cb35-44"><a href="#cb35-44" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Expectation type (full matching detail delegated to
 <code>components/evals.md</code>):</p>
 <div class="sourceCode" id="cb36"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> EvalFindingExpectation <span class="op">=</span> {</span>

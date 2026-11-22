@@ -252,14 +252,13 @@ this mode.</p>
 <span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
 <span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--ci</span></span>
 <span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--no-progress</span></span></code></pre></div>
-<p>Review depth was removed in #129: codegenie runs one review mode,
-using the budgets, close nudge and planner input that the plan 128
-campaign measured as <code>normal</code>. For one release
-<code>--depth</code>, <code>review.depth</code> in either TOML file, a
-stored <code>defaultDepth</code> and an eval case’s <code>depth</code>
-still accept <code>light</code>, <code>normal</code> or
-<code>deep</code>, and each such input is ignored with a config warning.
-The release after that rejects them.</p>
+<p>Codegenie runs one review mode using the budgets, close nudge and
+planner input that plan 128 measured as <code>normal</code>. When
+upgrading from 0.9.0, remove <code>--depth</code> from CLI invocations,
+<code>review.depth</code> from TOML and eval cases, and
+<code>depth</code> from GitHub Action inputs. A legacy
+<code>defaultDepth</code> in provider <code>settings.json</code> is
+silently ignored and dropped on the next save.</p>
 <p><code>--lens</code> restricts the run to the named lenses and may be
 repeated. It overrides the config-enabled lens set for the run, and it
 may explicitly enable a lens that is disabled by default, such as a
