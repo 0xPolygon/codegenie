@@ -2487,6 +2487,7 @@ function recordToolCall(
 ): void {
   const meta = outcome.result.meta ?? defaultToolMeta();
   const searchBudgetRefusal = toolCall.name === "search_files" && outcome.errorCode === "budget_exhausted";
+  const preExecutionBudgetRefusal = outcome.errorCode === "budget_exhausted" && outcome.backendExecuted === false && outcome.cacheStatus === "disabled";
   const record = definedRecord({
     stage: request.stage,
     initiator: "model" as const,
@@ -2496,8 +2497,8 @@ function recordToolCall(
     modelCallId,
     tool: toolCall.name,
     args: toolArgsForRecord(outcome.args),
-    backend: meta.backend,
-    precision: meta.precision,
+    backend: preExecutionBudgetRefusal ? undefined : meta.backend,
+    precision: preExecutionBudgetRefusal ? undefined : meta.precision,
     degraded: searchBudgetRefusal ? false : meta.degraded,
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
@@ -2507,6 +2508,8 @@ function recordToolCall(
     searchDelivery: meta.searchDelivery,
     lookupStatus: meta.lookupStatus,
     deliveryStatus: searchBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
+    totalLines: meta.totalLines,
+    deliveredLineRange: meta.deliveredLineRange,
     recovery: meta.recovery,
     budgetState: outcome.budgetState,
     cacheStatus: outcome.cacheStatus,
