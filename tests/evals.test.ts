@@ -433,6 +433,10 @@ describe("eval scoring", () => {
       failureMode: "The final seed token is stale in the returned output, but the resident KV cache contains the complete generated prefix."
     });
     expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final seed token is stale in the returned output, while the KV cache is complete and no positions are missing.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The trailing token is stale in output, but the cache contains every written row and has no missing KV entries.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
     finding.failureMode = "The final token is recorded as resident even though its KV state is stale, so reuse produces incorrect output.";
     expect(matchExpectation(expectation, finding).matched).toBe(true);
   });
