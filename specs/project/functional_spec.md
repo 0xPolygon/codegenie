@@ -204,7 +204,7 @@ codegenie should use a staged review pipeline:
 5. Run the planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
-8. Run optional cross-file/system follow-up review only for repeated scoped follow-up hints from Stage 7; skip otherwise.
+8. Unused: the targeted system follow-up stage was deleted in #114.
 9. Verify candidate findings, with only minimal duplicate suppression needed to avoid repeated verifier calls.
 10. Deduplicate, rank, and compose final output.
 11. Optionally post verified inline comments and a PR summary through GitHub.
@@ -217,30 +217,26 @@ The planner should choose coverage and lenses based on language, changed symbols
 
 The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
-## Stage 1: Diff Parsing And Change Inventory
+## Stage 1: Input Resolution
 
-Stage 1 resolves the requested review target into a deterministic local change inventory.
+Stage 1 resolves the requested review target into base and head revisions, commit metadata and a raw diff.
 
-Inputs can come from `--pr`, `--branch`, or commit/range mode, but the output should be normalized into the same internal shape: changed files, hunks, absolute old/new line mappings, file statuses, and commit or PR metadata when available.
+Inputs can come from `--pr`, `--branch`, or commit/range mode.
 
 Stage 1 should:
 
 - Resolve the base and head revisions for the selected input mode.
 - Collect commit titles and descriptions across the reviewed range.
-- Parse the unified diff into files and hunks.
-- Preserve old/new line numbers for every hunk line.
-- Identify file status such as added, modified, renamed, copied, deleted, binary, or mode-only.
-- Preserve diff side information for each changed line so added lines, removed lines, and context lines can be reviewed and anchored correctly.
 - Record GitHub PR metadata when `--pr` is used.
-- Fail clearly when the target cannot be resolved or the diff cannot be parsed.
+- Fail clearly when the target cannot be resolved or its diff cannot be obtained.
 
-This stage must not call the LLM. Its output is the source of truth for later anchor validation, hunk ids, changed-line detection, and GitHub inline-comment mapping.
+This stage must not call the LLM.
 
-Deleted files and deletion-only hunks are part of the review inventory. codegenie should not silently drop them merely because the file no longer exists in the head worktree. Stage 1 should retain their old-side line numbers and old path so later stages can review removed behavior, removed tests, removed exports, removed cleanup, and broken references caused by deletion.
+## Stage 2: Diff Parsing And Filtering
 
-## Stage 2: Filtering Ignored And Non-Reviewable Files
+Stage 2 parses the unified diff into files and hunks, preserving file status, old/new line numbers and diff sides for later anchor validation and GitHub inline-comment mapping. It must fail clearly if the diff cannot be parsed.
 
-Stage 2 removes files that should not enter the review pipeline and records why they were filtered.
+It also removes files that should not enter the review pipeline and records why they were filtered.
 
 Filtering should be deterministic and explainable. Stage 2 runs the shared deterministic detectors the skip policy needs — built-in generated/vendor/binary/lockfile detection, repository ignore rules where appropriate, and explicit `codegenie.toml` skip rules — and applies policy over their results. Detection results are recorded with provenance on each filter decision and reused by Stage 3 classification for kept files: nothing is detected twice, and filtered files receive no further classification, parsing, or review work.
 
@@ -257,7 +253,7 @@ Stage 2 should filter or mark:
 
 Filtering decisions must be recorded in telemetry and surfaced in coverage summaries when they affect review completeness. Filtered files should not produce candidate findings, but their counts and paths may still be visible to the planner as review-scope facts.
 
-Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
+Deleted reviewable source, test, config, migration, or documentation files should remain in scope by default. Preserve their old paths and line numbers for reviewing removed behavior. If deleted-file context cannot be reconstructed from local git or the diff, codegenie should mark the file as degraded or partially reviewed rather than pretending it was reviewed normally.
 
 ## Stage 3: File Classification
 
@@ -848,6 +844,8 @@ Stage 10 should:
 
 Published findings retain open verification conditions through deterministic rendering and include selected supporting evidence. The separate composition-sources artifact retains the original assessments and supporting evidence when telemetry is enabled. Ordinary reviews with telemetry disabled do not retain those originals separately.
 
+The inline confidence floor demotes ineligible inline findings before the soft inline cap is applied. After selection, reports group findings by severity and order each severity by file and line, with anchorless findings last for a file; the displayed order within a severity is not an importance ranking.
+
 The final composer should prefer no comments over weak comments. The default target is roughly 3-7 high-signal comments per PR, but this is a soft cap: verified critical and high-severity findings should not be hidden only to satisfy the default limit.
 
 The composer should produce a final review object containing:
@@ -932,7 +930,7 @@ V1 configuration should support:
 - Extra Markdown skill paths.
 - Severity and confidence thresholds, including a minimum severity threshold for reported findings.
 - Maximum findings (the report cap) and soft comment cap (the inline-comment target). Neither cap suppresses verified critical or high-severity findings.
-- LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency; one provider/model/reasoning configuration applies to the whole run. Repo `codegenie.toml` must not set provider credentials, default provider, default model, or reasoning effort.
+- LLM runtime options for `@earendil-works/pi-ai`, including shared provider-call concurrency and optional user-scoped model/reasoning selections for plan, review, verify, and compose. Unspecified fields inherit the global settings. Repo `codegenie.toml` must not set provider credentials, model selection, or reasoning effort.
 - Runtime and per-pass timeouts.
 - Maximum total token budget for a run.
 - Maximum model calls per run.
@@ -1049,7 +1047,7 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Spec/doc discovery and spec alignment. Deterministic discovery of repo-resident specs through configured `specs.paths` globs (path proximity to changed package roots, then filename/title keyword overlap; top 5 docs as capped snippets), plus `relevantSpecs` and `specAlignmentQuestions` on the planner's diff understanding, with spec-alignment findings citing both the spec evidence and the changed-code behavior. V1 compares declared intent against inferred behavior only. Build when evals show intent-only alignment missing real spec violations.
 - Human-thread awareness. Fetching existing PR review comments and threads, passing deterministically extracted and truncated summaries to the planner as hints (never findings), and composer acknowledgment of overlap with existing threads — without dropping verified findings or adopting an existing comment without codegenie's own evidence and verification. V1 lists only codegenie's own prior comments, for rerun duplicate avoidance. Build when codegenie is observed re-raising points humans already made on the thread.
 - Configured command execution. Opt-in `tools.testCommands` for test/typecheck/build commands run with timeouts, results treated as evidence rather than automatic findings, enabled only through user-level trust. V1 never executes repository commands. Build when evals show findings that only execution evidence could confirm or reject.
-- Per-role model/reasoning tiering. Optional per-role model and reasoning overrides (planner, packet reviewer, verifier, composer) supplied from user-level config or CLI. V1 runs one provider/model/reasoning configuration for the whole run. Build when evals identify roles where cheaper models or lower reasoning hold review quality.
+- GitHub Action inputs for per-stage model and reasoning settings. User-scoped `llm.stages` selections exist; Action-specific stage mappings are deferred separately.
 - Rich pre-attached packet context. Sibling symbol names, AST summaries, nearby imports, and small examples of nearby established patterns assembled into packets at construction time. V1 packets carry enclosing-symbol source, a file outline, and likely tests; reviewers fetch the rest on demand with read-only tools. Build when tool-call telemetry shows reviewers repeatedly refetching the same local context.
 - Per-language static-signal packs. Language-specific deterministic signal rules — ignored errors, concurrency primitives, migration files, resource cleanup, lifecycle-sensitive code — beyond the two v1 cross-language rules. Build when evals show planner risk-targeting misses attributable to absent signals.
 - Cost-based run budgets. A maximum-cost budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and the token budget covers the need. Build when Pi-reported pricing is reliable.

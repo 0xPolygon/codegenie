@@ -201,7 +201,7 @@ Naming convention: type-name prefixes mark the scope a record describes. `Diff*`
 Pipeline stages are identified by the numeric stage ids from the functional spec:
 
 ```ts
-// 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,
+// 1 input resolution, 2 diff parsing and filtering, 3 classification, 4 symbol extraction,
 // 5 planning, 6 packet construction, 7 lens review,
 // 8 unused (targeted system follow-up, deleted in #114),
 // 9 verification, 10 composition, 11 publishing
@@ -841,6 +841,7 @@ type CodegenieConfig = {
     provider?: string
     model?: string
     reasoning?: ReasoningLevel
+    stages?: Partial<Record<"plan" | "review" | "verify" | "compose", { model?: string; reasoning?: ReasoningLevel }>>
     maxConcurrentCalls: number
   }
   cache: {
@@ -1554,33 +1555,34 @@ Responsibilities:
 Run directory:
 
 ```text
-.codegenie/runs/<yyyyMMdd-HHmmss>-<shortid>/
+.codegenie/runs/<yyyyMMdd-HHmmss>-<8-hex-digits>/
   run.json
   run.log
   telemetry.json
   events.jsonl
   model-calls.jsonl
-  model-calls-summary.json
   tool-calls.jsonl
-  tool-calls-summary.json
-  planner-dossier.json
-  review-plan.json
-  coverage.json
-  packets/
-    <packet-id>.json
-  candidate-findings.json
-  verification.json
-  final-selection.json
-  final-findings.json
-  cost-profile.json
+  artifact-manifest.json
+  stages/
+    00-run/            # cost and model/tool summaries, errors
+    01-input/          # resolved input
+    02-diff/           # parsed diff and filter decisions
+    03-classify/       # file facts
+    05-planner/        # dossier, intent and plan
+    06-packets/        # hunk relationships and packets/<packet-id>.json
+    09-verification/   # candidates, promotions and verdicts
+    10-composition/    # coverage, selection, findings and budget summary
+    11-github-posting/ # posting artifact when applicable
   final-review.md
-  github-posting.json
+  final-review.json
   debug/
     llm-calls/
       <call-id>.json
     tool-calls/
       <tool-call-id>.json
 ```
+
+The generated run ID uses the UTC timestamp and eight random hexadecimal digits. By default it is also the directory name; evals may supply a different artifact directory while retaining the independently generated run ID.
 
 `debug/` is written only when `telemetry.debugTrace` is enabled. Debug artifacts may contain source snippets, prompts, and model outputs.
 
