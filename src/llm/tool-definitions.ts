@@ -48,7 +48,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",
-      description: "Read committed text at head (default) or base; works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns at most 400 lines / 16,000 characters before local budget limits, with truncation metadata. An end beyond EOF is clipped; a start beyond EOF returns empty text, never the last line. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Read committed text at head (default) or base. Works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns numbered source with file length and delivered range. Reads up to 400 lines / 16,000 source characters before local budget limits. A cut gives the next line. An end beyond EOF is clipped. A start beyond EOF returns no source and gives the file length. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),

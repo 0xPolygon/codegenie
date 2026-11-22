@@ -24,6 +24,8 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   const degradationReason = (originalMeta.degraded ? originalMeta.degradationReason : undefined) ?? "tool_result_budget";
   const lineRange = deliveredLineRange ?? sourceLineRange;
   const firstLine = lineRange && lineRange[1] - lineRange[0] + 1 === records.length ? lineRange[0] : undefined;
+  // A range clipped before EOF does not carry the original file's terminal newline.
+  const deliveredClosing = originalMeta.requestedRange ? "" : close;
   let recordChars = records.reduce((total, record) => total + record.length, 0);
   for (let count = records.length - 1; count > 0; count--) {
     recordChars -= records[count]!.length;
@@ -45,13 +47,13 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     }
     const footer = withMeta("", meta, notes);
     const deliveredOpening = renderRecordOpening(open, meta);
-    const bodyLength = deliveredOpening.length + recordChars + (count - 1) * separator.length + close.length;
+    const bodyLength = deliveredOpening.length + recordChars + (count - 1) * separator.length + deliveredClosing.length;
     if (bodyLength + footer.length <= allowance) {
-      const kept = { open, records: records.slice(0, count), separator, close,
+      const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
         ...(labels ? { labels: labels.slice(0, count) } : {}) };
       return {
         ...result,
-        text: deliveredOpening + kept.records.join(separator) + close + footer,
+        text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
         packable: kept,
         meta,
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})

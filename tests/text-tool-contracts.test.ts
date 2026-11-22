@@ -11,6 +11,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     fixture = await textRepository({
       "schema/policy.ridl": "first\nsecond\nthird", "empty.custom": "", "blank-line.custom": "\n", "crlf.custom": "one\r\ntwo\r\nthree\r\n",
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
+      "terminated.custom": "one\r\n\tsecond\r\n" + "    rest of source\r\n".repeat(40),
       "character-cap.ts": ["const required = makeRequirements();", "x".repeat(15_000), "y".repeat(15_000), "return required;"].join("\n"),
       "wide.custom": "x".repeat(20_000), "revision.custom": "base-only\nbase-tail"
     }, { "revision.custom": "head-only\nhead-tail" });
@@ -224,6 +225,18 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(canonical.meta?.degradationReason).toBe("source_line_limit");
   });
 
+  it("only retains the terminal separator on the last page", async () => {
+    const args = { path: "terminated.custom", startLine: 1, endLine: 100 };
+    const canonical = await fixture.call("read_range", args);
+    const cut = packTextToolResult(canonical, 500);
+    const last = cut.meta!.deliveredLineRange![1];
+    expect(last).toBeLessThan(42);
+    const rest = await fixture.call("read_range", { ...args, startLine: last + 1 });
+    const body = (text: string) => text.split("\n\n[tool meta:")[0]!.slice(text.indexOf("\n") + 1);
+    expect(body(cut.text) + "\n" + body(rest.text)).toBe(body(canonical.text));
+    expect(body(rest.text).endsWith("\r\n")).toBe(true);
+  });
+
   it.each(["../outside", "/etc/passwd", ".git/config"])("rejects unsafe paths instead of empty reads: %s", async path => {
     expect(await fixture.call("read_range", { path, startLine: 1, endLine: 2 })).toMatchObject({ isError: true, errorCode: "path_outside_repo" });
   });
@@ -231,7 +244,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
   it("keeps tool descriptions explicit about required bounds and unavailable syntax", () => {
     const description = (name: string) => fixture.definitions.find(tool => tool.name === name)!.description;
     expect(description("read_range")).toContain("Both startLine and endLine are required");
-    expect(description("read_range")).toContain("start beyond EOF returns empty text");
+    expect(description("read_range")).toContain("A start beyond EOF returns no source and gives the file length");
     expect(description("list_files")).toContain("not a regular expression or gitignore file");
     expect(description("search_files")).toContain("POSIX ERE");
     expect(description("search_files")).toContain("Invalid syntax is an error");
