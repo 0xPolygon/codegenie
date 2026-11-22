@@ -1,6 +1,6 @@
 import { matchRepositoryGlob } from "./path-guard.js";
 import type { SearchResult, SourceSelector, ResolvedReviewInput } from "../types.js";
-import { createGitClient, type InternalGitClient } from "../git/git-client.js";
+import { createGitClient, type GrepPosition, type InternalGitClient } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { containGlob, containPath, containRef } from "./path-guard.js";
@@ -84,17 +84,25 @@ export class SourceResolver {
       caseSensitive?: boolean;
       fixedString?: boolean;
       word?: boolean;
+      startAt?: GrepPosition;
+      positioned?: boolean;
     } = {}
   ): Promise<import("../git/git-client.js").GrepResults> {
     const commit = this.resolveSource(opts.source);
     const containedGlob = opts.glob === undefined ? undefined : containGlob(this.repoRoot, opts.glob);
-    return this.git.grep(commit, pattern, {
-      ...(containedGlob !== undefined ? { paths: await this.listFiles(containedGlob, opts.source) } : {}),
+    const paths = containedGlob === undefined ? undefined : await this.listFiles(containedGlob, opts.source);
+    const startPath = opts.startAt ? Buffer.from(opts.startAt.path) : undefined;
+    const results = await this.git.grep(commit, pattern, {
+      ...(paths ? { paths: startPath ? paths.filter(path => Buffer.compare(Buffer.from(path), startPath) >= 0) : paths } : {}),
       ...(opts.maxResults !== undefined ? { maxResults: opts.maxResults } : {}),
       ...(opts.caseSensitive !== undefined ? { caseSensitive: opts.caseSensitive } : {}),
       ...(opts.fixedString !== undefined ? { fixedString: opts.fixedString } : {}),
-      ...(opts.word !== undefined ? { word: opts.word } : {})
+      ...(opts.word !== undefined ? { word: opts.word } : {}),
+      ...(opts.startAt ? { startAt: opts.startAt } : {}),
+      ...(opts.positioned ? { positioned: true } : {})
     });
+    if (paths?.length === 0) results.emptyScope = true;
+    return results;
   }
 
   private async readFileUncached(

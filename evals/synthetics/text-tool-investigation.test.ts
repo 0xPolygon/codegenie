@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { packFileListToolResult, packOutlineToolResult, packSearchToolResult } from "../../src/llm/search-result-packing.js";
+import { packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../../src/llm/search-result-packing.js";
 import { textRepository } from "../../tests/helpers/text-repository.js";
 import { writeRepoFile } from "../../tests/helpers/git.js";
 
@@ -53,9 +53,8 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
       expect(result.isError).not.toBe(true);
       expect(result.meta).toMatchObject({ backend: "text", degraded: false, deliveryStatus: "full" });
       expect(result.text).toContain('"symbolExtraction": "unavailable"');
-      expect(result.text).toContain('"sourceText"');
-      // Wrapper appends metadata after the JSON payload.
-      expect(result.text).toContain(JSON.stringify(small));
+      expect(result.outline!.sourceText?.text).toBe(small);
+      expect(result.text).toContain(`${path}@head lines 1-4 of 4\n1\timport ./types.custom\n${numberedRule}`);
       expect((await fixture.call("read_range", { path, startLine: 2, endLine: 4 })).text).toContain(numberedRule);
     });
 
@@ -174,20 +173,21 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     const canonical = await fixture.call("search_files", { query: "AccessRule", pathGlob: "many/**" });
     expect(canonical.searchResults).toHaveLength(50);
     const small = packSearchToolResult(canonical, 900);
-    const payload = JSON.parse(small.text);
-    expect(payload.results.length).toBeGreaterThan(0);
-    expect(payload.results.length).toBeLessThan(50);
-    expect(payload.meta.truncated).toBe(true);
-    expect(payload.notice).toContain(`Omitted ${50 - payload.results.length} matching lines.`);
-    expect(payload.notice).toMatch(/Next read_range: "many\/\d+\.custom"@head:1/);
+    const matches = small.searchResults!;
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches.length).toBeLessThan(50);
+    expect(small.meta?.truncated).toBe(true);
+    expect(small.text).toContain(`truncated: ${50 - matches.length} omitted`);
+    expect(small.text).toMatch(/next: "many\/\d+\.custom"@head:1, cursor=/);
     expect(small.text.length).toBeLessThanOrEqual(900);
-    const hit = payload.results[0];
+    const hit = matches[0]!;
     expect((await fixture.call("read_range", { path: hit.path, startLine: hit.line, endLine: hit.line })).text).toContain("AccessRule");
-    expect(JSON.parse(packSearchToolResult(canonical, 16000).text).results).toHaveLength(50);
+    expect(packSearchToolResult(canonical, 16000).searchResults).toHaveLength(50);
     const listing = await fixture.call("list_files", { glob: "many/**" });
-    const packed = packFileListToolResult(listing, 600);
-    expect(JSON.parse(packed.text).meta.truncated).toBe(true);
-    expect(JSON.parse(packed.text).paths.every((path: string) => listing.filePaths!.includes(path))).toBe(true);
+    const packed = packTextToolResult(listing, 600);
+    expect(packed.meta?.truncated).toBe(true);
+    expect(packed.packable?.records.every(record => listing.filePaths!.includes(JSON.parse(record)))).toBe(true);
+    expect(packed.text).toMatch(/cursor=[\w-]+/u);
     expect(packSearchToolResult(canonical, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
     expect((await fixture.call("search_files", { query: "absent", pathGlob: "many/**" })).searchResults).toEqual([]);
   });

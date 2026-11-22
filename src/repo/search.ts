@@ -1,8 +1,10 @@
-import type { SearchDelivery, SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
+import type { SearchDelivery, SearchOptions, SearchPage, SearchPageOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
+import type { GrepPosition } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
-import { containGlob } from "./path-guard.js";
+import { containGlob, containPath } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
+import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 
 export type SearchEngine = "git-grep";
 
@@ -18,6 +20,7 @@ export type SearchExecution = {
   discoveryLimited?: boolean;
   omittedCountIsLowerBound?: boolean;
   searchDelivery?: SearchDelivery;
+  mentionNext?: { path: string; line: number };
 };
 
 export function hasSearchContext(result: SearchResult): boolean {
@@ -97,6 +100,69 @@ export class SearchService {
     private readonly limit: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn()
   ) {}
 
+  async searchPage(query: string, options: SearchPageOptions = {}): Promise<SearchPage> {
+    validateQuery(query);
+    const source = options.source ?? { kind: "head" };
+    const mode = options.mode ?? "regex";
+    const contextMode = options.contextMode ?? "none";
+    const maxResults = clampMaxResults(options.maxResults, DEFAULT_MAX_RESULTS, HARD_MAX_RESULTS);
+    const caseSensitive = options.caseSensitive ?? true;
+    const pathGlob = options.pathGlob === undefined ? undefined : containGlob(this.resolver.repoRoot, options.pathGlob);
+    const revision = this.resolver.resolveSource(source);
+    const binding = toolCursorBinding(["search_files", revision, source.kind, query, mode, pathGlob ?? null, contextMode, maxResults, caseSensitive]);
+    const startAt = options.cursor === undefined ? undefined : this.searchPosition(decodeToolCursor(options.cursor, binding));
+    const raw = await this.limit(() => this.resolver.grep(query, {
+      source, positioned: true, fixedString: mode === "literal", maxResults: maxResults + 1, caseSensitive,
+      ...(pathGlob === undefined ? {} : { glob: pathGlob }),
+      ...(startAt ? { startAt } : {})
+    })).catch(error => {
+      if (error instanceof CodegenieError && error.code === "invalid_args" && options.mode === "regex") {
+        throw new CodegenieError("invalid_args", error.message + " Use mode=literal to search for source text.", { cause: error });
+      }
+      throw error;
+    });
+
+    const hits = capMatchTexts(raw.slice(0, maxResults)).results;
+    const nextHit = raw[maxResults];
+    const skipped = raw.omittedLines ?? 0;
+    const delivery: SearchDelivery = {
+      source: source.kind, deliveredCount: hits.length, scanIncomplete: nextHit !== undefined,
+      ...(raw.emptyScope ? { emptyScope: true } : {}),
+      discoveryOmittedCount: Number(nextHit !== undefined), backendOmittedCount: skipped, budgetOmittedCount: 0,
+      shortenedExcerpts: hits.filter(hit => hit.excerpt).length, backendContextStripped: false, budgetContextStripped: false,
+      ...(raw.firstOmitted ? { nextRead: raw.firstOmitted } : {})
+    };
+    if (!hits.length && skipped) throw new SearchBudgetError("No matching line fits the search output allowance.", delivery);
+    await this.enrich(hits, source, contextMode);
+    const fileLengths = new Map<string, number>();
+    for (const path of groupByPath(hits).keys()) {
+      const file = await this.resolver.readFile(path, source);
+      if (!file) throw new CodegenieError("git_ref_missing", "A search result could not be positioned in the pinned source.");
+      const text = file.content;
+      fileLengths.set(path, text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
+    }
+    const cursorFor = ({ path, line }: GrepPosition) => encodeToolCursor(binding, { path, line });
+    return {
+      revision,
+      ...(pathGlob === undefined ? {} : { pathGlob }),
+      rows: hits.map(hit => ({ hit, totalLines: fileLengths.get(hit.path)!, cursor: cursorFor(hit) })),
+      meta: searchDeliveryMeta({
+        backend: "text", precision: "text", degraded: false, requestedSource: source.kind, sourceUsed: source.kind,
+        lookupStatus: hits.length ? "found" : "not_found",
+        ...(nextHit ? { discoveryLimited: true } : {})
+      }, delivery),
+      ...(nextHit ? { next: { path: nextHit.path, line: nextHit.line, cursor: cursorFor(nextHit) } } : {})
+    };
+  }
+
+  private searchPosition(value: unknown): GrepPosition {
+    if (value && typeof value === "object" && "path" in value && typeof value.path === "string" && "line" in value &&
+        typeof value.line === "number" && Number.isSafeInteger(value.line) && value.line > 0) {
+      return { path: containPath(this.resolver.repoRoot, value.path), line: value.line };
+    }
+    throw new CodegenieError("invalid_args", "Search cursor has an invalid match position.");
+  }
+
   async search(query: string, options: RawSearchOptions = {}): Promise<SearchExecution> {
     validateQuery(query);
     const source = options.source ?? { kind: "head" };
@@ -113,7 +179,8 @@ export class SearchService {
     const omittedLines = raw.omittedLines ?? 0;
     if (!raw.length && omittedLines) {
       if (options.mention !== undefined) {
-        throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+        const next = raw.firstOmitted ? ` First unread match: ${raw.firstOmitted.path}@${source.kind}:${raw.firstOmitted.line}.` : "";
+        throw new CodegenieError("budget_exhausted", `All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.${next}`);
       }
       throw new SearchBudgetError("No matching line fits the search output allowance.", {
         source: source.kind, deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0,
@@ -145,6 +212,7 @@ export class SearchService {
     );
     const searchDelivery: SearchDelivery | undefined = options.mention === undefined ? {
       source: source.kind,
+      ...(raw.emptyScope ? { emptyScope: true } : {}),
       deliveredCount: capped.results.length,
       scanIncomplete,
       discoveryOmittedCount,
@@ -165,6 +233,7 @@ export class SearchService {
       precision: classified?.syntaxOnly ? "syntactic" : "text",
       degraded,
       ...(searchDelivery ? { searchDelivery } : {}),
+      ...(options.mention !== undefined && nextRead ? { mentionNext: nextRead } : {}),
       ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
       ...(discoveryLimited || omittedCount > 0 || shortened ? { truncated: true, omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };

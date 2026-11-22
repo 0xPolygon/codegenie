@@ -12,7 +12,7 @@ export async function findLikelyTestsForInput(
   resolver: SourceResolver,
   registry: LanguageAdapterRegistry,
   input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }
-): Promise<{ tests: SymbolRef[]; backend: ToolBackend; truncated?: boolean; omittedCount?: number }> {
+): Promise<{ tests: SymbolRef[]; backend: ToolBackend; truncated?: boolean; omittedCount?: number; firstOmitted?: SymbolRef }> {
   const source = input.source ?? { kind: "head" };
   const subjectPath = input.symbol?.path ?? input.path;
   if (subjectPath === undefined) {
@@ -71,7 +71,7 @@ export async function findLikelyTestsForInput(
   return {
     tests,
     backend: parsedAny ? "tree-sitter" : "text",
-    ...(omittedCount > 0 ? { truncated: true, omittedCount } : {})
+    ...(omittedCount > 0 ? { truncated: true, omittedCount, firstOmitted: uniqueTests[MAX_TESTS]! } : {})
   };
 }
 

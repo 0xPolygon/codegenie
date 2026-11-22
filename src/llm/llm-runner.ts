@@ -44,6 +44,9 @@ export type ToolResultRecords = {
   keepWithNext?: boolean[];
   diffGroups?: DiffRecordGroups;
   nextPage?: string;
+  /** A cursor for each record, used only for the first unread row. */
+  cursors?: string[];
+  searchExcerptFlags?: boolean[];
 };
 
 export type ToolExecutionResult = {
@@ -56,6 +59,8 @@ export type ToolExecutionResult = {
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
   definitions?: import("../types.js").DefinitionHit[];
+  /** Raw source for complete source evidence; never use after a delivery cut. */
+  rawSource?: string;
   /** Actual inclusive lines delivered by read_range, after EOF clipping. */
   sourceLineRange?: [number, number];
   filePaths?: string[];

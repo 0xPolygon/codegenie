@@ -1,13 +1,46 @@
 import type { DiffRecordGroups, ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
-import type { ToolResultMeta } from "../types.js";
+import type { FileOutline, ToolResultMeta } from "../types.js";
 import { MAX_OMITTED_DIFF_LABELS } from "../repo/diff-blocks.js";
 import { earlierSearchPosition, hasSearchContext, searchContextPosition, searchCutNotice, searchDeliveryMeta } from "../repo/search.js";
-import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
+import { MISSING_FILE_GUIDANCE, numberSourceLine, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
 function renderRecordOpening(open: string, meta: ToolResultMeta): string {
   const { requestedRange, sourceUsed, deliveredLineRange, totalLines } = meta;
   if (!requestedRange || !sourceUsed || !deliveredLineRange || totalLines === undefined) return open;
   return open + renderSourceBlockHeader(requestedRange.path, sourceUsed, deliveredLineRange, totalLines) + "\n";
+}
+
+function pageDeliveryNotes(meta: ToolResultMeta): string[] {
+  const search = meta.searchDelivery;
+  if (search) {
+    const notes = [`delivered matches: ${search.deliveredCount}`];
+    if (search.emptyScope) notes.push(`No tracked files match pathGlob at the pinned ${search.source} revision.`);
+    if (search.shortenedExcerpts) notes.push("Some matching lines are excerpts. Use read_range at the numbered match to inspect the line.");
+    if (search.backendOmittedCount) {
+      const next = search.nextRead;
+      notes.push(`matching lines omitted by the Git output cap: ${search.backendOmittedCount}${next ? `; inspect ${JSON.stringify(next.path)}@${search.source}:${next.line} with read_range` : ""}`);
+    }
+    return notes;
+  }
+  return meta.pathListDelivery ? [`delivered paths: ${meta.pathListDelivery.deliveredCount}`] : [];
+}
+
+function updatePageDelivery(meta: ToolResultMeta, records: ToolResultRecords, count: number, refused = false): ToolResultMeta {
+  const budgetOmitted = records.records.length - count;
+  if (records.searchExcerptFlags && meta.searchDelivery) {
+    return searchDeliveryMeta(meta, {
+      ...meta.searchDelivery, deliveredCount: count,
+      budgetOmittedCount: meta.searchDelivery.budgetOmittedCount + budgetOmitted,
+      shortenedExcerpts: records.searchExcerptFlags.slice(0, count).filter(Boolean).length
+    }, refused);
+  }
+  if (meta.pathListDelivery) {
+    return { ...meta, pathListDelivery: {
+      ...meta.pathListDelivery, deliveredCount: count,
+      budgetOmittedCount: meta.pathListDelivery.budgetOmittedCount + budgetOmitted
+    } };
+  }
+  return meta;
 }
 
 /** Derive the canonical text and its packable representation together. */
@@ -16,6 +49,7 @@ export function createPackableToolResult(packable: ToolResultRecords, meta: Tool
   const notes = diffGroups && meta.truncated
     ? [`truncation: ${meta.degradationReason ?? "diff_result_limit"}`, ...diffDeliveryNotes(diffGroups, meta.omittedCount ?? 0, records.length, labels?.at(-1))]
     : [];
+  notes.push(...pageDeliveryNotes(meta));
   if (nextPage) notes.push(`next: ${nextPage}`);
   return { text: withMeta(renderRecordOpening(open, meta) + records.join(separator) + close, meta, notes), packable, meta };
 }
@@ -57,8 +91,13 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
   if (input.budgetFallback) return packTextToolResult(input.budgetFallback, allowance);
 
-  const { packable, sourceLineRange, ...result } = input;
+  const { packable, sourceLineRange, rawSource: _rawSource, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;
+  const unreadAt = (index: number): string | undefined => {
+    const label = labels?.[index];
+    const cursor = packable.cursors?.[index];
+    return cursor ? `${label ? `${label}, ` : ""}cursor=${cursor}` : label;
+  };
   // A backend continuation may be beyond the first line omitted by this cut.
   // The range/record locator below is the authoritative caller continuation.
   const { deliveredLineRange, recovery: _backendRecovery, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
@@ -73,20 +112,21 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
     if (keepWithNext?.[count - 1]) continue;
     const range: [number, number] | undefined = firstLine === undefined ? undefined : [firstLine, firstLine + count - 1];
     const diffCut = diffGroups ? diffGroupsAfterCut(diffGroups, count, labels?.[count]) : undefined;
-    const meta: ToolResultMeta = {
+    const meta = updatePageDelivery({
       ...originalMeta,
       truncated: true,
       deliveryStatus: "truncated",
       degradationReason,
       omittedCount: (originalMeta.omittedCount ?? 0) + (diffCut?.omittedCount ?? records.length - count),
       ...(range ? { deliveredLineRange: range } : {})
-    };
+    }, packable, count);
     const notes = ["truncation: tool_result_budget"];
+    notes.push(...pageDeliveryNotes(meta));
     if (diffCut) {
       notes.push(...diffDeliveryNotes(diffCut.groups, meta.omittedCount ?? 0, count, labels?.[count - 1]));
     } else if (!range) {
       const last = labels?.[count - 1];
-      const next = labels?.[count];
+      const next = unreadAt(count);
       if (last) notes.push(`last delivered: ${last}`);
       if (next) notes.push(`next: ${next}`);
     }
@@ -97,30 +137,34 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       const kept = { open, records: records.slice(0, count), separator, close: deliveredClosing,
         ...(labels ? { labels: labels.slice(0, count) } : {}),
         ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}),
+        ...(packable.cursors ? { cursors: packable.cursors.slice(0, count) } : {}),
+        ...(packable.searchExcerptFlags ? { searchExcerptFlags: packable.searchExcerptFlags.slice(0, count) } : {}),
         ...(diffCut ? { diffGroups: { ...diffCut.groups, lineEnds: diffCut.groups.lineEnds.slice(0, count) } } : {}) };
       return {
         ...result,
         text: deliveredOpening + kept.records.join(separator) + deliveredClosing + footer,
         packable: kept,
         meta,
+        ...(input.searchResults && packable.searchExcerptFlags ? { searchResults: input.searchResults.slice(0, count) } : {}),
         ...(sourceLineRange && range ? { sourceLineRange: range } : {})
       };
     }
   }
 
-  const refusalMeta: ToolResultMeta = {
+  const refusalMeta = updatePageDelivery({
     ...originalMeta,
     truncated: true,
     deliveryStatus: "budget_rejected",
     degradationReason,
     omittedCount: (originalMeta.omittedCount ?? 0) + (diffGroups?.rendered.length ?? records.length)
-  };
-  const firstUnread = labels?.[0];
+  }, packable, 0, true);
+  const firstUnread = unreadAt(0);
   const refusal = "Tool result cannot fit the remaining result budget. Narrow the request to retrieve source."
     + (firstUnread && !diffGroups ? ` First unread source: ${firstUnread}.` : "");
   return {
     text: diffGroups ? withMeta(refusal, refusalMeta, diffDeliveryNotes(diffGroupsAfterCut(diffGroups, 0, firstUnread).groups,
-      refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange ? withMeta(refusal, refusalMeta) : refusal,
+      refusalMeta.omittedCount ?? 0, 0)) : originalMeta.requestedRange || packable.searchExcerptFlags || originalMeta.pathListDelivery
+      ? withMeta(refusal, refusalMeta, pageDeliveryNotes(refusalMeta)) : refusal,
     isError: true,
     errorCode: "budget_exhausted",
     meta: refusalMeta
@@ -166,6 +210,7 @@ export function packFileListToolResult(input: ToolExecutionResult, allowance: nu
 
 /** Pack whole entries after cache lookup, never mutate the shared canonical result. */
 export function packSearchToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
+  if (input.packable) return packTextToolResult(input, allowance);
   if (!input.searchResults) return input;
   const { searchDelivery, ...meta } = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
   const canonical = input.searchResults;
@@ -201,7 +246,8 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
         notice: searchCutNotice(delivery)
       });
     }
-    if (delivery) return JSON.stringify({ results, meta });
+    if (delivery) return JSON.stringify({ results, meta,
+      ...(delivery.emptyScope ? { notice: `No tracked files match pathGlob at the pinned ${delivery.source} revision.` } : {}) });
     return JSON.stringify({
       results,
       meta: { ...meta, ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) },
@@ -248,6 +294,29 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
 }
 
 /** Keep outlines parseable under local caps; never present a chopped sourceText as complete. */
+export function renderOutlineToolResult(outline: FileOutline, meta: ToolResultMeta, packed = false): string {
+  const { sourceText, ...fields } = outline;
+  const description = { ...fields, notes: fields.notes.map(note => note.replace("Read sourceText or use read_range",
+    sourceText?.text ? "Read the numbered source or use read_range" : "Use read_range")) };
+  const source = meta.sourceUsed ?? "head";
+  const total = meta.totalLines;
+  const note = total !== undefined
+    ? `${outline.path}@${source}: ${total} lines. ${sourceText?.text ? "Numbered source follows." : "Source lines delivered: none; declaration ranges are listed above."}`
+    : "";
+  const next = meta.recovery;
+  const continuation = next ? `Continue with read_range at ${next.path}@${next.source} startLine=${next.startLine}, endLine=${next.endLine}.` : "";
+  const { recovery: _recovery, totalLines: _totalLines, ...compactMeta } = meta;
+  const text = packed
+    ? JSON.stringify({ outline: description, meta: compactMeta,
+      notice: ["Bounded outline. Omitted symbols do not imply absence.", note, continuation].filter(Boolean).join(" ") })
+    : withMeta(JSON.stringify(description, null, 2), meta, [note, continuation].filter(Boolean));
+  if (!sourceText?.text) return text;
+  const { startLine, endLine } = sourceText;
+  const positioned = sourceText.text.split("\n").slice(0, endLine - startLine + 1)
+    .map((line, index) => numberSourceLine(line, startLine + index));
+  return [text, renderSourceBlockHeader(outline.path, source, [startLine, endLine], total ?? endLine), ...positioned].join("\n");
+}
+
 export function packOutlineToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.outline || input.text.length <= allowance) return input;
   if (input.meta?.lookupStatus === "file_missing") {
@@ -261,25 +330,40 @@ export function packOutlineToolResult(input: ToolExecutionResult, allowance: num
   const outline = structuredClone(input.outline);
   let omitted = input.meta?.omittedCount ?? 0;
   let changed = false;
+  let nextLine = input.meta?.recovery?.startLine ?? Infinity;
+  const totalLines = input.meta?.totalLines;
+  const recordOmission = (line?: number) => {
+    omitted++;
+    changed = true;
+    if (line !== undefined) nextLine = Math.min(nextLine, line);
+  };
   const meta = () => ({ backend: "text" as const, precision: "heuristic" as const, degraded: false,
-    ...input.meta, ...(changed ? { degraded: true, truncated: true, deliveryStatus: "truncated" as const,
-      omittedCount: omitted, omittedCountIsLowerBound: true } : {}) });
-  const render = () => JSON.stringify({ outline, meta: meta(), notice: "Bounded outline. Use search_files to locate source, then read_range; omitted symbols do not imply absence." });
+    ...input.meta, ...(changed ? { truncated: true, deliveryStatus: "truncated" as const,
+      degradationReason: (input.meta?.degraded ? input.meta.degradationReason : undefined) ?? "tool_result_budget",
+      omittedCount: omitted, omittedCountIsLowerBound: true,
+      ...(totalLines !== undefined && nextLine <= totalLines ? { recovery: {
+        tool: "read_range" as const, path: outline.path, source: input.meta?.sourceUsed ?? "head",
+        startLine: nextLine, endLine: Math.min(totalLines, nextLine + 79), reason: "first source position affected by the outline delivery budget"
+      } } : {})
+    } : {}) });
+  const render = () => renderOutlineToolResult(outline, meta(), true);
   if (render().length > allowance && outline.sourceText) {
     outline.sourceReadHint = { tool: "read_range", path: outline.path,
       startLine: outline.sourceText.startLine, endLine: Math.min(outline.sourceText.endLine, outline.sourceText.startLine + 79) };
+    recordOmission(outline.sourceText.startLine);
     delete outline.sourceText;
-    omitted++;
-    changed = true;
   }
   for (const entries of [outline.testSymbols, outline.topLevelSymbols, outline.imports, outline.notes]) {
     while (entries.length && render().length > allowance) {
-      entries.pop();
-      omitted++;
-      changed = true;
+      const entry = entries.pop();
+      recordOmission(typeof entry === "object" ? entry.lineRange[0] : entries === outline.imports ? 1 : undefined);
     }
   }
-  if (render().length > allowance) return { text: "Outline cannot fit the remaining result budget. Use search_files or a known read_range; this is not an empty file.",
-    isError: true, errorCode: "budget_exhausted", meta: { ...meta(), degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
+  if (render().length > allowance) {
+    const refusalMeta = { ...meta(), truncated: true, deliveryStatus: "budget_rejected" as const,
+      degradationReason: (input.meta?.degraded ? input.meta.degradationReason : undefined) ?? "tool_result_budget" };
+    return { text: withMeta("Outline cannot fit the remaining result budget. Use a known read_range; this is not an empty file.", refusalMeta),
+      isError: true, errorCode: "budget_exhausted", meta: refusalMeta };
+  }
   return { ...input, text: render(), meta: meta() };
 }

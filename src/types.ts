@@ -361,6 +361,7 @@ export type PathListDelivery = {
 
 export type SearchDelivery = {
   source: SourceSelector["kind"];
+  emptyScope?: boolean;
   deliveredCount: number;
   scanIncomplete: boolean;
   discoveryOmittedCount: number;
@@ -700,14 +701,16 @@ export interface RepositoryTools {
     options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
   ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>;
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
+  searchFilesPage?(query: string, options?: SearchPageOptions): Promise<SearchPage>;
   findSymbolMentions(
     symbolName: string,
     options?: SymbolMentionOptions
-  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
+  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta; positioning?: { fileLengths: Record<string, number>; next?: { path: string; line: number } } }>;
   findLikelyTests(
     input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }
   ): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>;
   listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }>;
+  listFilesPage?(glob: string, cursor?: string): Promise<PathListPage>;
 }
 
 export type SourceFileMap = {
@@ -718,6 +721,28 @@ export type SourceFileMap = {
   declarations: Array<{ symbol: SymbolRef; cursor: string }>;
   next?: string;
   smallSource?: string;
+};
+
+export type SearchPageOptions = SearchOptions & {
+  mode?: "regex" | "literal";
+  cursor?: string;
+};
+
+export type SearchPage = {
+  revision: string;
+  pathGlob?: string;
+  rows: Array<{ hit: SearchResult; totalLines: number; cursor: string }>;
+  meta: ToolResultMeta;
+  next?: { path: string; line: number; cursor: string };
+};
+
+export type PathListPage = {
+  glob: string;
+  tree: string;
+  totalPaths: number;
+  rows: Array<{ path: string; cursor: string }>;
+  meta: ToolResultMeta;
+  next?: { path: string; cursor: string };
 };
 
 export interface RepositoryToolsHost extends RepositoryTools {
@@ -1821,6 +1846,7 @@ export type ToolCallRecord = {
     startLine?: number;
     endLine?: number;
     query?: string;
+    mode?: string;
     pathGlob?: string;
     maxResults?: number;
     glob?: string;

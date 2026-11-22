@@ -1,12 +1,12 @@
 import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
-import { createPackableToolResult } from "./search-result-packing.js";
+import { createPackableToolResult, renderOutlineToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, ReviewToolSurface, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { RepositoryTools, ReviewToolSurface, SearchPage, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
-import { SearchBudgetError } from "../repo/search.js";
+import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
 import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 
@@ -29,6 +29,7 @@ const SymbolLookupSourceSelectorSchema = Type.Optional(
 );
 
 const PATH_DISCOVERY_GUIDANCE = "Use known file paths; package/import directories and function names do not establish filenames. Discover unknown paths with list_files (head only), find_definition or search_files at the intended revision before reading.";
+const LIST_FILES_GUIDANCE = "List tracked files at the head revision using a repo-relative glob: ** crosses directories; * and ? match within a segment; [ab] character classes and {api,data}/** alternatives are supported, including dotfiles. Use **/*.txt to include nested files. This is a glob, not a regular expression or gitignore file; use braces for path alternatives. Untracked files are excluded.";
 
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
@@ -37,7 +38,10 @@ export type RepositoryToolDefinitionOptions = {
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
 const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
-  read_range: buildSixReadRangeTool, find_usages: buildFindUsagesTool
+  read_range: buildSixReadRangeTool,
+  find_usages: buildFindUsagesTool,
+  search_files: buildSixSearchTool,
+  list_files: buildSixListFilesTool
 };
 
 export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface = "current"): void {
@@ -48,6 +52,11 @@ export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface 
 
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
+  const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
+  if (properties?.source && args && typeof args === "object" && "source" in args && typeof args.source === "string") {
+    const auto = tool.name === "read_symbol" || tool.name === "find_definition" ? ', or {"kind":"auto"}' : "";
+    throw new CodegenieError("invalid_args", `source must be an object: {"kind":"head"} or {"kind":"base"}${auto}; not a string`);
+  }
   const issues = submissionIssues(tool.parameters, args);
   if (issues.length) throw new CodegenieError("invalid_args", `Invalid arguments for ${tool.name}: ${issues.slice(0, 5)
     .map(issue => `${issue.path || "arguments"}: ${issue.kind}`).join("; ")}`);
@@ -68,7 +77,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     buildBoundedReadRangeTool(tools),
     {
       name: "read_file_outline",
-      description: "Read a compact outline of imports, top-level symbols, and test symbols. Without syntax support, symbolExtraction is unavailable: empty symbol arrays do not mean no definitions. Small files can include complete sourceText when it fits; larger or locally bounded outlines provide a read_range hint. For known source locations, prefer read_range directly. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Read a compact outline of imports, top-level symbols, and test symbols. Without syntax support, symbolExtraction is unavailable: empty symbol arrays do not mean no definitions. Small files can include complete numbered source when it fits; larger or locally bounded outlines provide a read_range hint. For known source locations, prefer read_range directly. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -79,7 +88,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; source?: SourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.readFileOutline(input.path, input.source));
-        return { text: withMeta(JSON.stringify(result.outline, null, 2), result.meta), outline: result.outline, meta: result.meta };
+        return { text: renderOutlineToolResult(result.outline, result.meta), outline: result.outline, meta: result.meta };
       })
     },
     {
@@ -107,6 +116,19 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           selector.line = input.line;
         }
         const result = await runWithoutFacadeRecording(tools, () => tools.readSymbol(input.path, selector, input.source));
+        if (result.meta.deliveryStatus === "budget_rejected") {
+          return { text: withMeta("The first source line exceeds the source character limit; use search_files to locate a shorter excerpt.", result.meta),
+            meta: result.meta, isError: true, errorCode: "budget_exhausted" };
+        }
+        const range = result.meta.deliveredLineRange;
+        if (range && result.text !== undefined) {
+          const meta = result.meta.precision === "text" && result.meta.lookupStatus === "found"
+            ? { ...result.meta, lookupStatus: "unavailable" as const } : result.meta;
+          const records = result.text.split("\n").map((line, index) => numberSourceLine(line, range[0] + index));
+          return { ...createPackableToolResult({ open: "", records, separator: "\n", close: "" }, meta),
+            ...(meta.deliveryStatus === "full" && !meta.truncated && meta.precision === "syntactic"
+              ? { rawSource: result.text, sourceLineRange: range } : {}) };
+        }
         const payload = {
           lookupStatus: result.meta.lookupStatus,
           deliveryStatus: result.meta.deliveryStatus,
@@ -200,7 +222,8 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "search_files",
-      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]; no lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence.",
+      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]. Escape literal punctuation, for example name\\( or return \\{. No lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence."
+        + (tools.searchFilesPage ? " Continue with the returned cursor and the same search arguments." : ""),
       parameters: Type.Object(
         {
           query: Type.String({ minLength: 1, maxLength: 500 }),
@@ -208,12 +231,18 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
           maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
           caseSensitive: Type.Optional(Type.Boolean()),
-          source: SourceSelectorSchema
+          source: SourceSelectorSchema,
+          ...(tools.searchFilesPage ? { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) } : {})
         },
         { additionalProperties: false }
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
-        const input = args as Parameters<RepositoryTools["searchFiles"]>[1] & { query: string };
+        const input = args as SearchPageOptions & { query: string };
+        if (tools.searchFilesPage) {
+          const { query, ...options } = input;
+          const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, options));
+          return renderSearchPage(page, options.source?.kind ?? "head");
+        }
         const result = await runWithoutFacadeRecording(tools, () => tools.searchFiles(input.query, optionalOptions({
           pathGlob: input.pathGlob,
           contextMode: input.contextMode,
@@ -245,12 +274,51 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           maxResults: input.maxResults,
           source: input.source
         })));
+        if (result.results.length && result.positioning) {
+          const revision = input.source?.kind ?? "head";
+          const records = (includeContext: boolean) => result.results.map(hit => {
+            const total = result.positioning!.fileLengths[hit.path]!;
+            const before = includeContext ? hit.contextBefore ?? [] : [];
+            const after = includeContext ? (hit.contextAfter ?? []).slice(0, Math.max(0, total - hit.line)) : [];
+            const start = hit.line - before.length;
+            const end = hit.line + after.length;
+            const excerpt = hit.excerpt ? `Matching-line excerpt starts at column ${hit.excerptStartColumn ?? 1}; use read_range for the whole line.` : undefined;
+            return [renderSourceBlockHeader(hit.path, revision, [start, end], total),
+              ...(includeContext && hit.enclosingSymbol ? [`Enclosing ${hit.enclosingSymbol.name}, lines ${hit.enclosingSymbol.lineRange.join("-")}`] : []),
+              ...before.map((line, index) => numberSourceLine(line, start + index)),
+              ...(excerpt ? [excerpt] : []),
+              `${hit.line}:${hit.column ?? 1}\t${hit.matchText}`,
+              ...after.map((line, index) => numberSourceLine(line, hit.line + index + 1))].join("\n");
+          });
+          const next = result.positioning.next;
+          const render = (includeContext: boolean) => {
+            const firstContext = result.results.find(hit => hit.contextBefore?.length || hit.contextAfter?.length || hit.enclosingSymbol);
+            const contextLine = firstContext && (firstContext.contextBefore?.length ? firstContext.line - firstContext.contextBefore.length
+              : firstContext.contextAfter?.length ? firstContext.line + 1 : firstContext.enclosingSymbol?.lineRange[0] ?? firstContext.line);
+            const open = !includeContext && firstContext
+              ? `Context omitted to fit the result budget; next: ${firstContext.path}@${revision}:${contextLine} (omitted context; inspect with read_range).\n` : "";
+            const meta = !includeContext ? { ...result.meta, truncated: true, deliveryStatus: "truncated" as const } : result.meta;
+            return createPackableToolResult({ open, records: records(includeContext), separator: "\n", close: "",
+              labels: result.results.map(hit => `${hit.path}@${revision}:${hit.line - (includeContext ? hit.contextBefore?.length ?? 0 : 0)}`),
+              ...(next ? { nextPage: `${next.path}@${revision}:${next.line}; inspect with read_range or narrow the search` } : {})
+            }, meta);
+          };
+          const hasContext = result.results.some(hit => hit.contextBefore?.length || hit.contextAfter?.length || hit.enclosingSymbol);
+          return { ...render(true), searchResults: result.results, ...(hasContext ? { budgetFallback: render(false) } : {}) };
+        }
+        if (result.positioning?.next) {
+          const { path, line } = result.positioning.next;
+          const location = `${path}@${input.source?.kind ?? "head"}:${line}`;
+          return { ...createPackableToolResult({ open: "", records: [
+            `No verified mention delivered before the scan limit; next unread raw match: ${location}. Inspect with read_range or narrow the search.`
+          ], separator: "\n", close: "", labels: [location] }, result.meta), searchResults: result.results };
+        }
         return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
       })
     },
     {
       name: "find_likely_tests",
-      description: "Find likely tests for a path or symbol using deterministic test conventions.",
+      description: "Find likely tests for a path or symbol using deterministic test conventions. If results are cut, use read_range at the next returned test path and line.",
       parameters: Type.Object(
         {
           path: Type.Optional(Type.String({ minLength: 1 })),
@@ -272,12 +340,22 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as Parameters<RepositoryTools["findLikelyTests"]>[0];
         const result = await runWithoutFacadeRecording(tools, () => tools.findLikelyTests(input));
-        return { text: withMeta(JSON.stringify(result.tests, null, 2), result.meta), meta: result.meta };
+        if (!result.tests.length) return { text: withMeta("[]", result.meta), meta: result.meta };
+        const revision = input.source?.kind ?? "head";
+        return createPackableToolResult({
+          open: "[\n",
+          records: result.tests.map(test => JSON.stringify(test, null, 2).split("\n").map(line => "  " + line).join("\n")),
+          separator: ",\n", close: "\n]",
+          labels: result.tests.map(test => `${test.path}@${revision}:${test.lineRange[0]}`)
+        }, result.meta);
       })
     },
-    {
+    tools.listFilesPage ? {
+      ...buildSixListFilesTool(tools),
+      description: LIST_FILES_GUIDANCE + " Continue from the returned cursor with the same glob."
+    } : {
       name: "list_files",
-      description: "List tracked files at the head revision using a repo-relative glob: ** crosses directories; * and ? match within a segment; [ab] character classes and {api,data}/** alternatives are supported, including dotfiles. Use **/*.txt to include nested files. This is a glob, not a regular expression or gitignore file; use braces for path alternatives. Untracked files are excluded. Bounded results disclose omissions; narrow the glob when truncated.",
+      description: LIST_FILES_GUIDANCE + " Bounded results disclose omissions; narrow the glob when truncated.",
       parameters: Type.Object(
         {
           glob: Type.String({ minLength: 1 })
@@ -386,7 +464,7 @@ function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
       const sourceLineRange: [number, number] | undefined = meta.deliveryStatus === "full"
         ? range ?? (text ? [input.startLine, Math.min(input.endLine, input.startLine + records.length - 1)] : undefined)
         : undefined;
-      const placement = sourceLineRange ? { sourceLineRange } : {};
+      const placement = sourceLineRange ? { sourceLineRange, rawSource: text } : {};
       if (!range) {
         if (meta.requestedRange && meta.deliveryStatus === "empty") {
           return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
@@ -445,7 +523,9 @@ export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
           separator: "\n", close: map.smallSource.endsWith("\n") ? "\n" : ""
         }, meta);
         return sourceResult.text.length <= MAX_SMALL_SOURCE_CHARS
-          ? { ...sourceResult, ...(meta.deliveredLineRange ? { sourceLineRange: meta.deliveredLineRange } : {}), budgetFallback: fallback }
+          ? { ...sourceResult,
+            ...(meta.deliveredLineRange ? { sourceLineRange: meta.deliveredLineRange, rawSource: map.smallSource } : {}),
+            budgetFallback: fallback }
           : fallback;
       });
     }
@@ -469,4 +549,99 @@ function renderSourceFileMap(map: SourceFileMap): ToolExecutionResult {
     open: `${header}, ${totalDeclarations} declarations\n`, records, separator: "\n", close: "", labels,
     ...(next ? { nextPage: `declaration ${offset + declarations.length + 1}, cursor=${next}` } : {})
   }, meta);
+}
+
+export function buildSixSearchTool(tools: RepositoryTools): ToolDefinition {
+  return {
+    name: "search_files",
+    description: 'Search pinned repository source. Use mode "regex" for POSIX ERE (default, e.g. "track\\(") or mode "literal" for source text (e.g. "track("). To search base, pass source: {"kind":"base"}. Continue with the returned cursor and the same query, mode, source, pathGlob and contextMode.',
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1, maxLength: 500 }),
+      mode: Type.Optional(Type.Union([Type.Literal("regex"), Type.Literal("literal")])),
+      pathGlob: Type.Optional(Type.String({ minLength: 1 })),
+      source: SourceSelectorSchema,
+      contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+    }, { additionalProperties: false }),
+    execute: (args, signal) => wrapTool(signal, async () => {
+      const { query, ...options } = args as SearchPageOptions & { query: string };
+      if (!tools.searchFilesPage) throw new CodegenieError("config_error", "This repository cannot produce search pages.");
+      const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, { ...options, mode: options.mode ?? "regex" }));
+      return renderSearchPage(page, options.source?.kind ?? "head");
+    })
+  };
+}
+
+function renderSearchPage(page: SearchPage, revision: SourceSelector["kind"]): ToolExecutionResult {
+  const full = renderSearchRows(page, revision);
+  if (page.meta.deliveryStatus === "empty") {
+    const text = page.meta.searchDelivery?.emptyScope ? `No tracked files match pathGlob at ${revision}.`
+      : `No matches in the selected ${revision} scope.`;
+    return { ...full, budgetFallback: { ...full, text } };
+  }
+  const firstContext = page.rows.find(({ hit }) => hasSearchContext(hit));
+  const delivery = page.meta.searchDelivery;
+  if (!firstContext || !delivery) return full;
+  // Optional context is shed before match locations when the complete page
+  // exceeds its allowance. The cursor still belongs to the original query.
+  const rows = page.rows.map(({ hit, ...row }) => {
+    const { contextBefore: _before, contextAfter: _after, enclosingSymbol: _symbol, ...match } = hit;
+    return { ...row, hit: match };
+  });
+  const position = searchContextPosition(firstContext.hit);
+  const meta = searchDeliveryMeta(page.meta, { ...delivery, budgetContextStripped: true });
+  const notice = `Context omitted to fit the result budget. Use read_range at ${JSON.stringify(position.path)}@${revision}:${position.line}.\n`;
+  return { ...full, budgetFallback: renderSearchRows({ ...page, rows, meta }, revision, notice) };
+}
+
+function renderSearchRows(page: SearchPage, revision: SourceSelector["kind"], notice = ""): ToolExecutionResult {
+  const total = page.rows.length + (page.meta.omittedCount ?? 0);
+  const scope = page.pathGlob === undefined ? "all files" : JSON.stringify(page.pathGlob);
+  const open = `Search at ${revision} (${page.revision}) in ${scope}: ${page.meta.omittedCountIsLowerBound ? "at least " : ""}${total} matches from this position\n${notice}`;
+  const files = new Set<string>();
+  const records = page.rows.map(({ hit, totalLines }) => {
+    const header = files.has(hit.path) ? [] : [`${JSON.stringify(hit.path)}@${revision}: ${totalLines} lines`];
+    files.add(hit.path);
+    const before = hit.contextBefore ?? [];
+    const after = hit.contextAfter ?? [];
+    const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn})` : "";
+    const enclosing = hit.enclosingSymbol;
+    return [
+      ...header,
+      ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
+      ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
+      `${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`,
+      ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
+    ].join("\n");
+  });
+  return { ...createPackableToolResult({
+    open, records, separator: "\n", close: "",
+    labels: page.rows.map(({ hit }) => `${JSON.stringify(hit.path)}@${revision}:${hit.line}`),
+    cursors: page.rows.map(row => row.cursor),
+    searchExcerptFlags: page.rows.map(row => row.hit.excerpt === true),
+    ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}@${revision}:${page.next.line}, cursor=${page.next.cursor}` } : {})
+  }, page.meta), searchResults: page.rows.map(row => row.hit) };
+}
+
+export function buildSixListFilesTool(tools: RepositoryTools): ToolDefinition {
+  return {
+    name: "list_files",
+    description: "List committed paths in the pinned head tree matching a repository glob. Continue with the same glob and returned cursor. Use read_change for removed or renamed paths.",
+    parameters: Type.Object({
+      glob: Type.String({ minLength: 1 }),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+    }, { additionalProperties: false }),
+    execute: (args, signal) => wrapTool(signal, async () => {
+      const { glob, cursor } = args as { glob: string; cursor?: string };
+      if (!tools.listFilesPage) throw new CodegenieError("config_error", "This repository cannot produce file listing pages.");
+      const page = await runWithoutFacadeRecording(tools, () => tools.listFilesPage!(glob, cursor));
+      return { ...createPackableToolResult({
+        open: `Head tree ${page.tree}, glob ${JSON.stringify(page.glob)}: ${page.totalPaths} paths\n`,
+        records: page.rows.map(row => JSON.stringify(row.path)), separator: "\n", close: "",
+        labels: page.rows.map(row => JSON.stringify(row.path)),
+        cursors: page.rows.map(row => row.cursor),
+        ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}, cursor=${page.next.cursor}` } : {})
+      }, page.meta), filePaths: page.rows.map(row => row.path) };
+    })
+  };
 }

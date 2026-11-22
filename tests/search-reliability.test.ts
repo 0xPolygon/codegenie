@@ -54,7 +54,9 @@ describe("reliable search", () => {
     expect((await resolver.grep("Statuses", { glob, source: { kind: "base" } }))[0]?.matchText).toBe("Statuses");
     expect((await resolver.grep("literal|other", { glob: "src/data/[[]x[]].txt" })).map(m => m.path)).toEqual(["src/data/[x].txt"]);
     expect(await resolver.grep("absent", { glob })).toEqual([]);
-    expect(await resolver.grep("valid", { glob: "missing/**" })).toEqual([]);
+    const emptyScope = await resolver.grep("valid", { glob: "missing/**" });
+    expect(emptyScope).toHaveLength(0);
+    expect(emptyScope.emptyScope).toBe(true);
   });
 
   it("lists literal non-ASCII paths from the selected revision with or without a glob", async () => {
@@ -88,7 +90,7 @@ describe("reliable search", () => {
     const valid = await search.execute({ query: "absent", pathGlob: "missing/**" }, new AbortController().signal);
     expect(valid.isError).not.toBe(true);
     expect(valid.searchResults).toEqual([]);
-    expect(await resolver.grep("\\(\\?", { glob: "missing/**" })).toEqual([]);
+    expect(await resolver.grep("\\(\\?", { glob: "missing/**" })).toHaveLength(0);
   });
 
   it("chunks literal scopes with a single global allowance", async () => {

@@ -18,6 +18,9 @@ import type {
   ReviewPacket,
   ReviewStage,
   SearchOptions,
+  SearchPage,
+  SearchPageOptions,
+  PathListPage,
   SearchResult,
   SourceSelector,
   SymbolMentionOptions,
@@ -45,6 +48,7 @@ import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine
 import { SourceResolver } from "./source-resolver.js";
 import { findUsages as searchUsages, type UsagePage, type UsageSearchOptions } from "./usage-search.js";
 import { readSourceFileMap } from "./source-file-map.js";
+import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
 import { TreeSitterService } from "./tree-sitter/tree-sitter-service.js";
@@ -280,16 +284,25 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       async () => {
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_file_outline"));
         const result = await this.limit(() => readOutline(this.opts.resolver, this.opts.registry, path, source));
+        const end = result.totalLines;
+        const next = result.nextLine ?? 1;
         const meta: ToolResultMeta = {
           backend: result.parsed?.tree === undefined ? "text" : "tree-sitter",
           precision: result.parsed?.tree === undefined ? "heuristic" : "syntactic",
           degraded: result.degraded,
           requestedSource: source.kind, sourceUsed: source.kind,
+          ...(end !== undefined ? { totalLines: end } : {}),
           ...(result.fileMissing ? { lookupStatus: "file_missing" as const, deliveryStatus: "empty" as const } : {}),
           ...(result.outline.sourceText && !result.truncated && (source.kind === "head" || source.kind === "base")
             ? { lookupStatus: "found" as const, deliveryStatus: "full" as const, sourceUsed: source.kind } : {}),
           ...(result.degradationReason !== undefined ? { degradationReason: result.degradationReason } : {}),
-          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
+          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0, deliveryStatus: "truncated" as const,
+            degradationReason: result.degradationReason ?? "outline_result_limit",
+            ...(end !== undefined && end >= next ? { recovery: {
+              tool: "read_range" as const, path, source: source.kind, startLine: next, endLine: Math.min(next + 79, end),
+              reason: "first source position affected by the outline limit"
+            } } : {})
+          } : {})
         };
         return {
           value: { outline: result.outline, meta },
@@ -364,7 +377,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ? [adapter.getEnclosingSymbol(parsed, selector.line)].filter((symbol): symbol is SymbolInfo => symbol !== undefined)
           : symbols.filter((symbol) => symbolMatches(symbol, selector.symbolName ?? ""));
       const symbol = matches[0];
-      const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
+      const symbolSnippet = symbol ? definitionSourceSnippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
       const meta: ToolResultMeta = {
         backend: "tree-sitter",
         precision: "syntactic",
@@ -374,12 +387,17 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         requestedSource,
         sourceUsed: source.kind,
         ...(symbol === undefined ? { degradationReason: "symbol not found" } : {}),
-        ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1 } : {})
+        ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1, lookupNote: "More candidates: use find_definition." } : {}),
+        ...(symbol && symbolSnippet ? { totalLines: symbolSnippet.totalLines,
+          requestedRange: { path, startLine: symbol.lineRange[0], endLine: symbol.lineRange[1] },
+          ...(symbolSnippet.deliveredLineRange ? { deliveredLineRange: symbolSnippet.deliveredLineRange } : {}) } : {})
       };
       if (symbol !== undefined && symbolSnippet?.truncated) {
         meta.truncated = true;
         meta.omittedCount = (meta.omittedCount ?? 0) + symbolSnippet.omittedCount;
-        meta.recovery = recoveryReadRange(path, symbol.lineRange, source, "read exact symbol range because read_symbol was truncated");
+        meta.recovery = recoveryReadRange(path, [symbolSnippet.nextLine!, symbol.lineRange[1]], source, "read the remaining symbol lines");
+        meta.degradationReason = "source_line_or_character_limit";
+        if (!symbolSnippet.deliveredLineRange) meta.deliveryStatus = "budget_rejected";
       }
       const text = symbolSnippet?.text;
       return {
@@ -399,11 +417,16 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       lookupStatus: fallback === undefined ? "not_found" : "found",
       deliveryStatus: fallback === undefined ? "empty" : fallback.truncated ? "truncated" : "full",
       requestedSource,
-      sourceUsed: source.kind
+      sourceUsed: source.kind,
+      ...(fallback ? { totalLines: fallback.totalLines, requestedRange: { path, startLine: fallback.range[0], endLine: fallback.range[1] },
+        lookupNote: "Unverified text window; use find_definition for a verified declaration.",
+        ...(fallback.deliveredLineRange ? { deliveredLineRange: fallback.deliveredLineRange } : {}) } : {})
     };
     if (fallback?.truncated) {
       meta.truncated = true;
       meta.omittedCount = fallback.omittedCount;
+      meta.recovery = recoveryReadRange(path, [fallback.nextLine!, fallback.range[1]], source, "read the remaining text window");
+      if (!fallback.deliveredLineRange) meta.deliveryStatus = "budget_rejected";
     }
     return {
       value: { ...(fallback !== undefined ? { text: fallback.text } : {}), meta },
@@ -655,6 +678,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     };
   }
 
+  async searchFilesPage(query: string, options?: SearchPageOptions): Promise<SearchPage> {
+    return this.search.searchPage(query, options);
+  }
+
   async searchFiles(query: string, options: SearchOptions = {}): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
     return this.measure(
       "search_files",
@@ -685,7 +712,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   async findSymbolMentions(
     symbolName: string,
     options: SymbolMentionOptions = {}
-  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
+  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta; positioning?: { fileLengths: Record<string, number>; next?: { path: string; line: number } } }> {
     return this.measure(
       "find_symbol_mentions",
       {
@@ -700,8 +727,15 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const normalizedOptions = this.normalizeSearchOptions(options, "find_symbol_mentions");
         const execution = await this.search.findSymbolMentions(symbolName, normalizedOptions);
         const meta = metaFromSearch(execution);
+        const source = normalizedOptions.source ?? { kind: "head" as const };
+        const fileLengths: Record<string, number> = {};
+        for (const path of new Set(execution.results.map(result => result.path))) {
+          const content = await this.limit(() => this.opts.resolver.readFile(path, source));
+          if (!content) throw new CodegenieError("git_ref_missing", "A mention result could not be positioned in the pinned source.");
+          fileLengths[path] = content.content ? content.content.split("\n").length - Number(content.content.endsWith("\n")) : 0;
+        }
         return {
-          value: { results: execution.results, meta },
+          value: { results: execution.results, meta, positioning: { fileLengths, ...(execution.mentionNext ? { next: execution.mentionNext } : {}) } },
           meta,
           args: {
             symbolName,
@@ -748,11 +782,17 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         }
         const normalizedInput = this.normalizeLikelyTestsInput(input);
         const result = await findLikelyTestsForInput(this.opts.resolver, this.opts.registry, normalizedInput);
+        const firstOmitted = result.firstOmitted;
         const meta: ToolResultMeta = {
           backend: result.backend,
           precision: "heuristic",
           degraded: false,
-          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
+          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0,
+            deliveryStatus: "truncated" as const, degradationReason: "test_result_limit" } : {}),
+          ...(firstOmitted ? { recovery: {
+            tool: "read_range" as const, path: firstOmitted.path, source: normalizedInput.source?.kind ?? "head",
+            startLine: firstOmitted.lineRange[0], endLine: firstOmitted.lineRange[1], reason: "first omitted test reference"
+          } } : {})
         };
         return {
           value: { tests: result.tests, meta },
@@ -767,6 +807,31 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         };
       }
     );
+  }
+
+  async listFilesPage(glob: string, cursor?: string): Promise<PathListPage> {
+    const contained = containGlob(this.opts.resolver.repoRoot, glob, this.guardTelemetry("list_files"));
+    const tree = this.opts.resolver.resolveSource();
+    const binding = toolCursorBinding(["list_files", tree, contained]);
+    const offset = cursor === undefined ? 0 : decodeToolCursor(cursor, binding);
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new CodegenieError("invalid_args", "File listing cursor has an invalid path position.");
+    }
+    const paths = await this.opts.resolver.listFiles(contained);
+    if (cursor !== undefined && offset >= paths.length) {
+      throw new CodegenieError("invalid_args", "File listing cursor is outside the pinned listing.");
+    }
+    const end = Math.min(offset + LIST_FILES_MAX, paths.length);
+    const rows = paths.slice(offset, end).map((path, index) => ({ path, cursor: encodeToolCursor(binding, offset + index) }));
+    const omittedCount = paths.length - end;
+    const meta: ToolResultMeta = {
+      backend: "text", precision: "exact", degraded: false, sourceUsed: "head",
+      deliveryStatus: omittedCount ? "truncated" : rows.length ? "full" : "empty",
+      pathListDelivery: { deliveredCount: rows.length, backendOmittedCount: omittedCount, budgetOmittedCount: 0 },
+      ...(omittedCount ? { truncated: true, omittedCount, degradationReason: "list_path_limit" } : {})
+    };
+    return { glob: contained, tree, totalPaths: paths.length, rows, meta,
+      ...(omittedCount ? { next: { path: paths[end]!, cursor: encodeToolCursor(binding, end) } } : {}) };
   }
 
   async listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }> {
@@ -968,24 +1033,6 @@ function withSourceMeta<T extends { meta: ToolResultMeta }>(
   };
 }
 
-function snippet(
-  content: string,
-  range: [number, number],
-  maxLines: number,
-  maxChars: number
-): { text: string; truncated: boolean; omittedCount: number } {
-  const lines = content.split(/\n/u);
-  const end = Math.min(lines.length, range[1], range[0] + maxLines - 1);
-  const lineOmissions = Math.max(0, range[1] - end);
-  const text = lines.slice(Math.max(0, range[0] - 1), end).join("\n");
-  const capped = capText(text, maxChars);
-  return {
-    ...capped,
-    truncated: lineOmissions > 0 || capped.truncated,
-    omittedCount: lineOmissions + capped.omittedCount
-  };
-}
-
 function definitionSourceSnippet(content: string, range: [number, number], maxLines: number, maxChars: number): {
   text: string; truncated: boolean; omittedCount: number; totalLines: number; deliveredLineRange?: [number, number]; nextLine?: number
 } {
@@ -1009,22 +1056,16 @@ function definitionSourceSnippet(content: string, range: [number, number], maxLi
     ...(omittedCount > 0 ? { nextLine: last + 1 } : {}) };
 }
 
-function capText(text: string, maxChars: number): { text: string; truncated: boolean; omittedCount: number } {
-  if (text.length <= maxChars) {
-    return { text, truncated: false, omittedCount: 0 };
-  }
-  return { text: text.slice(0, maxChars), truncated: true, omittedCount: 1 };
-}
-
 function fallbackSymbolText(
   content: string,
   selector: { symbolName?: string; line?: number }
-): { text: string; truncated: boolean; omittedCount: number } | undefined {
+): (ReturnType<typeof definitionSourceSnippet> & { range: [number, number] }) | undefined {
   const lines = content.split(/\n/u);
   if (selector.line !== undefined) {
     const start = Math.max(1, selector.line - 20);
     const end = Math.min(lines.length, selector.line + 20);
-    return capText(lines.slice(start - 1, end).join("\n"), SYMBOL_MAX_CHARS);
+    const range: [number, number] = [start, end];
+    return { ...definitionSourceSnippet(content, range, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS), range };
   }
   if (selector.symbolName !== undefined) {
     const pattern = new RegExp(`\\b${escapeRegExp(selector.symbolName)}\\b`, "u");
@@ -1032,7 +1073,8 @@ function fallbackSymbolText(
     if (index >= 0) {
       const start = Math.max(0, index - 20);
       const end = Math.min(lines.length, index + 21);
-      return capText(lines.slice(start, end).join("\n"), SYMBOL_MAX_CHARS);
+      const range: [number, number] = [start + 1, end];
+      return { ...definitionSourceSnippet(content, range, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS), range };
     }
   }
   return undefined;
