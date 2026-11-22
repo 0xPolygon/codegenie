@@ -52,7 +52,7 @@ import {
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
 } from "../src/llm/schemas.js";
-import { buildRepositoryToolDefinitions, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
+import { buildRepositoryToolDefinitions, buildSixReadChangeTool, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
@@ -1777,6 +1777,34 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
     expect(telemetry.toolCalls.map((call) => call.backendExecuted)).toEqual([true, false]);
     expect(telemetry.toolCalls[1]?.cacheHitKind).toBe("stored");
+  });
+
+  it("scopes change directories by packet and shares cache entries for identical selected hunks", async () => {
+    const telemetry = fakeTelemetry();
+    const meta = { backend: "text" as const, precision: "exact" as const, degraded: false, deliveryStatus: "full" as const };
+    const readChange = vi.fn(async (args: { hunkId?: string }, currentHunks?: readonly string[]) =>
+      ({ text: args.hunkId ?? currentHunks?.join(",") ?? "change", meta }));
+    const tools = { ...fakeRepositoryTools(), readChange };
+    const selected = { hunkId: "ab8", context: "function", cursor: "pinned-page-two" };
+    const requests = [{}, {}, {}, selected, selected];
+    const adapter = scriptedAdapter(requests.flatMap((arguments_, i) => [
+      assistant([{ type: "toolCall", id: `read-${i}`, name: "read_change", arguments: arguments_ }]),
+      assistant([validSubmitReviewCall(`submit-${i}`)])
+    ]));
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    for (const [i, hunk] of ["ab8", "c71", "ab8", "ab8", "c71"].entries()) {
+      await runner.runStructured({ ...submitReviewRequest(`change-${i}`),
+        tools: [buildSixReadChangeTool(tools, { currentHunks: [hunk] })],
+        toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1200 } });
+    }
+    expect(readChange.mock.calls).toEqual([[{}, ["ab8"]], [{}, ["c71"]], [selected, ["ab8"]]]);
+    expect(telemetry.toolCalls.map(call => call.cacheStatus)).toEqual(["write", "write", "hit", "write", "hit"]);
+    expect(telemetry.toolCalls.slice(-2).map(call => call.args)).toEqual([selected, selected]);
   });
 
   it("coalesces concurrent identical repository tool requests in flight", async () => {
