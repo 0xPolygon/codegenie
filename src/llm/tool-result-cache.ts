@@ -14,6 +14,7 @@ const CACHEABLE_TOOL_NAMES = new Set([
   "read_change",
   "search_files",
   "find_symbol_mentions",
+  "find_usages",
   "find_likely_tests",
   "list_files"
 ]);
