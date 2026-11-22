@@ -20,6 +20,7 @@ export type ConfigSource =
   | "repo-config"
   | "environment"
   | "eval-case"
+  | "github-action"
   | "cli";
 
 export type ClassificationPathRule = {

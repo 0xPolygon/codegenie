@@ -149,6 +149,27 @@ List named models once. `model` stays the default for automatic reviews and a ba
 - **A mistyped name still cancels.** `codegenie review opsu` starts a run that supersedes the running review, then only posts the reply — the same "any comment supersedes" trade-off described below.
 - **Inline comments accumulate across models.** A `codegenie review opus` run after an automatic review posts its own inline findings. Duplicate suppression only matches unchanged wording, so two models reporting the same issue both appear. That is expected for a second opinion.
 
+### Advanced: per-stage Action models
+
+Use `stage-models` with the Action's global `model` on a release that documents this input. Each of `plan`, `review`, `verify`, and `compose` can set `model` (a `provider/model` ID) or `reasoning`. Omitted fields inherit the global choice independently.
+
+```yaml
+        with:
+          model: openrouter/openai/gpt-6-luna:high
+          stage-models: |
+            plan:
+              reasoning: medium
+            compose:
+              reasoning: low
+          llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+The workflow map supplies the stage settings for automatic reviews and bare trigger comments. A comment that explicitly selects a configured alias applies that choice across all stages and logs that the workflow map was skipped. Explicit `compose.reasoning` disables the usual composition step-down.
+
+Models, credentials, and reasoning support are checked before model calls. With `llm-api-key`, the global model, every alias, and every explicit stage model must read the same credential variable. Use native provider credentials for a workflow that needs different keys.
+
+Mixed-model review quality is unmeasured. There is no recommended mix.
+
 ### Credentials
 
 Each provider reads its key from its own env var. The common ones:

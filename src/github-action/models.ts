@@ -3,9 +3,11 @@
 // only ever selects an alias the workflow author listed — it never becomes a
 // model spec, reasoning level, or flag.
 import { isMap, isScalar, LineCounter, parseDocument } from "yaml";
+import { stageSelectionsSchema } from "../config/schema.js";
 import { getPiApiKeyEnvVarName, getPiCredentialEnvVarNames } from "../provider/pi-ai-models.js";
 import { providerKnown } from "../provider/provider-services.js";
 import { splitReasoningSuffix } from "../provider/reasoning.js";
+import type { CodegenieConfig } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 
 export type ModelSpec = {
@@ -25,6 +27,40 @@ export type ModelConfig = {
   aliases: Map<string, ModelSpec>;
   defaultModel?: ModelSelection;
 };
+
+export type ActionStageModels = NonNullable<CodegenieConfig["llm"]["stages"]>;
+
+export function parseStageModels(text: string): ActionStageModels | undefined {
+  if (text.trim() === "") return undefined;
+  const lineCounter = new LineCounter();
+  const document = parseDocument(text, { lineCounter, schema: "failsafe" });
+  const [syntaxError] = document.errors;
+  if (syntaxError !== undefined) {
+    const line = lineCounter.linePos(syntaxError.pos[0]).line;
+    const detail = syntaxError.code === "DUPLICATE_KEY" ? "duplicate key" : "invalid YAML";
+    throw new CodegenieError("invalid_args", `--stage-models ${detail} at line ${line}`);
+  }
+  if (!isMap(document.contents)) {
+    throw new CodegenieError("invalid_args", "--stage-models must be a mapping of stage names to model and reasoning");
+  }
+  let value: unknown;
+  try {
+    value = document.toJS({ maxAliasCount: 0 });
+  } catch {
+    throw new CodegenieError("invalid_args", "--stage-models could not read the mapping; use plain stage entries");
+  }
+  const parsed = stageSelectionsSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    const key = issue.path.join(".");
+    const detail = issue.path.at(-1) === "model"
+      ? "must be provider/model; put the reasoning level in reasoning"
+      : issue.message;
+    throw new CodegenieError("invalid_args", `--stage-models ${key ? `${key}: ` : ""}${detail}`);
+  }
+  const selections = Object.entries(parsed.data).filter(([, stage]) => stage?.model !== undefined || stage?.reasoning !== undefined);
+  return selections.length > 0 ? Object.fromEntries(selections) : undefined;
+}
 
 // Starts and ends with a letter or digit, so the comment-side stripping of
 // surrounding punctuation (event-gate) can never make an alias unreachable.
@@ -158,7 +194,7 @@ export function renderUnknownAliasReply(config: ModelConfig): string {
 // competing credential vars are cleared, and the key is written
 // unconditionally. Unset, provider credentials resolve exactly as they always
 // have. Returns the providers the key was routed to (empty when unset).
-export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig): string[] {
+export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig, stages?: ActionStageModels): string[] {
   const key = env.LLM_API_KEY;
   if (key === undefined || key === "") {
     return [];
@@ -174,6 +210,11 @@ export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig): str
     );
   }
   const providers = [...new Set(selectable.map((spec) => spec.provider as string))];
+  for (const stage of Object.values(stages ?? {})) {
+    if (stage.model === undefined) continue;
+    const provider = stage.model.slice(0, stage.model.indexOf("/"));
+    if (!providers.includes(provider)) providers.push(provider);
+  }
   const envVarNames = new Set(providers.map((provider) => getPiApiKeyEnvVarName(provider)));
   if (envVarNames.size > 1) {
     throw new CodegenieError(

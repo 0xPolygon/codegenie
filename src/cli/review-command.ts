@@ -21,7 +21,7 @@ type ParseReviewCommandOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   allowOutput?: boolean;
-};
+} & Pick<LoadConfigOptions, "actionStageModels">;
 
 type ExecuteReviewCommandResult = {
   runId: string;
@@ -165,6 +165,9 @@ export function parseReviewCommand(
   }
   if (opts.env !== undefined) {
     loadOptions.env = opts.env;
+  }
+  if (opts.actionStageModels !== undefined) {
+    loadOptions.actionStageModels = opts.actionStageModels;
   }
   const loaded = loadConfig(loadOptions);
 

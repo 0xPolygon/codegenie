@@ -8,7 +8,7 @@ export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
 const stageModelSchema = z.string().regex(/^[^/\s]+\/[^\s]+$/u).refine(value => !/:(?:minimal|low|medium|high|xhigh|max|auto)$/u.test(value),
   "stage model must be provider/model without a reasoning suffix");
 const stageSelectionSchema = z.object({ model: stageModelSchema.optional(), reasoning: reasoningLevelSchema.optional() }).strict();
-const stageSelectionsSchema = z.object({ plan: stageSelectionSchema.optional(), review: stageSelectionSchema.optional(),
+export const stageSelectionsSchema = z.object({ plan: stageSelectionSchema.optional(), review: stageSelectionSchema.optional(),
   verify: stageSelectionSchema.optional(), compose: stageSelectionSchema.optional() }).strict();
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
