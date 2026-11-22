@@ -1,0 +1,16 @@
+# Public eval case pi/pi-14. The oracle stays outside the reviewed checkout.
+name: public-pi-14
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-14
+command:
+  base: 43fb4e3106d5c5474ada9e3b2ac2162a7638be97
+  head: 3a7bb6f48cc64986608ffa1b0cb52c3ff938ef2a
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: read-abort-emits-unhandled-stream-error
+  path: packages/coding-agent/src/core/tools/read.ts
+  lineRange: [75, 83]
+  severityAtLeast: low

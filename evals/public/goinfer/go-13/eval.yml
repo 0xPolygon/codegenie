@@ -1,0 +1,16 @@
+# Public eval case goinfer/go-13. The oracle stays outside the reviewed checkout.
+name: go-13
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-13
+command:
+  base: 49d849de42ed328272bba422c6d178fd1906a193
+  head: a1640a6aa0dc1b7d05ec4165b7af38a1a2b8f39b
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: metal-batch-growth-abandons-buffers
+  path: metal/model.go
+  lineRange: [1255, 1269]
+  severityAtLeast: low

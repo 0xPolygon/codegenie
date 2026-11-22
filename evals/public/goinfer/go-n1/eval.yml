@@ -1,0 +1,20 @@
+# Public eval case goinfer/go-n1. The oracle stays outside the reviewed checkout.
+name: go-n1
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-n1
+command:
+  base: 2439737dbb0dc3ce33dcaf0af02d2673c6592747
+  head: b3a1d9140fa4eb82f3284898026a451ba42c6fc9
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: unexpected-load-option-remap
+  path: decoder/model.go
+  lineRange: [658, 659]
+  severityAtLeast: medium
+- id: unexpected-weight-builder-option-remap
+  path: decoder/weights.go
+  lineRange: [561, 572]
+  severityAtLeast: medium

@@ -1,0 +1,16 @@
+# Public eval case pi/pi-13. The oracle stays outside the reviewed checkout.
+name: public-pi-13
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-13
+command:
+  base: 890b3547af230d1ad75a4ec2a8989387fae2bd2b
+  head: 8e53e0e49cf3ecec20c840c4cb03e692e96c50f1
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: retry-backoff-retains-abort-listener
+  path: packages/ai/src/utils/retry.ts
+  lineRange: [124, 132]
+  severityAtLeast: low

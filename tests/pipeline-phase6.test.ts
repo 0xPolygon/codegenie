@@ -94,7 +94,7 @@ describe("phase 6 live review path", () => {
     const scratch = mkdtempSync(path.join(tmpdir(), "codegenie-stage-models-"));
     const runArtifactDir = path.join(scratch, "run");
     const cfg = liveConfig(runArtifactDir);
-    const adapter = liveReviewAdapter();
+    const adapter = liveReviewAdapter({ exerciseRecovery: false });
     adapter.resolveModel = request => ({ provider: request.provider!, id: request.model!, raw: { id: request.model!, api: "faux" } });
     const args = ["review", base, head, "--provider", "scripted", "--model", "scripted-model", "--reasoning", "high"];
     const opts = { repoRoot: repo, env: {} };
@@ -508,7 +508,7 @@ function liveConfig(runArtifactDir: string): CodegenieConfig {
   };
 }
 
-function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | "packetReview" | "verifier" | "composer", number> } {
+function liveReviewAdapter({ exerciseRecovery = true }: { exerciseRecovery?: boolean } = {}): PiAiAdapter & { callsByPrompt: Record<"planner" | "packetReview" | "verifier" | "composer", number> } {
   const callsByPrompt = {
     planner: 0,
     packetReview: 0,
@@ -531,7 +531,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("packet review")) {
         callsByPrompt.packetReview += 1;
-        if (callsByPrompt.packetReview === 1) {
+        if (exerciseRecovery && callsByPrompt.packetReview === 1) {
           return assistant([toolCall("submit-review-invalid", "submit_review", {})]);
         }
         const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet");
@@ -572,7 +572,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("verification")) {
         callsByPrompt.verifier += 1;
-        if (callsByPrompt.verifier === 1) {
+        if (exerciseRecovery && callsByPrompt.verifier === 1) {
           const error = new Error("rate limited") as Error & { status: number; headers: Record<string, string> };
           error.status = 429;
           error.headers = { "retry-after": "0" };
