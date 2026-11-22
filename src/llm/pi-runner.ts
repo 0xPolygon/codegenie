@@ -212,40 +212,92 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner | Promise<L
   const request = definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as ModelRequest;
   if (opts.adapter === undefined) {
     const adapter = createRealPiAiAdapter();
-    return adapter.resolveModelWithReason(request, opts.runSignal).then((resolution) => buildPiRunner(opts, adapter, resolution));
-  }
-  const model = opts.adapter.resolveModel(request);
-  if (model) return buildPiRunner(opts, opts.adapter, { model });
-  let failure: ModelResolutionFailure = { kind: "unresolved" };
-  try {
-    failure = opts.adapter.explainUnresolvedModel?.(request) ?? failure;
-  } catch {
-    // The explanation is best-effort; the generic message still applies.
-  }
-  return buildPiRunner(opts, opts.adapter, { failure });
-}
-
-function buildPiRunner(opts: CreateRunnerOptions, adapter: PiCompletionAdapter, resolution: ModelResolution): LlmRunner {
-  if ("failure" in resolution) {
-    throw new CodegenieError("config_error", modelResolutionMessage(resolution.failure), {
-      context: {
-        provider: opts.llmConfig.provider ?? null,
-        model: opts.llmConfig.model ?? null,
-        modelResolution: resolution.failure.kind,
-        hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
-      }
+    return adapter.resolveModelWithReason(request, opts.runSignal).then(async (resolution) => {
+      const stages = await resolveStageModels(opts, resolution, (stageRequest) => adapter.resolveModelWithReason(stageRequest, opts.runSignal));
+      return buildPiRunner(opts, adapter, resolution, stages);
     });
   }
-  const { model } = resolution;
+  const adapter = opts.adapter;
+  const resolve = (modelRequest: ModelRequest): ModelResolution => {
+    const model = adapter.resolveModel(modelRequest);
+    if (model) return { model };
+    let failure: ModelResolutionFailure = { kind: "unresolved" };
+    try { failure = adapter.explainUnresolvedModel?.(modelRequest) ?? failure; } catch { /* best-effort explanation */ }
+    return { failure };
+  };
+  const resolution = resolve(request);
+  return buildPiRunner(opts, adapter, resolution, resolveStageModelsSync(opts, resolution, resolve));
+}
+
+type StageName = "plan" | "review" | "verify" | "compose";
+type StageSelection = { model: PiModelRef; reasoning: NonNullable<CreateRunnerOptions["llmConfig"]["reasoning"]>; explicitReasoning: boolean };
+const MODEL_STAGES: Array<[StageName, ReviewStage]> = [["plan", 5], ["review", 7], ["verify", 9], ["compose", 10]];
+
+function stageModelRequest(model: string): ModelRequest {
+  const slash = model.indexOf("/");
+  return { provider: model.slice(0, slash), model: model.slice(slash + 1) };
+}
+
+function globalModelError(opts: CreateRunnerOptions, failure: ModelResolutionFailure): CodegenieError {
+  return new CodegenieError("config_error", modelResolutionMessage(failure), {
+    context: { provider: opts.llmConfig.provider ?? null, model: opts.llmConfig.model ?? null, modelResolution: failure.kind,
+      hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models" }
+  });
+}
+
+function validateInheritedGlobal(opts: CreateRunnerOptions, base: ModelResolution): void {
+  const inheritsModel = MODEL_STAGES.some(([name]) => opts.llmConfig.stages?.[name]?.model === undefined);
+  if (!inheritsModel) return;
+  if ("failure" in base) throw globalModelError(opts, base.failure);
+  const inheritsBoth = MODEL_STAGES.some(([name]) => opts.llmConfig.stages?.[name]?.model === undefined && opts.llmConfig.stages?.[name]?.reasoning === undefined);
+  if (inheritsBoth) assertReasoningSupported({ provider: base.model.provider, id: base.model.id,
+    thinkingLevels: modelThinkingLevels(base.model.raw) }, opts.llmConfig.reasoning ?? "high", "config_error");
+}
+
+function stageSelection(opts: CreateRunnerOptions, name: StageName, resolution: ModelResolution): StageSelection {
+  if ("failure" in resolution) throw new CodegenieError("config_error", `llm.stages.${name}: ${modelResolutionMessage(resolution.failure)}`,
+    { context: { stage: name, modelResolution: resolution.failure.kind } });
+  const reasoning = opts.llmConfig.stages?.[name]?.reasoning ?? opts.llmConfig.reasoning ?? "high";
+  try { assertReasoningSupported({ provider: resolution.model.provider, id: resolution.model.id,
+    thinkingLevels: modelThinkingLevels(resolution.model.raw) }, reasoning, "config_error"); }
+  catch (cause) { throw new CodegenieError("config_error", `llm.stages.${name}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause, context: { stage: name } }); }
+  return { model: resolution.model, reasoning, explicitReasoning: opts.llmConfig.stages?.[name]?.reasoning !== undefined };
+}
+
+function resolveStageModelsSync(opts: CreateRunnerOptions, base: ModelResolution, resolve: (request: ModelRequest) => ModelResolution): Map<ReviewStage, StageSelection> | undefined {
+  if (!opts.llmConfig.stages) return undefined;
+  validateInheritedGlobal(opts, base);
+  return new Map(MODEL_STAGES.map(([name, stage]) => {
+    const model = opts.llmConfig.stages?.[name]?.model;
+    return [stage, stageSelection(opts, name, model ? resolve(stageModelRequest(model)) : base)];
+  }));
+}
+
+async function resolveStageModels(opts: CreateRunnerOptions, base: ModelResolution, resolve: (request: ModelRequest) => Promise<ModelResolution>): Promise<Map<ReviewStage, StageSelection> | undefined> {
+  if (!opts.llmConfig.stages) return undefined;
+  validateInheritedGlobal(opts, base);
+  const entries: Array<[ReviewStage, StageSelection]> = [];
+  for (const [name, stage] of MODEL_STAGES) {
+    const model = opts.llmConfig.stages[name]?.model;
+    entries.push([stage, stageSelection(opts, name, model ? await resolve(stageModelRequest(model)) : base)]);
+  }
+  return new Map(entries);
+}
+
+function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAdapter, resolution: ModelResolution, stages?: Map<ReviewStage, StageSelection>): LlmRunner {
+  if ("failure" in resolution && !stages) {
+    throw globalModelError(runnerOpts, resolution.failure);
+  }
+  const defaultModel = "model" in resolution ? resolution.model : stages!.get(5)!.model;
   const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string; structuredRequestId: string; removedUnexpectedFields?: ReturnType<typeof focusedRepairDiagnostics>["removedUnexpectedFields"] }>();
   let obligationSequence = 0;
   const recoveryNamespace = randomUUID();
-  opts.telemetry.event({ stage: 0, level: "info", message: "recovery_fidelity_started", data: { version: 1 } });
-  opts.telemetry.event({ stage: 0, level: "info", message: "schema_recovery_tracking_started", data: { version: 2 } });
-  const providerLimit = pLimit(Math.max(1, opts.llmConfig.maxConcurrentCalls));
-  assertReasoningSupported(
-    { provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) },
-    opts.llmConfig.reasoning ?? "high",
+  runnerOpts.telemetry.event({ stage: 0, level: "info", message: "recovery_fidelity_started", data: { version: 1 } });
+  runnerOpts.telemetry.event({ stage: 0, level: "info", message: "schema_recovery_tracking_started", data: { version: 2 } });
+  const providerLimit = pLimit(Math.max(1, runnerOpts.llmConfig.maxConcurrentCalls));
+  if (!stages) assertReasoningSupported(
+    { provider: defaultModel.provider, id: defaultModel.id, thinkingLevels: modelThinkingLevels(defaultModel.raw) },
+    runnerOpts.llmConfig.reasoning ?? "high",
     "config_error"
   );
 
@@ -253,9 +305,20 @@ function buildPiRunner(opts: CreateRunnerOptions, adapter: PiCompletionAdapter, 
   const nextModelCallId = (): string => `mc-${String(++modelCallSeq).padStart(6, "0")}`;
   const recordedPromptCacheStages = new Set<ReviewStage>();
   const protocolFlags = { providerProtocolRecorded: false, downgradeWarned: false };
+  const flagsByModel = new Map<string, typeof protocolFlags>();
 
   return {
+    ...(stages ? { stageModels: Object.fromEntries(MODEL_STAGES.map(([name, stage]) => {
+      const selection = stages.get(stage)!;
+      return [name, { provider: selection.model.provider, id: selection.model.id, reasoning: selection.reasoning }];
+    })) } : {}),
     runStructured: async <T>(request: LlmStructuredRequest<T>): Promise<T> => {
+      const selection = stages?.get(request.stage);
+      const model = selection?.model ?? defaultModel;
+      const opts = selection ? { ...runnerOpts, llmConfig: { ...runnerOpts.llmConfig, reasoning: selection.reasoning } } : runnerOpts;
+      if (request.stage === 10 && selection?.explicitReasoning) request = { ...request, compositionReasoningStepDown: false };
+      const modelKey = `${model.provider}/${model.id}`;
+      const modelFlags = stages ? (flagsByModel.get(modelKey) ?? (() => { const flags = { providerProtocolRecorded: false, downgradeWarned: false }; flagsByModel.set(modelKey, flags); return flags; })()) : protocolFlags;
       const runOpts = request.signal
         ? { ...opts, runSignal: AbortSignal.any([opts.runSignal, request.signal]) }
         : opts;
@@ -267,8 +330,8 @@ function buildPiRunner(opts: CreateRunnerOptions, adapter: PiCompletionAdapter, 
       const budget = hardToolBudget(softBudget);
       const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage, request.telemetryContext?.workerId);
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
-      if (!protocolFlags.providerProtocolRecorded) {
-        protocolFlags.providerProtocolRecorded = true;
+      if (!modelFlags.providerProtocolRecorded) {
+        modelFlags.providerProtocolRecorded = true;
         const initialReasoning = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
           modelThinkingLevels(model.raw), request.purpose === "location_clarification" ? "lowest_supported" : "configured");
         const forcedProbe = describeProviderProtocol(
@@ -519,7 +582,7 @@ function buildPiRunner(opts: CreateRunnerOptions, adapter: PiCompletionAdapter, 
               budgetExempt: budgetForceFinalize,
               finalizeMode,
               finalizeTarget,
-              protocolFlags,
+              protocolFlags: modelFlags,
               compositionAttempts,
               ...(repairDeadlineAt !== undefined ? { repairDeadlineAt } : {})
             });

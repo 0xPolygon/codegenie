@@ -16,6 +16,24 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
+  it("keeps stage settings user-scoped and lets per-run fields override them", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    writeFileSync(path.join(homeOverride, "config.toml"), '[llm.stages.review]\nmodel = "provider/model"\nreasoning = "low"\n[llm.stages.compose]\nreasoning = "medium"\n');
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), '[llm.stages.review]\nmodel = "other/model"\n');
+    const loaded = loadConfig({ repoRoot, homeOverride, env: {} });
+    expect(loaded.config.llm.stages).toEqual({ review: { model: "provider/model", reasoning: "low" }, compose: { reasoning: "medium" } });
+    expect(loaded.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ key: "llm.stages", source: "repo-config" })]));
+    const overridden = loadConfig({ repoRoot, homeOverride, env: { CODEGENIE_MODEL: "new" }, cli: { reasoning: "high" } });
+    expect(overridden.config.llm.stages).toBeUndefined();
+    expect(overridden.warnings.filter(warning => warning.source === "cli" && warning.key === "llm.stages")).toHaveLength(1);
+    const auto = loadConfig({ repoRoot, homeOverride, env: { CODEGENIE_MODEL: "new" }, cli: { reasoning: "auto" } });
+    expect(auto.warnings.filter(warning => warning.key === "llm.stages" && warning.source === "environment")).toHaveLength(1);
+    expect(auto.config.llm.stages?.review).toEqual({ reasoning: "low" });
+    expect(rawConfigSchema.safeParse({ llm: { stages: { review: { model: "provider/model:high" } } } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ llm: { stages: { wrong: { model: "provider/model" } } } }).success).toBe(false);
+  });
+
   it("layers composition step-down as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

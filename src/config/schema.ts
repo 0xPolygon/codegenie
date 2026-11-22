@@ -5,6 +5,11 @@ import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 export const deprecatedReviewDepthSchema = z.enum(["light", "normal", "deep"]);
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
 export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
+const stageModelSchema = z.string().regex(/^[^/\s]+\/[^\s]+$/u).refine(value => !/:(?:minimal|low|medium|high|xhigh|max|auto)$/u.test(value),
+  "stage model must be provider/model without a reasoning suffix");
+const stageSelectionSchema = z.object({ model: stageModelSchema.optional(), reasoning: reasoningLevelSchema.optional() }).strict();
+const stageSelectionsSchema = z.object({ plan: stageSelectionSchema.optional(), review: stageSelectionSchema.optional(),
+  verify: stageSelectionSchema.optional(), compose: stageSelectionSchema.optional() }).strict();
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
@@ -80,6 +85,7 @@ export const rawConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema.optional(),
         forceSubmitToolChoice: z.boolean().optional()
       })
@@ -163,6 +169,7 @@ export const codegenieConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema,
         forceSubmitToolChoice: z.boolean().optional()
       })
