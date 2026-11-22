@@ -1,5 +1,6 @@
 import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
+import { hasSearchContext, searchDeliveryMeta } from "../repo/search.js";
 import { MISSING_FILE_GUIDANCE, withMeta } from "./repository-tool-guidance.js";
 
 function renderRecords({ open, records, separator, close }: ToolResultRecords): string {
@@ -96,7 +97,7 @@ export function packFileListToolResult(input: ToolExecutionResult, allowance: nu
 /** Pack whole entries after cache lookup, never mutate the shared canonical result. */
 export function packSearchToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.searchResults) return input;
-  const meta = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
+  const { searchDelivery, ...meta } = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
   let results = structuredClone(input.searchResults);
   let omitted = meta.omittedCount ?? 0;
   let shortened = false;
@@ -125,11 +126,19 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
       if (render().length > allowance) { results.pop(); omitted++; }
     }
   }
-  if (render().length > allowance || (input.searchResults.length > 0 && results.length === 0)) {
+  const refused = render().length > allowance || (input.searchResults.length > 0 && results.length === 0);
+  const reportedMeta = searchDelivery && searchDeliveryMeta(meta, {
+    ...searchDelivery,
+    deliveredCount: refused ? 0 : results.length,
+    budgetOmittedCount: input.searchResults.length - (refused ? 0 : results.length),
+    shortenedExcerpts: refused ? 0 : results.filter(result => result.excerpt).length,
+    budgetContextStripped: shortened && input.searchResults.some(hasSearchContext)
+  }, refused);
+  if (refused) {
     return { text: "Search results could not fit the remaining result budget. Narrow pathGlob or read a known range; this is not a zero-match result.", isError: true, errorCode: "budget_exhausted",
-      meta: { ...meta, degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
+      meta: reportedMeta ?? { ...meta, degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
   }
-  return { ...input, text: render(), meta: { ...meta,
+  return { ...input, text: render(), meta: reportedMeta ?? { ...meta,
     ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) } };
 }
 

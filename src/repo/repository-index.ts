@@ -38,7 +38,7 @@ import { DiffBlockRenderer } from "./diff-blocks.js";
 import { LanguageAdapterRegistry } from "./language-adapter.js";
 import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
-import { SearchService, type SearchEngine } from "./search.js";
+import { searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
@@ -593,7 +593,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const meta = metaFromSearch(execution);
         return {
           value: { results: execution.results, meta },
-          meta,
+          meta: execution.searchDelivery ? searchDeliveryMeta(meta, execution.searchDelivery) : meta,
           args: {
             query,
             glob: normalizedOptions.pathGlob,
@@ -729,6 +729,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
           ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
           ...(measurement.meta.discoveryLimited ? { discoveryLimited: true } : {}),
+          ...(measurement.meta.searchDelivery ? { searchDelivery: measurement.meta.searchDelivery } : {}),
           ...(measurement.meta.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
           ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
@@ -742,6 +743,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       return measurement.value;
     } catch (error) {
       const isRejected = error instanceof CodegenieError && error.code === "path_outside_repo";
+      const searchBudgetRefusal = tool === "search_files" && error instanceof CodegenieError && error.code === "budget_exhausted";
       if (context?.record !== false) {
         this.opts.telemetry.recordToolCall({
           ...toolCallContextRecordFields(context, stage),
@@ -749,8 +751,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           args: cleanArgs(args),
           backend: "text",
           precision: "text",
-          degraded: true,
+          degraded: !searchBudgetRefusal,
           degradationReason: error instanceof Error ? error.message : String(error),
+          ...(searchBudgetRefusal ? { deliveryStatus: "budget_rejected" as const, resultCount: 0 } : {}),
           resultChars: 0,
           durationMs: Date.now() - started,
           status: isRejected ? "rejected" : "error",
@@ -821,6 +824,7 @@ function metaFromSearch(execution: {
   omittedCount?: number;
   omittedCountIsLowerBound?: boolean;
   discoveryLimited?: boolean;
+  searchDelivery?: ToolResultMeta["searchDelivery"];
 }): ToolResultMeta {
   return {
     backend: execution.backend,
@@ -830,7 +834,8 @@ function metaFromSearch(execution: {
     ...(execution.truncated !== undefined ? { truncated: execution.truncated } : {}),
     ...(execution.omittedCount !== undefined ? { omittedCount: execution.omittedCount } : {}),
     ...(execution.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
-    ...(execution.discoveryLimited ? { discoveryLimited: true } : {})
+    ...(execution.discoveryLimited ? { discoveryLimited: true } : {}),
+    ...(execution.searchDelivery ? { searchDelivery: execution.searchDelivery } : {})
   };
 }
 

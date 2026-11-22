@@ -342,6 +342,17 @@ export type SymbolLookupSourceSelector = SourceSelector | { kind: "auto" };
 export type ToolBackend = "tree-sitter" | "text" | "language-analyzer";
 export type ToolPrecision = "exact" | "semantic" | "syntactic" | "heuristic" | "text";
 
+export type SearchDelivery = {
+  deliveredCount: number;
+  scanIncomplete: boolean;
+  discoveryOmittedCount: number;
+  backendOmittedCount: number;
+  budgetOmittedCount: number;
+  shortenedExcerpts: number;
+  backendContextStripped: boolean;
+  budgetContextStripped: boolean;
+};
+
 export type ToolResultMeta = {
   backend: ToolBackend;
   precision: ToolPrecision;
@@ -351,6 +362,7 @@ export type ToolResultMeta = {
   omittedCount?: number;
   omittedCountIsLowerBound?: boolean;
   discoveryLimited?: boolean;
+  searchDelivery?: SearchDelivery;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   totalLines?: number;
@@ -1774,6 +1786,7 @@ export type ToolCallRecord = {
   omittedCount?: number;
   omittedCountIsLowerBound?: boolean;
   discoveryLimited?: boolean;
+  searchDelivery?: SearchDelivery;
   lookupStatus?: ToolResultMeta["lookupStatus"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   recovery?: ToolResultMeta["recovery"];

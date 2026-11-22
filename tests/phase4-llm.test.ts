@@ -5856,6 +5856,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     for (const record of telemetry.toolCalls.slice(2, 4)) {
       expect(record).toMatchObject({ status: "rejected", errorCode: "budget_exhausted", backendExecuted: false, deliveryStatus: "budget_rejected" });
+      expect(record).toMatchObject({ resultCount: 0, degraded: false });
       expect(record.truncated).not.toBe(true);
       expect(record.resultChars).toBeGreaterThan(0);
     }

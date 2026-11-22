@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
-import { createPackableToolResult, packOutlineToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
+import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
 import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
@@ -190,6 +190,68 @@ const exactSource = {
   lookupStatus: "found",
   deliveryStatus: "full"
 } satisfies ToolResultMeta;
+
+describe("search delivery accounting over committed source", () => {
+  let fixture: Awaited<ReturnType<typeof textRepository>>;
+  beforeAll(async () => {
+    // Representative codegenie cg-04 and goinfer go-01 lines and Git paths.
+    fixture = await textRepository({
+      "src/pipeline/composition-repair.ts": [
+        "// " + "context ".repeat(100), "if (proofVisibilityDiagnostics.length > 0) {",
+        "  return buildCompositionRepair(proofVisibilityDiagnostics);", "}", "// " + "context ".repeat(100)
+      ].join("\n"),
+      "cmd/serve/admin.go": [
+        "s.regMu.Lock()", "if _, dup := s.models[lm.name]; dup { // raced another load of the same name",
+        "\ts.regMu.Unlock()", "\treturn", "}"
+      ].join("\n"),
+      "src/oversized.ts": ["// needle " + "x".repeat(33_000), "const needle = true;"].join("\n"),
+      "src/excerpt.ts": "// " + "x".repeat(600) + " needle"
+    });
+  });
+  afterAll(() => fixture?.dispose());
+
+  it("distinguishes an incomplete scan from exact line skips and true zero matches", async () => {
+    const search = (query: string, args = {}) => fixture.call("search_files", { query, ...args });
+    const incomplete = packSearchToolResult(await search("regMu", { maxResults: 1 }), 4000);
+    expect(incomplete.meta).toMatchObject({
+      degraded: false, deliveryStatus: "truncated", degradationReason: "search_discovery_limit", omittedCount: 1,
+      omittedCountIsLowerBound: true, searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1 }
+    });
+    const exact = packSearchToolResult(await search("needle", { pathGlob: "src/oversized.ts" }), 4000);
+    expect(exact.meta).toMatchObject({
+      omittedCount: 1, omittedCountIsLowerBound: false, searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 1 }
+    });
+    expect(JSON.parse(exact.text).results).toMatchObject([{ line: 2 }]);
+    const excerpt = packSearchToolResult(await search("needle", { pathGlob: "src/excerpt.ts" }), 4000);
+    expect(excerpt.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 0, searchDelivery: { shortenedExcerpts: 1 } });
+    const empty = packSearchToolResult(await search("missingNeedle"), 4000);
+    expect(empty.meta).toMatchObject({ deliveryStatus: "empty", searchDelivery: { deliveredCount: 0, scanIncomplete: false } });
+    expect(JSON.parse(empty.text).results).toEqual([]);
+  });
+
+  it("repackages cached results per allowance and counts context or rows separately", async () => {
+    const args = { query: "proofVisibilityDiagnostics|regMu", contextMode: "lines" };
+    const cache = createToolResultCache();
+    const request = { toolName: "search_files", args, run: () => fixture.call("search_files", args) };
+    const first = await cache.execute(request);
+    const hit = await cache.execute(request);
+    expect(hit.status).toBe("hit");
+    const full = packSearchToolResult(first.result, 4000);
+    expect(full.meta).toMatchObject({ deliveryStatus: "full", searchDelivery: { deliveredCount: 4, budgetContextStripped: false } });
+    expect(full.text).not.toContain("searchDelivery");
+    const rows = packSearchToolResult(hit.result, 760);
+    expect(rows.meta).toMatchObject({
+      degraded: false, deliveryStatus: "truncated", degradationReason: "tool_result_budget", omittedCountIsLowerBound: false,
+      searchDelivery: { budgetContextStripped: true, scanIncomplete: false }
+    });
+    expect(rows.meta?.searchDelivery?.deliveredCount).toBe(JSON.parse(rows.text).results.length);
+    expect(rows.meta?.searchDelivery?.budgetOmittedCount).toBe(4 - JSON.parse(rows.text).results.length);
+    const refused = packSearchToolResult(hit.result, 128);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", searchDelivery: { deliveredCount: 0, budgetOmittedCount: 4 } } });
+    expect(packSearchToolResult((await cache.execute(request)).result, 4000)).toEqual(full);
+  });
+});
 
 describe("whole-record tool packing", () => {
   it("preserves a full Go source range and reports where a cut range ends", () => {

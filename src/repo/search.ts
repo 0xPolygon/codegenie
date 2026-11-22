@@ -1,4 +1,4 @@
-import type { SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision } from "../types.js";
+import type { SearchDelivery, SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { containGlob } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
@@ -17,7 +17,30 @@ export type SearchExecution = {
   omittedCount?: number;
   discoveryLimited?: boolean;
   omittedCountIsLowerBound?: boolean;
+  searchDelivery?: SearchDelivery;
 };
+
+export function hasSearchContext(result: SearchResult): boolean {
+  return result.enclosingSymbol !== undefined || Boolean(result.contextBefore?.length || result.contextAfter?.length);
+}
+
+/** Report scan and delivery limits independently of the legacy rendered payload. */
+export function searchDeliveryMeta(meta: ToolResultMeta, delivery: SearchDelivery, refused = false): ToolResultMeta {
+  const omittedCount = delivery.discoveryOmittedCount + delivery.backendOmittedCount + delivery.budgetOmittedCount;
+  const truncated = refused || omittedCount > 0 || delivery.scanIncomplete
+    || delivery.backendContextStripped || delivery.budgetContextStripped || delivery.shortenedExcerpts > 0;
+  const degradationReason = refused || delivery.budgetOmittedCount > 0 || delivery.budgetContextStripped ? "tool_result_budget"
+    : delivery.scanIncomplete || delivery.discoveryOmittedCount > 0 ? "search_discovery_limit"
+      : truncated ? "search_result_limit" : undefined;
+  const { degradationReason: _legacyReason, ...base } = meta;
+  return {
+    ...base, searchDelivery: delivery, degraded: false, truncated,
+    ...(degradationReason ? { degradationReason } : {}),
+    deliveryStatus: refused ? "budget_rejected" : truncated ? "truncated" : delivery.deliveredCount ? "full" : "empty",
+    omittedCount,
+    omittedCountIsLowerBound: delivery.scanIncomplete
+  };
+}
 
 type RawSearchOptions = SearchOptions & {
   fixedString?: boolean;
@@ -65,11 +88,22 @@ export class SearchService {
     if (lineCapped.results.length > 0 && capped.results.length === 0) throw new CodegenieError("budget_exhausted", "No complete search entry fits the result allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
     const shortened = lineCapped.truncatedTextCount > 0 || capped.shortened;
     const degraded = discoveryLimited || capped.omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
+    const searchDelivery: SearchDelivery | undefined = options.mention === undefined ? {
+      deliveredCount: capped.results.length,
+      scanIncomplete: raw.length > maxResults,
+      discoveryOmittedCount: countOmitted,
+      backendOmittedCount: capped.omittedCount - countOmitted,
+      budgetOmittedCount: 0,
+      shortenedExcerpts: capped.results.filter(result => result.excerpt).length,
+      backendContextStripped: capped.shortened && lineCapped.results.some(hasSearchContext),
+      budgetContextStripped: false
+    } : undefined;
     return {
       results: capped.results, engine: "git-grep",
       backend: classified?.syntaxOnly ? "tree-sitter" : "text",
       precision: classified?.syntaxOnly ? "syntactic" : "text",
       degraded,
+      ...(searchDelivery ? { searchDelivery } : {}),
       ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
       ...(discoveryLimited || capped.omittedCount > 0 || shortened ? { truncated: true, omittedCount: capped.omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };
