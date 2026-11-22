@@ -699,7 +699,7 @@ export interface RepositoryTools {
   findSymbolMentions(
     symbolName: string,
     options?: SymbolMentionOptions
-  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
+  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta; positioning?: { fileLengths: Record<string, number>; next?: { path: string; line: number } } }>;
   findLikelyTests(
     input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }
   ): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>;

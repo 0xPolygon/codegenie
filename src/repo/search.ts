@@ -20,6 +20,7 @@ export type SearchExecution = {
   discoveryLimited?: boolean;
   omittedCountIsLowerBound?: boolean;
   searchDelivery?: SearchDelivery;
+  mentionNext?: { path: string; line: number };
 };
 
 export function hasSearchContext(result: SearchResult): boolean {
@@ -176,7 +177,8 @@ export class SearchService {
     const omittedLines = raw.omittedLines ?? 0;
     if (!raw.length && omittedLines) {
       if (options.mention !== undefined) {
-        throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+        const next = raw.firstOmitted ? ` First unread match: ${raw.firstOmitted.path}@${source.kind}:${raw.firstOmitted.line}.` : "";
+        throw new CodegenieError("budget_exhausted", `All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.${next}`);
       }
       throw new SearchBudgetError("No matching line fits the search output allowance.", {
         source: source.kind, deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0,
@@ -229,6 +231,7 @@ export class SearchService {
       precision: classified?.syntaxOnly ? "syntactic" : "text",
       degraded,
       ...(searchDelivery ? { searchDelivery } : {}),
+      ...(options.mention !== undefined && nextRead ? { mentionNext: nextRead } : {}),
       ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
       ...(discoveryLimited || omittedCount > 0 || shortened ? { truncated: true, omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };
