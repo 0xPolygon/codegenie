@@ -3298,7 +3298,7 @@ describe("phase 5 pipeline regressions", () => {
 
   it.each(["full", "prose", "truncated", "ambiguous", "degraded", "unparsed", "incomplete", "empty", "error"] as const)("recovers a wrong-file planner symbol hint only from a complete unique definition: %s", async mode => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const definitions = mode === "empty" ? [] : [{ symbol: { path: "decoder/ropescale.go", name: "parseRopeFlat", kind: "function" as const, lineRange: [10, 12] as [number, number] }, text: "func parseRopeFlat() {}" }];
+    const definitions = mode === "empty" ? [] : [{ symbol: { path: "decoder/ropescale.go", name: "parseRopeFlat", kind: "function" as const, lineRange: [10, 10] as [number, number] }, text: "func parseRopeFlat() {}", totalLines: 12, deliveredLineRange: [10, 10] as [number, number] }];
     if (mode === "ambiguous") definitions.push({ ...definitions[0]!, symbol: { ...definitions[0]!.symbol, path: "decoder/other.go" } });
     const tools = { ...fakeTools(),
       readSymbol: async () => ({ meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, lookupStatus: "not_found" as const, deliveryStatus: "empty" as const } }),
@@ -3311,7 +3311,7 @@ describe("phase 5 pipeline regressions", () => {
       fakeRepositoryIndex(tools), { ...nullTelemetry(), event: event => events.push(event) }, { config: config(), enabledLenses: ["core/code-review"] });
     if (mode === "full" || mode === "prose") {
       expect(packets[0]?.contextText).toContain("Planner packet context (enclosing_symbol) for decoder/ropescale.go:parseRopeFlat");
-      expect(packets[0]?.contextText).toContain("func parseRopeFlat() {}");
+      expect(packets[0]?.contextText).toContain("decoder/ropescale.go@head lines 10-10 of 12\n10\tfunc parseRopeFlat() {}");
       expect(events.filter(event => event.message === "packet_context_hint_unresolved")).toHaveLength(0);
     } else {
       expect(packets[0]?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "parseRopeFlat", expectedUse: "tool_lookup" })]);
@@ -3324,7 +3324,7 @@ describe("phase 5 pipeline regressions", () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, deliveryStatus: "full" as const };
     const tools = { ...fakeTools(),
       readSymbol: async (_path: string, selector: { symbolName?: string }) => selector.symbolName === "local" ? { text: "x".repeat(1800), meta } : { meta },
-      findDefinition: async () => ({ definitions: [{ symbol: { path: "helper.ts", name: "target", kind: "function" as const, lineRange: [1, 2] as [number, number] }, text: `function target() { ${"x".repeat(outcome === "hint_budget" ? 2100 : 500)} }` }], meta }),
+      findDefinition: async () => ({ definitions: [{ symbol: { path: "helper.ts", name: "target", kind: "function" as const, lineRange: [1, 1] as [number, number] }, text: `function target() { ${"x".repeat(outcome === "hint_budget" ? 2100 : 500)} }`, totalLines: 1, deliveredLineRange: [1, 1] as [number, number] }], meta }),
       ...(outcome === "context_truncated" ? { buildPacketContext: async (file: DiffFile) => ({ context: { path: file.path }, relevantTests: [], outline: { path: file.path, language: "typescript", imports: ["x".repeat(7800)], topLevelSymbols: [], testSymbols: [], notes: [] } }) } : {}) };
     const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review", surroundingContextHints: [
       { kind: "enclosing_symbol", path: "app.ts", symbol: "target", reason: "inspect target", expectedUse: "packet_context" }

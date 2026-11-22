@@ -36,6 +36,7 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
 import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
 import { isProsePath } from "../util/path-roles.js";
+import { numberSourceLine, renderSourceBlockHeader } from "../llm/repository-tool-guidance.js";
 
 type PacketBuildOptions = {
   config: CodegenieConfig;
@@ -2463,8 +2464,14 @@ async function resolvePacketContextHint(
       || fallback.meta.truncated || fallback.meta.discoveryLimited || fallback.meta.deliveryStatus !== "full"
       || candidateMeta.unparsedCandidatePaths?.some(candidate => !isProsePath(candidate) && !/\.adoc$/iu.test(candidate))
       || (candidateMeta.incompleteCandidatePaths?.length ?? 0) > 0
-      || definition?.text === undefined || definition.text.trim().length === 0) return undefined;
-    const text = [`Planner packet context (${hint.kind}) for ${definition.symbol.path}:${symbol}`, `Reason: ${hint.reason}`, definition.text.trimEnd()].join("\n");
+      || definition?.text === undefined || definition.text.trim().length === 0
+      || definition.totalLines === undefined || definition.deliveredLineRange === undefined) return undefined;
+    const [first, last] = definition.deliveredLineRange;
+    const lines = definition.text.split("\n");
+    if (lines.length !== last - first + 1) return undefined;
+    const text = [`Planner packet context (${hint.kind}) for ${definition.symbol.path}:${symbol}`, `Reason: ${hint.reason}`,
+      renderSourceBlockHeader(definition.symbol.path, "head", definition.deliveredLineRange, definition.totalLines),
+      ...lines.map((line, index) => numberSourceLine(line, first + index))].join("\n");
     return { text, recovered: true };
   }
   return undefined;
