@@ -18,6 +18,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   const { packable, sourceLineRange, ...result } = input;
   const { open, records, separator, close, labels } = packable;
   const { deliveredLineRange, ...originalMeta } = input.meta ?? { backend: "text", precision: "text", degraded: false };
+  const degradationReason = (originalMeta.degraded ? originalMeta.degradationReason : undefined) ?? "tool_result_budget";
   const lineRange = deliveredLineRange ?? sourceLineRange;
   const firstLine = lineRange && lineRange[1] - lineRange[0] + 1 === records.length ? lineRange[0] : undefined;
   let recordChars = records.reduce((total, record) => total + record.length, 0);
@@ -28,7 +29,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       ...originalMeta,
       truncated: true,
       deliveryStatus: "truncated",
-      degradationReason: originalMeta.degradationReason ?? "tool_result_budget",
+      degradationReason,
       omittedCount: (originalMeta.omittedCount ?? 0) + records.length - count,
       ...(range ? { deliveredLineRange: range } : {})
     };
@@ -62,7 +63,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
       ...originalMeta,
       truncated: true,
       deliveryStatus: "budget_rejected",
-      degradationReason: originalMeta.degradationReason ?? "tool_result_budget",
+      degradationReason,
       omittedCount: (originalMeta.omittedCount ?? 0) + records.length
     }
   };

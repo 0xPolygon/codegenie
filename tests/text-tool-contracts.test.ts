@@ -191,6 +191,21 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     expect(packed.text).toContain(`continue with startLine=${range[1] + 1}, endLine=166`);
   });
 
+  it("attributes a second cut of a capped range to the caller budget", async () => {
+    const canonical = await fixture.call("read_range", { path: "large.custom", startLine: 1, endLine: 620 });
+    expect(canonical.meta).toMatchObject({ degradationReason: "source_line_limit", omittedCount: 220 });
+
+    const packed = packTextToolResult(canonical, 448);
+    expect(packed.meta).toMatchObject({ degraded: false, degradationReason: "tool_result_budget", deliveryStatus: "truncated" });
+    const lastLine = packed.meta!.deliveredLineRange![1];
+    expect(packed.meta?.omittedCount).toBe(620 - lastLine);
+    expect(packed.text).toContain(`continue with startLine=${lastLine + 1}, endLine=620`);
+    expect(packTextToolResult(canonical, 1).meta).toMatchObject({
+      degradationReason: "tool_result_budget", deliveryStatus: "budget_rejected", omittedCount: 620
+    });
+    expect(canonical.meta?.degradationReason).toBe("source_line_limit");
+  });
+
   it.each(["../outside", "/etc/passwd", ".git/config"])("rejects unsafe paths instead of empty reads: %s", async path => {
     expect(await fixture.call("read_range", { path, startLine: 1, endLine: 2 })).toMatchObject({ isError: true, errorCode: "path_outside_repo" });
   });
