@@ -70,6 +70,7 @@ import { renderCoverageSummaryLines } from "../src/util/coverage-summary.js";
 import { summarizeAdaptiveReviews } from "../src/util/adaptive-review.js";
 import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
+import { textRepository } from "./helpers/text-repository.js";
 
 describe("phase 5 pipeline regressions", () => {
   it.each([false, true])("repairs omitted reconciliation with bounded calls and preserves unanswered questions, exhaust=%s", async exhaust => {
@@ -2056,6 +2057,7 @@ describe("phase 5 pipeline regressions", () => {
 
   it("resolves packet-context planner hints into context text and keeps tool-lookup hints for workers", async () => {
     const reads: Array<{ path: string; startLine: number; endLine: number }> = [];
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const meta = { backend: "text" as const, precision: "exact" as const, degraded: false };
     const tools = {
       ...fakeTools(),
@@ -2103,7 +2105,7 @@ describe("phase 5 pipeline regressions", () => {
       [fakeDiffFile("app.ts")],
       [fakeFacts("app.ts", "per-hunk")],
       fakeRepositoryIndex(tools),
-      nullTelemetry(),
+      { ...nullTelemetry(), event: event => events.push(event) },
       { config: config(), enabledLenses: ["core/code-review"] }
     );
 
@@ -2114,6 +2116,7 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ reason: "worker can inspect test", expectedUse: "tool_lookup" }),
       expect.objectContaining({ reason: "out of packet scope", expectedUse: "tool_lookup" })
     ]);
+    expect(events).toContainEqual(expect.objectContaining({ message: "packet_context_hint_unresolved", file: "other.ts", data: expect.objectContaining({ outcome: "outside_packet" }) }));
   });
 
   it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
@@ -3265,6 +3268,61 @@ describe("phase 5 pipeline regressions", () => {
     expect(symbolReads).toEqual([{ path: "quote.ts", selector: { symbolName: "scaleAmount" } }]);
     expect(packets[0]?.contextText).toContain("Planner packet context (enclosing_symbol) for quote.ts:scaleAmount");
     expect(packets[0]?.contextText).toContain("function scaleAmount");
+  });
+
+  it.each([
+    { caller: "decoder/registry.go", target: "decoder/ropescale.go", symbol: "parseRopeFlat", callerText: "package decoder\nfunc build() { parseRopeFlat() }\n", targetText: "package decoder\nfunc parseRopeFlat() {}\n" },
+    { caller: "src/llm/pi-runner.ts", target: "src/llm/diagnostics.ts", symbol: "withoutRejectedArguments", callerText: "function check() { withoutRejectedArguments('x'); }\n", targetText: "export function withoutRejectedArguments(value: string) { return value; }\n" },
+    { caller: "packages/coding-agent/src/core/sdk.ts", target: "packages/coding-agent/src/core/settings-manager.ts", symbol: "getDefaultTools", callerText: "function create() { getDefaultTools(); }\n", targetText: "export class SettingsManager {\n  getDefaultTools() { return []; }\n}\n" }
+  ])("recovers a real-repository-shaped wrong-file hint for $symbol", async ({ caller, target, symbol, callerText, targetText }) => {
+    const fixture = await textRepository({ [caller]: callerText, [target]: targetText });
+    try {
+      const plan: ReviewPlan = { ...fakePlan(caller), coverage: [{ hunkId: "h1", path: caller, coverage: "normal", lenses: ["core/code-review"], reason: "review",
+        surroundingContextHints: [{ kind: "enclosing_symbol", path: caller, symbol, reason: "inspect the definition", expectedUse: "packet_context" }] }] };
+      const packets = await buildReviewPackets(plan, [fakeDiffFile(caller)], [fakeFacts(caller, "per-hunk")],
+        fakeRepositoryIndex(fixture.tools), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+      expect(packets[0]?.contextText).toContain(`Planner packet context (enclosing_symbol) for ${target}:${symbol}`);
+      expect(packets[0]?.contextText).toContain(symbol);
+    } finally { fixture.dispose(); }
+  });
+
+  it.each(["full", "prose", "truncated", "ambiguous", "degraded", "unparsed", "incomplete", "empty", "error"] as const)("recovers a wrong-file planner symbol hint only from a complete unique definition: %s", async mode => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const definitions = mode === "empty" ? [] : [{ symbol: { path: "decoder/ropescale.go", name: "parseRopeFlat", kind: "function" as const, lineRange: [10, 12] as [number, number] }, text: "func parseRopeFlat() {}" }];
+    if (mode === "ambiguous") definitions.push({ ...definitions[0]!, symbol: { ...definitions[0]!.symbol, path: "decoder/other.go" } });
+    const tools = { ...fakeTools(),
+      readSymbol: async () => ({ meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, lookupStatus: "not_found" as const, deliveryStatus: "empty" as const } }),
+      findDefinition: async () => { if (mode === "error") throw new Error("lookup failed"); return { definitions, meta: { backend: "tree-sitter" as const, precision: "syntactic" as const,
+        degraded: mode === "degraded", truncated: mode === "truncated", deliveryStatus: "full" as const,
+        unparsedCandidatePaths: mode === "unparsed" ? ["schema/example.custom"] : mode === "prose" ? ["docs/example.md"] : [], incompleteCandidatePaths: mode === "incomplete" ? ["src/broken.ts"] : [] } }; } };
+    const plan: ReviewPlan = { ...fakePlan("decoder/registry.go"), coverage: [{ hunkId: "h1", path: "decoder/registry.go", coverage: "normal", lenses: ["core/code-review"], reason: "review",
+      surroundingContextHints: [{ kind: "enclosing_symbol", path: "decoder/registry.go", symbol: "parseRopeFlat", reason: "inspect the parser", expectedUse: "packet_context" }] }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("decoder/registry.go")], [fakeFacts("decoder/registry.go", "per-hunk")],
+      fakeRepositoryIndex(tools), { ...nullTelemetry(), event: event => events.push(event) }, { config: config(), enabledLenses: ["core/code-review"] });
+    if (mode === "full" || mode === "prose") {
+      expect(packets[0]?.contextText).toContain("Planner packet context (enclosing_symbol) for decoder/ropescale.go:parseRopeFlat");
+      expect(packets[0]?.contextText).toContain("func parseRopeFlat() {}");
+      expect(events.filter(event => event.message === "packet_context_hint_unresolved")).toHaveLength(0);
+    } else {
+      expect(packets[0]?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "parseRopeFlat", expectedUse: "tool_lookup" })]);
+      expect(events).toContainEqual(expect.objectContaining({ message: "packet_context_hint_unresolved", data: expect.objectContaining({ outcome: mode === "error" ? "error" : "not_resolved" }) }));
+    }
+  });
+
+  it.each(["hint_budget", "context_truncated"] as const)("keeps a recovered hint available to tools when source delivery fails: %s", async outcome => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, deliveryStatus: "full" as const };
+    const tools = { ...fakeTools(),
+      readSymbol: async (_path: string, selector: { symbolName?: string }) => selector.symbolName === "local" ? { text: "x".repeat(1800), meta } : { meta },
+      findDefinition: async () => ({ definitions: [{ symbol: { path: "helper.ts", name: "target", kind: "function" as const, lineRange: [1, 2] as [number, number] }, text: `function target() { ${"x".repeat(outcome === "hint_budget" ? 2100 : 500)} }` }], meta }),
+      ...(outcome === "context_truncated" ? { buildPacketContext: async (file: DiffFile) => ({ context: { path: file.path }, relevantTests: [], outline: { path: file.path, language: "typescript", imports: ["x".repeat(7800)], topLevelSymbols: [], testSymbols: [], notes: [] } }) } : {}) };
+    const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review", surroundingContextHints: [
+      { kind: "enclosing_symbol", path: "app.ts", symbol: "target", reason: "inspect target", expectedUse: "packet_context" }
+    ] }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], fakeRepositoryIndex(tools),
+      { ...nullTelemetry(), event: event => events.push(event) }, { config: config(), enabledLenses: ["core/code-review"] });
+    expect(packets[0]?.surroundingContextHints).toEqual([expect.objectContaining({ symbol: "target", expectedUse: "tool_lookup" })]);
+    expect(events).toContainEqual(expect.objectContaining({ message: "packet_context_hint_unresolved", data: expect.objectContaining({ outcome }) }));
   });
 
   it("does not resolve a call-site hint to the callee body when only self mentions are found", async () => {
