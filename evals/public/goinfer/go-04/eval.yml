@@ -13,4 +13,4 @@ should_find:
     path: decoder/blockspec.go
     lineRange: [434, 436]
     severityAtLeast: medium
-    failureModePattern: '^(?=[\s\S]*\b(?:trail\w*|last|final|pending|anchor|seed|token\w*)\b)(?=[\s\S]*\b(?:unwritten|unforwarded|unprefilled|stale|incomplete|absent|(?:never|not|without)[^.\n]*(?:forward|writ|fed|prefill|present)\w*|only[^.\n]*(?:prefill|writ)\w*|no\s+kv\s+row)\b)'
+    failureModePattern: '^(?=[\s\S]*\b(?:trail\w*|last|final|pending|anchor|seed|token\w*)\b)(?=[\s\S]*\b(?:kv|cache\w*|resident\w*|prefill\w*)\b)(?=[\s\S]*(?:\b(?:unwritten|unforwarded|unprefilled|stale)\b|\b(?:incomplete|invalid)\s+(?:resident\s+)?(?:kv|cache\w*|context|prefix)\b|\b(?:kv|cache\w*)\b[^.\n]{0,40}\b(?:incomplete|invalid|absent|missing)\b|\b(?:never|not|without)\b[^.\n]{0,80}\b(?:forward|writ|fed|prefill)\w*\b|\b(?:not|never)\s+present\s+in\s+(?:the\s+)?(?:resident\s+)?(?:kv|cache)\b|\bonly\b[^.\n]{0,60}\b(?:prefill|writ)\w*\b|\b(?:kv|cache\w*)\b[^.\n]{0,60}\bonly\b[^.\n]{0,40}\bprompt\b|\b(?:absent|missing)\s+(?:from|in)\s+(?:the\s+)?(?:resident\s+)?(?:kv|cache)\b|\bno\s+kv\s+row\b))'
