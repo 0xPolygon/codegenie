@@ -1,0 +1,16 @@
+# Public eval case goinfer/go-12. The oracle stays outside the reviewed checkout.
+name: go-12
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-12
+command:
+  base: bb5d55b84c195d05540904129a5ff2c4439d0690
+  head: 76cab582735ad426ea696fa8ca1369040f84d892
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: bf16-convolution-aliases-released-mapping
+  path: decoder/lfm2.go
+  lineRange: [49, 59]
+  severityAtLeast: low
