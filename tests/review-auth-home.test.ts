@@ -25,6 +25,8 @@ function authFixture(stored: boolean) {
   if (stored) writeAuth(home, storedKey);
   vi.stubEnv("CODEGENIE_HOME", ambientHome);
   vi.stubEnv("OPENAI_API_KEY", envKey);
+  // The offline provider error can be retried; auth selection does not depend on retry jitter.
+  const random = vi.spyOn(Math, "random").mockReturnValue(0);
   const authorization: Array<string | null> = [];
   vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
@@ -42,6 +44,7 @@ function authFixture(stored: boolean) {
     home, suite, repo, base, head, authorization,
     logs: path.join(directory, "logs"),
     dispose() {
+      random.mockRestore();
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
       rmSync(directory, { recursive: true, force: true });
