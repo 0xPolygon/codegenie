@@ -58,6 +58,10 @@ describe("repository intelligence", () => {
     expect(prose.meta).toMatchObject({ lookupStatus: "unavailable", lookupNote: expect.stringContaining("docs/plan.md") });
     expect(prose.meta.unparsedCandidatePaths).toContain("docs/plan.md");
     expect(telemetry.toolCalls).toContainEqual(expect.objectContaining({ tool: "find_definition", lookupNote: prose.meta.lookupNote }));
+    await expect(tools.findDefinition("")).rejects.toMatchObject({ code: "invalid_args" });
+    expect(telemetry.toolCalls.at(-1)).toMatchObject({ tool: "find_definition", status: "error" });
+    expect(telemetry.toolCalls.at(-1)).not.toHaveProperty("unparsedCandidatePaths");
+    expect(telemetry.toolCalls.at(-1)).not.toHaveProperty("incompleteCandidatePaths");
     expect((await tools.findDefinition("LoadQwenVisionEncoder")).meta.lookupStatus).toBe("unavailable");
     const go = await tools.findDefinition("greedyN");
     expect(go.definitions.map(item => item.symbol.kind).sort()).toEqual(["function", "value"]);

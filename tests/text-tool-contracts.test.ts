@@ -1,10 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
-import { packOutlineToolResult } from "../src/llm/search-result-packing.js";
+import { createPackableToolResult, packOutlineToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
+import { withMeta } from "../src/llm/repository-tool-guidance.js";
+import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
 describe("text tools: exact range and model-facing argument contracts", () => {
+  it("preserves definition lookup guidance in an uncut result", () => {
+    const meta: ToolResultMeta = { backend: "text", precision: "text", degraded: false,
+      lookupStatus: "unavailable", lookupNote: "Not checked: use find_symbol_mentions.", deliveryStatus: "empty" };
+    const text = withMeta("[]", meta);
+    expect(text).toBe("[]\n\n[tool meta: lookup: unavailable; Not checked: use find_symbol_mentions.; delivery: empty]");
+  });
   let fixture: Awaited<ReturnType<typeof textRepository>>;
   beforeAll(async () => {
     fixture = await textRepository({
@@ -177,5 +185,106 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       expect(description(name)).toContain("Discover unknown paths with list_files (head only), find_definition or search_files");
     }
     expect(description("find_symbol_mentions")).toContain("including comments/strings");
+  });
+});
+
+const exactSource = {
+  backend: "text",
+  precision: "exact",
+  degraded: false,
+  requestedSource: "head",
+  sourceUsed: "head",
+  lookupStatus: "found",
+  deliveryStatus: "full"
+} satisfies ToolResultMeta;
+
+describe("whole-record tool packing", () => {
+  it("preserves a full Go source range and reports where a cut range ends", () => {
+    // goinfer go-01, cmd/serve/admin.go:76-87.
+    const records = [
+      "\ts.regMu.Lock()",
+      "\tif _, dup := s.models[lm.name]; dup { // raced another load of the same name",
+      "\t\ts.regMu.Unlock()",
+      '\t\twriteErr(w, http.StatusConflict, fmt.Sprintf("model %q already loaded", lm.name))',
+      "\t\treturn",
+      "\t}",
+      "\ts.models[lm.name] = lm",
+      "\ts.regMu.Unlock()",
+      '\tif s.cfg.sessionDir != "" && s.cfg.kvSessions > 0 {',
+      "\t\tlm.sessions.load(sessionSubdir(s.cfg.sessionDir, lm.fp))",
+      "\t}",
+      '\twriteJSON(w, http.StatusOK, map[string]any{"id": lm.name, "object": "model", "status": "loaded"})'
+    ];
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "" },
+      { ...exactSource, totalLines: 120, deliveredLineRange: [76, 87] });
+    result.sourceLineRange = [76, 87];
+    expect(result.text).toBe(records.join("\n") + "\n\n[tool meta: source: requested head, used head; lookup: found; delivery: full]");
+    expect(packTextToolResult(result, result.text.length)).toBe(result);
+
+    const expected = records.slice(0, 2).join("\n") +
+      "\n\n[tool meta: source: requested head, used head; lookup: found; delivery: truncated; truncated: 10 omitted; truncation: tool_result_budget; delivered lines 76-77 of 120; continue with startLine=78]";
+    const cut = packTextToolResult(result, expected.length);
+    expect(cut.text).toBe(expected);
+    expect(cut.sourceLineRange).toEqual([76, 77]);
+    expect(cut.meta).toMatchObject({ deliveredLineRange: [76, 77], degraded: false, degradationReason: "tool_result_budget" });
+    expect(result.sourceLineRange).toEqual([76, 87]);
+  });
+
+  it("keeps serialized likely-test records intact and combines backend and delivery omissions", () => {
+    // Pi pi-07, representative symbols from the settings-manager test lookup.
+    const tests = [
+      { path: "packages/coding-agent/test/settings-manager.test.ts", name: "SettingsManager", kind: "test", lineRange: [8, 601] },
+      { path: "packages/coding-agent/test/settings-manager.test.ts", name: "preserves externally added settings", kind: "test", lineRange: [28, 112] }
+    ];
+    const records = tests.map(test => JSON.stringify(test, null, 2).split("\n").map(line => "  " + line).join("\n"));
+    const meta = { backend: "tree-sitter", precision: "heuristic", degraded: false, truncated: true, omittedCount: 39, omittedCountIsLowerBound: true } satisfies ToolResultMeta;
+    const result = createPackableToolResult({ open: "[\n", records, separator: ",\n", close: "\n]" }, meta);
+    const original = JSON.stringify(tests, null, 2) + "\n\n[tool meta: truncated: at least 39 omitted]";
+    expect(packTextToolResult(result, original.length).text).toBe(original);
+
+    const cut = packTextToolResult(result, 355);
+    const [body, footer] = cut.text.split("\n\n[tool meta: ");
+    expect(JSON.parse(body!)).toEqual(tests.slice(0, 1));
+    expect(footer).toContain("truncated: at least 40 omitted");
+    expect(cut.meta).toMatchObject({ omittedCount: 40, omittedCountIsLowerBound: true });
+    expect(cut.text.length).toBeLessThanOrEqual(355);
+  });
+
+  it("keeps complete diff blocks and refuses when the first block cannot fit", () => {
+    // Codegenie cg-12, the test literal that exercises generated-file detection.
+    const first = 'tests/file-classifier.test.ts @@ -18,2 +18,2 @@\n  writeRepoFile(repo, "src/marker.go", "// Code generated by tool. DO NOT EDIT.\\npackage src\\n");';
+    const next = "src/git/git-client.ts @@ -100,3 +100,3 @@\n" + "new\tline\n".repeat(25);
+    const labels = ["test hunk, line 20", "Git client hunk, line 100"];
+    const result = createPackableToolResult({ open: "", records: [first, next], separator: "\n\n", close: "", labels }, exactSource);
+    const packed = packTextToolResult(result, 365);
+    expect(packed.text.split("\n\n[tool meta:")[0]).toBe(first);
+    expect(packed.text).toContain("last delivered: test hunk, line 20; next: Git client hunk, line 100");
+    expect(packed.packable?.labels).toEqual(labels.slice(0, 1));
+    expect(result.packable?.labels).toEqual(labels);
+    expect(result.text).not.toContain("last delivered:");
+    expect(packed.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 1 });
+    const refused = packTextToolResult(result, first.length);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", truncated: true, omittedCount: 2 } });
+    expect(refused.text).toContain("Narrow the request");
+  });
+
+  it("repacks canonical symbol results from the cache without losing a complete later delivery", async () => {
+    // Codegenie cg-09, classifyVerifierSchemaInvalid in src/pipeline/verifier.ts.
+    const records = ["    argumentsValue.verdict === \"revise\" &&",
+      '    (!("findingUpdates" in argumentsValue) || argumentsValue.findingUpdates == null) &&',
+      '    (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);'];
+    const result = createPackableToolResult({ open: "", records, separator: "\n", close: "" },
+      { backend: "text", precision: "text", degraded: true, degradationReason: "syntax fallback" });
+    const cache = createToolResultCache();
+    const input = { toolName: "read_symbol", args: { path: "src/pipeline/verifier.ts", symbolName: "classifyVerifierSchemaInvalid" }, run: async () => result };
+    const first = await cache.execute(input);
+    const small = packTextToolResult(first.result, 186);
+    expect(small.text).toContain(records[0]);
+    expect(small.text).not.toContain(records[1]);
+    expect(small.meta).toMatchObject({ degraded: true, degradationReason: "syntax fallback", deliveryStatus: "truncated" });
+    const hit = await cache.execute(input);
+    expect(hit.status).toBe("hit");
+    expect(packTextToolResult(hit.result, result.text.length)).toEqual(result);
   });
 });

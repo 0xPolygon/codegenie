@@ -356,6 +356,9 @@ export type ToolResultMeta = {
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
+  totalLines?: number;
+  /** Inclusive source lines when each packable record is one consecutive line. */
+  deliveredLineRange?: [number, number];
   recovery?: {
     tool: "read_range";
     path: string;
