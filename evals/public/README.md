@@ -45,6 +45,6 @@ For an approved slot, run the chosen binary with `codegenie eval --eval-dir eval
 
 ## Adjudicate against the source
 
-Treat the matchers as a pre-filter. Check matches and misses against the pinned diff, repository context and oracle. Negative controls flag findings at medium severity or higher in the configured span. Review other reported findings as well. A separate genuine defect can appear on either kind of case.
+Treat the matchers as a pre-filter. Negated descriptions can still match lexical patterns; source adjudication decides whether a finding counts. Check matches and misses against the pinned diff, repository context and oracle. Negative controls flag findings at medium severity or higher in the configured span. Review other reported findings as well. A separate genuine defect can appear on either kind of case.
 
 For comparisons, track where each adjudicated defect first appears and where it is lost or downgraded. Compare Stage 5 planning, Stage 6 packets, Stage 7 packet review, Stage 9 verification and Stage 10 composition across arms. Report calls, tokens, elapsed time and cost per stage, along with errors, repairs, timeouts, degraded tools and budget stops. Cite aggregate evidence for hardening and simplification proposals. Have two analysts using different models write independent assessments before the operator reconciles them, and record their disagreements.

@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
@@ -423,6 +424,21 @@ describe("eval scoring", () => {
     expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
     artifacts.metricsSources = {};
     expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+  });
+
+  it("does not credit stale returned output as the go-04 resident-KV defect", () => {
+    const evalCase = parseYaml(readFileSync("evals/public/goinfer/go-04/eval.yml", "utf8")) as EvalCase;
+    const expectation = evalCase.should_find![0]!;
+    const finding = candidate("go-04-probe", "decoder/blockspec.go", 435, {
+      failureMode: "The final seed token is stale in the returned output, but the resident KV cache contains the complete generated prefix."
+    });
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final seed token is stale in the returned output, while the KV cache is complete and no positions are missing.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The trailing token is stale in output, but the cache contains every written row and has no missing KV entries.";
+    expect(matchExpectation(expectation, finding).matched).toBe(false);
+    finding.failureMode = "The final token is recorded as resident even though its KV state is stale, so reuse produces incorrect output.";
+    expect(matchExpectation(expectation, finding).matched).toBe(true);
   });
 
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
