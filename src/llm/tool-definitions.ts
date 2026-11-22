@@ -7,6 +7,7 @@ import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
+import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 import { buildReadDefinitionTool } from "./definition-tool.js";
 
@@ -40,6 +41,7 @@ const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_us
 const sixToolFactories: Partial<Record<typeof SIX_TOOL_NAMES[number], (tools: RepositoryTools) => ToolDefinition>> = {
   read_definition: buildReadDefinitionTool,
   read_range: buildSixReadRangeTool,
+  find_usages: buildFindUsagesTool,
   search_files: buildSixSearchTool,
   list_files: buildSixListFilesTool
 };

@@ -389,6 +389,8 @@ export type ToolResultMeta = {
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
   candidateScans?: Partial<Record<"head" | "base", { unparsedCandidatePaths: string[]; incompleteCandidatePaths: string[] }>>;
+  usageDelivery?: { candidateFiles: number; filesScanned: number; filesParsed: number; discoveredRows: number; deliveredRows: number;
+    scanComplete: boolean; coverageComplete: boolean; stopReason?: "row_limit" | "file_scan_limit" };
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   totalLines?: number;
   /** Inclusive source lines when each packable record is one consecutive line. */
@@ -672,6 +674,10 @@ export type PlannerRecoveryTelemetry = {
 };
 
 export interface RepositoryTools {
+  /** Six-tool surface only; absent from legacy adapters until that surface is selected. */
+  findUsages?(name: string, options?: import("./repo/usage-search.js").UsageSearchOptions): Promise<{
+    page: import("./repo/usage-search.js").UsagePage; meta: ToolResultMeta
+  }>;
   readRange(
     path: string,
     startLine: number,
@@ -1833,6 +1839,7 @@ export type ToolCallRecord = {
   tool: string;
   args: {
     name?: string;
+    scope?: string;
     path?: string;
     packetId?: string;
     symbolName?: string;
@@ -1864,6 +1871,7 @@ export type ToolCallRecord = {
   unparsedCandidatePaths?: ToolResultMeta["unparsedCandidatePaths"];
   incompleteCandidatePaths?: ToolResultMeta["incompleteCandidatePaths"];
   candidateScans?: ToolResultMeta["candidateScans"];
+  usageDelivery?: ToolResultMeta["usageDelivery"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   totalLines?: number;
   deliveredLineRange?: ToolResultMeta["deliveredLineRange"];
