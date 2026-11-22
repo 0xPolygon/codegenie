@@ -1,5 +1,5 @@
 import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
-import { createPackableToolResult } from "./search-result-packing.js";
+import { createPackableToolResult, renderOutlineToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
 import type { RepositoryTools, ReviewToolSurface, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
@@ -69,7 +69,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     buildBoundedReadRangeTool(tools),
     {
       name: "read_file_outline",
-      description: "Read a compact outline of imports, top-level symbols, and test symbols. Without syntax support, symbolExtraction is unavailable: empty symbol arrays do not mean no definitions. Small files can include complete sourceText when it fits; larger or locally bounded outlines provide a read_range hint. For known source locations, prefer read_range directly. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Read a compact outline of imports, top-level symbols, and test symbols. Without syntax support, symbolExtraction is unavailable: empty symbol arrays do not mean no definitions. Small files can include complete numbered source when it fits; larger or locally bounded outlines provide a read_range hint. For known source locations, prefer read_range directly. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -80,7 +80,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; source?: SourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.readFileOutline(input.path, input.source));
-        return { text: withMeta(JSON.stringify(result.outline, null, 2), result.meta), outline: result.outline, meta: result.meta };
+        return { text: renderOutlineToolResult(result.outline, result.meta), outline: result.outline, meta: result.meta };
       })
     },
     {
@@ -108,6 +108,19 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           selector.line = input.line;
         }
         const result = await runWithoutFacadeRecording(tools, () => tools.readSymbol(input.path, selector, input.source));
+        if (result.meta.deliveryStatus === "budget_rejected") {
+          return { text: withMeta("The first source line exceeds the source character limit; use search_files to locate a shorter excerpt.", result.meta),
+            meta: result.meta, isError: true, errorCode: "budget_exhausted" };
+        }
+        const range = result.meta.deliveredLineRange;
+        if (range && result.text !== undefined) {
+          const meta = result.meta.precision === "text" && result.meta.lookupStatus === "found"
+            ? { ...result.meta, lookupStatus: "unavailable" as const } : result.meta;
+          const records = result.text.split("\n").map((line, index) => numberSourceLine(line, range[0] + index));
+          return { ...createPackableToolResult({ open: "", records, separator: "\n", close: "" }, meta),
+            ...(meta.deliveryStatus === "full" && !meta.truncated && meta.precision === "syntactic"
+              ? { rawSource: result.text, sourceLineRange: range } : {}) };
+        }
         const payload = {
           lookupStatus: result.meta.lookupStatus,
           deliveryStatus: result.meta.deliveryStatus,

@@ -1,8 +1,8 @@
 import type { DiffRecordGroups, ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
-import type { ToolResultMeta } from "../types.js";
+import type { FileOutline, ToolResultMeta } from "../types.js";
 import { MAX_OMITTED_DIFF_LABELS } from "../repo/diff-blocks.js";
 import { earlierSearchPosition, hasSearchContext, searchContextPosition, searchCutNotice, searchDeliveryMeta } from "../repo/search.js";
-import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
+import { MISSING_FILE_GUIDANCE, numberSourceLine, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
 function renderRecordOpening(open: string, meta: ToolResultMeta): string {
   const { requestedRange, sourceUsed, deliveredLineRange, totalLines } = meta;
@@ -90,7 +90,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
   if (!input.packable || input.isError || input.text.length <= allowance) return input;
   if (input.budgetFallback) return packTextToolResult(input.budgetFallback, allowance);
 
-  const { packable, sourceLineRange, ...result } = input;
+  const { packable, sourceLineRange, rawSource: _rawSource, ...result } = input;
   const { open, records, separator, close, labels, keepWithNext, diffGroups } = packable;
   const unreadAt = (index: number): string | undefined => {
     const label = labels?.[index];
@@ -291,6 +291,29 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
 }
 
 /** Keep outlines parseable under local caps; never present a chopped sourceText as complete. */
+export function renderOutlineToolResult(outline: FileOutline, meta: ToolResultMeta, packed = false): string {
+  const { sourceText, ...fields } = outline;
+  const description = { ...fields, notes: fields.notes.map(note => note.replace("Read sourceText or use read_range",
+    sourceText?.text ? "Read the numbered source or use read_range" : "Use read_range")) };
+  const source = meta.sourceUsed ?? "head";
+  const total = meta.totalLines;
+  const note = total !== undefined
+    ? `${outline.path}@${source}: ${total} lines. ${sourceText?.text ? "Numbered source follows." : "Source lines delivered: none; declaration ranges are listed above."}`
+    : "";
+  const next = meta.recovery;
+  const continuation = next ? `Continue with read_range at ${next.path}@${next.source} startLine=${next.startLine}, endLine=${next.endLine}.` : "";
+  const { recovery: _recovery, totalLines: _totalLines, ...compactMeta } = meta;
+  const text = packed
+    ? JSON.stringify({ outline: description, meta: compactMeta,
+      notice: ["Bounded outline. Omitted symbols do not imply absence.", note, continuation].filter(Boolean).join(" ") })
+    : withMeta(JSON.stringify(description, null, 2), meta, [note, continuation].filter(Boolean));
+  if (!sourceText?.text) return text;
+  const { startLine, endLine } = sourceText;
+  const positioned = sourceText.text.split("\n").slice(0, endLine - startLine + 1)
+    .map((line, index) => numberSourceLine(line, startLine + index));
+  return [text, renderSourceBlockHeader(outline.path, source, [startLine, endLine], total ?? endLine), ...positioned].join("\n");
+}
+
 export function packOutlineToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.outline || input.text.length <= allowance) return input;
   if (input.meta?.lookupStatus === "file_missing") {
@@ -304,25 +327,40 @@ export function packOutlineToolResult(input: ToolExecutionResult, allowance: num
   const outline = structuredClone(input.outline);
   let omitted = input.meta?.omittedCount ?? 0;
   let changed = false;
+  let nextLine = input.meta?.recovery?.startLine ?? Infinity;
+  const totalLines = input.meta?.totalLines;
+  const recordOmission = (line?: number) => {
+    omitted++;
+    changed = true;
+    if (line !== undefined) nextLine = Math.min(nextLine, line);
+  };
   const meta = () => ({ backend: "text" as const, precision: "heuristic" as const, degraded: false,
-    ...input.meta, ...(changed ? { degraded: true, truncated: true, deliveryStatus: "truncated" as const,
-      omittedCount: omitted, omittedCountIsLowerBound: true } : {}) });
-  const render = () => JSON.stringify({ outline, meta: meta(), notice: "Bounded outline. Use search_files to locate source, then read_range; omitted symbols do not imply absence." });
+    ...input.meta, ...(changed ? { truncated: true, deliveryStatus: "truncated" as const,
+      degradationReason: (input.meta?.degraded ? input.meta.degradationReason : undefined) ?? "tool_result_budget",
+      omittedCount: omitted, omittedCountIsLowerBound: true,
+      ...(totalLines !== undefined && nextLine <= totalLines ? { recovery: {
+        tool: "read_range" as const, path: outline.path, source: input.meta?.sourceUsed ?? "head",
+        startLine: nextLine, endLine: Math.min(totalLines, nextLine + 79), reason: "first source position affected by the outline delivery budget"
+      } } : {})
+    } : {}) });
+  const render = () => renderOutlineToolResult(outline, meta(), true);
   if (render().length > allowance && outline.sourceText) {
     outline.sourceReadHint = { tool: "read_range", path: outline.path,
       startLine: outline.sourceText.startLine, endLine: Math.min(outline.sourceText.endLine, outline.sourceText.startLine + 79) };
+    recordOmission(outline.sourceText.startLine);
     delete outline.sourceText;
-    omitted++;
-    changed = true;
   }
   for (const entries of [outline.testSymbols, outline.topLevelSymbols, outline.imports, outline.notes]) {
     while (entries.length && render().length > allowance) {
-      entries.pop();
-      omitted++;
-      changed = true;
+      const entry = entries.pop();
+      recordOmission(typeof entry === "object" ? entry.lineRange[0] : entries === outline.imports ? 1 : undefined);
     }
   }
-  if (render().length > allowance) return { text: "Outline cannot fit the remaining result budget. Use search_files or a known read_range; this is not an empty file.",
-    isError: true, errorCode: "budget_exhausted", meta: { ...meta(), degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
+  if (render().length > allowance) {
+    const refusalMeta = { ...meta(), truncated: true, deliveryStatus: "budget_rejected" as const,
+      degradationReason: (input.meta?.degraded ? input.meta.degradationReason : undefined) ?? "tool_result_budget" };
+    return { text: withMeta("Outline cannot fit the remaining result budget. Use a known read_range; this is not an empty file.", refusalMeta),
+      isError: true, errorCode: "budget_exhausted", meta: refusalMeta };
+  }
   return { ...input, text: render(), meta: meta() };
 }

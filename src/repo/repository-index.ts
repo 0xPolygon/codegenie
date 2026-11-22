@@ -275,16 +275,25 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       async () => {
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_file_outline"));
         const result = await this.limit(() => readOutline(this.opts.resolver, this.opts.registry, path, source));
+        const end = result.totalLines;
+        const next = result.nextLine ?? 1;
         const meta: ToolResultMeta = {
           backend: result.parsed?.tree === undefined ? "text" : "tree-sitter",
           precision: result.parsed?.tree === undefined ? "heuristic" : "syntactic",
           degraded: result.degraded,
           requestedSource: source.kind, sourceUsed: source.kind,
+          ...(end !== undefined ? { totalLines: end } : {}),
           ...(result.fileMissing ? { lookupStatus: "file_missing" as const, deliveryStatus: "empty" as const } : {}),
           ...(result.outline.sourceText && !result.truncated && (source.kind === "head" || source.kind === "base")
             ? { lookupStatus: "found" as const, deliveryStatus: "full" as const, sourceUsed: source.kind } : {}),
           ...(result.degradationReason !== undefined ? { degradationReason: result.degradationReason } : {}),
-          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
+          ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0, deliveryStatus: "truncated" as const,
+            degradationReason: result.degradationReason ?? "outline_result_limit",
+            ...(end !== undefined && end >= next ? { recovery: {
+              tool: "read_range" as const, path, source: source.kind, startLine: next, endLine: Math.min(next + 79, end),
+              reason: "first source position affected by the outline limit"
+            } } : {})
+          } : {})
         };
         return {
           value: { outline: result.outline, meta },
@@ -359,7 +368,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ? [adapter.getEnclosingSymbol(parsed, selector.line)].filter((symbol): symbol is SymbolInfo => symbol !== undefined)
           : symbols.filter((symbol) => symbolMatches(symbol, selector.symbolName ?? ""));
       const symbol = matches[0];
-      const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
+      const symbolSnippet = symbol ? definitionSourceSnippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
       const meta: ToolResultMeta = {
         backend: "tree-sitter",
         precision: "syntactic",
@@ -369,12 +378,17 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         requestedSource,
         sourceUsed: source.kind,
         ...(symbol === undefined ? { degradationReason: "symbol not found" } : {}),
-        ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1 } : {})
+        ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1, lookupNote: "More candidates: use find_definition." } : {}),
+        ...(symbol && symbolSnippet ? { totalLines: symbolSnippet.totalLines,
+          requestedRange: { path, startLine: symbol.lineRange[0], endLine: symbol.lineRange[1] },
+          ...(symbolSnippet.deliveredLineRange ? { deliveredLineRange: symbolSnippet.deliveredLineRange } : {}) } : {})
       };
       if (symbol !== undefined && symbolSnippet?.truncated) {
         meta.truncated = true;
         meta.omittedCount = (meta.omittedCount ?? 0) + symbolSnippet.omittedCount;
-        meta.recovery = recoveryReadRange(path, symbol.lineRange, source, "read exact symbol range because read_symbol was truncated");
+        meta.recovery = recoveryReadRange(path, [symbolSnippet.nextLine!, symbol.lineRange[1]], source, "read the remaining symbol lines");
+        meta.degradationReason = "source_line_or_character_limit";
+        if (!symbolSnippet.deliveredLineRange) meta.deliveryStatus = "budget_rejected";
       }
       const text = symbolSnippet?.text;
       return {
@@ -394,11 +408,16 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       lookupStatus: fallback === undefined ? "not_found" : "found",
       deliveryStatus: fallback === undefined ? "empty" : fallback.truncated ? "truncated" : "full",
       requestedSource,
-      sourceUsed: source.kind
+      sourceUsed: source.kind,
+      ...(fallback ? { totalLines: fallback.totalLines, requestedRange: { path, startLine: fallback.range[0], endLine: fallback.range[1] },
+        lookupNote: "Unverified text window; use find_definition for a verified declaration.",
+        ...(fallback.deliveredLineRange ? { deliveredLineRange: fallback.deliveredLineRange } : {}) } : {})
     };
     if (fallback?.truncated) {
       meta.truncated = true;
       meta.omittedCount = fallback.omittedCount;
+      meta.recovery = recoveryReadRange(path, [fallback.nextLine!, fallback.range[1]], source, "read the remaining text window");
+      if (!fallback.deliveredLineRange) meta.deliveryStatus = "budget_rejected";
     }
     return {
       value: { ...(fallback !== undefined ? { text: fallback.text } : {}), meta },
@@ -981,24 +1000,6 @@ function withSourceMeta<T extends { meta: ToolResultMeta }>(
   };
 }
 
-function snippet(
-  content: string,
-  range: [number, number],
-  maxLines: number,
-  maxChars: number
-): { text: string; truncated: boolean; omittedCount: number } {
-  const lines = content.split(/\n/u);
-  const end = Math.min(lines.length, range[1], range[0] + maxLines - 1);
-  const lineOmissions = Math.max(0, range[1] - end);
-  const text = lines.slice(Math.max(0, range[0] - 1), end).join("\n");
-  const capped = capText(text, maxChars);
-  return {
-    ...capped,
-    truncated: lineOmissions > 0 || capped.truncated,
-    omittedCount: lineOmissions + capped.omittedCount
-  };
-}
-
 function definitionSourceSnippet(content: string, range: [number, number], maxLines: number, maxChars: number): {
   text: string; truncated: boolean; omittedCount: number; totalLines: number; deliveredLineRange?: [number, number]; nextLine?: number
 } {
@@ -1022,22 +1023,16 @@ function definitionSourceSnippet(content: string, range: [number, number], maxLi
     ...(omittedCount > 0 ? { nextLine: last + 1 } : {}) };
 }
 
-function capText(text: string, maxChars: number): { text: string; truncated: boolean; omittedCount: number } {
-  if (text.length <= maxChars) {
-    return { text, truncated: false, omittedCount: 0 };
-  }
-  return { text: text.slice(0, maxChars), truncated: true, omittedCount: 1 };
-}
-
 function fallbackSymbolText(
   content: string,
   selector: { symbolName?: string; line?: number }
-): { text: string; truncated: boolean; omittedCount: number } | undefined {
+): (ReturnType<typeof definitionSourceSnippet> & { range: [number, number] }) | undefined {
   const lines = content.split(/\n/u);
   if (selector.line !== undefined) {
     const start = Math.max(1, selector.line - 20);
     const end = Math.min(lines.length, selector.line + 20);
-    return capText(lines.slice(start - 1, end).join("\n"), SYMBOL_MAX_CHARS);
+    const range: [number, number] = [start, end];
+    return { ...definitionSourceSnippet(content, range, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS), range };
   }
   if (selector.symbolName !== undefined) {
     const pattern = new RegExp(`\\b${escapeRegExp(selector.symbolName)}\\b`, "u");
@@ -1045,7 +1040,8 @@ function fallbackSymbolText(
     if (index >= 0) {
       const start = Math.max(0, index - 20);
       const end = Math.min(lines.length, index + 21);
-      return capText(lines.slice(start, end).join("\n"), SYMBOL_MAX_CHARS);
+      const range: [number, number] = [start + 1, end];
+      return { ...definitionSourceSnippet(content, range, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS), range };
     }
   }
   return undefined;

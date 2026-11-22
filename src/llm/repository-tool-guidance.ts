@@ -61,7 +61,7 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
   if (request && meta.truncated && meta.degradationReason && deliveryNotes.length === 0) {
     notes.push(`truncation: ${meta.degradationReason}`);
   }
-  if (meta.truncated && meta.deliveredLineRange) {
+  if (meta.truncated && meta.deliveredLineRange && (!request || meta.deliveredLineRange[1] < request.endLine)) {
     const [first, last] = meta.deliveredLineRange;
     const total = meta.totalLines === undefined ? "" : ` of ${meta.totalLines}`;
     const requestedEnd = request ? `, endLine=${request.endLine}` : "";

@@ -53,9 +53,8 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
       expect(result.isError).not.toBe(true);
       expect(result.meta).toMatchObject({ backend: "text", degraded: false, deliveryStatus: "full" });
       expect(result.text).toContain('"symbolExtraction": "unavailable"');
-      expect(result.text).toContain('"sourceText"');
-      // Wrapper appends metadata after the JSON payload.
-      expect(result.text).toContain(JSON.stringify(small));
+      expect(result.outline!.sourceText?.text).toBe(small);
+      expect(result.text).toContain(`${path}@head lines 1-4 of 4\n1\timport ./types.custom\n${numberedRule}`);
       expect((await fixture.call("read_range", { path, startLine: 2, endLine: 4 })).text).toContain(numberedRule);
     });
 
