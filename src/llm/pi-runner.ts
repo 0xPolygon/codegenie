@@ -3,6 +3,7 @@ import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
 import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
+import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
@@ -145,6 +146,7 @@ type ToolRunOutcome = {
 
 type ToolRejectionReason =
   | "tool_result_budget_exhausted"
+  | "usage_scan_limit"
   | "tool_call_budget_exhausted"
   | "investigation_round_budget_exhausted"
   | "unknown_tool";
@@ -904,7 +906,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               });
               const remainingResultChars = baseResultCharLimit;
               const budgetRejected = localBudgetReason !== undefined;
-              const outcome =
+              const outcome: ToolRunOutcome =
                 budgetRejected
                   ? rejectedToolOutcome(toolCall, localBudgetReason, localBudgetReason === "tool_result_budget_exhausted" &&
                     (resultPoolExhausted || budgetState.remainingResultChars === 0)
@@ -923,26 +925,27 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               if (consumedCall) toolCallsUsed += 1;
               else rejectedToolCalls += 1;
               // Fixed budget-status messages are control information, not source content.
-              if (!budgetRejected && (outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
+              if (!budgetRejected && (outcome.result.usagePage || outcome.result.searchResults || outcome.result.filePaths || outcome.result.outline || outcome.result.packable)) {
                 const canonical = outcome.result;
                 outcome.result = packRepositoryToolResult(canonical, remainingResultChars);
                 if (outcome.result.isError) {
                   outcome.status = "rejected";
-                  outcome.rejectionReason = "tool_result_budget_exhausted";
+                  const usageScanLimited: boolean = Boolean(canonical.usagePage && canonical.usagePage.page.entries.length === 0
+                    && canonical.usagePage.page.nextCursor);
+                  outcome.rejectionReason = usageScanLimited ? "usage_scan_limit" : "tool_result_budget_exhausted";
                   const initialLimit = toolResultCharLimit(sourceRead, budget, budget.maxResultChars);
-                  // A no-fit result can also be too large for this tool's own
-                  // cap. Close only if spending the aggregate allowance caused it.
-                  resultPoolExhausted = packedResultExhaustedPool(canonical, remainingResultChars,
+                  // Scan limits are distinct from spending the result pool.
+                  resultPoolExhausted = !usageScanLimited && packedResultExhaustedPool(canonical, remainingResultChars,
                     budgetState.remainingResultChars, initialLimit);
                   if (resultPoolExhausted) {
                     outcome.result.text = `${spentResultBudgetNotice(budgetState.remainingResultChars)}\nDetails for a later investigation:\n${outcome.result.text}`;
-                  } else if (!canonical.isError) {
+                  } else if (!usageScanLimited && !canonical.isError) {
                     outcome.result.text = `This request has a ${remainingResultChars}-character delivery limit. Hard result characters remaining: ${budgetState.remainingResultChars}.\n${outcome.result.text}`;
                   }
                   if (outcome.result.meta) {
                     const meta = outcome.result.meta;
                     outcome.result.meta = { ...meta,
-                      degradationReason: (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" };
+                      degradationReason: usageScanLimited ? "usage_scan_limit" : (meta.degraded ? meta.degradationReason : undefined) ?? "tool_result_budget_exhausted" };
                   }
                   if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
                 }
@@ -2406,6 +2409,8 @@ function localBudgetRejectionReason(input: {
 function toolRejectionMessage(reason: Exclude<ToolRejectionReason, "unknown_tool">): string {
   let message: string;
   switch (reason) {
+    case "usage_scan_limit":
+      return "Usage search reached its scan limit; continue with the supplied cursor. This is not a zero-match result.";
     case "tool_result_budget_exhausted":
       message = "tool result character budget exhausted";
       break;
@@ -2503,6 +2508,7 @@ function toolResultCharLimit(sourceRead: boolean, budget: ToolBudget, remainingC
 }
 
 function packRepositoryToolResult(result: ToolExecutionResult, allowance: number): ToolExecutionResult {
+  if (result.usagePage) return packUsageToolResult(result, allowance);
   if (result.packable) return packTextToolResult(result, allowance);
   if (result.outline) return packOutlineToolResult(result, allowance);
   if (result.filePaths) return packFileListToolResult(result, allowance);
@@ -2568,6 +2574,7 @@ function recordToolCall(
     unparsedCandidatePaths: meta.unparsedCandidatePaths,
     incompleteCandidatePaths: meta.incompleteCandidatePaths,
     candidateScans: meta.candidateScans,
+    usageDelivery: meta.usageDelivery,
     deliveryStatus: searchOrListBudgetRefusal ? "budget_rejected" : meta.deliveryStatus,
     totalLines: meta.totalLines,
     deliveredLineRange: meta.deliveredLineRange,
@@ -2577,7 +2584,7 @@ function recordToolCall(
     backendExecuted: outcome.backendExecuted,
     cacheHitKind: outcome.cacheHitKind,
     cacheEvictedEntries: outcome.cacheEvictedEntries,
-    resultCount: meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
+    resultCount: meta.usageDelivery?.deliveredRows ?? meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,
@@ -4314,6 +4321,8 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
+    name: typeof args.name === "string" ? args.name.slice(0, 500) : undefined,
+    scope: typeof args.scope === "string" ? args.scope : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
     hunkId: typeof args.hunkId === "string" ? args.hunkId : undefined,

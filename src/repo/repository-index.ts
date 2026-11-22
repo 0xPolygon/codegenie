@@ -47,6 +47,7 @@ import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
 import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
+import { findUsages as searchUsages, type UsagePage, type UsageSearchOptions } from "./usage-search.js";
 import { readSourceFileMap } from "./source-file-map.js";
 import { decodeToolCursor, encodeToolCursor, toolCursorBinding } from "./tool-cursor.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
@@ -68,6 +69,10 @@ type ToolMeasurement<T> = {
 };
 
 type ToolArgs = {
+  name?: string | undefined;
+  scope?: string | undefined;
+  cursor?: string | undefined;
+  pathGlob?: string | undefined;
   path?: string | undefined;
   packetId?: string | undefined;
   symbolName?: string | undefined;
@@ -82,6 +87,10 @@ type ToolArgs = {
 };
 
 type RecordedToolArgs = {
+  name?: string;
+  scope?: string;
+  cursor?: string;
+  pathGlob?: string;
   path?: string;
   packetId?: string;
   symbolName?: string;
@@ -755,6 +764,23 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     );
   }
 
+  async findUsages(name: string, options: UsageSearchOptions = {}): Promise<{ page: UsagePage; meta: ToolResultMeta }> {
+    return this.measure("find_usages", { name, source: options.source?.kind, scope: options.scope, pathGlob: options.pathGlob, cursor: options.cursor }, 7, async () => {
+      const page = await searchUsages(this.opts.resolver, this.opts.registry, name, options);
+      const meta: ToolResultMeta = { backend: page.filesParsed > 0 ? "tree-sitter" : "text",
+        precision: page.textMatches.length ? "text" : "syntactic", degraded: page.omissions.length > 0,
+        ...(page.omissions.length ? { degradationReason: "some candidate files could not be fully inspected" } : {}),
+        sourceUsed: page.revision, requestedSource: page.revision,
+        usageDelivery: { candidateFiles: page.candidateFiles, filesScanned: page.filesScanned, filesParsed: page.filesParsed,
+          discoveredRows: page.entries.length, deliveredRows: page.entries.length, scanComplete: page.scanComplete, coverageComplete: page.coverageComplete,
+          ...(page.stopReason ? { stopReason: page.stopReason } : {}) },
+        lookupStatus: page.rows.length ? "found" : page.coverageComplete ? "not_found" : "unavailable",
+        deliveryStatus: page.nextCursor ? "truncated" : page.entries.length ? "full" : "empty",
+        ...(page.nextCursor ? { truncated: true, ...(page.omissions.length ? {} : { degradationReason: "usage_page_limit" }) } : {}) };
+      return { value: { page, meta }, meta, engine: "git-grep", resultCount: page.entries.length, resultChars: JSON.stringify(page.entries).length };
+    });
+  }
+
   async findLikelyTests(
     input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }
   ): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }> {
@@ -880,6 +906,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.unparsedCandidatePaths !== undefined ? { unparsedCandidatePaths: measurement.meta.unparsedCandidatePaths } : {}),
           ...(measurement.meta.incompleteCandidatePaths !== undefined ? { incompleteCandidatePaths: measurement.meta.incompleteCandidatePaths } : {}),
           ...(measurement.meta.candidateScans !== undefined ? { candidateScans: measurement.meta.candidateScans } : {}),
+          ...(measurement.meta.usageDelivery !== undefined ? { usageDelivery: measurement.meta.usageDelivery } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
           ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),
