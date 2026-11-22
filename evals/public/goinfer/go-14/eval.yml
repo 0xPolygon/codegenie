@@ -1,0 +1,21 @@
+# Public eval case goinfer/go-14. The oracle stays outside the reviewed checkout.
+name: go-14
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-14
+command:
+  base: 177b9816e13fad9fc69a84e3bdb06e508ccc47c3
+  head: b7e873b8e2a21f5d42f37ad4c9032e5b6d09729c
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: metal-batched-forward-blocks-before-submit
+  path: gpu/decodetoken_batched.go
+  lineRange: [77, 84]
+  severityAtLeast: low
+- id: metal-batched-forward-blocks-before-submit-queue
+  tier: optional
+  path: gpu/decodetoken_batched.go
+  lineRange: [215, 221]
+  severityAtLeast: low
