@@ -3286,6 +3286,16 @@ describe("phase 5 pipeline regressions", () => {
     } finally { fixture.dispose(); }
   });
 
+  it("keeps a cross-file call-site hint as a tool lookup", async () => {
+    const findSymbolMentions = vi.fn(async () => { throw new Error("unexpected call-site resolution"); });
+    const plan: ReviewPlan = { ...fakePlan("app.ts"), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], reason: "review",
+      surroundingContextHints: [{ kind: "call_site", path: "other.ts", symbol: "target", reason: "inspect callers", expectedUse: "packet_context" }] }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex({ ...fakeTools(), findSymbolMentions }), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+    expect(findSymbolMentions).not.toHaveBeenCalled();
+    expect(packets[0]?.surroundingContextHints).toEqual([expect.objectContaining({ kind: "call_site", path: "other.ts", expectedUse: "tool_lookup" })]);
+  });
+
   it.each(["full", "prose", "truncated", "ambiguous", "degraded", "unparsed", "incomplete", "empty", "error"] as const)("recovers a wrong-file planner symbol hint only from a complete unique definition: %s", async mode => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const definitions = mode === "empty" ? [] : [{ symbol: { path: "decoder/ropescale.go", name: "parseRopeFlat", kind: "function" as const, lineRange: [10, 12] as [number, number] }, text: "func parseRopeFlat() {}" }];

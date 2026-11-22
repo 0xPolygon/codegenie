@@ -2350,7 +2350,7 @@ async function resolvePacketContextHints(
       continue;
     }
     const hintPath = hint.path ?? file.path;
-    if (hintPath !== file.path && (hint.symbol === undefined || hint.lineRange !== undefined)) {
+    if (hintPath !== file.path && (hint.kind === "call_site" || hint.symbol === undefined || hint.lineRange !== undefined)) {
       telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: hintPath,
         data: { kind: hint.kind, reason: hint.reason, outcome: "outside_packet" } });
       workerHints.push(toToolLookupHint(hint));
