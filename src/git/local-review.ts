@@ -12,14 +12,13 @@ type SnapshotOptions = {
   onCleanup(task: () => Promise<void>): void;
 };
 
-export function localReviewHeadName(mode: LocalReviewTarget["mode"]): string {
-  return mode === "staged" ? "index" : "tracked worktree";
-}
-
 export async function captureLocalReview(
   target: LocalReviewTarget,
   opts: SnapshotOptions
-): Promise<{ resolved: ResolvedReviewInput; git: InternalGitClient }> {
+): Promise<{
+  resolved: ResolvedReviewInput & { baseRefName: string; headRefName: string };
+  git: InternalGitClient;
+}> {
   const original = createGitClient(opts.repoRoot);
   if (!(await original.isInsideWorktree())) {
     throw new CodegenieError("not_git_worktree", "codegenie review must run inside a git worktree");
@@ -90,7 +89,7 @@ export async function captureLocalReview(
       resolved: {
         mode: target.mode, repoRoot, baseRef: baseTree, headRef: headTree,
         baseRefName: head.length > 0 ? "HEAD" : "empty tree (unborn HEAD)",
-        headRefName: localReviewHeadName(target.mode),
+        headRefName: target.mode === "staged" ? "index" : "tracked worktree",
         ...(untrackedFiles !== undefined && untrackedFiles > 0 ? { untrackedFiles } : {}),
         commits: [], rawDiff
       },

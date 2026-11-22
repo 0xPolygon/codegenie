@@ -158,6 +158,26 @@ describe("local review snapshots", () => {
     }
   });
 
+  it.each(["staged", "uncommitted"] as const)("records the resolved labels for --%s on an unborn branch", async (mode) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "first.ts", "export const first = 1;\n");
+    git(repo, ["add", "--", "first.ts"]);
+    const parsed = parseReviewCommand(["review", `--${mode}`], { repoRoot: repo, env: fakeEnv });
+    parsed.config.telemetry.enabled = true;
+    parsed.config.telemetry.runDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-local-runs-")), "runs");
+
+    const { runDir } = await executeReviewCommand(parsed);
+    const run = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    const resolved = JSON.parse(readFileSync(path.join(runDir, canonicalArtifactPath("resolved-input.json")), "utf8"));
+    expect(resolved.baseRefName).toBe("empty tree (unborn HEAD)");
+    expect(run.review).toMatchObject({
+      baseRef: resolved.baseRefName,
+      headRef: resolved.headRefName,
+      baseSha: null,
+      headSha: null
+    });
+  });
+
   it.each(["staged", "uncommitted"] as const)("runs --%s through the pipeline using only tree readers", async (mode) => {
     const repo = fixture();
     const staged = "export const value = 'CODEGENIE_FAKE_FINDING STAGED';";

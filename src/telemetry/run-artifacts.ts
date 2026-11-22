@@ -42,6 +42,7 @@ export type RunTelemetry = {
   logger: Logger;
   recorder: TelemetryRecorder;
   attachRunDirectory(repoRoot: string): Promise<{ runId: string; runDir: string }>;
+  setReviewRefs(baseRef: string, headRef: string): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
 
@@ -370,6 +371,7 @@ export function createRunTelemetry(opts: CreateRunTelemetryOptions): RunTelemetr
     logger: impl.logger,
     recorder: impl.recorder,
     attachRunDirectory: (repoRoot) => impl.attachRunDirectory(repoRoot),
+    setReviewRefs: (baseRef, headRef) => impl.setReviewRefs(baseRef, headRef),
     finalize: (outcome) => impl.finalize(outcome)
   };
 }
@@ -534,6 +536,10 @@ class RunTelemetryImpl {
       }));
     }
     return { runId: this.runId, runDir };
+  }
+
+  setReviewRefs(baseRef: string, headRef: string): void {
+    this.metadata.review = { ...this.metadata.review, baseRef, headRef };
   }
 
   async finalize(outcome: RunOutcome): Promise<void> {

@@ -7,7 +7,7 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
 import { createGitClient, type InternalGitClient } from "../git/git-client.js";
-import { captureLocalReview, localReviewHeadName } from "../git/local-review.js";
+import { captureLocalReview } from "../git/local-review.js";
 import { SourceResolver } from "../repo/source-resolver.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
@@ -93,6 +93,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
+  setReviewRefs(baseRef: string, headRef: string): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
 
@@ -473,8 +474,6 @@ async function startRun(
       review: {
         mode: input.mode,
         target: input,
-        ...(input.mode === "staged" || input.mode === "uncommitted"
-          ? { baseRef: "HEAD", headRef: localReviewHeadName(input.mode) } : {}),
         concurrency: config.review.concurrency,
         budgetBoost: config.review.budgetBoost,
         llmMaxConcurrentCalls: config.llm.maxConcurrentCalls,
@@ -512,6 +511,7 @@ async function startRun(
     addCleanupTask: (task) => {
       cleanupTasks.push(task);
     },
+    setReviewRefs: run.setReviewRefs,
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
@@ -952,7 +952,10 @@ async function resolveInput(
     const runsRoot = overrides.runArtifactDir !== undefined
       ? path.dirname(path.resolve(overrides.runArtifactDir))
       : path.resolve(repoRoot, config.telemetry.runDir);
-    return captureLocalReview(input, { repoRoot, runsRoot, onCleanup: run.addCleanupTask });
+    const captured = await captureLocalReview(input, { repoRoot, runsRoot, onCleanup: run.addCleanupTask });
+    const { baseRefName, headRefName } = captured.resolved;
+    run.setReviewRefs(baseRefName, headRefName);
+    return captured;
   }
   const resolved = await resolveReviewCommandTarget(input, config, run.telemetry, {
     repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {})
