@@ -1,0 +1,21 @@
+# Public eval case pi/pi-16. The oracle stays outside the reviewed checkout.
+name: public-pi-16
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-16
+command:
+  base: d7a988d18d2a27f78f1cdcc0597154e916d95ed9
+  head: e5f3b41506570eca81eaf75ae114ee4c8b9ef075
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: archive-rejection-leaks-sync-reader
+  path: packages/chord/src/sync/client.ts
+  lineRange: [355, 363]
+  severityAtLeast: low
+- id: archive-rejection-leaks-sync-reader-producer
+  tier: optional
+  path: packages/chord/src/sync/filesystem.ts
+  lineRange: [182, 200]
+  severityAtLeast: low
