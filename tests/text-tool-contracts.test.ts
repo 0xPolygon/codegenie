@@ -20,6 +20,7 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       "unicode.custom": "Café\n用户 🔑\nfin\n", "large.custom": Array.from({ length: 620 }, (_, i) => `line ${i + 1}`).join("\n"),
       "src/shared.ts": `export function SharedCall() {\n${Array.from({ length: 25 }, (_, i) => `  const value${i} = ${i};`).join("\n")}\n}\n`,
       "src/detect.ts": `export function detectLanguage() {}\n${Array.from({ length: 30 }, () => "detectLanguage();").join("\n")}\n`,
+      "src/comment-first.ts": "// ProbeName is mentioned here.\nconst ProbeName = 1;\n",
       "pkg/shared.go": `package pkg\nfunc SharedCall() {\n${Array.from({ length: 20 }, (_, i) => `  value${i} := ${i}`).join("\n")}\n}\n`,
       "src/long.ts": `export function LongDefinition() {\n${Array.from({ length: 300 }, (_, i) => `  const n${i} = ${i};`).join("\n")}\n}\n`,
       "src/huge.ts": `export const HugeDefinition = "${"x".repeat(11_000)}";\n`,
@@ -33,6 +34,16 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     writeRepoFile(fixture.repo, "untracked.custom", "untracked-only");
   });
   afterAll(() => fixture?.dispose());
+
+  it.each(["head", "base"] as const)("reports an unread raw match after filtering the first result at %s", async source => {
+    const result = await fixture.call("find_symbol_mentions", { symbolName: "ProbeName", pathGlob: "src/comment-first.ts", maxResults: 1, source: { kind: source } });
+    expect(result.searchResults).toEqual([]);
+    expect(result.meta?.truncated).toBe(true);
+    expect(result.text).toContain(`No verified mention delivered before the scan limit; next unread raw match: src/comment-first.ts@${source}:2`);
+    const refused = packTextToolResult(result, 1);
+    expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
+    expect(refused.text).toContain(`src/comment-first.ts@${source}:2`);
+  });
 
   it("positions mention context and identifies the first unread match on backend and caller cuts", async () => {
     const result = await fixture.call("find_symbol_mentions", { symbolName: "detectLanguage", pathGlob: "src/detect.ts", contextMode: "lines" });

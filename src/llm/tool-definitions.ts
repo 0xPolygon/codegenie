@@ -278,6 +278,13 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           const hasContext = result.results.some(hit => hit.contextBefore?.length || hit.contextAfter?.length || hit.enclosingSymbol);
           return { ...render(true), searchResults: result.results, ...(hasContext ? { budgetFallback: render(false) } : {}) };
         }
+        if (result.positioning?.next) {
+          const { path, line } = result.positioning.next;
+          const location = `${path}@${input.source?.kind ?? "head"}:${line}`;
+          return { ...createPackableToolResult({ open: "", records: [
+            `No verified mention delivered before the scan limit; next unread raw match: ${location}. Inspect with read_range or narrow the search.`
+          ], separator: "\n", close: "", labels: [location] }, result.meta), searchResults: result.results };
+        }
         return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
       })
     },
