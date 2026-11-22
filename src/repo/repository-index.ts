@@ -38,7 +38,7 @@ import { DiffBlockRenderer } from "./diff-blocks.js";
 import { LanguageAdapterRegistry } from "./language-adapter.js";
 import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
-import { searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
+import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
 import { SourceResolver } from "./source-resolver.js";
 import { extractChangedSymbolFacts } from "./symbol-extraction.js";
 import { extractStaticSignals } from "./static-signals.js";
@@ -771,6 +771,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           degraded: !searchBudgetRefusal,
           degradationReason: error instanceof Error ? error.message : String(error),
           ...(searchBudgetRefusal ? { deliveryStatus: "budget_rejected" as const, resultCount: 0 } : {}),
+          ...(error instanceof SearchBudgetError ? error.meta : {}),
           resultChars: 0,
           durationMs: Date.now() - started,
           status: isRejected ? "rejected" : "error",

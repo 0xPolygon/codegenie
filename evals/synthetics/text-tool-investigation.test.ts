@@ -174,7 +174,8 @@ describe("synthetic: investigating formats without a syntax adapter", () => {
     expect(payload.results.length).toBeGreaterThan(0);
     expect(payload.results.length).toBeLessThan(50);
     expect(payload.meta.truncated).toBe(true);
-    expect(payload.notice).toContain("not exhaustive");
+    expect(payload.notice).toContain(`Omitted ${50 - payload.results.length} matching lines.`);
+    expect(payload.notice).toMatch(/Next read_range: "many\/\d+\.custom"@head:1/);
     expect(small.text.length).toBeLessThanOrEqual(900);
     const hit = payload.results[0];
     expect((await fixture.call("read_range", { path: hit.path, startLine: hit.line, endLine: hit.line })).text).toContain("AccessRule");

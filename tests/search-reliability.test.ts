@@ -35,8 +35,12 @@ describe("reliable search", () => {
     expect(result).toMatchObject({ truncated: true, degraded: true, omittedCount: 1, discoveryLimited: true });
     const packed = packSearchToolResult({ text: "", searchResults: result.results, meta: result }, 2000);
     expect(JSON.parse(packed.text).results).toHaveLength(2);
-    expect(JSON.parse(packed.text).notice).toContain("not exhaustive");
-    await expect(service.search("x+", { pathGlob: "big.txt" })).rejects.toMatchObject({ code: "budget_exhausted" });
+    expect(JSON.parse(packed.text).notice).toContain('Omitted 1 matching lines. Next read_range: "big.txt"@head:2.');
+    await expect(service.search("x+", { pathGlob: "big.txt" })).rejects.toMatchObject({
+      code: "budget_exhausted",
+      meta: { deliveryStatus: "budget_rejected", omittedCount: 1,
+        searchDelivery: { deliveredCount: 0, nextRead: { path: "big.txt", line: 2 } } }
+    });
     expect((await service.search("absent", { pathGlob: "big.txt" })).results).toEqual([]);
   });
 

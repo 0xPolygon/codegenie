@@ -1,6 +1,6 @@
 import type { ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
 import type { ToolResultMeta } from "../types.js";
-import { hasSearchContext, searchDeliveryMeta } from "../repo/search.js";
+import { earlierSearchPosition, hasSearchContext, searchContextPosition, searchCutNotice, searchDeliveryMeta } from "../repo/search.js";
 import { MISSING_FILE_GUIDANCE, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
 
 function renderRecordOpening(open: string, meta: ToolResultMeta): string {
@@ -108,14 +108,46 @@ export function packFileListToolResult(input: ToolExecutionResult, allowance: nu
 export function packSearchToolResult(input: ToolExecutionResult, allowance: number): ToolExecutionResult {
   if (!input.searchResults) return input;
   const { searchDelivery, ...meta } = input.meta ?? { backend: "text" as const, precision: "text" as const, degraded: false };
-  let results = structuredClone(input.searchResults);
+  const canonical = input.searchResults;
+  let results = structuredClone(canonical);
   let omitted = meta.omittedCount ?? 0;
   let shortened = false;
-  const render = (): string => JSON.stringify({
-    results,
-    meta: { ...meta, ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) },
-    ...(omitted || shortened || meta.truncated ? { notice: "Bounded results, not exhaustive. Optional context/excerpts may be shortened. Omitted count is a lower bound. Narrow pathGlob or read a known range." } : {})
-  });
+  let firstBudgetOmitted: (typeof canonical)[number] | undefined;
+  let nextUnconsidered: (typeof canonical)[number] | undefined;
+  const firstContext = searchDelivery ? canonical.find(hasSearchContext) : undefined;
+  const deliveryFor = (refused = false) => {
+    if (!searchDelivery) return undefined;
+    const nextMissing = refused ? canonical[0] : earlierSearchPosition(firstBudgetOmitted, nextUnconsidered);
+    const nextRead = earlierSearchPosition(
+      searchDelivery.nextRead,
+      earlierSearchPosition(nextMissing, shortened && firstContext ? searchContextPosition(firstContext) : undefined)
+    );
+    const deliveredCount = refused ? 0 : results.length;
+    return {
+      ...searchDelivery, deliveredCount,
+      budgetOmittedCount: canonical.length - deliveredCount,
+      shortenedExcerpts: refused ? 0 : results.filter(result => result.excerpt).length,
+      budgetContextStripped: shortened && firstContext !== undefined,
+      ...(nextRead ? { nextRead: { path: nextRead.path, line: nextRead.line } } : {})
+    };
+  };
+  const render = (): string => {
+    const delivery = deliveryFor();
+    const bounded = delivery && searchDeliveryMeta(meta, delivery);
+    if (bounded?.truncated && delivery) {
+      const { backend, precision, degraded, truncated, omittedCount, omittedCountIsLowerBound, discoveryLimited } = bounded;
+      return JSON.stringify({ results,
+        meta: { backend, precision, degraded, truncated, omittedCount, omittedCountIsLowerBound, discoveryLimited },
+        notice: searchCutNotice(delivery)
+      });
+    }
+    if (delivery) return JSON.stringify({ results, meta });
+    return JSON.stringify({
+      results,
+      meta: { ...meta, ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) },
+      ...(omitted || shortened || meta.truncated ? { notice: "Bounded results, not exhaustive. Optional context/excerpts may be shortened. Omitted count is a lower bound. Narrow pathGlob or read a known range." } : {})
+    });
+  };
   if (render().length > allowance) {
     shortened = true;
     for (const result of results) {
@@ -130,25 +162,28 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
     // Reserve the omission notice before admitting entries; an oversized first
     // match must not evict later matches that fit.
     omitted += available.length;
-    for (const result of available) {
+    for (const [index, result] of available.entries()) {
+      nextUnconsidered = available[index + 1];
       results.push(result);
       omitted--;
-      if (render().length > allowance) { results.pop(); omitted++; }
+      if (render().length > allowance) {
+        results.pop();
+        omitted++;
+        firstBudgetOmitted ??= result;
+      }
     }
   }
-  const refused = render().length > allowance || (input.searchResults.length > 0 && results.length === 0);
-  const reportedMeta = searchDelivery && searchDeliveryMeta(meta, {
-    ...searchDelivery,
-    deliveredCount: refused ? 0 : results.length,
-    budgetOmittedCount: input.searchResults.length - (refused ? 0 : results.length),
-    shortenedExcerpts: refused ? 0 : results.filter(result => result.excerpt).length,
-    budgetContextStripped: shortened && input.searchResults.some(hasSearchContext)
-  }, refused);
+  const text = render();
+  const refused = text.length > allowance || (canonical.length > 0 && results.length === 0);
+  const delivery = deliveryFor(refused);
+  const reportedMeta = delivery && searchDeliveryMeta(meta, delivery, refused);
   if (refused) {
-    return { text: "Search results could not fit the remaining result budget. Narrow pathGlob or read a known range; this is not a zero-match result.", isError: true, errorCode: "budget_exhausted",
+    const refusal = "Search results could not fit the remaining result budget. This is not a zero-match result.";
+    return { text: delivery ? `${refusal} ${searchCutNotice(delivery)}`
+      : "Search results could not fit the remaining result budget. Narrow pathGlob or read a known range; this is not a zero-match result.", isError: true, errorCode: "budget_exhausted",
       meta: reportedMeta ?? { ...meta, degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
   }
-  return { ...input, text: render(), meta: reportedMeta ?? { ...meta,
+  return { ...input, text, meta: reportedMeta ?? { ...meta,
     ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) } };
 }
 

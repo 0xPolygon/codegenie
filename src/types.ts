@@ -343,6 +343,7 @@ export type ToolBackend = "tree-sitter" | "text" | "language-analyzer";
 export type ToolPrecision = "exact" | "semantic" | "syntactic" | "heuristic" | "text";
 
 export type SearchDelivery = {
+  source: SourceSelector["kind"];
   deliveredCount: number;
   scanIncomplete: boolean;
   discoveryOmittedCount: number;
@@ -351,6 +352,7 @@ export type SearchDelivery = {
   shortenedExcerpts: number;
   backendContextStripped: boolean;
   budgetContextStripped: boolean;
+  nextRead?: { path: string; line: number };
 };
 
 export type ToolResultMeta = {

@@ -293,13 +293,16 @@ describe("search delivery accounting over committed source", () => {
       degraded: false, deliveryStatus: "truncated", degradationReason: "search_discovery_limit", omittedCount: 1,
       omittedCountIsLowerBound: true, searchDelivery: { deliveredCount: 1, scanIncomplete: true, discoveryOmittedCount: 1 }
     });
+    expect(JSON.parse(incomplete.text).notice).toContain('Omitted at least 1 matching lines. Scan limited. Next read_range: "cmd/serve/admin.go"@head:3.');
     const exact = packSearchToolResult(await search("needle", { pathGlob: "src/oversized.ts" }), 4000);
     expect(exact.meta).toMatchObject({
       omittedCount: 1, omittedCountIsLowerBound: false, searchDelivery: { deliveredCount: 1, scanIncomplete: false, discoveryOmittedCount: 1 }
     });
     expect(JSON.parse(exact.text).results).toMatchObject([{ line: 2 }]);
+    expect(JSON.parse(exact.text).notice).toContain('Omitted 1 matching lines. Next read_range: "src/oversized.ts"@head:1.');
     const excerpt = packSearchToolResult(await search("needle", { pathGlob: "src/excerpt.ts" }), 4000);
     expect(excerpt.meta).toMatchObject({ deliveryStatus: "truncated", omittedCount: 0, searchDelivery: { shortenedExcerpts: 1 } });
+    expect(JSON.parse(excerpt.text).notice).toContain('Next read_range: "src/excerpt.ts"@head:1.');
     const empty = packSearchToolResult(await search("missingNeedle"), 4000);
     expect(empty.meta).toMatchObject({ deliveryStatus: "empty", searchDelivery: { deliveredCount: 0, scanIncomplete: false } });
     expect(JSON.parse(empty.text).results).toEqual([]);
@@ -325,6 +328,7 @@ describe("search delivery accounting over committed source", () => {
     const refused = packSearchToolResult(hit.result, 128);
     expect(refused).toMatchObject({ isError: true, errorCode: "budget_exhausted",
       meta: { deliveryStatus: "budget_rejected", searchDelivery: { deliveredCount: 0, budgetOmittedCount: 4 } } });
+    expect(refused.text).toContain('Next read_range: "cmd/serve/admin.go"@head:1.');
     expect(packSearchToolResult((await cache.execute(request)).result, 4000)).toEqual(full);
   });
 });
