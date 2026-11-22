@@ -223,6 +223,7 @@ export type CreateRunnerHooks = {
 
 export type CreateRunnerOptions = {
   llmConfig: CodegenieConfig["llm"];
+  codegenieHome?: string;
   telemetry: TelemetryRecorder;
   logger: Logger;
   cache?: ModelCallCache;
