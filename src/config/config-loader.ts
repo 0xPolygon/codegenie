@@ -282,6 +282,10 @@ function applyRawConfig(
     config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
     sources["review.adaptiveSecondPass"] = source;
   }
+  if (raw.review?.toolSurface !== undefined) {
+    config.review.toolSurface = raw.review.toolSurface;
+    sources["review.toolSurface"] = source;
+  }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;

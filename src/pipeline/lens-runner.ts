@@ -460,9 +460,10 @@ async function runPacket(
   );
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
   const passSkillIds = projectedSkillIds(prompt.projection);
+  const toolSurface = config.review.toolSurface ?? "current";
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
-    : buildRepositoryToolDefinitions(tools, { includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
+    : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
   let toolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
@@ -475,7 +476,7 @@ async function runPacket(
     tools: repositoryTools,
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
-    telemetryContext: { workerId, packetId: packet.id },
+    telemetryContext: { workerId, packetId: packet.id, toolSurface },
     normalizeSubmit: normalizeStage7Submit,
     // Plan 95: stage 7's deterministic submit cleanup rides the shared
     // recoverInvalidSubmit seam like every other stage; the engine and its

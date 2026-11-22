@@ -7,6 +7,7 @@ import { applyRepoConfigLayer, clearStageOverridesForRun } from "../config/confi
 import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
+  reviewToolSurfaceSchema,
   severitySchema
 } from "../config/schema.js";
 import { createGitClient } from "../git/git-client.js";
@@ -135,6 +136,7 @@ const caseSchema = z
       .optional(),
     review: z
       .object({
+        toolSurface: reviewToolSurfaceSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -873,6 +875,9 @@ function applyCaseReviewConfig(
   }
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
+  }
+  if (review?.toolSurface !== undefined) {
+    config.review.toolSurface = review.toolSurface;
   }
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;

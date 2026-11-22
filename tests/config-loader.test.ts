@@ -16,6 +16,16 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
+  it("loads the repository tool surface and validates its value", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    writeFileSync(path.join(homeOverride, "config.toml"), '[review]\ntoolSurface = "six"\n');
+    const loaded = loadConfig({ repoRoot, homeOverride, env: {} });
+    expect(loaded.config.review.toolSurface).toBe("six");
+    expect(loaded.sources["review.toolSurface"]).toBe("user-config");
+    expect(rawConfigSchema.safeParse({ review: { toolSurface: "unknown" } }).success).toBe(false);
+  });
+
   it("keeps stage settings user-scoped and lets per-run fields override them", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

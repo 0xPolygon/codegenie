@@ -13,6 +13,7 @@ import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/revie
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
+import { assertRepositoryToolSurfaceAvailable } from "../llm/tool-definitions.js";
 import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
 import { createToolResultCache } from "../llm/tool-result-cache.js";
@@ -119,6 +120,7 @@ export async function runReview(
   config: CodegenieConfig,
   overrides: RunReviewOverrides = {}
 ): Promise<ReviewResult> {
+  assertRepositoryToolSurfaceAvailable(config.review.toolSurface);
   const repoRoot = await resolveRunRepoRoot(overrides.repoRoot);
   const run = await startRun(config, input, repoRoot, overrides);
   let retainedReview: ReviewResult | undefined;
@@ -881,7 +883,7 @@ export function reviewCacheFingerprint(
   // the base-branch setting and skill paths. The model-call key also hashes
   // the actual prompts and tools, including changes caused by runtime limits.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
-  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, ...review } = config.review;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,
@@ -895,7 +897,7 @@ export function reviewCacheFingerprint(
     diffHash: sha256Hex(resolved.rawDiff),
     reviewConfigHash: buildModelCallCacheKey({
       lenses,
-      review,
+      review: toolSurface === "six" ? { ...review, toolSurface } : review,
       classification: config.classification,
       llm
     }),
