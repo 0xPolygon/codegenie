@@ -309,9 +309,19 @@ describe("phase 6 live review path", () => {
       const prompt = firstPrompt(context);
       if (prompt.includes("packet review")) {
         const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet")!;
-        return assistant([toolCall("submit-review", "submit_review", { ...packetReviewFromPacket(packet), followUpHints: [] })]);
+        const review = packetReviewFromPacket(packet);
+        const [finding] = review.findings as Record<string, unknown>[];
+        return assistant([toolCall("submit-review", "submit_review", { ...review, followUpHints: [], findings: [finding, {
+          ...finding, title: "Fixture candidate with a completed verdict", failureMode: "The guard change could break a range check."
+        }] })]);
       }
       if (prompt.includes("verification")) {
+        if (prompt.includes("Fixture candidate with a completed verdict")) {
+          return assistant([toolCall("submit-reject", "submit_verdict", {
+            verdict: "reject", reason: "The range check is outside this change.", requiredEvidencePresent: true, falsePositiveRisk: "high",
+            proofAssessment: { status: "refuted", evidence: "The patch changes only the divisor.", assumptions: [] }
+          })]);
+        }
         const raw = JSON.stringify({ error: { code: "invalid_encrypted_content", message: "opaque item ID should stay private" } });
         return { ...assistant([]), stopReason: "error", errorMessage: `400: ${JSON.stringify({ message: "Provider returned error", code: 400, metadata: { raw } })}` };
       }
@@ -322,15 +332,20 @@ describe("phase 6 live review path", () => {
       repoRoot: repo, runArtifactDir, piAdapter: adapter
     });
 
-    expect(review.health?.status).toBe("failed");
-    const calls = readJsonl<{ stage: number; callId: string; workerId?: unknown }>(path.join(runArtifactDir, "model-calls.jsonl"));
-    const call = calls.find((call) => call.stage === 9)!;
+    expect(review.health).toMatchObject({ status: "failed", verificationCandidateCount: 2 });
+    expect(review.coverage.verificationIncompleteCount).toBe(1);
+    expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8"))
+      .toContain("Verification did not finish for 1 of 2 candidates selected for verification.");
+    const calls = readJsonl<{ stage: number; status: string; callId: string; workerId?: unknown }>(path.join(runArtifactDir, "model-calls.jsonl"));
+    const call = calls.find((call) => call.stage === 9 && call.status !== "ok")!;
     expect(call.workerId).toEqual(expect.any(String));
     const detail = { stage: 9, workerId: call.workerId, callId: call.callId, providerErrorCode: "invalid_encrypted_content" };
     const events = readJsonl<{ message: string }>(path.join(runArtifactDir, "events.jsonl"));
     expect(events.filter((event) => event.message === "review_health_failed")).toEqual([
       expect.objectContaining({ stage: 9, level: "error", data: expect.objectContaining(detail) })
     ]);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 9, message: "stage_completed",
+      data: expect.objectContaining({ incompleteCount: 1, verificationCandidateCount: 2 }) }));
     const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
     expect(run.outcome).toMatchObject({ status: "failed", exitCode: 1, failure: detail });
     expect(JSON.stringify(run.outcome)).not.toContain("opaque item ID should stay private");
@@ -339,7 +354,7 @@ describe("phase 6 live review path", () => {
     expect(score).toMatchObject({
       status: "error",
       error: { code: "review_failed", message: expect.stringContaining("invalid_encrypted_content") },
-      metrics: { candidateFindings: 1, modelCalls: calls.length, reviewCompleteness: "partial" }
+      metrics: { candidateFindings: 2, modelCalls: calls.length, reviewCompleteness: "partial" }
     });
     expect(score.error?.message).not.toContain("opaque item ID should stay private");
     expect(score.metrics.costUSD).toBeGreaterThan(0);

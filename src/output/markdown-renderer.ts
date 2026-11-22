@@ -10,7 +10,8 @@ export function renderMarkdownReview(result: ReviewResult): string {
     "",
     renderReviewHealth(health, result.composition, {
       shown: result.needsHumanAttention.length,
-      omitted: result.needsHumanAttentionOmittedCount ?? 0
+      omitted: result.needsHumanAttentionOmittedCount ?? 0,
+      verificationIncompleteCount: result.coverage.verificationIncompleteCount
     }),
     renderBudgetStopNotice(result.coverage),
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),

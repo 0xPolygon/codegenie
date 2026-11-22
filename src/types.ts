@@ -1070,6 +1070,8 @@ export type ReviewHealth = {
   status: "failed" | "incomplete" | "unresolved" | "completed";
   diagnostics: ReviewDiagnostic[];
   unresolvedCount: number;
+  /** Total candidates selected for verification when some remained incomplete. Includes duplicates sharing their representative's verdict. */
+  verificationCandidateCount?: number;
 };
 
 export type ReviewResult = {
