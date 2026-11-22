@@ -6338,8 +6338,9 @@ describe("phase 5 pipeline regressions", () => {
     expect(events).toContainEqual(expect.objectContaining({ stage: 7, message: "tool_call_rejected",
       data: expect.objectContaining({ reason: "tool_result_budget_exhausted" }) }));
     expect(telemetry.snapshotContextPressure?.()).toMatchObject({
-      toolBudgetRejections: 1, toolBudgetRejectionsByStage: { 7: 1 },
-      rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 1 }]
+      // Both oversized unstructured reads are refused instead of slicing the first.
+      toolBudgetRejections: 2, toolBudgetRejectionsByStage: { 7: 2 },
+      rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 2 }]
     });
     expect(packetResults[0]!.status).toBe(incomplete ? "incomplete" : "completed");
     expect(result.coverage).toMatchObject({
