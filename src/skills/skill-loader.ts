@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256Hex } from "../util/hashing.js";
 import { CodegenieError } from "../util/errors.js";
-import { protectedSourceSlice } from "../telemetry/redaction.js";
 import type { Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 
@@ -510,5 +509,5 @@ function comparePaths(a: string, b: string): number {
 }
 
 function truncate(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : protectedSourceSlice(input, 0, maxChars - 1).text.trimEnd();
+  return input.length <= maxChars ? input : input.slice(0, maxChars - 1).trimEnd();
 }

@@ -1,5 +1,4 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { normalizeSourceWhitespace, protectedSourceSlice, protectedSignaturePrefix } from "../telemetry/redaction.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
@@ -436,12 +435,11 @@ async function buildPacket(
     group.degradationReason,
     context.symbolSliced === true && reviewProfile === "simple" ? "enclosing symbol source sliced with no review tools" : undefined
   ].filter((reason): reason is string => reason !== undefined && reason.length > 0);
-  const summary = reviewContext?.prSummary ?? "Review local diff.";
   const packet: ReviewPacket = {
     id: packetId,
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
     kind,
-    prSummary: protectedSignaturePrefix(summary, 500, false),
+    prSummary: (reviewContext?.prSummary ?? "Review local diff.").slice(0, 500),
     path: first.file.path,
     ...(first.file.oldPath !== undefined ? { oldPath: first.file.oldPath } : {}),
     fileStatus: first.file.status,
@@ -1207,7 +1205,7 @@ function bareIdentifier(value: string): string {
 }
 
 function normalizeNote(value: string): string {
-  return truncateTail(normalizeSourceWhitespace(value), MAX_ATTENTION_NOTE_CHARS);
+  return truncateTail(value.trim().replace(/\s+/gu, " "), MAX_ATTENTION_NOTE_CHARS);
 }
 
 function stripLocationSuffix(value: string): string {
@@ -1488,10 +1486,7 @@ function fitWindow(lines: PacketLine[], start: number, end: number): { lines: Pa
     const truncatedChars: number = originalContent.length - contentLength;
     const marker = ` [... ${truncatedChars} chars truncated ...]`;
     const contentBudget = Math.max(0, contentLength - marker.length);
-    const kept = protectedSourceSlice(originalContent, 0, contentBudget).text;
-    const padding = contentBudget - kept.length;
-    const notice = padding >= 5 ? "[...]" : "";
-    fitted = { ...line, content: `${(kept + notice).padEnd(contentBudget, " ")} [... ${originalContent.length - kept.length} chars truncated ...]` };
+    fitted = { ...line, content: `${originalContent.slice(0, contentBudget)}${marker}` };
     const rendered = renderWindow([fitted], start, end, lines.length);
     if (rendered.length <= MAX_PATCH_CHARS || contentBudget === 0) {
       return { lines: [fitted], contentWithLineNumbers: rendered };
@@ -1588,7 +1583,7 @@ function truncateTail(input: string, maxChars: number): string {
     return input;
   }
   const marker = "\n[... content truncated to fit packet context budget ...]";
-  return `${protectedSignaturePrefix(input, Math.max(0, maxChars - marker.length))}${marker}`;
+  return `${input.slice(0, Math.max(0, maxChars - marker.length)).trimEnd()}${marker}`;
 }
 
 type PacketContextBuildResult = {
@@ -2216,9 +2211,9 @@ function truncateToBudget(input: string, maxChars: number): string {
   }
   const marker = "\n[... content truncated to fit packet context budget ...]";
   if (maxChars <= marker.length) {
-    return protectedSignaturePrefix(input, maxChars, false);
+    return input.slice(0, maxChars);
   }
-  return `${protectedSignaturePrefix(input, maxChars - marker.length)}${marker}`;
+  return `${input.slice(0, maxChars - marker.length).trimEnd()}${marker}`;
 }
 
 async function readChangedLineExcerpts(

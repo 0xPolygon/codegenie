@@ -1,4 +1,3 @@
-import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -228,13 +227,19 @@ function declarationColonEnd(definition: Node): number | undefined {
 }
 
 function compactPythonHeader(text: string): string {
-  return normalizeSourceWhitespace(text);
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(" ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function boundedSignature(signature: string): string {
   return signature.length <= MAX_SIGNATURE_CHARS
     ? signature
-    : protectedSignaturePrefix(signature, MAX_SIGNATURE_CHARS);
+    : signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
 }
 
 function importSpecifiers(node: Node): string[] {

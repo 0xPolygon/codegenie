@@ -1,6 +1,5 @@
 import type { CommitInfo, SearchResult } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
-import { redactThenTruncate } from "../telemetry/redaction.js";
 import {
   assertSafeGlob,
   assertSafeLogRange,
@@ -223,7 +222,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         } catch (error) {
           const stderr = error instanceof CodegenieError ? String(error.context?.stderr ?? "") : "";
           if (/^fatal: (?:command line, |-e option, )/u.test(stderr)) {
-            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${redactThenTruncate(stderr, 300)}. Check brackets and parentheses. Escape literal punctuation, for example name\\( or return \\{. Use name|other for alternatives.`, { cause: error });
+            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${stderr.slice(0, 300)}. Check brackets and parentheses. Escape literal punctuation, for example name\\( or return \\{. Use name|other for alternatives.`, { cause: error });
           }
           throw error;
         }

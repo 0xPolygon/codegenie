@@ -1,4 +1,3 @@
-import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../../telemetry/redaction.js";
 import type { Node, Tree } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -374,11 +373,17 @@ function signatureForSymbol(node: Node, nativeKind: string): string {
   } else {
     signature = compact;
   }
-  return signature.length <= MAX_SIGNATURE_CHARS ? signature : protectedSignaturePrefix(signature, MAX_SIGNATURE_CHARS);
+  return signature.length <= MAX_SIGNATURE_CHARS ? signature : signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
 }
 
 function compactDeclarationText(text: string): string {
-  return normalizeSourceWhitespace(text);
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(" ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function trimAtTopLevelArrow(text: string): string {

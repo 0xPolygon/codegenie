@@ -1,4 +1,3 @@
-import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -301,7 +300,13 @@ function declarationHeader(node: Node): string {
 }
 
 function compactRustText(text: string): string {
-  return normalizeSourceWhitespace(text);
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(" ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function compactRustImport(node: Node): string {
@@ -349,7 +354,7 @@ function boundedSignature(signature: string): string {
   if (signature.length <= MAX_SIGNATURE_CHARS) {
     return signature;
   }
-  return protectedSignaturePrefix(signature, MAX_SIGNATURE_CHARS);
+  return signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
 }
 
 function nominalOwner(typeNode: Node | null, projectionRoots: ReadonlySet<string>): string | undefined {

@@ -1,5 +1,4 @@
 import { normalizePlannerBookkeeping, normalizePlannerSubmission } from "../llm/submit-preservation.js";
-import { protectedSourceSlice } from "../telemetry/redaction.js";
 import type { LlmRunner, LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
@@ -1646,7 +1645,7 @@ function isPolicyPath(filePath: string): boolean {
 }
 
 function truncate(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : protectedSourceSlice(input, 0, maxChars).text.trimEnd() || "[long token omitted]".slice(0, maxChars);
+  return input.length <= maxChars ? input : input.slice(0, maxChars).trimEnd();
 }
 
 function dedupe<T>(items: T[]): T[] {

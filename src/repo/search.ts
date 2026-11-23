@@ -1,5 +1,4 @@
 import type { SearchDelivery, SearchOptions, SearchPage, SearchPageOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
-import { protectedSourceSlice } from "../telemetry/redaction.js";
 import type { GrepPosition } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
@@ -388,11 +387,7 @@ function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; trun
       truncatedTextCount += 1;
       const matchOffset = Buffer.from(result.matchText).subarray(0, (result.column ?? 1) - 1).toString("utf8").length;
       const offset = Math.max(0, matchOffset - 120);
-      const excerpt = protectedSourceSlice(result.matchText, offset, offset + MAX_MATCH_TEXT_CHARS);
-      const excerptOmitted = !excerpt.text || matchOffset < excerpt.start || matchOffset >= excerpt.end;
-      return { ...result, matchText: excerptOmitted ? "" : excerpt.text, excerptStartColumn: Buffer.byteLength(result.matchText.slice(0, excerpt.start)) + 1,
-        ...(!excerptOmitted ? { excerptEndColumn: Buffer.byteLength(result.matchText.slice(0, excerpt.end)) } : {}),
-        excerpt: true, ...(excerptOmitted ? { excerptOmitted: true } : {}) };
+      return { ...result, matchText: result.matchText.slice(offset, offset + MAX_MATCH_TEXT_CHARS), excerptStartColumn: Buffer.byteLength(result.matchText.slice(0, offset)) + 1, excerpt: true };
     }),
     truncatedTextCount
   };

@@ -1,7 +1,7 @@
 import type { ReviewDiagnostic, ReviewHealth, ReviewResult, RunCoverageStatus } from "../types.js";
 import type { LlmToolResultSummary } from "../llm/llm-runner.js";
 import { isCodegenieError } from "./errors.js";
-import { redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
+import { stripCredentials } from "../telemetry/redaction.js";
 import { isLocalToolBudgetRejectionReason } from "./context-pressure.js";
 
 export function reviewDiagnostic(stage: number, error: unknown, workItem?: string, outcome?: string): ReviewDiagnostic {
@@ -20,7 +20,7 @@ export function reviewDiagnostic(stage: number, error: unknown, workItem?: strin
 }
 
 export function safeDiagnosticLine(message: string): string {
-  return redactThenTruncate(stripCredentials(message).replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ").trim(), 600);
+  return stripCredentials(message).replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ").trim().slice(0, 600);
 }
 
 export function deriveReviewHealth(
@@ -79,7 +79,7 @@ export function factualReviewSummary(health: ReviewHealth, count: number): strin
 }
 
 function safeText(text: string): string {
-  return redactThenTruncate(stripCredentials(text).replace(/[\r\n]+/g, " ").replace(/[<>&`*\[\]]/g, ""), 600);
+  return stripCredentials(text).replace(/[\r\n]+/g, " ").replace(/[<>&`*\[\]]/g, "").slice(0, 600);
 }
 
 // Keep the original diagnostic in the coverage shown to the composer. Apply the
@@ -107,5 +107,5 @@ export function unresolvedToolDiagnostic(stage: number, results: LlmToolResultSu
 
 function toolFailureDiagnostic(stage: number, failed: LlmToolResultSummary, workItem: string): ReviewDiagnostic {
   return { stage, workItem, origin: "tool", code: failed.errorCode!, kind: failed.errorCode === "budget_exhausted" || failed.errorCode === "timeout" ? "incomplete" : "failure",
-    reason: redactThenTruncate(failed.preview ?? "A tool failed and required evidence remains unresolved; recovery could not be established.", 600), recoveryExhausted: true };
+    reason: stripCredentials(failed.preview ?? "A tool failed and required evidence remains unresolved; recovery could not be established.").slice(0, 600), recoveryExhausted: true };
 }

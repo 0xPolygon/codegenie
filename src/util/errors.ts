@@ -93,5 +93,8 @@ export function errorExitCode(error: unknown): number {
 // (moved from pi-runner per plan 95; the stage-7 recovery seam needs the
 // identical cap so event payloads stay byte-compatible).
 export function truncateDiagnostic(input: string): string {
-  return redactThenTruncate(input, 2_000, "\n[validation error truncated by codegenie]");
+  const maxChars = 2_000;
+  if (input.length <= maxChars) return input;
+  const marker = "\n[validation error truncated by codegenie]";
+  return redactThenTruncate(input, maxChars + marker.length, marker);
 }

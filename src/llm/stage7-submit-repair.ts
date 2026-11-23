@@ -2,7 +2,6 @@ import { submissionIssues } from "./submit-preservation.js";
 import { SubmitPacketReviewSchema } from "./schemas.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
-import { redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
 import { stableJson } from "../util/json.js";
 import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
 import type {
@@ -384,19 +383,19 @@ function cleanBoundedString(value: unknown, maxChars: number, suffixWhenTruncate
   if (typeof value !== "string") {
     return { value: "", changed: true, truncated: false };
   }
-  const stripped = stripStage7Markup(stripCredentials(value));
+  const stripped = stripStage7Markup(value);
   const cleaned = stripped.replace(/\s+/gu, " ").trim();
   if (cleaned.length <= maxChars) {
     return { value: cleaned, changed: cleaned !== value, truncated: false };
   }
   if (suffixWhenTruncated && maxChars > STAGE7_FIELD_TRUNCATION_SUFFIX.length) {
     return {
-      value: redactThenTruncate(cleaned, maxChars, STAGE7_FIELD_TRUNCATION_SUFFIX),
+      value: `${cleaned.slice(0, maxChars - STAGE7_FIELD_TRUNCATION_SUFFIX.length).trimEnd()}${STAGE7_FIELD_TRUNCATION_SUFFIX}`,
       changed: true,
       truncated: true
     };
   }
-  return { value: redactThenTruncate(cleaned, maxChars).trimEnd(), changed: true, truncated: true };
+  return { value: cleaned.slice(0, maxChars).trimEnd(), changed: true, truncated: true };
 }
 
 function cloneRecord(input: Record<string, unknown>): Record<string, unknown> {

@@ -2,7 +2,7 @@ import { repairJson, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
 import { xmlParameterSyntax } from "./json-syntax-guidance.js";
 import { createHash } from "node:crypto";
-import { protectedSourceSlice, redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
+import { stripCredentials } from "../telemetry/redaction.js";
 import type {
   PiAssistantMessage,
   PiArgumentSyntaxDiagnostic,
@@ -144,8 +144,8 @@ function finalizeMessage(
         if (offset !== undefined) syntaxErrorOffset = Number(offset);
       }
       // Redact before slicing so a boundary cannot expose part of a secret.
-      const prefix = redactThenTruncate(sample, 8192);
-      const suffix = sample.length > prefix.length ? protectedSourceSlice(sample, Math.max(8192, sample.length - 8192), sample.length).text : "";
+      const prefix = sample.slice(0, 8192);
+      const suffix = sample.length > prefix.length ? sample.slice(Math.max(prefix.length, sample.length - 8192)) : "";
       hooks.onRejectedArguments({ contentIndex, toolCallId: block.id, name: block.name, parse,
         capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
         ...(syntaxErrorOffset !== undefined ? { syntaxErrorOffset } : {}),
@@ -179,10 +179,9 @@ function argumentSyntaxDiagnostic(sample: string): PiArgumentSyntaxDiagnostic | 
     const preview = cause.message.match(/, (?:\.\.\.)?"([\s\S]*)"(?:\.\.\.)? is not valid JSON$/u)?.[1];
     const previewStart = preview && sample.indexOf(preview) === sample.lastIndexOf(preview) ? sample.indexOf(preview) : -1;
     const excerptStart = Math.max(0, (offset ?? Math.max(0, previewStart)) - 256);
-    const excerpt = protectedSourceSlice(sample, excerptStart, excerptStart + 512);
-    return { error: redactThenTruncate(error, 160), ...(offset !== undefined ? { offset } : {}),
+    return { error: error.slice(0, 160), ...(offset !== undefined ? { offset } : {}),
       ...(xml ? { xmlParameter: { ...(xml.field ? { field: xml.field } : {}) } } : {}),
-      excerptStart: excerpt.start, excerpt: excerpt.text };
+      excerptStart, excerpt: sample.slice(excerptStart, excerptStart + 512) };
   }
 }
 

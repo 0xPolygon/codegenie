@@ -1,5 +1,4 @@
 import type { IntentSignal, IntentSignals } from "../types.js";
-import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../telemetry/redaction.js";
 
 type IntentSource = IntentSignal["source"];
 
@@ -88,7 +87,7 @@ export function buildIntentSignals(input: IntentSignalInput): IntentSignals {
       signals.push({
         kind: group.kind,
         source: entry.source,
-        snippet: truncate(normalizeSourceWhitespace(entry.text), MAX_SNIPPET_CHARS),
+        snippet: truncate(entry.text.replace(/\s+/gu, " ").trim(), MAX_SNIPPET_CHARS),
         reason: group.reason,
         ...(entry.sha !== undefined ? { commitSha: entry.sha } : {})
       });
@@ -172,5 +171,8 @@ function summarizeSignals(signals: IntentSignal[]): string {
 }
 
 function truncate(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : `${protectedSignaturePrefix(input, Math.max(0, maxChars - 1))}...`;
+  if (input.length <= maxChars) {
+    return input;
+  }
+  return `${input.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
 }

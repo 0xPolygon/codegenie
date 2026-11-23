@@ -2,7 +2,6 @@ import type { CodegenieConfig, Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
 import { CodegenieError } from "../util/errors.js";
-import { protectedSourceSlice } from "../telemetry/redaction.js";
 import type { Skill, SkillLoadFailure } from "./skill-loader.js";
 
 export type LensDescriptor = {
@@ -193,5 +192,5 @@ function isSkill(skill: Skill | undefined): skill is Skill {
 }
 
 function truncate(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : protectedSourceSlice(input, 0, maxChars).text.trimEnd();
+  return input.length <= maxChars ? input : input.slice(0, maxChars).trimEnd();
 }

@@ -3,7 +3,7 @@ import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
 import { compositionSources } from "../src/pipeline/composition-content.js";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -16,7 +16,6 @@ import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
-import { clearRegisteredSecretsForTests, protectedSignaturePrefix, registerSecret } from "../src/telemetry/redaction.js";
 import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
@@ -3223,53 +3222,6 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(packets).toHaveLength(2);
     expect(packets.every((packet) => packet.relatedChangedContext.length === 0)).toBe(true);
-  });
-
-  it("preserves subsequent packet context admission when a signature cut crosses a credential", async () => {
-    const secret = "registered-secret-unique-123456";
-    const signature = "x".repeat(590) + secret + " trailing";
-    const tools = { ...fakeTools(), readSymbol: async () => ({ text: "function changed() { return 1; }",
-      symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [1, 1] as [number, number] },
-      meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false } }) };
-    const build = async (boundedSignature: string) => buildReviewPackets(fakePlan(), [fakeDiffFile("app.ts")],
-      [fakeFacts("app.ts", "per-hunk")], { ...fakeRepositoryIndex(tools), symbolFacts: [{ path: "app.ts", hunkId: "h1",
-        enclosingSymbol: "changed", symbolKind: "function", symbolRange: [1, 1], changedLines: [1], changedLinesSide: "new",
-        signature: boundedSignature, source: "tree-sitter", confidence: "syntactic" }] }, nullTelemetry(),
-      { config: config(), enabledLenses: ["core/code-review"] });
-    try {
-      const baseline = await build(protectedSignaturePrefix(signature, 600));
-      registerSecret(secret);
-      const bounded = protectedSignaturePrefix(signature, 600);
-      const protectedPackets = await build(bounded);
-      expect(bounded).not.toContain(secret.slice(0, 10));
-      expect(bounded.length).toBe(signature.slice(0, 600).trimEnd().length);
-      expect(protectedPackets.map(packet => packet.id)).toEqual(baseline.map(packet => packet.id));
-      expect(protectedPackets[0]?.contextText).toContain("function changed() { return 1; }");
-      expect(protectedPackets[0]?.contextText?.length).toBe(baseline[0]?.contextText?.length);
-    } finally { clearRegisteredSecretsForTests(); }
-  });
-
-  it("keeps token-bearing planner notes in the Stage 7 prompt while redacting persisted telemetry", async () => {
-    const token = "sk-" + "A1b2C3d4".repeat(4);
-    const note = `Check code handling ${token}`;
-    const plan = fakePlan("app.ts");
-    plan.coverage[0]!.focusNotes = [note];
-    const [packet] = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
-      fakeRepositoryIndex(), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
-    expect(packet!.attentionNotes).toContain(note);
-    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packet!, skills: [] }).prompt;
-    expect(prompt).toContain(note);
-    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-note-redaction-"));
-    try {
-      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
-      const attached = await run.attachRunDirectory(dir);
-      await run.recorder.writeDebug("llm-calls", "planner-note", { prompt });
-      await run.finalize({ status: "completed_full", exitCode: 0 });
-      const folder = path.join(attached.runDir, "debug", "llm-calls");
-      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
-      expect(stored).not.toContain(token);
-      expect(stored).toContain("[redacted:pattern]");
-    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("keeps non-call-site symbol hints on the symbol definition path", async () => {
@@ -6737,13 +6689,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(promptHunks[0]?.hunk.detail).toBe("compact");
     expect(promptHunks[1]?.hunk.detail).toBe("rich");
     expect(promptHunks[2]?.hunk.detail).toBe("rich");
-    const projectedExcerpt = String(promptHunks[0]?.hunk.excerpt);
-    expect(projectedExcerpt.length).toBeLessThanOrEqual(120);
-    expect(projectedExcerpt.endsWith("...")).toBe(true);
-    expect(longExcerpt.startsWith(projectedExcerpt.slice(0, -3))).toBe(true);
+    expect(String(promptHunks[0]?.hunk.excerpt)).toHaveLength(120);
     expect((promptHunks[0]?.hunk.symbolFacts as Record<string, unknown>).path).toBeUndefined();
     expect((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).path).toBe("src/critical.ts");
-    expect(String((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).signature).length).toBeLessThanOrEqual(220);
+    expect(String((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).signature)).toHaveLength(220);
     expect(((promptHunks[1]?.hunk.staticSignals as Array<Record<string, unknown>>)[0]?.explanation as string).length)
       .toBeLessThanOrEqual(180);
     expect(projection.pr?.body.length).toBeLessThanOrEqual(1600);

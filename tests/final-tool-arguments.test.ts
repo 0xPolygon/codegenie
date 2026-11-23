@@ -84,8 +84,8 @@ describe("final tool argument provenance", () => {
       expect(diagnostic).toMatchObject({ toolCallId: "submit-bad", contentIndex: 0,
         capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
         parse: { state: "invalid", errorKind: "invalid_syntax" } });
-      expect(diagnostic.prefix.length + diagnostic.suffix.length).toBeLessThanOrEqual(16_384);
-      expect(diagnostic.omittedChars).toBe(diagnostic.sampleChars - diagnostic.prefix.length - diagnostic.suffix.length);
+      expect(diagnostic.prefix.length + diagnostic.suffix.length).toBe(16_384);
+      expect(diagnostic.omittedChars).toBe(diagnostic.sampleChars - 16_384);
       expect(diagnostic.prefix).not.toContain("unique-");
       expect(diagnostic.suffix).toContain('"verdict":}');
       expect(onBuffersCleared).toHaveBeenCalledWith(0);
