@@ -2592,7 +2592,7 @@ function recordToolCall(
     candidateId: request.telemetryContext?.candidateId,
     modelCallId,
     tool: toolCall.name,
-    args: toolArgsForRecord(outcome.args),
+    args: toolArgsForRecord(meta.definitionScope ? { ...outcome.args, glob: meta.definitionScope.glob } : outcome.args),
     backend: preExecutionBudgetRefusal ? undefined : meta.backend,
     precision: preExecutionBudgetRefusal ? undefined : meta.precision,
     degraded: searchOrListBudgetRefusal ? false : meta.degraded,

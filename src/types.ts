@@ -386,6 +386,7 @@ export type ToolResultMeta = {
   pathListDelivery?: PathListDelivery;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "incomplete" | "file_missing" | "unavailable";
   lookupNote?: string;
+  definitionScope?: { directory: string; glob: string };
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
   candidateScans?: Partial<Record<"head" | "base", { unparsedCandidatePaths: string[]; incompleteCandidatePaths: string[] }>>;

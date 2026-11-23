@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import type { RepositoryTools, SymbolLookupSourceSelector } from "../types.js";
+import { DefinitionDirectoryBudgetError } from "../repo/definition-page.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition } from "./llm-runner.js";
@@ -8,7 +9,7 @@ import { packDefinitionPage } from "./definition-result-packing.js";
 export function buildReadDefinitionTool(tools: RepositoryTools): ToolDefinition {
   return {
     name: "read_definition",
-    description: 'Read verified declarations by name, including Owner.method and Go receiver forms. An optional path is exact and never broadened. Use source {"kind":"auto"} to try head then base. A cursor continues declaration locations; use read_range for an omitted or cut body. Text-only leads are unverified.',
+    description: 'Read verified declarations by name, including Owner.method and Go receiver forms. An optional path limits the lookup to that file or a directory and its descendants. Use source {"kind":"auto"} to try head then base. A cursor continues declaration locations; use read_range for an omitted or cut body. Text-only leads are unverified.',
     parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 200 }), path: Type.Optional(Type.String({ minLength: 1 })),
       source: Type.Optional(Type.Object({ kind: Type.Union([Type.Literal("head"), Type.Literal("base"), Type.Literal("auto")]) }, { additionalProperties: false })),
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) }, { additionalProperties: false }),
@@ -23,8 +24,12 @@ export function buildReadDefinitionTool(tools: RepositoryTools): ToolDefinition 
         return { ...packDefinitionPage(page, Number.MAX_SAFE_INTEGER), definitionPage: page };
       } catch (error) {
         if (isCodegenieError(error) && error.code === "llm_call_failed") throw error;
-        if (isCodegenieError(error)) return { text: `tool error: ${error.code}: ${error.message}`, isError: true,
-          errorCode: error.code, meta: { backend: "text", precision: "text", degraded: true, degradationReason: error.code } };
+        if (isCodegenieError(error)) {
+          const scope = error instanceof DefinitionDirectoryBudgetError ? error.scope : undefined;
+          return { text: `tool error: ${error.code}: ${error.message}`, isError: true, errorCode: error.code,
+            meta: { backend: "text", precision: "text", degraded: scope === undefined, degradationReason: error.code,
+              ...(scope ? { definitionScope: scope, deliveryStatus: "budget_rejected" } : {}) } };
+        }
         throw error;
       }
     }

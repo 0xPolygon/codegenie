@@ -5939,14 +5939,15 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     else expect(captured[0]!.repositoryEvidence).toBeUndefined();
   });
 
-  it("retains the unnumbered complete read_definition body as Stage 9 evidence", async () => {
+  it.each(["src/guard.ts", "src/"])("retains the read_definition body as evidence and records scope for %s", async path => {
     const fixture = await textRepository({ "src/guard.ts": "export function guard() { return 1; }\n" });
     try {
       const tool = buildReadDefinitionTool(fixture.tools);
+      const telemetry = fakeTelemetry();
       const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "definition", name: tool.name,
-        arguments: { name: "guard", path: "src/guard.ts" } }]), assistant([validSubmitVerdictCall("done")])]);
+        arguments: { name: "guard", path } }]), assistant([validSubmitVerdictCall("done")])]);
       const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
         toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
       const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
       await runner.runStructured({ stage: 9, prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 1_000,

@@ -70,9 +70,9 @@ export class Service { process() { return 10; } }
       const resolver = (fixture.tools as unknown as { opts: { resolver: { listFiles: (...args: never[]) => unknown } } }).opts.resolver;
       const listFiles = vi.spyOn(resolver, "listFiles");
       const directory = await tool.execute({ name: "lsTree", path: "src" }, new AbortController().signal);
-      expect(directory).toMatchObject({ isError: true, errorCode: "invalid_args" });
-      expect(directory.text).toContain("is a directory");
-      expect(directory.text).toContain("exact file path");
+      expect(directory.meta).toMatchObject({ lookupStatus: "found", definitionScope: { directory: "src", glob: "src/**" } });
+      expect(directory.text).toContain('Path "src" is a directory at head.');
+      expect(directory.text).toContain('Searched definitions under "src/**".');
       expect((await tool.execute({ name: "lsTree", path: "missing" }, new AbortController().signal)).meta?.lookupStatus).toBe("file_missing");
       expect(listFiles).toHaveBeenCalledTimes(1);
     } finally { fixture.dispose(); }
@@ -180,6 +180,123 @@ export class Service { process() { return 10; } }
       expect(packDefinitionToolResult(unavailable, 9)).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { lookupStatus: "unavailable" } });
       expect(grep).not.toHaveBeenCalled();
       await expect(fixture.tools.findDefinition("Widget", { exactPath: "../outside.ts" })).rejects.toMatchObject({ code: "path_outside_repo" });
+    } finally { fixture.dispose(); }
+  });
+});
+
+describe("read_definition directory scopes", () => {
+  it("matches a pinned directory as a literal prefix, with the usual glob lookup statuses", async () => {
+    const fixture = await textRepository({
+      "decoder/a.ts": "export function Decode() { return 1; }\n",
+      "decoder/nested/b.ts": "export function Decode() { return 2; }\n",
+      "decoder2/unrelated.ts": "export function Decode() { return 3; }\n",
+      "lib/[a]?{b}*/a.ts": "export function Decode() { return 4; }\n",
+      "lib/axbzzz/other.ts": "export function Decode() { return 5; }\n",
+      "bounded/mentions.md": "OnlyMentioned is an example.\n".repeat(310)
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const signal = new AbortController().signal;
+      const scoped = await tool.execute({ name: "Decode", path: "./decoder/" }, signal);
+      const legacy = await fixture.tools.findDefinition("Decode", { pathGlob: "decoder/**" });
+      const expected = ["decoder/a.ts", "decoder/nested/b.ts"];
+      expect(scoped.meta).toMatchObject({ lookupStatus: legacy.meta.lookupStatus,
+        deliveryStatus: legacy.meta.deliveryStatus, definitionScope: { directory: "decoder", glob: "decoder/**" } });
+      expect(scoped.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(expected);
+      expect(legacy.definitions.map(hit => hit.symbol.path)).toEqual(expected);
+
+      const punctuation = await tool.execute({ name: "Decode", path: "lib/[a]?{b}*" }, signal);
+      expect(punctuation.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["lib/[a]?{b}*/a.ts"]);
+      expect(punctuation.meta?.definitionScope?.glob).toBe("lib/[[]a[]][?][{]b[}][*]/**");
+
+      const bounded = await tool.execute({ name: "OnlyMentioned", path: "bounded" }, signal);
+      expect(bounded.meta).toMatchObject({ lookupStatus: "incomplete", truncated: true,
+        definitionScope: { directory: "bounded", glob: "bounded/**" } });
+      expect(bounded.text).toContain("first unexamined text occurrence");
+
+      const missing = await tool.execute({ name: "Decode", path: "does-not-exist" }, signal);
+      expect(missing.meta).toMatchObject({ lookupStatus: "file_missing", deliveryStatus: "empty" });
+      expect(missing.meta?.definitionScope).toBeUndefined();
+      expect(missing.text).toContain("read_definition with name and source and without path");
+
+      const exact = await tool.execute({ name: "Decode", path: "decoder/a.ts" }, signal);
+      expect(exact.meta).toMatchObject({ lookupStatus: "found", deliveryStatus: "full" });
+      expect(exact.meta?.definitionScope).toBeUndefined();
+      expect(exact.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["decoder/a.ts"]);
+      expect(exact.rawSource).toBe("export function Decode() { return 1; }");
+    } finally { fixture.dispose(); }
+  });
+
+  it("tries a directory only on its pinned sides and keeps head precedence for an auto lookup", async () => {
+    const fixture = await textRepository({
+      "removed/a.ts": "export function Decode() { return 1; }\n",
+      "converted.ts": "export function Decode() { return 2; }\n"
+    }, {
+      "removed/a.ts": null,
+      "converted.ts": null,
+      "converted.ts/a.ts": "export function Decode() { return 3; }\n",
+      "added/a.ts": "export function Added() {}\n"
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const signal = new AbortController().signal;
+      const grep = vi.spyOn(fixture.resolver, "grep");
+      const removed = await tool.execute({ name: "Decode", path: "removed", source: { kind: "auto" } }, signal);
+      expect(removed.meta).toMatchObject({ requestedSource: "auto", sourceUsed: "base", sourceFallback: true,
+        definitionScope: { directory: "removed", glob: "removed/**" } });
+      expect(removed.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["removed/a.ts"]);
+      expect(grep).toHaveBeenCalledTimes(1);
+      expect(grep).toHaveBeenLastCalledWith("Decode", expect.objectContaining({ source: { kind: "base" }, paths: ["removed/a.ts"] }));
+
+      const converted = await tool.execute({ name: "Decode", path: "converted.ts", source: { kind: "auto" } }, signal);
+      expect(converted.meta).toMatchObject({ requestedSource: "auto", sourceUsed: "head",
+        definitionScope: { directory: "converted.ts", glob: "converted.ts/**" } });
+      expect(converted.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["converted.ts/a.ts"]);
+
+      const withoutMatch = await tool.execute({ name: "Decode", path: "added", source: { kind: "auto" } }, signal);
+      expect(withoutMatch.meta).toMatchObject({ lookupStatus: "not_found", sourceUsed: "head",
+        definitionScope: { directory: "added", glob: "added/**" } });
+      expect(withoutMatch.text).not.toContain("does not exist");
+    } finally { fixture.dispose(); }
+  });
+
+  it("binds continuation to the normalized directory and pinned side", async () => {
+    const files = Object.fromEntries(Array.from({ length: 10 }, (_, n) =>
+      [`src/f${n}.ts`, `export function run() { return ${n}; }\n`]));
+    const fixture = await textRepository({ ...files, "other/a.ts": "export function run() {}\n" });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const signal = new AbortController().signal;
+      const list = vi.spyOn(fixture.resolver, "listFiles");
+      const query = { name: "run", path: "src" };
+      const first = await tool.execute(query, signal);
+      const page = packDefinitionToolResult(first, 675);
+      const cursor = page.text.match(/continue with cursor ([\w-]+)/u)?.[1];
+      expect(cursor).toBeDefined();
+      const resumed = await tool.execute({ ...query, path: "src/", cursor }, signal);
+      expect(resumed.definitionPage?.binding).toBe(first.definitionPage?.binding);
+      expect(resumed.definitionPage?.offset).toBeGreaterThan(0);
+      expect(resumed.meta?.definitionScope).toEqual({ directory: "src", glob: "src/**" });
+      expect(resumed.text).not.toContain("src/f0.ts@head");
+      expect(await tool.execute({ ...query, path: "other", cursor }, signal)).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(await tool.execute({ ...query, path: "src/f0.ts", cursor }, signal)).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(await tool.execute({ ...query, source: { kind: "base" }, cursor }, signal)).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(list.mock.calls.map(([, source]) => source?.kind)).toEqual(["head", "base"]);
+    } finally { fixture.dispose(); }
+  });
+
+  it("names a directory whose path count exceeds the grep scope cap", async () => {
+    const fixture = await textRepository({ "src/a.ts": "export function run() {}\n" });
+    try {
+      vi.spyOn(fixture.resolver, "listFiles").mockResolvedValue(
+        Array.from({ length: 20_001 }, (_, n) => `src/${n}.ts`)
+      );
+      const result = await buildReadDefinitionTool(fixture.tools)
+        .execute({ name: "run", path: "src" }, new AbortController().signal);
+      expect(result).toMatchObject({ isError: true, errorCode: "budget_exhausted",
+        meta: { degraded: false, deliveryStatus: "budget_rejected", definitionScope: { directory: "src", glob: "src/**" } } });
+      expect(result.text).toContain('Directory "src" is too broad');
+      expect(result.text).toContain("Narrow path to a subdirectory or exact file");
     } finally { fixture.dispose(); }
   });
 });
