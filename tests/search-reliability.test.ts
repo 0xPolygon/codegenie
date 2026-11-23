@@ -72,11 +72,14 @@ describe("reliable search", () => {
   });
 
   it("rejects invalid syntax even in empty scopes and preserves backend failure", async () => {
-    const { resolver, git } = await fixture();
+    const { resolver, git, service } = await fixture();
     for (const query of ["[", "(?=x)"]) await expect(resolver.grep(query, { glob: "missing/**" })).rejects.toMatchObject({ code: "invalid_args", message: expect.stringContaining("query") });
     await expect(resolver.grep("valid", { glob: "src/{data" })).rejects.toMatchObject({ code: "invalid_args", message: expect.stringContaining("pathGlob") });
     expect(await resolver.grep("(?=x)", { fixedString: true })).toEqual([]);
     vi.spyOn(git, "lsTree").mockRejectedValueOnce(new Error("backend unavailable"));
+    await expect(service.search("func (.*Decode", { pathGlob: "**" })).rejects.toMatchObject({
+      code: "invalid_args", message: expect.stringContaining("unclosed parenthesis group")
+    });
     await expect(resolver.grep("valid", { glob: "**" })).rejects.toThrow("backend unavailable");
   });
   it("delivers invalid inputs as actionable model-facing errors, not empty matches", async () => {
@@ -91,6 +94,32 @@ describe("reliable search", () => {
     expect(valid.isError).not.toBe(true);
     expect(valid.searchResults).toEqual([]);
     expect(await resolver.grep("\\(\\?", { glob: "missing/**" })).toHaveLength(0);
+  });
+
+  it.each(["current", "six"] as const)("pre-checks unclosed ERE groups and supports a corrected retry on %s", async toolSurface => {
+    const { resolver, repo } = await fixture();
+    writeRepoFile(repo, "decoder.go", "func (r Decoder) Decode() {}\n");
+    resolver.binding.headCommit = commitAll(repo, "receiver declaration");
+    const tools = new RepositoryToolsFacade({ resolver, diff: { files: [] }, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: nullTelemetry() });
+    const search = buildRepositoryToolDefinitions(tools, { toolSurface }).find(tool => tool.name === "search_files")!;
+    const grep = vi.spyOn(resolver, "grep");
+    const signal = new AbortController().signal;
+
+    const invalid = await search.execute({ query: "func (.*Decode", pathGlob: "*.go" }, signal);
+    expect(invalid).toMatchObject({ isError: true, errorCode: "invalid_args" });
+    expect(invalid.text).toContain("unclosed parenthesis group");
+    expect(invalid.text).toContain("name\\(");
+    expect(invalid.text.includes("mode=literal")).toBe(toolSurface === "six");
+    expect(grep).not.toHaveBeenCalled();
+
+    for (const query of ["func \\(.*Decode", "func (.*) Decode", "func [(].*Decode", "func [[:punct:]].*Decode", "Decode()"]) {
+      const corrected = await search.execute({ query, pathGlob: "*.go" }, signal);
+      expect(corrected.searchResults).toEqual([expect.objectContaining({ path: "decoder.go", line: 1 })]);
+    }
+    if (toolSurface === "six") {
+      const literal = await search.execute({ query: "func (", mode: "literal", pathGlob: "*.go" }, signal);
+      expect(literal.searchResults).toEqual([expect.objectContaining({ path: "decoder.go", line: 1 })]);
+    }
   });
 
   it("chunks literal scopes with a single global allowance", async () => {
