@@ -203,7 +203,12 @@ describe("read_change", () => {
       const cut = packTextToolResult(result, 850);
       expect(cut.meta?.deliveryStatus).toBe("truncated");
       const cursor = continuation(cut.text);
-      expect(await fixture.change({ hunkId, cursor })).toMatchObject({ errorCode: "invalid_args" });
+      const changedSelector = await fixture.change({ hunkId, cursor });
+      expect(changedSelector).toMatchObject({ errorCode: "invalid_args" });
+      expect(changedSelector.text).toContain("reuse the original arguments and revision");
+      const incomplete = await fixture.change({ ...args, cursor: cursor.slice(0, -3) });
+      expect(incomplete).toMatchObject({ errorCode: "invalid_args" });
+      expect(incomplete.text).toContain("copy the entire cursor verbatim");
       expect(await fixture.change({ ...args, path: "src/unrelated.ts", cursor })).toMatchObject({ errorCode: "invalid_args" });
       const resumed = await fixture.change({ ...args, cursor });
       expect(resumed.packable?.records[1]).toBe(result.packable?.records[cut.packable!.records.length]);
