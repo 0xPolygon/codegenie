@@ -1688,6 +1688,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           enumerable: true, get: () => progress.snapshot()
         });
         const argumentGuard = createToolArgumentStreamGuard(request.stage);
+        const toolNames = new Map<number, string>();
         const streamController = argumentGuard === undefined ? undefined : new AbortController();
         const streamSignal = streamController === undefined ? taskSignal : AbortSignal.any([taskSignal, streamController.signal]);
         return awaitProviderCall(
@@ -1699,10 +1700,20 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
                 if (streamSignal.aborted) return;
                 progress.observe(event);
+                if (!argumentGuard) return;
+                if (event.type === "toolcall_start") {
+                  const content = event.partial.content[event.contentIndex];
+                  if (content?.type === "toolCall" && content.name) toolNames.set(event.contentIndex, content.name);
+                  return;
+                }
                 if (event.type !== "toolcall_delta") return;
-                const limit = argumentGuard?.(event.contentIndex, event.delta, progress.toolArgumentChars);
+                const limit = argumentGuard(event.contentIndex, event.delta, progress.toolArgumentChars);
                 if (limit === undefined) return;
-                const error = new ToolArgumentStreamLimitError(limit, event.partial.usage, failureLocation);
+                const content = event.partial.content[event.contentIndex];
+                const toolName = (content?.type === "toolCall" && content.name) || toolNames.get(event.contentIndex);
+                const error = new ToolArgumentStreamLimitError({
+                  ...limit, ...(toolName ? { toolName: redactThenTruncate(toolName, 128) } : {})
+                }, event.partial.usage, failureLocation);
                 streamController?.abort(error);
                 throw error;
               },
@@ -1857,10 +1868,11 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         : taskTimedOut()
           ? { retryable: false, reason: "task_deadline_exhausted" }
           : classifyProviderRetry(cause, attempt);
-      recordErroredModelCall(opts, request, model, {
+      const streamProgress = recordErroredModelCall(opts, request, model, {
         callId,
         protocol,
         providerResponse: responseCapture,
+        toolArgumentStreamLimit: argumentLimit?.limit,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1882,6 +1894,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           stage: request.stage, level: "warn", message: "model_tool_argument_stream_limit",
           data: {
             ...request.telemetryContext, callId, kind, attempt, ...argumentLimit.limit,
+            ...(streamProgress ? { streamProgress } : {}),
             retryScheduled: retry.retryable, usageStatus: observedUsage === undefined ? "unknown" : "partial",
             ...(observedUsage === undefined ? {} : { observedUsage })
           }
@@ -2147,6 +2160,14 @@ type ProviderResponseCapture = {
   providerRequestId?: string;
   rateLimit?: Record<string, string>;
 };
+
+function providerResponseForRecord(response: ProviderResponseCapture | undefined, aborted: boolean): ProviderResponseCapture {
+  const snapshot = { ...response };
+  if (aborted && snapshot.streamProgress !== undefined) {
+    snapshot.streamProgress = { ...snapshot.streamProgress, partial: true };
+  }
+  return snapshot;
+}
 
 type ProviderProtocolFields = {
   reasoningConfigured?: string;
@@ -3503,7 +3524,7 @@ function recordModelCall(
   const record = definedRecord({
     callId: meta.callId,
     ...meta.protocol,
-    ...meta.providerResponse,
+    ...providerResponseForRecord(meta.providerResponse, meta.status === "aborted"),
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -3593,6 +3614,7 @@ function recordErroredModelCall(
     kind: ModelCallKind;
     protocol?: ProviderProtocolFields;
     providerResponse?: ProviderResponseCapture;
+    toolArgumentStreamLimit?: ToolArgumentStreamLimit | undefined;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -3608,11 +3630,12 @@ function recordErroredModelCall(
     maxAttempts?: number;
     retryExhausted?: boolean;
   }
-): void {
+): StreamProgress | undefined {
   const record = definedRecord({
     callId: meta.callId,
     ...meta.protocol,
-    ...meta.providerResponse,
+    ...providerResponseForRecord(meta.providerResponse, meta.status === "aborted"),
+    toolArgumentStreamLimit: meta.toolArgumentStreamLimit,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -3649,6 +3672,7 @@ function recordErroredModelCall(
   writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, {
     error: { message: meta.errorMessage ?? "LLM provider call failed" }
   });
+  return record.streamProgress;
 }
 
 function schemaValidityForResponse(

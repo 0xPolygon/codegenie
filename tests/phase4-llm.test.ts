@@ -8099,6 +8099,70 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 });
 
 describe("Pi tool argument stream limits", () => {
+  it("records the tool at index 2 and partial progress when a packet retry recovers", async () => {
+    const read = (id: string): PiToolCall => ({ type: "toolCall", id, name: "read_range", arguments: { path: "src/a.ts" } });
+    const submit = validSubmitReviewCall("replacement");
+    const discarded = read("discarded");
+    const partial = assistant([
+      { type: "thinking", thinking: "" },
+      discarded,
+      { type: "toolCall", id: "padding", name: "search_files", arguments: {} }
+    ]);
+    partial.usage = { input: 0, output: 0, totalTokens: 0 };
+    // Exercise a delta without identity metadata after the tool start named it.
+    const deltaPartial = { ...partial, content: partial.content.slice(0, 2) };
+    const firstArgument = '{"path":"src/a.ts"}';
+    const padding = ['{"query":"private-fixture-args","rest":' + " ".repeat(2_048), "\n".repeat(2_048), " "];
+    const argumentChars = [firstArgument, ...padding].reduce((total, delta) => total + delta.length, 0);
+    expect(argumentChars).toBeLessThan(64_000);
+    const contexts: string[] = [];
+    const streamSimple: PiStreamSimpleForTest = (_model, context, options) => {
+      contexts.push(JSON.stringify(context.messages));
+      if (contexts.length === 1) return streamForMessage(assistant([read("completed")]));
+      if (contexts.length === 3) return streamForMessage(assistant([submit]));
+      const stream = createAssistantMessageEventStream();
+      stream.push({ type: "start", partial: partial as never });
+      stream.push({ type: "thinking_delta", contentIndex: 0, delta: "plan", partial: partial as never });
+      stream.push({ type: "toolcall_start", contentIndex: 1, partial: partial as never });
+      stream.push({ type: "toolcall_delta", contentIndex: 1, delta: firstArgument, partial: partial as never });
+      stream.push({ type: "toolcall_end", contentIndex: 1, toolCall: discarded as never, partial: partial as never });
+      stream.push({ type: "toolcall_start", contentIndex: 2, partial: partial as never });
+      for (const delta of padding) {
+        stream.push({ type: "toolcall_delta", contentIndex: 2, delta, partial: deltaPartial as never });
+      }
+      options!.signal!.addEventListener("abort", () => stream.end(), { once: true });
+      return stream;
+    };
+    const execute = vi.fn(async () => ({ text: "completed source" }));
+    const { runner, telemetry, onUsage } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({
+      ...submitReviewRequest("review packet"), telemetryContext: { workerId: "worker", packetId: "packet" },
+      tools: ["read_range", "search_files"].map(name => ({
+        name, description: "fixture", parameters: Type.Object({ path: Type.Optional(Type.String()) }), execute
+      })),
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 100 }
+    })).resolves.toEqual(submit.arguments);
+
+    expect(contexts[2]).toBe(contexts[1]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const limit = { toolName: "search_files", contentIndex: 2, trigger: "whitespace_run",
+      limitChars: 4_096, observedChars: 4_097, toolArgumentChars: argumentChars };
+    const progress = { partial: true, toolArgumentChars: argumentChars, toolArgumentChunks: 4,
+      thinkingChars: 4, thinkingChunks: 1 };
+    const abortEvent = telemetry.events.find(event => event.message === "model_tool_argument_stream_limit");
+    expect(abortEvent).toMatchObject({ stage: 7, data: { ...limit, callId: "mc-000002", packetId: "packet",
+      retryScheduled: true, streamProgress: progress, usageStatus: "unknown" } });
+    expect(abortEvent?.data).not.toHaveProperty("observedUsage");
+    const aborted = telemetry.modelCalls[1];
+    expect(aborted).toMatchObject({ callId: "mc-000002", packetId: "packet", status: "aborted", outputChars: 0,
+      toolArgumentStreamLimit: limit, streamProgress: progress });
+    expect(aborted).not.toHaveProperty("totalTokens");
+    expect(onUsage.mock.calls[1]?.[0]).toEqual({ stage: 7, providerCalls: 1 });
+    expect(JSON.stringify([aborted, abortEvent?.data])).not.toContain("private-fixture-args");
+    expect(telemetry.modelCalls[2]).toMatchObject({ callId: "mc-000003", packetId: "packet", status: "ok", schemaValid: true });
+    expect(telemetry.modelCalls[2]?.streamProgress).not.toHaveProperty("partial");
+  });
+
   it("aborts padded verifier output and retries the same continuation before the deadline", async () => {
     const tool = (id: string): PiToolCall => ({ type: "toolCall", id, name: "read_range", arguments: { path: "src/a.ts" } });
     const verdict = validSubmitVerdictCall("replacement");
