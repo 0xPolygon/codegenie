@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { packTextToolResult } from "../src/llm/search-result-packing.js";
-import { buildSixListFilesTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
+import {
+  assertRepositoryToolArguments,
+  buildRepositoryToolDefinitions,
+  buildSixListFilesTool,
+  buildSixSearchTool,
+  normalizeRepositoryToolArguments
+} from "../src/llm/tool-definitions.js";
 import { writeRepoFile } from "./helpers/git.js";
+import { validateToolCall } from "./helpers/pi-validation.js";
 import { textRepository } from "./helpers/text-repository.js";
 
 function nextCursor(text: string): string {
@@ -11,6 +18,48 @@ function nextCursor(text: string): string {
 }
 
 describe("six-tool discovery on pinned Git snapshots", () => {
+  it.each([
+    ["current", ["list_files", "search_files"]],
+    ["six", ["find_usages", "list_files", "read_change", "read_definition", "read_range", "search_files"]]
+  ] as const)("treats empty cursors as first-page requests for every %s paged tool", async (toolSurface, expectedNames) => {
+    const path = "src/guard.ts";
+    const fixture = await textRepository({ [path]: "export function guard() { return true; }\nguard();\n" });
+    try {
+      const definitions = buildRepositoryToolDefinitions(fixture.tools, { toolSurface });
+      const argsByTool: Record<string, Record<string, unknown>> = {
+        find_usages: { name: "guard" },
+        list_files: { glob: "**" },
+        read_change: {},
+        read_definition: { name: "guard", path },
+        read_range: { path },
+        search_files: { query: "guard" }
+      };
+      const paged = definitions.filter(tool => (tool.parameters as { properties?: Record<string, unknown> }).properties?.cursor);
+      expect(paged.map(tool => tool.name).sort()).toEqual(expectedNames);
+      for (const tool of paged) {
+        const omitted = argsByTool[tool.name]!;
+        const supplied = { ...omitted, cursor: "" };
+        const args = normalizeRepositoryToolArguments(tool, supplied);
+        expect(supplied.cursor).toBe("");
+        expect(args).toEqual(omitted);
+        assertRepositoryToolArguments(tool, args);
+        const validated = validateToolCall(definitions, { type: "toolCall", id: "empty-cursor", name: tool.name, arguments: args });
+        const signal = new AbortController().signal;
+        const first = await tool.execute(omitted, signal);
+        expect(first.isError).toBeUndefined();
+        expect(await tool.execute(validated as Record<string, unknown>, signal)).toEqual(first);
+      }
+      if (toolSurface === "current") {
+        const bounded = definitions.find(tool => tool.name === "read_range")!;
+        const args = { path, startLine: 1, endLine: 1, cursor: "" };
+        expect(normalizeRepositoryToolArguments(bounded, args)).toBe(args);
+        expect(() => assertRepositoryToolArguments(bounded, args)).toThrow("Invalid arguments");
+      }
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("positions current search context and binds the cursor to the existing options", async () => {
     const fixture = await textRepository({
       "src/cli/review-command.ts": "// before\nTRACK(1);\n// between\nTRACK(2);\n// end\n",

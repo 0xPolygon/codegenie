@@ -1,4 +1,4 @@
-import { assertRepositoryToolArguments } from "./tool-definitions.js";
+import { assertRepositoryToolArguments, normalizeRepositoryToolArguments } from "./tool-definitions.js";
 import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
@@ -2321,7 +2321,7 @@ async function executeToolCall(
   try {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     try {
-      const normalized = tool.normalizeArguments?.(toolCall.arguments) ?? toolCall.arguments;
+      const normalized = normalizeRepositoryToolArguments(tool, toolCall.arguments);
       assertRepositoryToolArguments(tool, normalized);
       const args = adapter.validateToolCall(tools.map(toolSpec),
         normalized === toolCall.arguments ? toolCall : { ...toolCall, arguments: normalized }) as Record<string, unknown>;

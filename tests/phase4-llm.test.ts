@@ -1737,7 +1737,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     try {
       const calls = [
         { id: "saved-head", arguments: { path, source: { kind: "head", startLine: 1, endLine: 90 } } },
-        { id: "base", arguments: { path, source: { kind: "base", startLine: 2, endLine: 2 } } },
+        { id: "base", arguments: { path, source: { kind: "base", startLine: 2, endLine: 2 }, cursor: "" } },
+        { id: "map-cursor", arguments: { path, source: { kind: "base", startLine: 2, endLine: 2 }, cursor: "page-two" } },
         { id: "mixed", arguments: { path, startLine: 1, endLine: 2, source: { kind: "head", startLine: 1, endLine: 2 } } },
         { id: "partial", arguments: { path, source: { kind: "head", startLine: 1 } } },
         { id: "string", arguments: { path, source: { kind: "head", startLine: "1", endLine: 2 } } },
@@ -1774,7 +1775,52 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(adapter.contexts[1]).toContain("const base = 1");
       expect(adapter.contexts[1]).toContain("top-level startLine and endLine");
       expect(telemetry.toolCalls.slice(2).map(call => [call.errorCode, call.backendExecuted])).toEqual(
-        Array.from({ length: 4 }, () => ["invalid_args", false]));
+        Array.from({ length: 5 }, () => ["invalid_args", false]));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("normalizes empty definition cursors before validation and caching while preserving raw debug arguments", async () => {
+    const path = "src/guard.ts";
+    const fixture = await textRepository({ [path]: "export function guard() { return true; }\n" });
+    try {
+      const firstPage = { name: "guard", path };
+      const emptyCursor = { ...firstPage, cursor: "" };
+      const calls = [emptyCursor, firstPage, { ...firstPage, cursor: "broken" }, { ...firstPage, cursor: " " }, { ...firstPage, cursor: 0 }];
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter(calls.flatMap((args, i) => [
+        assistant([{ type: "toolCall", id: `read-${i}`, name: "read_definition", arguments: args }]),
+        assistant([validSubmitReviewCall(`submit-${i}`)])
+      ]));
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        toolResultCache: createToolResultCache(),
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      for (let i = 0; i < calls.length; i++) {
+        await runner.runStructured({
+          ...submitReviewRequest(`read-definition-cursor-${i}`),
+          tools: [buildReadDefinitionTool(fixture.tools)],
+          toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2_000 }
+        });
+      }
+      expect(telemetry.toolCalls.slice(0, 2)).toMatchObject([
+        { args: firstPage, lookupStatus: "found", cacheStatus: "write", backendExecuted: true },
+        { args: firstPage, lookupStatus: "found", cacheStatus: "hit", backendExecuted: false }
+      ]);
+      expect(telemetry.toolCalls.slice(0, 2).map(call => call.args)).toEqual([firstPage, firstPage]);
+      expect(toolDebugRecord(telemetry, "mc-000001.read-0")).toMatchObject({ toolCall: { arguments: emptyCursor } });
+      expect(telemetry.toolCalls.slice(2).map(call => [call.errorCode, call.backendExecuted])).toEqual([
+        ["invalid_args", true], ["invalid_args", true], ["invalid_args", false]
+      ]);
+      expect(adapter.contexts[5]).toContain("Cursor does not match the pinned revision and tool query.");
+      expect(adapter.contexts[7]).toContain("Cursor does not match the pinned revision and tool query.");
+      expect(adapter.contexts[9]).toContain("Correct the arguments and retry; no source was read.");
     } finally {
       fixture.dispose();
     }
