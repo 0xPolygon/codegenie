@@ -1841,6 +1841,10 @@ export type ToolCallRecord = {
   candidateId?: string;
   modelCallId?: string;
   tool: string;
+  /** Redacted, bounded argument text from a rejected model invocation; may be a truncated excerpt. */
+  rawArguments?: string;
+  rawArgumentsTruncated?: boolean;
+  rawArgumentsSource?: "tool_call" | "parse_error";
   args: {
     name?: string;
     scope?: string;
