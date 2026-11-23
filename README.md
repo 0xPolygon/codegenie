@@ -254,7 +254,7 @@ The default and recommended tool surface is `current`. To try the six-tool surfa
 toolSurface = "six"
 ```
 
-Set `toolSurface = "current"` or remove the setting to return to the default. In the development comparison, the current surface published more required findings and used fewer calls and tokens.
+Set `toolSurface = "current"` or remove the setting to return to the default. In a small development comparison, the current surface published more required findings and used fewer calls and tokens.
 
 ### Advanced: per-stage models
 
