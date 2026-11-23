@@ -13,4 +13,4 @@ should_find:
     path: cmd/serve/admin.go
     lineRange: [76, 81]
     severityAtLeast: medium
-    failureModePattern: '^(?=[\s\S]*\b(?:duplicat\w*|rac\w*|concurren\w*|409|same[- ]name)\b)(?=[\s\S]*\b(?:leak\w*|unreleased|unclosed|(?:without|never|fails to|does not) clos\w*)\b)'
+    failureModePattern: '^(?=[\s\S]*\b(?:duplicat\w*|rac\w*|concurren\w*|409|same[- ]name|both\s+loaders|losing\s+(?:load\w*|insert\w*)|conflict)\b)(?=[\s\S]*\b(?:leak\w*|unreleased|unclosed|(?:without|never|fails to|does not) (?:clos|releas)\w*|(?:mmap\w*|mapping|mapped\s+weights|safetensors)\b[\s\S]{0,120}\b(?:finalizer|garbage\s+collect\w*|gc|reclaim\w*)|(?:finalizer|garbage\s+collect\w*|gc|reclaim\w*)\b[\s\S]{0,120}\b(?:mmap\w*|mapping|mapped\s+weights|safetensors))\b)'
