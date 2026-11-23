@@ -1,4 +1,5 @@
 import type { IntentSignal, IntentSignals } from "../types.js";
+import { credentialSpans, protectedSourceSlice } from "../telemetry/redaction.js";
 
 type IntentSource = IntentSignal["source"];
 
@@ -87,7 +88,7 @@ export function buildIntentSignals(input: IntentSignalInput): IntentSignals {
       signals.push({
         kind: group.kind,
         source: entry.source,
-        snippet: truncate(entry.text.replace(/\s+/gu, " ").trim(), MAX_SNIPPET_CHARS),
+        snippet: truncate(normalizeIntentText(entry.text), MAX_SNIPPET_CHARS),
         reason: group.reason,
         ...(entry.sha !== undefined ? { commitSha: entry.sha } : {})
       });
@@ -171,8 +172,35 @@ function summarizeSignals(signals: IntentSignal[]): string {
 }
 
 function truncate(input: string, maxChars: number): string {
-  if (input.length <= maxChars) {
-    return input;
+  return input.length <= maxChars ? input : `${protectedSourceSlice(input, 0, Math.max(0, maxChars - 1)).text.trimEnd()}...`;
+}
+
+// Preserve complete credentials in model input while normalizing surrounding
+// prose; otherwise whitespace normalization could split a registered secret.
+function normalizeIntentText(input: string): string {
+  const spans = credentialSpans(input).sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of spans) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
   }
-  return `${input.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+  let output = "", pendingSpace = false, index = 0;
+  for (const [start, end] of merged) {
+    for (; index < start; index++) {
+      const char = input[index]!;
+      if (/\s/u.test(char)) pendingSpace = output.length > 0;
+      else { if (pendingSpace) output += " "; output += char; pendingSpace = false; }
+    }
+    if (pendingSpace) output += " ";
+    output += input.slice(start, end);
+    pendingSpace = false;
+    index = end;
+  }
+  for (; index < input.length; index++) {
+    const char = input[index]!;
+    if (/\s/u.test(char)) pendingSpace = output.length > 0;
+    else { if (pendingSpace) output += " "; output += char; pendingSpace = false; }
+  }
+  return output.trim();
 }

@@ -1,4 +1,5 @@
 import { deriveReviewHealth, factualReviewSummary, renderReviewHealth, requiredDiagnosticsAfterComposition } from "../util/review-health.js";
+import { redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
@@ -620,7 +621,7 @@ function recoverComposerInvalidSubmit(
   });
 
   const args = input.submitCalls[0]?.arguments;
-  const summary = typeof args?.summary === "string" ? args.summary : undefined;
+  const summary = typeof args?.summary === "string" ? stripCredentials(args.summary) : undefined;
   if (summary === undefined) {
     telemetry.event({
       stage: 10,
@@ -723,13 +724,13 @@ function classifyComposerSchemaInvalid(input: LlmSchemaInvalidSubmitRecoveryInpu
 }
 
 function sanitizeComposerSummary(input: string): string {
-  const cleaned = input
+  const cleaned = stripCredentials(input)
     .replace(/<\s*\/?\s*parameter\b[^>]*>/giu, " ")
     .replace(/&lt;\s*\/?\s*parameter\b[^&]*(?:&gt;)?/giu, " ")
     .replace(/<[^>]{1,200}>/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
-  return cleaned.slice(0, MAX_COMPOSER_SUMMARY_CHARS);
+  return redactThenTruncate(cleaned, MAX_COMPOSER_SUMMARY_CHARS);
 }
 
 function extractFirstJsonArray(input: string): string | undefined {
@@ -1310,8 +1311,8 @@ function firstIssueSentence(input: string): string | undefined {
 }
 
 function limitTitle(title: string): string {
-  const cleaned = title.trim().replace(/\s+/gu, " ");
-  return cleaned.length <= 200 ? cleaned : `${cleaned.slice(0, 197).trimEnd()}...`;
+  const cleaned = stripCredentials(title).trim().replace(/\s+/gu, " ");
+  return redactThenTruncate(cleaned, 200, "...");
 }
 
 function uniqueStrings(values: string[]): string[] {

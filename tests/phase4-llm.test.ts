@@ -53,7 +53,7 @@ import {
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
 } from "../src/llm/schemas.js";
-import { buildRepositoryToolDefinitions, buildSixReadChangeTool, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
+import { buildRepositoryToolDefinitions, buildSixReadChangeTool, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
@@ -5059,6 +5059,112 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       clearRegisteredSecretsForTests();
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it.each(["thrown provider error", "provider response error"])("redacts a credential crossing the diagnostic cap in persisted %s", async mode => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-provider-boundary-"));
+    const secret = "uniqueBoundaryCredential1234567890";
+    const diagnostic = "HTTP status 400 " + "x".repeat(1_987 - "HTTP status 400 ".length) + secret + "y".repeat(2_000);
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const adapter = scriptedAdapter([assistantError(diagnostic)]);
+      if (mode === "thrown provider error") adapter.complete = vi.fn(async () => {
+        const error = new Error(diagnostic) as Error & { status: number }; error.status = 400; throw error;
+      });
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await expect(runner.runStructured(submitReviewRequest("provider-boundary"))).rejects.toBeDefined();
+      await run.finalize({ status: "completed_partial", exitCode: 1 });
+      const record = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8");
+      expect(record).toContain("HTTP status 400");
+      expect(record).not.toContain(secret.slice(0, 13));
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("redacts a capped repair input before the real event writer", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-repair-boundary-"));
+    const secret = "uniqueRepairCredential1234567890";
+    const diagnostic = "invalid " + "x".repeat(1_987 - 8) + secret + "y".repeat(2_000);
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const scripted = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "invalid", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+        assistant([validSubmitReviewCall("valid")])
+      ]);
+      const adapter: typeof scripted = { ...scripted, validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "invalid") throw new Error(diagnostic);
+        return scripted.validateToolCall(tools, call);
+      } };
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured(submitReviewRequest("repair-boundary", run.recorder));
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const events = readFileSync(path.join(attached.runDir, "events.jsonl"), "utf8");
+      const models = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8");
+      expect(events).toContain("stage7_schema_repair");
+      expect(events + models).not.toContain(secret.slice(0, 13));
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("redacts a secret crossing tool-call argument and preview caps before the real writer", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-tool-boundary-"));
+    const secret = "uniqueToolCredential1234567890";
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const adapter = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: { name: "x".repeat(487) + secret, pathGlob: "z".repeat(487) + secret } }]),
+        assistant([validSubmitReviewCall("valid")])
+      ]);
+      const summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("tool-boundary"), tools: [{ name: "search_files", description: "search",
+        parameters: Type.Object({ name: Type.String(), pathGlob: Type.String() }),
+        execute: async () => ({ text: "x".repeat(227) + secret + " trailing text" }) }],
+        onToolResults: rows => summaries.push(...rows) });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const calls = readFileSync(path.join(attached.runDir, "tool-calls.jsonl"), "utf8");
+      expect(calls).not.toContain(secret.slice(0, 13));
+      expect(JSON.stringify(summaries)).not.toContain(secret.slice(0, 13));
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("preserves a protected source excerpt in the model request and persists no split credential", async () => {
+    const secret = "sk-" + "AB12cd34".repeat(4);
+    const line = "x ".repeat(100) + "NEEDLE " + "x ".repeat(186) + secret + " z".repeat(100);
+    const fixture = await textRepository({ "src/example.ts": line + "\n" });
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-source-debug-"));
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const tool = buildSixSearchTool(fixture.tools);
+      const args = { query: "NEEDLE", mode: "literal", pathGlob: "src/example.ts" };
+      const expected = await tool.execute(args, new AbortController().signal);
+      const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: args }]),
+        assistant([validSubmitReviewCall("valid")])]);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("source-boundary"), tools: [tool],
+        toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 4_000 } });
+      const messages = JSON.parse(adapter.contexts[1]!) as Array<{ role: string; content: Array<{ text?: string }> }>;
+      expect(messages.find(message => message.role === "toolResult")?.content.map(item => item.text ?? "").join("")).toContain(expected.text);
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const records = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(records).toContain("NEEDLE");
+      expect(records).not.toContain(secret.slice(0, 13));
+      expect(records).not.toContain(secret.slice(-13));
+    } finally { fixture.dispose(); rmSync(directory, { recursive: true, force: true }); }
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {

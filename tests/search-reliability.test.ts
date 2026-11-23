@@ -123,7 +123,7 @@ describe("reliable search", () => {
     expect(result.results.every(m => !("signature" in (m.enclosingSymbol ?? {})))).toBe(true);
     const long = await service.search("needle");
     expect(long.results[0]).toMatchObject({ column: 5001, excerpt: true });
-    expect(long.results[0]?.matchText).toContain("needle");
+    expect(long.results[0]).toMatchObject({ matchText: "", excerptOmitted: true });
   });
 });
 

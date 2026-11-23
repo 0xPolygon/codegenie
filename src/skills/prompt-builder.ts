@@ -1,4 +1,5 @@
 import { packetHasRepositoryTools } from "../util/packet-tools.js";
+import { protectedSourceSlice } from "../telemetry/redaction.js";
 import type {
   CandidateFinding,
   IntentSignals,
@@ -626,12 +627,12 @@ function truncateText(input: string, maxChars: number): string {
     return input;
   }
   if (maxChars <= 1) {
-    return input.slice(0, maxChars);
+    return protectedSourceSlice(input, 0, maxChars).text;
   }
   if (maxChars <= 3) {
-    return input.slice(0, maxChars);
+    return protectedSourceSlice(input, 0, maxChars).text;
   }
-  return `${input.slice(0, maxChars - 3)}...`;
+  return `${protectedSourceSlice(input, 0, maxChars - 3).text}...`;
 }
 
 function sixToolFinishCondition(packet: ReviewPacket): string {
@@ -853,7 +854,7 @@ function truncateSkillAtBoundary(input: string, maxChars: number): string {
   const sectionBoundary = input.lastIndexOf("\n### ", maxChars);
   const firstSectionBoundary = input.indexOf("\n### ");
   const cutoff = sectionBoundary > firstSectionBoundary ? sectionBoundary : input.lastIndexOf("\n", maxChars);
-  return input.slice(0, cutoff > 0 ? cutoff : maxChars).trimEnd();
+  return protectedSourceSlice(input, 0, cutoff > 0 ? cutoff : maxChars).text.trimEnd();
 }
 
 function truncateSkillWithMarker(input: string, maxChars: number): { text: string; truncatedChars: number } {

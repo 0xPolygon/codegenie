@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { redactThenTruncate } from "../telemetry/redaction.js";
 import { validateToolCall } from "@earendil-works/pi-ai";
 import { FindingUpdatesSchema, SubmittedFindingSchema, type SubmitVerificationVerdict } from "./schemas.js";
 import type { CandidateFinding } from "../types.js";
@@ -83,7 +84,7 @@ export function normalizeVerifierSubmission(candidate: CandidateFinding, value: 
       const explanation = "The original assessment did not identify one unambiguous suggestion; reassessment is required. ";
       assessments[field] = { ...assessment, status: "unverified",
         ...(typeof rationale === "string" && rationale.length > 0
-          ? { rationale: explanation + rationale.slice(0, 2000 - explanation.length) } : {}) };
+          ? { rationale: explanation + redactThenTruncate(rationale, 2000 - explanation.length) } : {}) };
       ambiguous = true;
     }
   }

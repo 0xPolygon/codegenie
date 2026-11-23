@@ -287,12 +287,15 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
             const after = includeContext ? (hit.contextAfter ?? []).slice(0, Math.max(0, total - hit.line)) : [];
             const start = hit.line - before.length;
             const end = hit.line + after.length;
-            const excerpt = hit.excerpt ? `Matching-line excerpt starts at column ${hit.excerptStartColumn ?? 1}; use read_range for the whole line.` : undefined;
-            return [renderSourceBlockHeader(hit.path, revision, [start, end], total),
+            const excerpt = hit.excerpt && !hit.excerptOmitted ? `Matching-line excerpt starts at byte column ${hit.excerptStartColumn ?? 1}${hit.excerptEndColumn === undefined ? "" : ` and ends at ${hit.excerptEndColumn}`}; use read_range for the whole line.` : undefined;
+            return [hit.excerptOmitted
+              ? `${hit.path}@${revision}, file length ${total} lines; match at line ${hit.line} (source omitted)`
+              : renderSourceBlockHeader(hit.path, revision, [start, end], total),
               ...(includeContext && hit.enclosingSymbol ? [`Enclosing ${hit.enclosingSymbol.name}, lines ${hit.enclosingSymbol.lineRange.join("-")}`] : []),
               ...before.map((line, index) => numberSourceLine(line, start + index)),
               ...(excerpt ? [excerpt] : []),
-              `${hit.line}:${hit.column ?? 1}\t${hit.matchText}`,
+              ...(hit.excerptOmitted ? [`Match at ${hit.path}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because its token exceeds the excerpt limit. Use read_range.`]
+                : [`${hit.line}:${hit.column ?? 1}\t${hit.matchText}`]),
               ...after.map((line, index) => numberSourceLine(line, hit.line + index + 1))].join("\n");
           });
           const next = result.positioning.next;
@@ -651,13 +654,14 @@ function renderSearchRows(page: SearchPage, revision: SourceSelector["kind"], no
     files.add(hit.path);
     const before = hit.contextBefore ?? [];
     const after = hit.contextAfter ?? [];
-    const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn})` : "";
+    const excerpt = hit.excerpt ? ` (excerpt starts at byte column ${hit.excerptStartColumn}${hit.excerptEndColumn === undefined ? "" : ` and ends at ${hit.excerptEndColumn}`})` : "";
     const enclosing = hit.enclosingSymbol;
     return [
       ...header,
       ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
       ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
-      `${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`,
+      ...(hit.excerptOmitted ? [`Match at ${JSON.stringify(hit.path)}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because its token exceeds the excerpt limit. Use read_range.`]
+        : [`${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`]),
       ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
     ].join("\n");
   });

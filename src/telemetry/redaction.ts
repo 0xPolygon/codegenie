@@ -1,4 +1,6 @@
 const registeredSecrets = new Set<string>();
+// Component lines are writer-only: they must not change source cut boundaries.
+const registeredSecretLines = new Set<string>();
 
 const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi;
 const AUTH_HEADER_PATTERN = /\b(Authorization\s*:\s*)([^\r\n]+)/gi;
@@ -10,6 +12,13 @@ const OPENAI_STYLE_TOKEN_PATTERN = /\bsk-[A-Za-z0-9_-]{20,}\b/g;
 const AWS_ACCESS_KEY_PATTERN = /\bAKIA[0-9A-Z]{16}\b/g;
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
 const BEARER_VALUE_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/-]{20,}={0,2}\b/gi;
+const CREDENTIAL_RULES: Array<[RegExp, string]> = [
+  [URL_USERINFO_PATTERN, "$1[redacted]@"], [AUTH_HEADER_PATTERN, "$1[redacted:pattern]"],
+  [TOKEN_ASSIGNMENT_PATTERN, "$1$2[redacted:pattern]"], [GITHUB_TOKEN_PATTERN, "[redacted:pattern]"],
+  [GITHUB_PAT_PATTERN, "[redacted:pattern]"], [OPENAI_STYLE_TOKEN_PATTERN, "[redacted:pattern]"],
+  [AWS_ACCESS_KEY_PATTERN, "[redacted:pattern]"], [JWT_PATTERN, "[redacted:pattern]"],
+  [BEARER_VALUE_PATTERN, "$1[redacted:pattern]"]
+];
 
 export function registerSecret(value: string | undefined | null): void {
   if (typeof value !== "string") {
@@ -18,15 +27,97 @@ export function registerSecret(value: string | undefined | null): void {
   const trimmed = value.trim();
   if (trimmed.length >= 6) {
     registeredSecrets.add(trimmed);
+    if (/[\r\n]/u.test(trimmed)) {
+      for (const line of trimmed.split(/\r?\n|\r/u)) {
+        const component = line.trim();
+        if (component.length >= 6) registeredSecretLines.add(component);
+      }
+    }
   }
 }
 
 export function clearRegisteredSecretsForTests(): void {
   registeredSecrets.clear();
+  registeredSecretLines.clear();
 }
 
 export function stripCredentials<T>(input: T): T {
   return stripValue(input, new WeakSet()) as T;
+}
+
+/** Original-text spans protected by exactly the same rules as writer redaction. */
+export function credentialSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const secret of registeredSecrets) {
+    for (let start = text.indexOf(secret); start >= 0; start = text.indexOf(secret, start + 1)) spans.push([start, start + secret.length]);
+  }
+  for (const [pattern] of CREDENTIAL_RULES) {
+    for (const match of text.matchAll(pattern)) spans.push([match.index, match.index + match[0].length]);
+  }
+  return spans;
+}
+
+/** Clip source without cutting through a credential or token; offsets are UTF-16 indices. */
+export function protectedSourceSlice(text: string, requestedStart: number, requestedEnd: number): { text: string; start: number; end: number } {
+  let start = Math.max(0, Math.min(text.length, requestedStart));
+  let end = Math.max(start, Math.min(text.length, requestedEnd));
+  const spans = credentialSpans(text);
+  const token = (character: string | undefined) => character !== undefined && /[A-Za-z0-9._~+/=:-]/u.test(character);
+  // Recheck overlaps after moving a boundary; a credential may overlap a
+  // token or another credential. Only scan the token runs at the boundaries.
+  let changed: boolean;
+  do {
+    const previousStart = start, previousEnd = end;
+    if (start > 0 && token(text[start - 1]) && token(text[start])) while (token(text[start])) start++;
+    if (end < text.length && token(text[end - 1]) && token(text[end])) while (end > 0 && token(text[end - 1])) end--;
+    for (const [a, b] of spans) {
+      if (a < start && start < b) start = b;
+      if (a < end && end < b) end = a;
+    }
+    changed = start !== previousStart || end !== previousEnd;
+  } while (changed && start < end);
+  if (start > end) start = end;
+  if (start > 0 && /[\uD800-\uDBFF]/u.test(text[start - 1]!) && /[\uDC00-\uDFFF]/u.test(text[start] ?? "")) start++;
+  if (end > 0 && /[\uD800-\uDBFF]/u.test(text[end - 1]!) && /[\uDC00-\uDFFF]/u.test(text[end] ?? "")) end--;
+  if (start > end) start = end;
+  return { text: text.slice(start, end), start, end };
+}
+
+/** Redact before applying a character cap, including incomplete credential tails. */
+export function redactThenTruncate(text: string, maxChars: number, marker = ""): string {
+  const redacted = stripCredentials(text);
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (redacted.length <= limit) return redacted;
+  const suffix = marker.slice(0, limit);
+  let end = Math.max(0, limit - suffix.length);
+  // Do not cut between the UTF-16 halves of a code point.
+  if (end > 0 && /[\uD800-\uDBFF]/u.test(redacted[end - 1]!) && /[\uDC00-\uDFFF]/u.test(redacted[end] ?? "")) end--;
+  let prefix = redacted.slice(0, end);
+  if (suffix) prefix = prefix.trimEnd();
+  let registeredStart = prefix.length;
+  for (const secret of [...registeredSecrets, ...registeredSecretLines]) {
+    for (let size = Math.min(secret.length - 1, prefix.length); size >= 4; size--) {
+      if (prefix.endsWith(secret.slice(0, size))) { registeredStart = Math.min(registeredStart, prefix.length - size); break; }
+    }
+  }
+  const tail = /[A-Za-z0-9._~+/=_-]+$/u.exec(prefix);
+  let redactStart = registeredStart;
+  if (tail) {
+    const token = tail[0];
+    const credentialPrefix = /^(?:sk-|gh[pousr]_|github_pat_|AKIA|eyJ)/u.test(token);
+    const context = prefix.slice(0, tail.index);
+    const credentialContext = /(?:\bBearer\s+|\bAuthorization\s*:\s*|\b(?:api[_-]?key|apikey|secret|token|password|passwd|authorization)\s*[:=]\s*['"]?)$/iu.test(context)
+      || /^(?:api[_-]?key|apikey|secret|token|password|passwd|authorization)=/iu.test(token);
+    if (credentialPrefix || credentialContext) redactStart = Math.min(redactStart, tail.index);
+  }
+  if (redactStart < prefix.length) {
+    const replacement = "[REDACTED]".slice(0, Math.max(0, limit - suffix.length));
+    prefix = prefix.slice(0, Math.min(redactStart, Math.max(0, limit - suffix.length - replacement.length))) + replacement;
+  }
+  const final = stripCredentials(prefix);
+  let finalEnd = Math.max(0, limit - suffix.length);
+  if (finalEnd > 0 && /[\uD800-\uDBFF]/u.test(final[finalEnd - 1] ?? "") && /[\uDC00-\uDFFF]/u.test(final[finalEnd] ?? "")) finalEnd--;
+  return final.slice(0, finalEnd) + suffix;
 }
 
 export type RedactionSummary = {
@@ -88,21 +179,25 @@ function stripValue(input: unknown, active: WeakSet<object>): unknown {
 }
 
 function stripString(input: string): string {
-  let output = input;
-  for (const secret of registeredSecrets) {
-    output = output.split(secret).join("[redacted:secret]");
+  // Match all registered values against the original input: replacing one
+  // first can otherwise hide an overlapping secret from later replacements.
+  const spans: Array<[number, number]> = [];
+  for (const secret of [...registeredSecrets, ...registeredSecretLines]) {
+    for (let start = input.indexOf(secret); start >= 0; start = input.indexOf(secret, start + 1)) spans.push([start, start + secret.length]);
   }
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  let output = "", offset = 0;
+  for (let i = 0; i < spans.length; i++) {
+    const [start, firstEnd] = spans[i]!;
+    let end = firstEnd;
+    while (i + 1 < spans.length && spans[i + 1]![0] < end) end = Math.max(end, spans[++i]![1]);
+    output += input.slice(offset, start) + "[redacted:secret]";
+    offset = end;
+  }
+  output += input.slice(offset);
 
-  return output
-    .replace(URL_USERINFO_PATTERN, "$1[redacted]@")
-    .replace(AUTH_HEADER_PATTERN, "$1[redacted:pattern]")
-    .replace(TOKEN_ASSIGNMENT_PATTERN, "$1$2[redacted:pattern]")
-    .replace(GITHUB_TOKEN_PATTERN, "[redacted:pattern]")
-    .replace(GITHUB_PAT_PATTERN, "[redacted:pattern]")
-    .replace(OPENAI_STYLE_TOKEN_PATTERN, "[redacted:pattern]")
-    .replace(AWS_ACCESS_KEY_PATTERN, "[redacted:pattern]")
-    .replace(JWT_PATTERN, "[redacted:pattern]")
-    .replace(BEARER_VALUE_PATTERN, "$1[redacted:pattern]");
+  for (const [pattern, replacement] of CREDENTIAL_RULES) output = output.replace(pattern, replacement);
+  return output;
 }
 
 function stableInspectableText(input: unknown): string {

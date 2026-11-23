@@ -6689,10 +6689,13 @@ describe("phase 5 pipeline regressions", () => {
     expect(promptHunks[0]?.hunk.detail).toBe("compact");
     expect(promptHunks[1]?.hunk.detail).toBe("rich");
     expect(promptHunks[2]?.hunk.detail).toBe("rich");
-    expect(String(promptHunks[0]?.hunk.excerpt)).toHaveLength(120);
+    const projectedExcerpt = String(promptHunks[0]?.hunk.excerpt);
+    expect(projectedExcerpt.length).toBeLessThanOrEqual(120);
+    expect(projectedExcerpt.endsWith("...")).toBe(true);
+    expect(longExcerpt.startsWith(projectedExcerpt.slice(0, -3))).toBe(true);
     expect((promptHunks[0]?.hunk.symbolFacts as Record<string, unknown>).path).toBeUndefined();
     expect((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).path).toBe("src/critical.ts");
-    expect(String((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).signature)).toHaveLength(220);
+    expect(String((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).signature).length).toBeLessThanOrEqual(220);
     expect(((promptHunks[1]?.hunk.staticSignals as Array<Record<string, unknown>>)[0]?.explanation as string).length)
       .toBeLessThanOrEqual(180);
     expect(projection.pr?.body.length).toBeLessThanOrEqual(1600);

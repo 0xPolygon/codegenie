@@ -6,6 +6,7 @@ import type {
   ReviewPacket,
   Severity
 } from "../types.js";
+import { protectedSourceSlice, redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleBudgetValue } from "../util/budget.js";
@@ -477,7 +478,7 @@ function promotedCandidateId(source: PromotionSource, index: number): string {
 // (bounded), so scorer/category/title matching — and human readers — see the
 // model's actual claim instead of promotion boilerplate.
 function promotedTitle(source: PromotionSource, _category: FindingCategory): string {
-  return truncate(source.question.trim().replace(/\s+/gu, " "), 140);
+  return redactThenTruncate(stripCredentials(source.question).trim().replace(/\s+/gu, " "), 140, "...");
 }
 
 function promotedFailureMode(source: PromotionSource, category: FindingCategory): string {
@@ -1058,5 +1059,5 @@ function cleanStrings(values: string[]): string[] {
 
 function truncate(input: string, maxChars: number): string {
   const trimmed = input.trim();
-  return trimmed.length <= maxChars ? trimmed : `${trimmed.slice(0, maxChars - 3)}...`;
+  return trimmed.length <= maxChars ? trimmed : `${protectedSourceSlice(trimmed, 0, maxChars - 3).text}...`;
 }

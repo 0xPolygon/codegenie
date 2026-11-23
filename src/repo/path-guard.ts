@@ -2,6 +2,7 @@ import picomatch from "picomatch";
 import type { ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
+import { redactThenTruncate } from "../telemetry/redaction.js";
 
 type GuardTelemetry = {
   telemetry?: TelemetryRecorder;
@@ -103,7 +104,7 @@ function throwViolation(
 }
 
 function truncateForTelemetry(value: string): string {
-  return value.length <= 200 ? value : `${value.slice(0, 200)}...`;
+  return redactThenTruncate(value, 200, "...");
 }
 
 /** One dialect for tracked-file discovery and all model-facing search scopes. */
@@ -111,6 +112,6 @@ export function matchRepositoryGlob(pattern: string): (path: string) => boolean 
   try {
     return picomatch(pattern, { dot: true, strictBrackets: true });
   } catch (error) {
-    throw new CodegenieError("invalid_args", `pathGlob is invalid: ${String(error).slice(0, 200)}. Use a repo-relative glob such as src/{api,data}/**; literal brackets can be expressed as character classes.`, { cause: error });
+    throw new CodegenieError("invalid_args", `pathGlob is invalid: ${redactThenTruncate(String(error), 200)}. Use a repo-relative glob such as src/{api,data}/**; literal brackets can be expressed as character classes.`, { cause: error });
   }
 }

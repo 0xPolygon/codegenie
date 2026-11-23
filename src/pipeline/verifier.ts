@@ -1,4 +1,5 @@
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
+import { redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
 import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 import { selectVerifierSourceEvidence } from "./source-evidence.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
@@ -1244,8 +1245,8 @@ function verifierRepairCandidateProjection(candidate: CandidateFinding): Record<
 }
 
 function boundedVerifierRepairText(input: string, maxChars: number): string {
-  const escaped = input.trim().replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
-  return escaped.length <= maxChars ? escaped : `${escaped.slice(0, maxChars - 3).trimEnd()}...`;
+  const escaped = stripCredentials(input).trim().replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  return redactThenTruncate(escaped, maxChars, "...");
 }
 
 function isEmptySubmitObject(input: unknown): boolean {
@@ -1276,7 +1277,7 @@ function isPrimaryVerifierSubmitAccepted(input: unknown, candidate: CandidateFin
 
 function sanitizeVerifierSchemaError(error: string): string {
   return clampVerifierDiagnostic(
-    error
+    stripCredentials(error)
       .replace(/<\s*parameter\b[^>]*>[\s\S]*?<\s*\/\s*parameter\s*>/giu, "[xml-parameter-block]")
       .replace(/&lt;\s*parameter\b[\s\S]*?&lt;\s*\/\s*parameter\s*&gt;/giu, "[xml-parameter-block]")
       .replace(/<[^>]{1,200}>/gu, "[xml-like-tag]")
@@ -1285,7 +1286,7 @@ function sanitizeVerifierSchemaError(error: string): string {
 
 function clampVerifierDiagnostic(value: string): string {
   const trimmed = value.trim();
-  return trimmed.length > 500 ? `${trimmed.slice(0, 497)}...` : trimmed;
+  return redactThenTruncate(trimmed, 500, "...");
 }
 
 function safeStringify(input: unknown): string {
@@ -1989,12 +1990,12 @@ function locationTrustedAnchor(candidate: CandidateFinding): CandidateFinding["a
 
 function truncateEvidenceLines(lines: string): string {
   const trimmed = lines.trim();
-  return trimmed.length <= 4000 ? trimmed : `${trimmed.slice(0, 3997)}...`;
+  return redactThenTruncate(trimmed, 4000, "...");
 }
 
 function truncateReason(reason: string): string {
-  const trimmed = reason.trim().replace(/\s+/gu, " ");
-  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 237)}...`;
+  const trimmed = stripCredentials(reason).trim().replace(/\s+/gu, " ");
+  return redactThenTruncate(trimmed, 240, "...");
 }
 
 function verifierRepresentative(candidates: CandidateFinding[]): CandidateFinding {

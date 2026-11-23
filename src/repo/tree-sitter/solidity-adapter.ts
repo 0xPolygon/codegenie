@@ -1,3 +1,4 @@
+import { protectedSourceSlice } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -249,7 +250,7 @@ function compactSolidityText(text: string): string {
 function boundedSignature(signature: string): string {
   return signature.length <= MAX_SIGNATURE_CHARS
     ? signature
-    : signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
+    : (protectedSourceSlice(signature, 0, MAX_SIGNATURE_CHARS).text.trimEnd() || "[long token omitted]");
 }
 
 function fallbackReceiveName(node: Node): "fallback" | "receive" {

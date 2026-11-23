@@ -1,4 +1,5 @@
 import { StringEnum } from "../llm/string-enum.js";
+import { protectedSourceSlice } from "../telemetry/redaction.js";
 import { Type, type Static } from "typebox";
 import pLimit from "p-limit";
 import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js";
@@ -29,7 +30,7 @@ export async function clarifyFindingLocations(
     const packetId = candidate.producedBy.kind === "packet" ? candidate.producedBy.packetId : undefined;
     const origin = opts.packets?.find((packet) => packet.id === packetId);
     const relevantDiff = findingDiffContext(opts.diff, [candidate.path, ...(origin ? [origin.path] : []), ...(candidate.evidence.relatedCode ?? []).map((entry) => entry.path)]);
-    const context = relevantDiff.length > 24_000 ? `${relevantDiff.slice(0, 24_000)}\n[diff context truncated; return unavailable unless shown lines establish placement]` : relevantDiff;
+    const context = relevantDiff.length > 24_000 ? `${protectedSourceSlice(relevantDiff, 0, 24_000).text}\n[diff context truncated; return unavailable unless shown lines establish placement]` : relevantDiff;
     const event = (outcome: string) => telemetry.event({ stage: 7, level: "info", message: "candidate_location_clarification", data: {
       candidateId: candidate.id, packetId: candidate.producedBy.kind === "packet" ? candidate.producedBy.packetId : undefined, outcome, reason
     } });

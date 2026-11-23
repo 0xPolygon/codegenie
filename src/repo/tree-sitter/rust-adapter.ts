@@ -1,3 +1,4 @@
+import { protectedSourceSlice } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -354,7 +355,7 @@ function boundedSignature(signature: string): string {
   if (signature.length <= MAX_SIGNATURE_CHARS) {
     return signature;
   }
-  return signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
+  return (protectedSourceSlice(signature, 0, MAX_SIGNATURE_CHARS).text.trimEnd() || "[long token omitted]");
 }
 
 function nominalOwner(typeNode: Node | null, projectionRoots: ReadonlySet<string>): string | undefined {

@@ -1,3 +1,4 @@
+import { protectedSourceSlice } from "../../telemetry/redaction.js";
 import type { Node, Tree } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -373,7 +374,7 @@ function signatureForSymbol(node: Node, nativeKind: string): string {
   } else {
     signature = compact;
   }
-  return signature.length <= MAX_SIGNATURE_CHARS ? signature : signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
+  return signature.length <= MAX_SIGNATURE_CHARS ? signature : (protectedSourceSlice(signature, 0, MAX_SIGNATURE_CHARS).text.trimEnd() || "[long token omitted]");
 }
 
 function compactDeclarationText(text: string): string {

@@ -1771,7 +1771,9 @@ export type PlannerDossier = {
 
 export type SearchResult = {
   excerpt?: boolean;
+  excerptOmitted?: boolean;
   excerptStartColumn?: number;
+  excerptEndColumn?: number;
   path: string;
   line: number;
   column?: number;
