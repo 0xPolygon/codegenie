@@ -106,6 +106,7 @@ type LoginCommandResult = {
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
+  json?: boolean;
   provider?: string;
   apiKeyLogin?: boolean;
   apiKey?: string;
@@ -259,7 +260,7 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       }
       return;
     case "auth-status":
-      writeOut(await renderAuthStatus(rest[0], services));
+      writeOut(await renderAuthStatus(rest.find((arg) => arg !== "--json"), services, opts.json || rest.includes("--json")));
       return;
     case "models": {
       const all = opts.all || rest.includes("--all");
@@ -805,13 +806,26 @@ const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
   "zai-coding-cn": "ZAI Coding China"
 };
 
-async function renderAuthStatus(provider: string | undefined, services: ProviderServices): Promise<string> {
+async function renderAuthStatus(provider: string | undefined, services: ProviderServices, json: boolean): Promise<string> {
   const providers = provider ? [provider] : services.modelRegistry.listProviders();
   for (const id of providers) {
     assertProviderExists(id, services);
   }
   const statuses = await Promise.all(providers.map((id) => services.modelRegistry.authStatus(id)));
-  return `${JSON.stringify(provider ? statuses[0] : statuses, null, 2)}\n`;
+  if (json) {
+    return `${JSON.stringify(provider ? statuses[0] : statuses, null, 2)}\n`;
+  }
+
+  const rows = statuses.filter((status) => status.configured).map((status) => {
+    const method = status.kind === "oauth"
+      ? "stored OAuth login"
+      : status.source === "environment" ? "API key from environment" : "stored API key";
+    return `${status.provider} (${method})`;
+  });
+  if (rows.length === 0) {
+    return provider ? `No credentials configured for ${provider}.\n` : "No providers are logged in.\n";
+  }
+  return `${rows.join("\n")}\n`;
 }
 
 async function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): Promise<string> {

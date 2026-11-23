@@ -199,6 +199,7 @@ See [`examples/workflows/codegenie-review.yml`](./examples/workflows/codegenie-r
 
 ```bash
 codegenie provider list                  # known providers and auth status
+codegenie provider auth-status           # authenticated providers only (use --json for full status)
 codegenie provider login <provider>      # OAuth by default; --api-key to store a key
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
