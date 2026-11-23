@@ -2284,8 +2284,10 @@ async function executeToolCall(
   try {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     try {
-      assertRepositoryToolArguments(tool, toolCall.arguments);
-      const args = adapter.validateToolCall(tools.map(toolSpec), toolCall) as Record<string, unknown>;
+      const normalized = tool.normalizeArguments?.(toolCall.arguments) ?? toolCall.arguments;
+      assertRepositoryToolArguments(tool, normalized);
+      const args = adapter.validateToolCall(tools.map(toolSpec),
+        normalized === toolCall.arguments ? toolCall : { ...toolCall, arguments: normalized }) as Record<string, unknown>;
       try {
         const requestScope = tool.resultCacheScope?.(args);
         const cacheLookup = toolResultCache === undefined

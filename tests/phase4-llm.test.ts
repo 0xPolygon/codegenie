@@ -1730,6 +1730,56 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls.map(call => call.args)).toEqual([{ path: "decoder/model.go", cursor }]);
   });
 
+  it("moves six-tool read_range bounds out of source before validation and rejects ambiguous bounds", async () => {
+    const path = "decoder/residentneed.go";
+    const fixture = await textRepository({ [path]: "package decoder\nconst base = 1\n" },
+      { [path]: "package decoder\nconst head = 2\n" });
+    try {
+      const calls = [
+        { id: "saved-head", arguments: { path, source: { kind: "head", startLine: 1, endLine: 90 } } },
+        { id: "base", arguments: { path, source: { kind: "base", startLine: 2, endLine: 2 } } },
+        { id: "mixed", arguments: { path, startLine: 1, endLine: 2, source: { kind: "head", startLine: 1, endLine: 2 } } },
+        { id: "partial", arguments: { path, source: { kind: "head", startLine: 1 } } },
+        { id: "string", arguments: { path, source: { kind: "head", startLine: "1", endLine: 2 } } },
+        { id: "reversed", arguments: { path, source: { kind: "head", startLine: 2, endLine: 1 } } }
+      ];
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([
+        assistant(calls.map(call => ({ type: "toolCall", name: "read_range", ...call }))),
+        assistant([validSubmitReviewCall("submit-ranges")])
+      ]);
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await runner.runStructured({
+        ...submitReviewRequest("read-range-nested-bounds"),
+        tools: [buildSixReadRangeTool(fixture.tools)],
+        toolBudget: { maxToolCalls: 8, maxInvestigationRounds: 2, maxResultChars: 4000 }
+      });
+      expect(telemetry.toolCalls.slice(0, 2).map(call => call.args)).toEqual([
+        { path, source: "head", startLine: 1, endLine: 90 },
+        { path, source: "base", startLine: 2, endLine: 2 }
+      ]);
+      expect(toolDebugRecord(telemetry, "mc-000001.saved-head")).toMatchObject({
+        toolCall: { arguments: calls[0]!.arguments }
+      });
+      expect(adapter.contexts[1]).toContain("decoder/residentneed.go@head lines 1-2 of 2");
+      expect(adapter.contexts[1]).toContain("decoder/residentneed.go@base lines 2-2 of 2");
+      expect(adapter.contexts[1]).toContain("const head = 2");
+      expect(adapter.contexts[1]).toContain("const base = 1");
+      expect(adapter.contexts[1]).toContain("top-level startLine and endLine");
+      expect(telemetry.toolCalls.slice(2).map(call => [call.errorCode, call.backendExecuted])).toEqual(
+        Array.from({ length: 4 }, () => ["invalid_args", false]));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("reuses identical deterministic repository tool results within one runner", async () => {
     const telemetry = fakeTelemetry();
     const readRange = vi.fn(async () => ({
