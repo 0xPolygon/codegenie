@@ -27,6 +27,9 @@ describe("exact definition lookup", () => {
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "src/broken.ts" })).meta.lookupStatus).toBe("unavailable");
       expect((await fixture.tools.findDefinition("Quoted", { exactPath: "src/quoted.ts" })).definitions).toHaveLength(1);
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "src/missing.ts" })).meta.lookupStatus).toBe("file_missing");
+      const missing = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "src/missing.ts" }, new AbortController().signal);
+      expect(missing.text).toContain("read_definition with name and source and without path");
+      expect(missing.text).not.toContain("find_definition");
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "data/example.custom" })).meta.lookupStatus).toBe("unavailable");
       const unavailable = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "data/example.custom" }, new AbortController().signal);
       expect(unavailable.meta?.lookupStatus).toBe("unavailable");
@@ -86,6 +89,10 @@ describe("read_definition delivery", () => {
         lookupNote: "Candidate scan was bounded. Narrow pathGlob; this occurrence is not a verified definition." } }, { headCommit: "head", baseCommit: "base" });
       expect(packDefinitionPage(bounded, 100_000).text).toContain("Narrow the path");
       expect(packDefinitionPage(bounded, 100_000).text).not.toContain("pathGlob");
+      const unchecked = makeDefinitionPage("run", {}, { definitions: [], meta: { ...page.meta,
+        lookupStatus: "unavailable", lookupNote: "Not checked: 1 text mention in docs/example.md; use find_symbol_mentions." } }, { headCommit: "head", baseCommit: "base" });
+      expect(packDefinitionPage(unchecked, 100_000).text).toContain("use find_usages");
+      expect(packDefinitionPage(unchecked, 100_000).text).not.toContain("find_symbol_mentions");
       expect(packDefinitionPage(page, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
       const single = await tool.execute({ name: "Alone", path: "src/one.ts" }, new AbortController().signal);
       expect(single.rawSource).toBe("export function Alone() { return 7; }");
