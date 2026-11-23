@@ -96,5 +96,5 @@ export function truncateDiagnostic(input: string): string {
   const maxChars = 2_000;
   if (input.length <= maxChars) return input;
   const marker = "\n[validation error truncated by codegenie]";
-  return redactThenTruncate(input, maxChars + marker.length, marker);
+  return `${redactThenTruncate(input, maxChars, "", true).trimEnd()}${marker}`;
 }

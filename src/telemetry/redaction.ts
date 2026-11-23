@@ -54,14 +54,14 @@ export function stripCredentials<T>(input: T): T {
 }
 
 /** Redact before applying a character cap, including incomplete credential tails. */
-export function redactThenTruncate(text: string, maxChars: number, marker = ""): string {
+export function redactThenTruncate(text: string, maxChars: number, marker = "", preserveUtf16Boundary = false): string {
   const redacted = stripCredentials(text);
   const limit = Math.max(0, Math.floor(maxChars));
   if (redacted.length <= limit) return redacted;
   const suffix = marker.slice(0, limit);
   let end = Math.max(0, limit - suffix.length);
   // Do not cut between the UTF-16 halves of a code point.
-  if (end > 0 && /[\uD800-\uDBFF]/u.test(redacted[end - 1]!) && /[\uDC00-\uDFFF]/u.test(redacted[end] ?? "")) end--;
+  if (!preserveUtf16Boundary && end > 0 && /[\uD800-\uDBFF]/u.test(redacted[end - 1]!) && /[\uDC00-\uDFFF]/u.test(redacted[end] ?? "")) end--;
   let prefix = redacted.slice(0, end);
   if (suffix) prefix = prefix.trimEnd();
   let registeredStart = prefix.length;
@@ -86,7 +86,7 @@ export function redactThenTruncate(text: string, maxChars: number, marker = ""):
   }
   const final = stripCredentials(prefix);
   let finalEnd = Math.max(0, limit - suffix.length);
-  if (finalEnd > 0 && /[\uD800-\uDBFF]/u.test(final[finalEnd - 1] ?? "") && /[\uDC00-\uDFFF]/u.test(final[finalEnd] ?? "")) finalEnd--;
+  if (!preserveUtf16Boundary && finalEnd > 0 && /[\uD800-\uDBFF]/u.test(final[finalEnd - 1] ?? "") && /[\uDC00-\uDFFF]/u.test(final[finalEnd] ?? "")) finalEnd--;
   return final.slice(0, finalEnd) + suffix;
 }
 

@@ -58,4 +58,13 @@ describe("redaction before text caps", () => {
     expect(redactThenTruncate(hash, 32, "...")).toBe(hash.slice(0, 29) + "...");
     expect(redactThenTruncate("prefix😀suffix", 8, "…")).toBe("prefix…");
   });
+  it.each([2_000, 2_001, 2_020])("preserves the original plain diagnostic boundary at %i characters", length => {
+    const value = "x".repeat(length);
+    const marker = "\n[validation error truncated by codegenie]";
+    expect(truncateDiagnostic(value)).toBe(length <= 2_000 ? value : value.slice(0, 2_000).trimEnd() + marker);
+  });
+  it("keeps the existing UTF-16 boundary for ordinary repair diagnostics", () => {
+    const value = "x".repeat(1_999) + "😀" + "z";
+    expect(truncateDiagnostic(value)).toBe(value.slice(0, 2_000) + "\n[validation error truncated by codegenie]");
+  });
 });
