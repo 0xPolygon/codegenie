@@ -12,7 +12,7 @@ severity: medium
 
 ## Expected finding
 
-`olmo3Architecture` replaces the parser for nested `rope_parameters` with `parseRopeFlat`. In a valid Olmo 3 config with `rope_theta` under `full_attention` and no top-level frequency, the flat parser misses the field. The model then fails validation because its base frequency remains unset.
+`olmo3Architecture` replaces the parser for nested `rope_parameters` with `parseRopeFlat`. For the nested config shape accepted by the parent, `rope_theta` is under `full_attention` and absent from the outer `rope_parameters` object. The flat reader looks in that outer object and rejects the model load with `rope_theta must be >0` before `validateLlama` runs. Credit descriptions that identify the lost nested-config support and the load rejection. This case does not establish the config shape used by every released checkpoint.
 
 ## Anchor
 
@@ -24,4 +24,4 @@ Medium.
 
 ## Fixing evidence
 
-The fix explicitly reverses the switch and preserves the uniform rotary table derived from `full_attention`. The later [committed config fixture](https://github.com/townsendmerino/goinfer/commit/d5bcfbf99) matches that nested layout. At the case revision the parent parser is the repository evidence for the shape. [Fixing commit](https://github.com/townsendmerino/goinfer/commit/85f68e72bd07e9921844841c359a5c8aca54f308)
+The fix explicitly reverses the switch and preserves the uniform rotary table derived from `full_attention`. The later [committed config fixture](https://github.com/townsendmerino/goinfer/commit/d5bcfbf99) matches that nested layout. At the case revision the parent parser is the repository evidence for the shape. To reproduce, copy `nested_rope_test.go` from this directory into `decoder/` in isolated base and head checkouts and run `go test ./decoder -run '^TestOracleNestedOlmo3RoPE$'`. It succeeds at base and fails at head in the flat parser. [Fixing commit](https://github.com/townsendmerino/goinfer/commit/85f68e72bd07e9921844841c359a5c8aca54f308)
