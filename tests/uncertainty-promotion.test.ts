@@ -139,11 +139,40 @@ describe("uncertainty promotion", () => {
     const result = await promoteUncertaintiesForVerification({ packets, packetResults }, telemetry.recorder);
 
     expect(result.summary.considered).toBe(7);
-    expect(result.summary.promoted).toBe(2);
-    expect(result.summary.laneLimited).toBe(4);
+    expect(result.summary.promoted).toBe(4);
+    expect(result.summary.laneLimited).toBe(2);
     expect(result.summary.notPromoted).toMatchObject({ no_concrete_file_or_symbol: 1 });
-    expect(result.packetResults.flatMap((item) => item.findings)).toHaveLength(2);
-    expect(result.summary.decisions.filter((decision) => decision.reason === "promotion_lane_limited")).toHaveLength(4);
+    expect(result.packetResults.flatMap((item) => item.findings)).toHaveLength(4);
+    expect(result.summary.decisions.filter((decision) => decision.reason === "promotion_lane_limited")).toHaveLength(2);
+  });
+
+  it("uses the added slots for local eligible questions without replacing the original winners", async () => {
+    const packets = Array.from({ length: 6 }, (_, index) => fakePacket(
+      `real-question-${index}`,
+      index === 5 ? "metal/model.go" : `src/security-${index}.ts`,
+      { symbol: index === 5 ? "ensureBatchCap" : `authorize${index}`, line: index === 5
+        ? "+ batchX = NewBufferLen(capacity)"
+        : `+ return authorize${index}(request, token)` }
+     ));
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => ({
+      packetId: packet.id, lenses: packet.lenses, findings: [], uncertainties: [], status: "completed",
+      followUpHints: [{
+        question: index === 5
+          ? "When ensureBatchCap grows beyond the current batchCap, do replacing batchX and batchLogits via NewBufferLen release the prior Metal allocations (through explicit ownership handling or guaranteed finalization)?"
+          : `Does authorize${index} allow tenant access when the token is missing?`,
+        files: [packet.path], symbols: [index === 5 ? "ensureBatchCap" : `authorize${index}`],
+        reason: index === 5
+          ? "The growth path overwrites both buffer references without an explicit disposal call. If these wrappers retain Metal resources after Go references are dropped, repeated batch-size growth leaks GPU memory; the buffer ownership/finalization contract was not established from the inspected code."
+          : "The authorization path can affect production access control.",
+        confidence: index === 5 ? "medium" : "high", suggestedLenses: [], projectedSkillIds: []
+      }]
+    }));
+    const result = await promoteUncertaintiesForVerification({ packets, packetResults }, captureTelemetry().recorder);
+    expect(result.summary.promoted).toBe(4);
+    expect(result.summary.decisions).toContainEqual(expect.objectContaining({
+      packetId: "real-question-5", promoted: true
+    }));
+    expect(result.summary.decisions.filter((decision) => decision.selectedBy === "additional_locality")).toHaveLength(2);
   });
 
   it("does not promote same-scope follow-ups when the packet already produced a finding", async () => {
@@ -344,8 +373,8 @@ describe("uncertainty promotion", () => {
 
     const result = await promoteUncertaintiesForVerification({ packets, packetResults }, captureTelemetry().recorder);
 
-    expect(result.summary.promoted).toBe(2);
-    expect(result.summary.laneLimited).toBe(4);
+    expect(result.summary.promoted).toBe(4);
+    expect(result.summary.laneLimited).toBe(2);
     expect(result.packetResults.find((item) => item.packetId === "packet-lane-5")?.findings).toHaveLength(1);
   });
 
@@ -423,8 +452,8 @@ describe("uncertainty promotion", () => {
       ]
     }, telemetry.recorder);
 
-    expect(result.summary.promoted).toBe(2);
-    expect(result.packetResults.find((item) => item.packetId === localPacket.id)?.findings).toHaveLength(1);
+    expect(result.summary.promoted).toBe(4);
+    expect(result.packetResults.find((item) => item.packetId === localPacket.id)?.findings).toHaveLength(2);
     const promotedFindings = result.packetResults.flatMap((item) => item.findings);
     expect(promotedFindings).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -451,15 +480,16 @@ describe("uncertainty promotion", () => {
     });
     expect(localDecision?.localityScore).toBeGreaterThan(broadDecision?.localityScore ?? 0);
     expect(broadDecision).toMatchObject({
-      promoted: false,
-      reason: "promotion_lane_limited",
+      promoted: true,
+      reason: "promoted_for_verification",
+      selectedBy: "additional_locality",
       promotionClass: "broad_behavior_delta",
       rank: expect.any(Number),
       localityScore: expect.any(Number)
     });
 
     expect(telemetry.artifacts.get("uncertainty-promotion.json")).toMatchObject({
-      promoted: 2,
+      promoted: 4,
       decisions: expect.arrayContaining([
         expect.objectContaining({
           promotionClass: "local_behavior_delta",
@@ -467,8 +497,8 @@ describe("uncertainty promotion", () => {
         }),
         expect.objectContaining({
           promotionClass: "broad_behavior_delta",
-          promoted: false,
-          reason: "promotion_lane_limited"
+          promoted: true,
+          selectedBy: "additional_locality"
         })
       ])
     });
@@ -527,7 +557,7 @@ describe("uncertainty promotion", () => {
     const broadDecision = result.summary.decisions.find((decision) =>
       decision.question.includes("across all billing modules")
     );
-    expect(result.summary.promoted).toBe(2);
+    expect(result.summary.promoted).toBe(3);
     expect(broadDecision).toMatchObject({
       promoted: true,
       reason: "promoted_for_verification",
@@ -769,13 +799,13 @@ describe("uncertainty promotion", () => {
 
     const baselineCandidates = baseline.packetResults.flatMap((packetResult) => packetResult.findings);
     const candidates = result.packetResults.flatMap((packetResult) => packetResult.findings);
-    expect(result.summary.promotedCandidateIds).toEqual(baseline.summary.promotedCandidateIds);
-    expect(candidates.map((candidate) => candidate.id)).toEqual(baselineCandidates.map((candidate) => candidate.id));
+    expect(result.summary.promotedCandidateIds.slice(0, 2)).toEqual(baseline.summary.promotedCandidateIds);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(expect.arrayContaining(baselineCandidates.map((candidate) => candidate.id)));
     expect(result.summary).toMatchObject({
-      promoted: 2,
+      promoted: 3,
       representedRelatedSignals: 3,
-      laneLimited: 1,
-      unrepresentedLaneLimited: 1
+      laneLimited: 0,
+      unrepresentedLaneLimited: 0
     });
 
     const inputCandidate = candidates.find((candidate) => candidate.provenance?.question.includes("unauthorized token input"));
@@ -798,15 +828,13 @@ describe("uncertainty promotion", () => {
     });
     expect(outputCandidate?.provenance?.relatedSignals?.some((signal) => signal.question.includes("unauthorized token input"))).toBe(false);
     expect(result.summary.decisions.filter((decision) => decision.reason === "represented_as_related_signal")).toHaveLength(3);
-    expect(result.summary.decisions.filter((decision) => decision.reason === "promotion_lane_limited")).toEqual([
-      expect.objectContaining({ packetId: "packet-unmatched" })
-    ]);
+    expect(result.summary.decisions).toContainEqual(expect.objectContaining({ packetId: "packet-unmatched", selectedBy: "additional_locality" }));
     expect(telemetry.events).toContainEqual(expect.objectContaining({
       message: "uncertainty_promotion",
       data: expect.objectContaining({
-        promoted: 2,
+        promoted: 3,
         representedRelatedSignals: 3,
-        unrepresentedLaneLimited: 1
+        unrepresentedLaneLimited: 0
       })
     }));
   });
@@ -821,10 +849,10 @@ describe("uncertainty promotion", () => {
     expect(outputCandidate?.provenance?.relatedSignals).toHaveLength(8);
     expect(outputCandidate?.provenance?.crossPacketRelatedCount).toBe(8);
     expect(result.summary).toMatchObject({
-      promoted: 2,
+      promoted: 4,
       representedRelatedSignals: 8,
-      laneLimited: 2,
-      unrepresentedLaneLimited: 2
+      laneLimited: 0,
+      unrepresentedLaneLimited: 0
     });
   });
 });
