@@ -25,7 +25,12 @@ export function makeDefinitionPage(name: string, options: DefinitionPageOptions,
     }
     offset = position.index;
   }
-  return { name, ...(options.path !== undefined ? { path: options.path } : {}), requestedSource, sourceUsed, hits, meta: result.meta, offset, binding };
+  const lookupNote = result.meta.lookupNote
+    ?.replaceAll("; use read_range or find_symbol_mentions.", "; use read_range or find_usages.")
+    .replaceAll("; use find_symbol_mentions.", "; use find_usages.")
+    .replaceAll(". Narrow pathGlob; this occurrence", ". Narrow the path; this occurrence");
+  const meta = { ...result.meta, ...(lookupNote !== undefined ? { lookupNote } : {}) };
+  return { name, ...(options.path !== undefined ? { path: options.path } : {}), requestedSource, sourceUsed, hits, meta, offset, binding };
 }
 
 export function definitionCursor(page: DefinitionPage, index: number): string {
