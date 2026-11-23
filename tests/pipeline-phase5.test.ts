@@ -16603,9 +16603,9 @@ describe("fallback co-location of exact changed anchors", () => {
     "A handler that writes status 101 receives a synthesized 200 instead.", "Treat 101 as a final status.");
   const second = () => buildCandidate("second", "WriteHeader discards final 101 status",
     "A handler that responds with the valid final status 101 is observed by the client as 200 instead.", "Reject unsupported protocol switching.");
-  async function compose(findings: CandidateFinding[], fallback = true) {
+  async function compose(findings: CandidateFinding[], fallback = true, event = vi.fn()) {
     return dedupeRankAndComposeReview({ verified: findings, verdicts: [] }, fakePlan(),
-      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), { ...nullTelemetry(), event }, {
         runner: { runStructured: async <T>() => {
           if (fallback) throw composerTransientError();
           return { summary: "Confirmed defects", composedFindings: findings.map(finding => ({ findingIds: [finding.id],
@@ -16614,7 +16614,8 @@ describe("fallback co-location of exact changed anchors", () => {
       });
   }
   it("co-locates the historical 101-to-200 reports without dropping either cause or recommending unreconciled remedies", async () => {
-    const result = await compose([first(), second()]);
+    const event = vi.fn();
+    const result = await compose([first(), second()], true, event);
     expect(result.findings).toHaveLength(1);
     const finding = result.findings[0]!;
     expect(finding.mergedCandidateIds).toEqual(expect.arrayContaining(["first", "second"]));
@@ -16623,6 +16624,11 @@ describe("fallback co-location of exact changed anchors", () => {
     expect(finding.finalBody).not.toContain(first().suggestedFix);
     expect(finding.finalBody).not.toContain(second().suggestedFix);
     expect(finding.finalBody).toContain("Remediation remains unreconciled");
+    expect(finding.finalBody.split(first().failureMode)).toHaveLength(2);
+    expect(event.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toEqual([
+      [expect.objectContaining({ data: expect.objectContaining({ candidateIds: ["first", "second"],
+        path, side: "RIGHT", line: 98, hunkId: "38763030", category: "correctness" }) })]
+    ]);
   });
   it("retains distinct causes at the line and withholds an unsupported remedy", async () => {
     const other = second();
@@ -16636,6 +16642,7 @@ describe("fallback co-location of exact changed anchors", () => {
     expect(result.findings[0]!.finalBody).toContain(other.whyThisMatters);
     expect(result.findings[0]!.severity).toBe("high");
     expect(result.findings[0]!.finalBody).toContain(first().suggestedFix);
+    expect(result.findings[0]!.finalBody.split(first().suggestedFix!)).toHaveLength(2);
     expect(result.findings[0]!.finalBody).not.toContain(other.suggestedFix);
   });
   it("keeps categories separate and does not co-locate in model composition", async () => {

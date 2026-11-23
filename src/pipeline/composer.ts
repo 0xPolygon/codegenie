@@ -154,6 +154,13 @@ export async function dedupeRankAndComposeReview(
     });
     coverage.reasons.push(fallbackReason);
     const fallbackGroups = colocateFallbackGroups(groups, opts.diff, packetsById, colocatedFallbackIds);
+    for (const group of fallbackGroups) {
+      if (!group.findings.some(finding => colocatedFallbackIds.has(finding.id))) continue;
+      const anchor = group.representative.anchor!;
+      telemetry.event({ stage: 10, level: "info", message: "fallback_colocated", file: anchor.path,
+        data: { candidateIds: group.findings.map(finding => finding.id), path: anchor.path, side: anchor.side,
+          line: anchor.line, hunkId: anchor.hunkId, category: group.representative.category } });
+    }
     return fallbackComposition(fallbackGroups, link);
   });
 
@@ -2085,14 +2092,11 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings, colocated = false): string {
   const body = renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
   if (!colocated) return body;
-  const sources = compositionSources(groupedFindings, assessmentFindings);
-  const eligibleFixes = sources.filter(source => eligibleCompositionSource(source, "fix"));
-  const showFix = new Set(eligibleFixes.map(source => source.text)).size === 1;
-  const reports = groupedFindings.map((member, index) => {
-    const fix = showFix ? eligibleFixes.find(source => source.findingId === member.id) : undefined;
-    return `**${index + 1}. ${safeReportProse(member.title)}**\n\n${safeReportProse(member.failureMode)}\n\n${safeReportProse(member.whyThisMatters)}${fix ? `\n\nSuggested remedy: ${safeReportProse(fix.text)}` : ""}`;
+  const reports = groupedFindings.filter(member => member.id !== finding.id).map((member, index) => {
+    const consequence = member.whyThisMatters === member.failureMode ? "" : `\n\n${safeReportProse(member.whyThisMatters)}`;
+    return `**${index + 1}. ${safeReportProse(member.title)}**\n\n${safeReportProse(member.failureMode)}${consequence}`;
   });
-  return `${body}\n\nThese reports concern the same changed line; assess each cause.\n\n${reports.join("\n\n")}`;
+  return `${body}\n\nAlso reported at this line; assess each cause:\n\n${reports.join("\n\n")}`;
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {
