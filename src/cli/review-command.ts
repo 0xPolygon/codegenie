@@ -120,12 +120,14 @@ export function parseReviewCommand(
   provider.command("logout").description("remove stored provider credentials").argument("[provider]").option("--yes", "confirm removing all credentials");
   provider.command("auth-status").description("show stored or environment auth status").argument("[provider]");
   provider.command("models").description("list available models").argument("[query]").option("--all", "include unauthenticated providers");
-  provider.command("use").description("set the default provider/model by fuzzy model id").argument("<model>");
+  provider.command("use").description("set the default provider/model by fuzzy model id").argument("<model>")
+    .option("--provider <name>", "limit model matching to this provider");
   const providerConfig = provider.command("config").description("show or update provider defaults");
   providerConfig.command("set-provider").argument("<provider>");
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-reasoning").argument(REASONING_USAGE);
-  program.command("use").description("shorthand for `provider use`").argument("<model>");
+  program.command("use").description("shorthand for `provider use`").argument("<model>")
+    .option("--provider <name>", "limit model matching to this provider");
   program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
   program

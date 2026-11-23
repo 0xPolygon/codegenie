@@ -733,6 +733,171 @@ describe("Phase 4 provider commands", () => {
     expect(output.join("")).toBe("default model set to fake/fake-large (fake large); reasoning set to high\n");
   });
 
+  it.each([
+    ["use", "luna:xhigh", "--provider", "openai-codex"],
+    ["provider", "use", "luna:xhigh", "--provider", "openai-codex"],
+    ["use", "openai-codex/luna:xhigh"],
+    ["provider", "use", "openai-codex:luna:xhigh"]
+  ].map((args) => ({ args })))("uses the same scoped fuzzy ranking for $args", async ({ args }) => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["openai-codex", "openrouter"],
+      envConfiguredProviders: ["openai-codex", "openrouter"],
+      modelsByProvider: {
+        "openai-codex": [
+          fakeModel("openai-codex", "gpt-6-preview-luna", "Luna Preview"),
+          fakeModel("openai-codex", "gpt-6-luna", "Luna"),
+          fakeModel("openai-codex", "gpt-6-luna-mini", "Luna Mini")
+        ],
+        openrouter: [fakeModel("openrouter", "luna", "Router Luna")]
+      }
+    });
+    const output: string[] = [];
+
+    await executeProviderCommand(expandProviderAlias(args)!, { services, writeOut: (text) => output.push(text) });
+
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-6-luna",
+      defaultReasoning: "high"
+    });
+    expect(output.join("")).toBe(
+      "default model set to openai-codex/gpt-6-luna (Luna); reasoning set to high (normalized from xhigh)\n" +
+      "other matches in openai-codex: gpt-6-preview-luna\n"
+    );
+  });
+
+  it("keeps colon-bearing model IDs and explicitly scoped vendor paths intact", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["openai", "openrouter"],
+      envConfiguredProviders: ["openai", "openrouter"],
+      modelsByProvider: {
+        openai: [fakeModel("openai", "gpt-6-luna", "Luna")],
+        openrouter: [
+          fakeModel("openrouter", "openai/gpt-6-luna", "Router Luna"),
+          fakeModel("openrouter", "openai/gpt-4o-0731:batch", "Batch")
+        ]
+      }
+    });
+    const writeOut = () => {};
+
+    await executeProviderCommand(["provider", "use", "gpt-4o-0731:batch"], { services, writeOut });
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultProvider: "openrouter", defaultModel: "openai/gpt-4o-0731:batch" });
+    await executeProviderCommand(["provider", "use", "openrouter:openai/gpt-4o-0731:batch:max"], { services, writeOut });
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "openrouter",
+      defaultModel: "openai/gpt-4o-0731:batch",
+      defaultReasoning: "high"
+    });
+    await executeProviderCommand(["provider", "use", "openai/gpt-6-luna", "--provider", "openrouter"], { services, writeOut });
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultProvider: "openrouter", defaultModel: "openai/gpt-6-luna" });
+    await executeProviderCommand(["provider", "use", "openai/gpt-6-luna"], { services, writeOut });
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultProvider: "openai", defaultModel: "gpt-6-luna" });
+  });
+
+  it("reports alternate providers when model rank picks one", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["openai-codex", "openrouter", "other"],
+      envConfiguredProviders: ["openai-codex", "openrouter", "other"],
+      modelsByProvider: {
+        "openai-codex": [fakeModel("openai-codex", "gpt-6-luna", "Luna")],
+        openrouter: [
+          fakeModel("openrouter", "openai/gpt-6-luna", "Router Luna"),
+          fakeModel("openrouter", "vendor/gpt-6-luna", "Other Router Luna")
+        ],
+        other: [fakeModel("other", "previous-gpt-6-luna-mini", "Previous Luna Mini")]
+      }
+    });
+    saveProviderSettings({ defaultProvider: "openrouter", defaultModel: "openai/gpt-6-luna" }, services.paths);
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "use", "gpt-6-luna"], { services, writeOut: (text) => output.push(text) });
+
+    expect(output.join("")).toBe(
+      "default model set to openai-codex/gpt-6-luna (Luna); reasoning set to high\n" +
+      "also available as openrouter/vendor/gpt-6-luna; choose with --provider openrouter or openrouter:vendor/gpt-6-luna\n"
+    );
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultProvider: "openai-codex", defaultModel: "gpt-6-luna" });
+  });
+
+  it("requires a choice between tied providers unless the current provider is tied", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      envConfiguredProviders: ["fake", "other"],
+      modelsByProvider: {
+        fake: [fakeModel("fake", "shared", "Fake Shared")],
+        other: [fakeModel("other", "shared", "Other Shared")]
+      }
+    });
+    const args = ["provider", "use", "shared:medium"];
+    const output: string[] = [];
+    const options = { services, writeOut: (text: string) => output.push(text) };
+
+    await expect(executeProviderCommand(args, options)).rejects.toMatchObject({
+      code: "invalid_args",
+      message: "model shared matches multiple providers: other/shared, fake/shared. Choose with --provider <name> or <provider>:<model>."
+    });
+    expect(loadProviderSettings(services.paths)).toEqual({});
+    expect(output).toEqual([]);
+
+    saveProviderSettings({ defaultProvider: "fake", defaultModel: "shared", defaultReasoning: "high" }, services.paths);
+    await executeProviderCommand(args, options);
+    expect(loadProviderSettings(services.paths)).toEqual({ defaultProvider: "fake", defaultModel: "shared", defaultReasoning: "medium" });
+    expect(output.join("")).toContain("also available as other/shared; choose with --provider other or other:shared");
+  });
+
+  it("preserves a whole vendor ID when its prefix is logged out or unknown", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["openai", "openrouter"],
+      envConfiguredProviders: ["openrouter"],
+      modelsByProvider: {
+        openrouter: [
+          fakeModel("openrouter", "openai/gpt-6-luna", "Router Luna"),
+          fakeModel("openrouter", "vendor/local-model", "Local Model")
+        ]
+      }
+    });
+    const output: string[] = [];
+    const options = { services, writeOut: (text: string) => output.push(text) };
+
+    await executeProviderCommand(["provider", "use", "openai/gpt-6-luna"], options);
+    expect(output.join("")).toContain(
+      "provider openai is not logged in; matched openrouter/openai/gpt-6-luna instead (run codegenie provider login openai to use it)"
+    );
+    await executeProviderCommand(["provider", "use", "vendor/local-model"], options);
+    expect(output.at(-1)).toBe("default model set to openrouter/vendor/local-model (Local Model); reasoning set to high\n");
+    await expect(executeProviderCommand(["provider", "use", "openai/no-such-model"], options)).rejects.toThrow(
+      "provider openai is not logged in. Run codegenie provider login openai."
+    );
+  });
+
+  it.each([
+    { args: ["shared", "--provider", "unknown"], message: "unknown provider unknown. Run codegenie provider list" },
+    { args: ["shared", "--provider", "other"], message: "provider other is not logged in. Run codegenie provider login other." },
+    { args: ["other:shared"], message: "provider other is not logged in. Run codegenie provider login other." },
+    { args: ["fake:shared", "--provider", "other"], message: "conflicting providers other and fake" }
+  ])("rejects invalid provider selection $args before searching", async ({ args, message }) => {
+    const services = fakeProviderServices(tempDir(), { envConfiguredProviders: ["fake"] });
+    services.modelRegistry.listModels = () => {
+      throw new Error("unexpected model search");
+    };
+
+    await expect(executeProviderCommand(["provider", "use", ...args], { services })).rejects.toMatchObject({
+      code: "invalid_args",
+      message: expect.stringContaining(message)
+    });
+    expect(loadProviderSettings(services.paths)).toEqual({});
+  });
+
+  it("limits reasoning-typo suggestions to the selected provider", async () => {
+    const services = fakeProviderServices(tempDir(), { envConfiguredProviders: ["fake", "other"] });
+
+    await expect(executeProviderCommand(["provider", "use", "other:fake-large:mmm"], { services })).rejects.toThrow(
+      "sorry cannot find model other:fake-large:mmm."
+    );
+    await expect(executeProviderCommand(["provider", "use", "fake-large:mmm", "--provider", "fake"], { services })).rejects.toThrow(
+      "unknown reasoning level mmm for fake/fake-large; supported levels: low, medium, high"
+    );
+  });
+
   it("allows API-key login for providers that also support OAuth", async () => {
     const services = fakeProviderServices(tempDir(), { providerIds: ["anthropic"] });
     const output: string[] = [];
