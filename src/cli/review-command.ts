@@ -94,7 +94,7 @@ export function parseReviewCommand(
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
-    .option("--model <model>", "model override, optionally provider/model[:reasoning] (e.g. openai-codex/gpt-6-luna:high)")
+    .option("--model <model>", "model as [provider/]model[:reasoning]. Exact IDs on the configured provider take precedence. Use --provider to choose explicitly.")
     .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
     .option("--skip-svg-review", "skip SVG files during review (default)")
     .option("--no-skip-svg-review", "include SVG files in review, subject to other exclusion rules")
