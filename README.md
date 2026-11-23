@@ -112,7 +112,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.9.1
+      - uses: 0xPolygon/codegenie@v0.9.2
         with:
           # Works with any model!
           model: "openrouter/openai/gpt-6-luna:xhigh"
@@ -133,7 +133,7 @@ The `model` input is one spec: `provider/model[:reasoning]` — any model in [mo
 List named models once. `model` stays the default for automatic reviews and a bare `codegenie review`. A collaborator can comment `codegenie review opus` to run that one review with the `opus` entry instead.
 
 ```yaml
-      - uses: 0xPolygon/codegenie@v0.9.1
+      - uses: 0xPolygon/codegenie@v0.9.2
         env:
           # one credential env var per provider in the list (see Credentials below)
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -244,6 +244,17 @@ processingMode = "skip"
 - **Telemetry is off by default.** Repo config may only set `telemetry.enabled`; user-level `~/.codegenie/config.toml` can also set run directory, log level, and retention.
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
 - **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
+
+### Experimental repository tools
+
+The default and recommended tool surface is `current`. To try the six-tool surface for review and verification, add the setting below to the `[review]` table in `codegenie.toml`.
+
+```toml
+[review]
+toolSurface = "six"
+```
+
+Set `toolSurface = "current"` or remove the setting to return to the default. In the development comparison, the current surface published more required findings and used fewer calls and tokens.
 
 ### Advanced: per-stage models
 
