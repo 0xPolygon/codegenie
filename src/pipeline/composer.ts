@@ -128,6 +128,7 @@ export async function dedupeRankAndComposeReview(
   // Promises may reject with any value (even undefined), so presence is a flag.
   let compositionFailed = false;
   let compositionFailure: unknown;
+  const colocatedFallbackIds = new Set<string>();
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
@@ -152,7 +153,8 @@ export async function dedupeRankAndComposeReview(
       data: composerFallbackTelemetry(error, groups, fallbackReason, fallbackMode)
     });
     coverage.reasons.push(fallbackReason);
-    return fallbackComposition(groups, link);
+    const fallbackGroups = colocateFallbackGroups(groups, opts.diff, packetsById, colocatedFallbackIds);
+    return fallbackComposition(fallbackGroups, link);
   });
 
   const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
@@ -215,7 +217,9 @@ export async function dedupeRankAndComposeReview(
       compositionDegraded = true;
       telemetry.event({ stage: 10, level: "warn", message: "composition_legacy_content_fallback", data: { findingIds: ids } });
     }
-    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept);
+    const colocated = ids.some(id => colocatedFallbackIds.has(id));
+    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept, colocated);
+    if (colocated) final.severity = strongest(mergedFindings).severity;
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -944,6 +948,36 @@ function fallbackComposition(groups: FindingGroup[], link?: EvidenceLinker): Sub
   };
 }
 
+// Fallback cannot judge whether reports at the same line have the same cause.
+// Co-locate them only when every member has the same validated changed anchor;
+// the final template retains each report independently.
+function colocateFallbackGroups(groups: FindingGroup[], diff: UnifiedDiff | undefined,
+  packetsById: Map<string, ReviewPacket>, colocatedIds: Set<string>): FindingGroup[] {
+  const result: FindingGroup[] = [];
+  const keys = new Map<string, number>();
+  for (const group of groups) {
+    const keysForGroup = group.findings.map(finding => {
+      const anchor = finding.anchorSource === "backfill_packet_representative" ? undefined : validateAnchorForDiff(finding.anchor, diff);
+      return anchor?.hunkId ? JSON.stringify([anchor.path, anchor.side, anchor.line, anchor.hunkId, finding.category]) : undefined;
+    });
+    const key = keysForGroup[0];
+    if (key === undefined || keysForGroup.some(value => value !== key)) {
+      result.push(group);
+      continue;
+    }
+    const index = keys.get(key);
+    if (index === undefined) {
+      keys.set(key, result.length);
+      result.push(group);
+    } else {
+      const merged = combineFindingGroups([result[index]!, group], packetsById);
+      merged.findings.forEach(finding => colocatedIds.add(finding.id));
+      result[index] = merged;
+    }
+  }
+  return result;
+}
+
 type ConfidenceSelection = {
   confidence: Confidence;
   sourceFindingId?: string;
@@ -1031,13 +1065,14 @@ function toFinalFinding(
   link?: EvidenceLinker,
   attributed = false,
   onFallbackMetrics?: (metrics: CompositionMetrics) => void,
-  assessmentFindings = mergedFindings
+  assessmentFindings = mergedFindings,
+  colocated = false
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   // Only attributed output can replace verified prose. Legacy or invalid output
   // uses one deterministic rendering, never narrative plus every source section.
-  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings);
+  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings, colocated);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, attributed ? normalizedFinalBody : undefined);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
@@ -2047,8 +2082,17 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
   return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
-function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings): string {
-  return renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings, colocated = false): string {
+  const body = renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
+  if (!colocated) return body;
+  const sources = compositionSources(groupedFindings, assessmentFindings);
+  const eligibleFixes = sources.filter(source => eligibleCompositionSource(source, "fix"));
+  const showFix = new Set(eligibleFixes.map(source => source.text)).size === 1;
+  const reports = groupedFindings.map((member, index) => {
+    const fix = showFix ? eligibleFixes.find(source => source.findingId === member.id) : undefined;
+    return `**${index + 1}. ${safeReportProse(member.title)}**\n\n${safeReportProse(member.failureMode)}\n\n${safeReportProse(member.whyThisMatters)}${fix ? `\n\nSuggested remedy: ${safeReportProse(fix.text)}` : ""}`;
+  });
+  return `${body}\n\nThese reports concern the same changed line; assess each cause.\n\n${reports.join("\n\n")}`;
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {
