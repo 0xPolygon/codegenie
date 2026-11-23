@@ -1,5 +1,5 @@
 const registeredSecrets = new Set<string>();
-// Component lines are writer-only: they must not change source cut boundaries.
+// Component lines also protect character cuts, so the writer can match them whole.
 const registeredSecretLines = new Set<string>();
 
 const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi;

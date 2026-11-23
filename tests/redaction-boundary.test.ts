@@ -79,6 +79,13 @@ describe("protected source boundaries", () => {
     expect(protectedSourceSlice(text, start + 2, end - 1).text).toBe("");
     expect(stripCredentials(protectedSourceSlice(text, 0, text.length).text)).not.toContain(secret);
   });
+  it("moves character cuts out of registered multiline component lines", () => {
+    registerSecret("BEGIN\nshort-key-123\nEND");
+    const line = "prefix short-key-123 suffix";
+    const middle = line.indexOf("short-key-123") + 7;
+    expect(protectedSourceSlice(line, 0, middle).text).toBe("prefix ");
+    expect(protectedSourceSlice(line, middle, line.length).text).toBe(" suffix");
+  });
   it.each([
     "https://user:password@host.invalid/path",
     "Authorization: Bearer " + "x".repeat(24),
