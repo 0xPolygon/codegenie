@@ -6,6 +6,146 @@ import { packDefinitionPage, packDefinitionToolResult } from "../src/llm/definit
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 
 describe("exact definition lookup", () => {
+  it("finds literal object callables without inventing a receiver or changing legacy lookup", async () => {
+    const fixture = await textRepository({
+      "src/client.ts": `export function makeClient() { return {
+  async lsTree() { return 1; },
+  plain() { return 2; },
+  fn: function () { return 3; },
+  arrow: () => 4,
+  asyncArrow: async () => 5,
+  [dynamic]: () => 6,
+  ...spread,
+  get computed() { return 7; },
+}; }
+export const client = { bound() { return 8; } };
+export class Service { process() { return 10; } }
+`,
+      "src/other.ts": "export function lsTree() { return 9; }\n",
+      "src/dual.ts": "export function finalize() { return 1; }\nexport const wrapper = { finalize() { return 2; } };\n",
+      "src/objects.ts": "export const a = { run() { return 1; } };\nexport const b = { run() { return 2; } };\n",
+      "src/store.go": "package store\ntype Store struct{}\nfunc (s *Store) Save() {}\ntype Other struct{}\nfunc (o *Other) Save() {}\n"
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      for (const name of ["lsTree", "plain", "fn", "arrow", "asyncArrow"]) {
+        const result = await tool.execute({ name, path: "src/client.ts" }, new AbortController().signal);
+        expect(result.meta?.lookupStatus, name).toBe("found");
+        expect(result.definitionPage?.hits).toHaveLength(1);
+        expect(result.definitionPage?.hits[0]?.symbol).toMatchObject({ name, nativeKind: "object method" });
+        expect(result.definitionPage?.hits[0]?.symbol.ownerType).toBeUndefined();
+      }
+      const bound = await tool.execute({ name: "client.bound", path: "src/client.ts" }, new AbortController().signal);
+      expect(bound.definitionPage?.hits[0]?.symbol).toMatchObject({ name: "bound", ownerType: "client" });
+      const classMethod = await tool.execute({ name: "Service.process", path: "src/client.ts" }, new AbortController().signal);
+      expect(classMethod.definitionPage?.hits[0]?.symbol).toMatchObject({ name: "process", ownerType: "Service" });
+      for (const name of ["Client.lsTree", "dynamic", "computed", "spread"]) {
+        const result = await tool.execute({ name, path: "src/client.ts" }, new AbortController().signal);
+        expect(result.definitionPage?.hits ?? [], name).toHaveLength(0);
+      }
+      expect((await fixture.tools.findDefinition("lsTree", { exactPath: "src/client.ts" })).meta.lookupStatus).toBe("not_found");
+      const all = await tool.execute({ name: "lsTree" }, new AbortController().signal);
+      expect(all.meta?.lookupStatus).toBe("found");
+      expect(all.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["src/other.ts"]);
+      expect(all.text).toContain("src/client.ts@head:2-2");
+      expect(all.text).toContain("Use read_range");
+      expect(all.text).toContain("additional same-name object member");
+      const dual = await tool.execute({ name: "finalize", path: "src/dual.ts" }, new AbortController().signal);
+      expect(dual.meta?.lookupStatus).toBe("found");
+      expect(dual.definitionPage?.hits).toHaveLength(1);
+      expect(dual.text).toContain("src/dual.ts@head:2-2");
+      expect(dual.text).toContain("Use read_range");
+      expect(dual.text).toContain('read_range({"path":"src/dual.ts","startLine":2,"endLine":2,"source":{"kind":"head"}})');
+      const objects = await tool.execute({ name: "run", path: "src/objects.ts" }, new AbortController().signal);
+      expect(objects.meta?.lookupStatus).toBe("ambiguous");
+      expect(objects.definitionPage?.hits.map(hit => hit.symbol.ownerType)).toEqual(["a", "b"]);
+      for (const name of ["Store.Save", "(*Store).Save", "store.Store.Save"]) {
+        const method = await tool.execute({ name, path: "src/store.go" }, new AbortController().signal);
+        expect(method.meta?.lookupStatus, name).toBe("found");
+        expect(method.definitionPage?.hits).toHaveLength(1);
+        expect(method.definitionPage?.hits[0]?.symbol).toMatchObject({ name: "Save", ownerType: "Store" });
+      }
+      const unknownOwner = await tool.execute({ name: "Missing.Save", path: "src/store.go" }, new AbortController().signal);
+      expect(unknownOwner.meta?.lookupStatus).toBe("not_found");
+      const resolver = (fixture.tools as unknown as { opts: { resolver: { listFiles: (...args: never[]) => unknown } } }).opts.resolver;
+      const listFiles = vi.spyOn(resolver, "listFiles");
+      const directory = await tool.execute({ name: "lsTree", path: "src" }, new AbortController().signal);
+      expect(directory).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(directory.text).toContain("is a directory");
+      expect(directory.text).toContain("exact file path");
+      expect((await tool.execute({ name: "lsTree", path: "missing" }, new AbortController().signal)).meta?.lookupStatus).toBe("file_missing");
+      expect(listFiles).toHaveBeenCalledTimes(1);
+    } finally { fixture.dispose(); }
+  });
+
+  it("bounds member disclosures and keeps the selected revision in actionable reads", async () => {
+    const base = "export function run() {}\n" + Array.from({ length: 25 }, (_, i) =>
+      `export const item${i} = { run() { return ${i}; } };\n`).join("");
+    const fixture = await textRepository({ "src/many-members.ts": base }, {
+      "src/many-members.ts": "export function run() { return 'head'; }\n"
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const result = await tool.execute({ name: "run", path: "src/many-members.ts", source: { kind: "base" } }, new AbortController().signal);
+      expect(result.meta?.lookupStatus).toBe("found");
+      expect(result.definitionPage?.hits).toHaveLength(1);
+      expect(result.text).toContain("25 additional same-name object member(s)");
+      expect(result.text).toContain("5 more not listed");
+      expect(result.text).toContain('"source":{"kind":"base"}');
+      expect(result.text).not.toContain("src/many-members.ts@head:");
+    } finally { fixture.dispose(); }
+  });
+
+  it("counts verified object hits separately from unverified text leads without changing the old tier", async () => {
+    const fixture = await textRepository({
+      "src/client.ts": "export function makeClient() { return { go() { return 1; }, open() { return 2; } }; }\n",
+      "src/existing.ts": "export function open() { return 3; }\n",
+      "vendor/leads.custom": "function go() {}\nfunction open() {}\n"
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const object = await tool.execute({ name: "go" }, new AbortController().signal);
+      expect(object.meta?.lookupStatus).toBe("found");
+      expect(object.definitionPage?.hits).toHaveLength(2);
+      expect(object.text).toContain("Verified declarations:");
+      expect(object.text).toContain("Unverified text leads:");
+      const oldTier = await fixture.tools.findDefinition("open");
+      const sameTier = await tool.execute({ name: "open" }, new AbortController().signal);
+      expect(oldTier.meta.lookupStatus).toBe("ambiguous");
+      expect(sameTier.meta?.lookupStatus).toBe(oldTier.meta.lookupStatus);
+      expect(sameTier.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(oldTier.definitions.map(hit => hit.symbol.path));
+      expect(sameTier.text).toContain("Verified declarations are identified above");
+    } finally { fixture.dispose(); }
+  });
+
+  it("keeps object lookup ambiguous when a result cap omits a discovered declaration", async () => {
+    const longBody = "x".repeat(9_100);
+    const fixture = await textRepository({
+      "src/a.ts": `export const a = { run() { return '${longBody}'; } };\n`,
+      "src/b.ts": `export const b = { run() { return '${longBody}'; } };\n`
+    });
+    try {
+      const result = await buildReadDefinitionTool(fixture.tools).execute({ name: "run" }, new AbortController().signal);
+      expect(result.definitionPage?.hits).toHaveLength(1);
+      expect(result.meta).toMatchObject({ lookupStatus: "ambiguous", deliveryStatus: "truncated", omittedCount: 1 });
+    } finally { fixture.dispose(); }
+  });
+
+  it("keeps the verified location when the only object body exceeds the serialization cap", async () => {
+    const quotes = '"'.repeat(9_000);
+    const fixture = await textRepository({ "src/a.ts": `export const a = { run() { return '${quotes}'; } };\n` });
+    try {
+      const result = await buildReadDefinitionTool(fixture.tools).execute({ name: "run" }, new AbortController().signal);
+      expect(result.meta).toMatchObject({ lookupStatus: "found", deliveryStatus: "truncated", truncated: true, omittedCount: 1 });
+      expect(result.definitionPage?.hits).toHaveLength(1);
+      expect(result.definitionPage?.hits[0]).toMatchObject({ symbol: { path: "src/a.ts", lineRange: [1, 1] }, nextLine: 1 });
+      expect(result.definitionPage?.hits[0]?.text).toBeUndefined();
+      expect(result.text).toContain("src/a.ts@head");
+      expect(result.text).toContain("read_range");
+      expect(result.rawSource).toBeUndefined();
+    } finally { fixture.dispose(); }
+  });
+
   it("parses a literal named path directly, distinguishes absent and missing, and never broadens", async () => {
     const fixture = await textRepository({
       "src/[a].ts": "export function Widget() { return 1; }\n",

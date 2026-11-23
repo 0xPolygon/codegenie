@@ -127,6 +127,8 @@ export type ToolDefinition = {
   name: string;
   description: string;
   parameters: TSchema;
+  /** Canonicalize compatible raw arguments before schema validation and cache lookup. */
+  normalizeArguments?(args: Record<string, unknown>): Record<string, unknown>;
   /** Include request-local context in the result cache without sending it as a model argument. */
   resultCacheScope?(args: Record<string, unknown>): string | undefined;
   execute(args: unknown, signal: AbortSignal): Promise<ToolExecutionResult>;
