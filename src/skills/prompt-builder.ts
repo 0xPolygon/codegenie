@@ -1,3 +1,4 @@
+import { packetHasRepositoryTools } from "../pipeline/packet-tools.js";
 import type {
   CandidateFinding,
   IntentSignals,
@@ -87,6 +88,8 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
   10: "p10.25"
 };
 
+const SIX_STAGE7_PROMPT_VERSION = "p7.16-six.1";
+
 export const TEST_COVERAGE_GUIDANCE = "A missing test for a new branch alone is not a finding. Establish a material behavioral requirement from callers, boundary tests or an explicit contract, identify a concrete violating regression, and show why inspected relevant tests would accept it. A currently correct production guard may still need an important rejection test; no existing production bug or executed mutation is required. Inspect likely sister tests and transport validation where relevant. Scope absence claims to inspected evidence: a bounded or unsuccessful search cannot prove repository-wide absence. Neither neighboring test style, a commit title, nor an unsupported client-visible label establishes material consequence. Omit optional extra coverage rather than turning it into human-attention noise. A proposed regression test must exercise a reachable boundary, reject weakened requirements, and accept valid remedies.";
 
 const DOCUMENTATION_IMPACT_GUIDANCE = "For documentation findings, identify the specific instruction or decision the reader would get wrong and the concrete consequence supported by inspected evidence. Read the surrounding example and corrective instructions before treating an isolated wording or arithmetic inconsistency as a defect. A possible future misunderstanding or hypothetical monitoring/implementation mistake alone does not establish material impact. Do not promote wording-only corrections as findings; retain documentation findings that demonstrably prescribe an unsafe action or violate an established requirement.";
@@ -137,7 +140,8 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     { surface: "reviewStatus incomplete discipline", reason: "incomplete is reserved for reviews cut off before evaluation; hedged no-finding conclusions must not be counted as unreviewed coverage.", evidence: "gpt-5.5 runs 56-58: 9-10 no-finding conclusions self-reported incomplete -> ~15-17 hunks counted failed, completeness partial; opus 0" },
     { surface: "behaviorChange/intentEvidence", reason: "Preserves explicit framing for refactor-like or mixed-intent behavior changes through verification and composition.", evidence: "Plan 82 unknown-demotion fix and Plan 74 confidence calibration" },
     { surface: "staticSignals/lossy-transform guidance", reason: "Keeps validation-before-conversion and deliverable-bound checks visible where regressions have clustered.", evidence: "Fable D10 static-signal watch and Wave-era relay/hyperlane cases" },
-    { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
+    { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" },
+    { surface: "six-tool packet-scoped finish and no close nudges", reason: "Allow investigation to continue while an assigned row is unassessed.", evidence: "Plan 134 depth: 0/28/54 packets with at least 20 calls; C incomplete 4/48" }
   ],
   9: [
     { surface: "collected source evidence and bounded test claims", reason: "Reuse relevant complete tool deliveries across packets and distinguish a proven local assertion gap from global absence.", evidence: "OMSX 205254: validator body collected elsewhere but verifier only inspected search hits; 214916 overstates absence of transport validation." },
@@ -291,7 +295,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
         fenceUntrusted(renderPacket(packet), "review-packet")
       ].filter(Boolean);
-      return buildPrompt(7, [
+      const built = buildPrompt(7, [
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
@@ -300,7 +304,10 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
-        "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation). If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
+        (six
+          ? "reviewStatus:\"incomplete\" means the review was cut off before this packet's hunks could be evaluated (tool or budget exhaustion mid-investigation). Unread sibling hunks alone do not make this review incomplete. Use incomplete if the missing evidence prevents assessment of an assigned changed line."
+          : "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation).")
+          + " If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
@@ -315,19 +322,25 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
           + (six
             ? "Use read_change with a hunkId and context \"function\" to compare the enclosing function. Use read_definition with source {kind:\"base\"} for a declaration removed from head. Use find_usages for caller leads or scope \"tests\" for test leads."
             : "Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base."),
-        `When local context feels tight, prefer exact source reads such as ${exactSourceToolNames[toolSurface]} over broad search/list tools. Local budgets are targets: aim to finish within them, and use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply.`,
-        packet.reviewProfile === "simple"
-          ? "This packet is classified as simple. Review the provided packet only, but surface a clear changed-line defect or pointer-rich unresolved predicate visible from the packet text."
-          : packet.reviewProfile === "investigate"
-            ? "This packet is classified for investigation. Use repository tools when they can materially decide a concrete suspected failure mode."
-            : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
-        depthCloseGuidance(packet),
+        `When local context feels tight, prefer exact source reads such as ${exactSourceToolNames[toolSurface]} over broad search/list tools.`
+          + (six
+            ? " Local budgets are targets, not stop signals: when one is reached, continue only while a line in this packet's hunks remains unaccounted for. Hard limits still apply."
+            : " Local budgets are targets: aim to finish within them, and use bounded continuation only to resolve concrete remaining questions. Global limits and local ceilings still apply."),
+        ...(six ? [sixToolFinishCondition(packet)] : [
+          packet.reviewProfile === "simple"
+            ? "This packet is classified as simple. Review the provided packet only, but surface a clear changed-line defect or pointer-rich unresolved predicate visible from the packet text."
+            : packet.reviewProfile === "investigate"
+              ? "This packet is classified for investigation. Use repository tools when they can materially decide a concrete suspected failure mode."
+              : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
+          depthCloseGuidance(packet)
+        ]),
         "Skill guidance:\n" + projection.text,
         ...(changeDirectory ? [fenceUntrusted(changeDirectory, "change-directory")] : []),
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
+      return six ? { ...built, templateVersion: SIX_STAGE7_PROMPT_VERSION } : built;
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
@@ -619,6 +632,14 @@ function truncateText(input: string, maxChars: number): string {
     return input.slice(0, maxChars);
   }
   return `${input.slice(0, maxChars - 3)}...`;
+}
+
+function sixToolFinishCondition(packet: ReviewPacket): string {
+  const assigned = "You are finished when every removed line and every added line in this packet's hunks is accounted for: you know what it guaranteed or now does, and either nothing depends on the difference or you have raised a finding or a followUpHint about it.";
+  const close = "Settling your first suspicion is not the finish.";
+  return packetHasRepositoryTools(packet)
+    ? `${assigned} Other hunks in the change directory are context you may inspect; they are not part of what you must finish. ${close}`
+    : `${assigned} ${close} This packet has no repository tools; decide from the packet text.`;
 }
 
 function depthCloseGuidance(packet: ReviewPacket): string {

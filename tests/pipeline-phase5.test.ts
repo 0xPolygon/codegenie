@@ -8218,6 +8218,72 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
+  it("preserves the current prompt and scopes six-tool completion to assigned rows", () => {
+    const packet = fakePacket();
+    const simple: ReviewPacket = { ...packet, reviewProfile: "simple", toolBudget: { ...packet.toolBudget, maxToolCalls: 0 } };
+    const current = createPromptBuilder(fakeLensRegistry(), { toolSurface: "current" });
+    const six = createPromptBuilder(fakeLensRegistry(), { toolSurface: "six" });
+    for (const [input, hash] of [
+      [packet, "7e18f944bb1daf37108f431fdbfe3f733546544c37d953323e0a12d6c8099ada"],
+      [simple, "855470e3a7e6d05ffaa8f4b521ea266fe49e3bd0a116463c27e6d563a7fc595e"]
+    ] as const) {
+      const old = current.buildPacketReviewPrompt({ packet: input, skills: [] });
+      expect(sha256Hex(old.prompt)).toBe(hash);
+      expect(old.templateVersion).toBe("p7.16");
+      const { prompt, templateVersion } = six.buildPacketReviewPrompt({ packet: input, skills: [fakeTestsSkill()],
+        changeDirectory: "app.ts h1 [current packet]\nsibling.ts h2" });
+      expect(templateVersion).toBe("p7.16-six.1");
+      expect(prompt.match(/every removed line and every added line in this packet's hunks/gu)).toHaveLength(1);
+      expect(prompt).toContain("Unread sibling hunks alone do not make this review incomplete");
+      expect(prompt).toContain("Use incomplete if the missing evidence prevents assessment of an assigned changed line");
+      expect(prompt).toContain("Local budgets are targets, not stop signals");
+      expect(prompt).toContain("real defects only");
+      expect(prompt).toContain("Return no findings when there is no concrete failure mode");
+      expect(prompt).toContain("followUpHint/uncertainty");
+      expect(prompt).toContain("### False Positives");
+      expect(prompt).toContain("untrusted-data label=review-packet");
+      expect(extractPromptJson<ReviewPacket>(prompt, "review-packet")?.hunks.map(hunk => hunk.hunkId)).toEqual(["h1"]);
+      expect(prompt).not.toMatch(/(?:author-claims|must be emitted as a followUpHint|This packet is classified|For light\/simple review|Avoid broad exploration)/u);
+      if (input === simple) {
+        expect(prompt).toContain("This packet has no repository tools; decide from the packet text.");
+        expect(prompt).not.toContain("Other hunks in the change directory are context you may inspect");
+      } else {
+        expect(prompt).toContain("Other hunks in the change directory are context you may inspect; they are not part of what you must finish");
+      }
+    }
+  });
+
+  it("selects scoped soft guidance only for six and preserves a complete submission with a sibling question", async () => {
+    for (const toolSurface of ["current", "six"] as const) {
+      let captured: LlmStructuredRequest<unknown> | undefined;
+      const runner: LlmRunner = {
+        runStructured: async <T>(input: LlmStructuredRequest<T>): Promise<T> => {
+          captured = input;
+          return { reviewStatus: "no_findings", findings: [], noFindingReason: "Assigned row is covered", uncertainties: [],
+            followUpHints: [{ question: "Does the sibling update preserve the caller's fail-closed contract?", files: ["sibling.ts"], symbols: [], suggestedLenses: [], reason: "The sibling implements the caller contract.", confidence: "medium" }] } as T;
+        }
+      };
+      const directory = vi.fn(() => "app.ts h1 [current packet]\nsibling.ts h2");
+      const packet = fakePacket();
+      const cfg = config();
+      const [result] = await runLensPackets(fakePlan(), [packet], { ...fakeTools(), readChangePromptDirectory: directory },
+        { ...cfg, review: { ...cfg.review, toolSurface } }, nullTelemetry(), {
+          runner, lensRegistry: fakeLensRegistry(), promptBuilder: createPromptBuilder(fakeLensRegistry(), { toolSurface })
+        });
+      expect(result?.reviewStatus).toBe("no_findings");
+      expect(result?.followUpHints[0]?.question).toContain("sibling update");
+      if (toolSurface === "six") {
+        expect(directory).toHaveBeenCalledWith(["h1"], true);
+        expect(captured?.finalization?.buildPostToolNudge).toBeUndefined();
+        expect(captured?.finalization?.softTargetNotice).toContain("a removed or added line in this packet's hunks");
+      } else {
+        expect(directory).not.toHaveBeenCalled();
+        expect(captured?.finalization?.buildPostToolNudge).toBeTypeOf("function");
+        expect(captured?.finalization?.softTargetNotice).toBeUndefined();
+      }
+    }
+  });
+
   it("preserves behavior-change assessment from packet reviewer output", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() => ({
