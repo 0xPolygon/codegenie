@@ -1,5 +1,5 @@
 import type { SearchDelivery, SearchOptions, SearchPage, SearchPageOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision, ToolResultMeta } from "../types.js";
-import type { GrepPosition } from "../git/git-client.js";
+import { invalidEreMessage, type GrepPosition } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
@@ -111,6 +111,7 @@ export class SearchService {
     const revision = this.resolver.resolveSource(source);
     const binding = toolCursorBinding(["search_files", revision, source.kind, query, mode, pathGlob ?? null, contextMode, maxResults, caseSensitive]);
     const startAt = options.cursor === undefined ? undefined : this.searchPosition(decodeToolCursor(options.cursor, binding));
+    if (mode === "regex") precheckEreGroups(query, options.mode === "regex");
     const raw = await this.limit(() => this.resolver.grep(query, {
       source, positioned: true, fixedString: mode === "literal", maxResults: maxResults + 1, caseSensitive,
       ...(pathGlob === undefined ? {} : { glob: pathGlob }),
@@ -167,6 +168,7 @@ export class SearchService {
     validateQuery(query);
     const source = options.source ?? { kind: "head" };
     const pathGlob = options.pathGlob === undefined ? undefined : containGlob(this.resolver.repoRoot, options.pathGlob);
+    if (options.fixedString !== true) precheckEreGroups(query);
     const maxResults = clampMaxResults(options.maxResults, options.defaultMaxResults ?? DEFAULT_MAX_RESULTS, options.hardMaxResults ?? HARD_MAX_RESULTS);
     const requested = maxResults + 1;
     const raw = await this.gitGrep(query, {
@@ -367,6 +369,31 @@ function validateQuery(query: string): void {
   }
   if (query.length > MAX_QUERY_CHARS) {
     throw new CodegenieError("invalid_args", "query exceeds 500 characters");
+  }
+}
+
+function precheckEreGroups(query: string, literalModeAvailable = false): void {
+  // Let Git handle bracket expressions and multi-pattern input.
+  if (/[\[\n\0]/u.test(query)) return;
+
+  let openGroups = 0;
+  for (let index = 0; index < query.length; index++) {
+    switch (query[index]) {
+      case "\\":
+        index++;
+        break;
+      case "(":
+        openGroups++;
+        break;
+      case ")":
+        // Git can treat an unmatched closing parenthesis as literal.
+        if (openGroups > 0) openGroups--;
+        break;
+    }
+  }
+  if (openGroups > 0) {
+    const literalHint = literalModeAvailable ? " Use mode=literal to search for source text." : "";
+    throw new CodegenieError("invalid_args", invalidEreMessage("unclosed parenthesis group") + literalHint);
   }
 }
 

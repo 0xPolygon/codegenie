@@ -223,7 +223,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         } catch (error) {
           const stderr = error instanceof CodegenieError ? String(error.context?.stderr ?? "") : "";
           if (/^fatal: (?:command line, |-e option, )/u.test(stderr)) {
-            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${stderr.slice(0, 300)}. Check brackets and parentheses. Escape literal punctuation, for example name\\( or return \\{. Use name|other for alternatives.`, { cause: error });
+            throw new CodegenieError("invalid_args", invalidEreMessage(stderr.slice(0, 300)), { cause: error });
           }
           throw error;
         }
@@ -555,6 +555,10 @@ function orderRemotes(remotes: GitRemote[]): GitRemote[] {
     }
     return a.name.localeCompare(b.name);
   });
+}
+
+export function invalidEreMessage(detail: string): string {
+  return `query is invalid POSIX ERE: ${detail}. Check brackets and parentheses. Escape literal punctuation, for example name\\( or return \\{. Use name|other for alternatives.`;
 }
 
 // Detect recognizable dialect mistakes without using JavaScript to validate ERE.
