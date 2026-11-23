@@ -8525,6 +8525,107 @@ describe("phase 5 pipeline regressions", () => {
     expect(dossier.policyFilesChanged).toEqual([".codegenie/skills/review-note.md"]);
   });
 
+  it("verifies six candidates concurrently with held reservations and writes verdicts in dispatch order", async () => {
+    const cfg = verifierConcurrencyConfig();
+    const paths = Array.from({ length: cfg.review.concurrency }, (_, index) => `file-${index}.ts`);
+    const packets = paths.map((file, index) => fakePacket({ id: `packet-${index}`, path: file }));
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => {
+      const finding = fakeFinding();
+      return {
+        packetId: packet.id, lenses: packet.lenses, status: "completed", followUpHints: [], uncertainties: [],
+        findings: [{
+          ...finding, id: `finding-${index}`, path: packet.path,
+          anchor: { ...finding.anchor!, path: packet.path },
+          producedBy: { ...finding.producedBy, packetId: packet.id }
+        }]
+      };
+    });
+    const scheduledIds = packetResults.flatMap(result => result.findings.map(finding => finding.id));
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const artifacts = new Map<string, unknown>();
+    const fixture = timedVerifierRunner();
+
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const budget = new BudgetLedger(cfg);
+      const reserve = vi.spyOn(budget, "reserve");
+      const releaseReservation = vi.spyOn(budget, "releaseReservation");
+      const pending = verifyFindings(
+        { packetResults, packets },
+        fakeTools(),
+        cfg,
+        {
+          ...nullTelemetry(),
+          event: event => events.push(event),
+          writeArtifact: async (name, data) => { artifacts.set(name, data); }
+        },
+        {
+          runner: fixture.runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(),
+          diff: { ...fakeDiff(), files: paths.map(file => fakeDiffFile(file, "bad")) },
+          signal: new AbortController().signal,
+          checkpoint: stage => budget.checkpoint(stage),
+          reserve: (stage, tokens, calls) => budget.reserve(stage, tokens, calls),
+          releaseReservation: (stage, tokens, calls) => budget.releaseReservation(stage, tokens, calls)
+        }
+      );
+      await runVerifierTestClock(fixture.firstStarted, pending);
+      const result = await pending;
+      expectConcurrentVerifierCalls(fixture, scheduledIds);
+      expect(result.verdicts.map(verdict => verdict.candidateId)).toEqual(scheduledIds);
+      expect(result.verified.map(finding => finding.id)).toEqual(scheduledIds);
+      expect(events.find(event => event.message === "verification_scheduling")?.data).toMatchObject({
+        concurrency: 6, usesHeldReservations: true, scheduledCandidateIds: scheduledIds
+      });
+      expect(artifacts.get("verification.json")).toEqual(scheduledIds.map(candidateId => expect.objectContaining({
+        candidateId, verdict: expect.objectContaining({ candidateId, verdict: "keep" })
+      })));
+      expect(reserve).toHaveBeenCalledTimes(6);
+      expect(reserve.mock.results.map(result => result.value)).toEqual(Array(6).fill("ok"));
+      expect(releaseReservation.mock.calls).toEqual(reserve.mock.calls);
+      expect(budget.reserve(9, 0, 12)).toBe("ok");
+      expect(budget.stopSnapshot()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatches six verifiers concurrently through runReview and preserves artifact order", async () => {
+    const cfg = verifierConcurrencyConfig();
+    const repo = initRepo();
+    const artifactDir = mkdtempSync(path.join(tmpdir(), "codegenie-verifier-concurrency-"));
+    const fixture = timedVerifierRunner();
+    try {
+      const files = Array.from({ length: cfg.review.concurrency }, (_, index) => `file-${index}.ts`);
+      for (const file of files) writeRepoFile(repo, file, "export const value = 1;\n");
+      const base = commitAll(repo, "base");
+      for (const file of files) writeRepoFile(repo, file, "export const value = 2; // CODEGENIE_FAKE_FINDING\n");
+      const head = commitAll(repo, "change");
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const pending = runReview(
+        { mode: "head", baseRef: base, headRef: head },
+        cfg,
+        { repoRoot: repo, runArtifactDir: artifactDir, runner: fixture.runner }
+      );
+      await runVerifierTestClock(fixture.firstStarted, pending);
+      const review = await pending;
+      const events = readFileSync(path.join(artifactDir, "events.jsonl"), "utf8").trim().split("\n")
+        .map(line => JSON.parse(line) as TelemetryEvent);
+      const scheduling = events.find(event => event.message === "verification_scheduling")?.data;
+      expect(scheduling).toMatchObject({ concurrency: 6, usesHeldReservations: true, budgetLimitedCandidateIds: [] });
+      const scheduledIds = scheduling?.scheduledCandidateIds as string[];
+      expectConcurrentVerifierCalls(fixture, scheduledIds);
+      const records = JSON.parse(readFileSync(path.join(artifactDir, canonicalArtifactPath("verification.json")), "utf8"));
+      expect(records).toEqual(scheduledIds.map(candidateId => expect.objectContaining({
+        candidateId, verdict: expect.objectContaining({ candidateId, verdict: "keep" })
+      })));
+      expect(review.health?.status).toBe("completed");
+    } finally {
+      vi.useRealTimers();
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
   it("verifies only duplicate cluster representatives and preserves duplicate lineage", async () => {
     let verifierCalls = 0;
     const artifacts = new Map<string, unknown>();
@@ -15809,6 +15910,47 @@ function fakeCoverage(): RunCoverageStatus {
     partial: false,
     reasons: []
   };
+}
+
+function verifierConcurrencyConfig(): CodegenieConfig {
+  const cfg = config();
+  return { ...cfg, review: { ...cfg.review, concurrency: 6, maxModelCalls: 12 } };
+}
+
+function timedVerifierRunner() {
+  const fake = createFakeRunner();
+  const starts: Array<{ candidateId: string; time: number }> = [];
+  const completions: typeof starts = [];
+  let markStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markStarted = resolve; });
+  const runner: LlmRunner = {
+    async runStructured<T>(request: LlmStructuredRequest<T>): Promise<T> {
+      if (request.stage !== 9) return fake.runStructured(request);
+      const candidateId = request.telemetryContext?.candidateId;
+      if (!candidateId) throw new Error("Expected a verifier candidate ID");
+      const delay = 1_000 - starts.length;
+      starts.push({ candidateId, time: Date.now() });
+      markStarted();
+      await new Promise<void>(resolve => setTimeout(resolve, delay));
+      completions.push({ candidateId, time: Date.now() });
+      return { verdict: "keep", reason: "kept", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+    }
+  };
+  return { runner, starts, completions, firstStarted };
+}
+
+async function runVerifierTestClock(firstStarted: Promise<void>, pending: Promise<unknown>): Promise<void> {
+  await Promise.race([firstStarted, pending]);
+  // Let a serial regression finish as well, so the assertions report the actual timing.
+  await vi.advanceTimersByTimeAsync(6_000);
+}
+
+function expectConcurrentVerifierCalls(fixture: ReturnType<typeof timedVerifierRunner>, scheduledIds: string[]): void {
+  expect(scheduledIds).toHaveLength(6);
+  expect(fixture.starts.map(call => call.candidateId)).toEqual(scheduledIds);
+  expect(new Set(fixture.starts.map(call => call.time)).size).toBe(1);
+  expect(fixture.completions.map(call => call.candidateId)).toEqual([...scheduledIds].reverse());
+  expect(fixture.completions.at(-1)!.time - fixture.starts[0]!.time).toBe(1_000);
 }
 
 function config(): CodegenieConfig {

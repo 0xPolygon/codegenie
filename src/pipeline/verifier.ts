@@ -305,7 +305,7 @@ export async function verifyFindings(
   }
 
   const orderedRepresentatives = orderVerifierRepresentatives(clustered.representatives);
-  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId, config.review.budgetBoost);
+  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId, config.review);
   const runtimeStats: VerificationRuntimeStats = {
     schemaInvalid: 0,
     repairAttempted: 0,
@@ -1475,7 +1475,7 @@ function scheduleVerifierRepresentatives(
   opts: VerifyOptions,
   telemetry: TelemetryRecorder,
   verificationLaneByCandidateId: Map<string, VerificationLane>,
-  budgetBoost: number
+  reviewConfig: Pick<CodegenieConfig["review"], "budgetBoost" | "concurrency">
 ): {
   scheduled: CandidateFinding[];
   budgetLimited: CandidateFinding[];
@@ -1491,7 +1491,7 @@ function scheduleVerifierRepresentatives(
   const canHoldReservations = opts.reserve !== undefined && opts.releaseReservation !== undefined;
   const standardCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) !== "evidence_resolution");
   const evidenceResolutionCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) === "evidence_resolution");
-  const evidenceResolutionLaneMax = scaleBudgetValue(EVIDENCE_RESOLUTION_LANE_MAX, budgetBoost);
+  const evidenceResolutionLaneMax = scaleBudgetValue(EVIDENCE_RESOLUTION_LANE_MAX, reviewConfig.budgetBoost);
   const evidenceResolutionScheduledCandidates = evidenceResolutionCandidates.slice(0, evidenceResolutionLaneMax);
   laneLimited.push(...evidenceResolutionCandidates.slice(evidenceResolutionLaneMax));
 
@@ -1516,11 +1516,14 @@ function scheduleVerifierRepresentatives(
     scheduled.push(candidate);
   }
 
+  const usesHeldReservations = canHoldReservations && reservations.size > 0;
   telemetry.event({
     stage: 9,
     level: budgetLimited.length > 0 ? "warn" : "info",
     message: "verification_scheduling",
     data: {
+      concurrency: reviewConfig.concurrency,
+      usesHeldReservations,
       expectedCallsPerCandidate: VERIFIER_EXPECTED_CALLS_PER_CANDIDATE,
       evidenceResolutionLaneMax,
       orderedCandidateIds: candidates.map((candidate) => candidate.id),
@@ -1546,7 +1549,7 @@ function scheduleVerifierRepresentatives(
     budgetLimited,
     laneLimited,
     reservations,
-    usesHeldReservations: canHoldReservations && reservations.size > 0,
+    usesHeldReservations,
     evidenceResolutionScheduled: scheduled.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) === "evidence_resolution").length
   };
 }
