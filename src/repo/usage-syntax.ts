@@ -148,7 +148,10 @@ function enclosingDeclaration(node: Node, root: Node): UsageOccurrence["enclosin
   for (let p = node.parent; p; p = p.parent) {
     if (!DECLARATIONS.has(p.type)) continue;
     const display = declarationName(p);
-    if (display) return { name: display, searchName: p.childForFieldName("name")?.text ?? display,
+    const memberName = ["arrow_function", "function_expression"].includes(p.type)
+      && ["public_field_definition", "field_definition"].includes(p.parent?.type ?? "")
+      ? p.parent?.childForFieldName("name")?.text : undefined;
+    if (display) return { name: display, searchName: p.childForFieldName("name")?.text ?? memberName ?? display,
       lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], startColumn: p.startPosition.column + 1, endColumnExclusive: p.endPosition.column + 1, kind: "declaration" };
     let nearestNamed: { name: string; lineRange: [number, number] } | undefined;
     for (let outer = p.parent; outer; outer = outer.parent) {

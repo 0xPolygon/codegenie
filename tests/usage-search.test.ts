@@ -69,6 +69,8 @@ describe("pinned usage search", () => {
       expect(output).not.toContain("Scan complete for the selected scope");
       expect(output).toContain("At module level (lines 2-5)");
       expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 7)?.enclosing.name).toBe("Svc.loader");
+      expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 7)?.enclosing.searchName).toBe("loader");
+      expect(output).toContain('next-hop name "loader"');
       expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 8)?.enclosing.name).toBe("Svc.field");
       const dotted = (await fixture.tools.findUsages("sessions.load")).page;
       expect(dotted.rows.filter(row => row.path === "src/module.ts").map(row => row.line)).toEqual([4, 7, 8]);
