@@ -13,4 +13,4 @@ should_find:
     path: decoder/registry.go
     lineRange: [690, 706]
     severityAtLeast: medium
-    failureModePattern: '^(?=[\s\S]*\b(?:nest\w*|full_attention)\b)(?=[\s\S]*\b(?:rope\w*|theta|rotary)\b)'
+    failureModePattern: '^(?=[\s\S]*\b(?:nest\w*|full[-_ ]attention|per[-_ ](?:layer|attention))\b)(?=[\s\S]*\b(?:rope\w*|theta|rotary)\b)'
