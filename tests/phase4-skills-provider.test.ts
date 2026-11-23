@@ -477,6 +477,79 @@ describe("Phase 4 provider commands", () => {
     expect(printed).toMatch(/  other\s+✓ env configured\s+Other/u);
   });
 
+  it("reports an empty provider auth status clearly", async () => {
+    const services = fakeProviderServices(tempDir());
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "auth-status"], { services, writeOut: (text) => output.push(text) });
+
+    expect(output.join("")).toBe("No providers are logged in.\n");
+  });
+
+  it("prints only the authenticated provider when one is logged in", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", {
+      type: "oauth", credentials: { access: "secret-access", refresh: "secret-refresh", expires: 0 },
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "auth-status"], { services, writeOut: (text) => output.push(text) });
+
+    expect(output.join("")).toBe("fake (stored OAuth login)\n");
+  });
+
+  it("lists each authenticated provider with its auth method and offers full JSON status", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["anthropic", "fake", "openrouter"],
+      envConfiguredProviders: ["openrouter"]
+    });
+    services.authStorage.set("anthropic", {
+      type: "api_key", apiKey: "secret-stored-api-key", createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+    const opts = { services, writeOut: (text: string) => output.push(text) };
+
+    await executeProviderCommand(["provider", "auth-status"], opts);
+    expect(output.splice(0).join("")).toBe("anthropic (stored credentials)\nopenrouter (credentials from environment)\n");
+
+    await executeProviderCommand(["provider", "auth-status", "--json"], opts);
+    expect(JSON.parse(output.splice(0).join(""))).toEqual([
+      { provider: "anthropic", configured: true, source: "stored", kind: "api_key" },
+      { provider: "fake", configured: false },
+      { provider: "openrouter", configured: true, source: "environment", kind: "api_key" }
+    ]);
+
+    await executeProviderCommand(["provider", "auth-status", "openrouter", "--json"], opts);
+    expect(JSON.parse(output.join(""))).toEqual({
+      provider: "openrouter", configured: true, source: "environment", kind: "api_key"
+    });
+  });
+
+  it("describes ambient Bedrock authentication without calling an AWS profile an API key", async () => {
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", undefined);
+    vi.stubEnv("AWS_PROFILE", "synthetic-private-profile");
+    try {
+      const services = {
+        ...fakeProviderServices(tempDir()),
+        modelRegistry: createPiModelRegistry(memoryAuthStorage())
+      };
+      const output: string[] = [];
+      const opts = { services, writeOut: (text: string) => output.push(text) };
+      const args = ["provider", "auth-status", "amazon-bedrock"];
+
+      await executeProviderCommand(args, opts);
+      expect(output.splice(0).join("")).toBe("amazon-bedrock (credentials from environment)\n");
+
+      await executeProviderCommand([...args, "--json"], opts);
+      expect(JSON.parse(output.join(""))).toEqual({
+        provider: "amazon-bedrock", configured: true, source: "environment", kind: "api_key"
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("prints provider models grouped by authenticated provider by default", async () => {
     const services = fakeProviderServices(tempDir());
     services.authStorage.set("fake", {

@@ -118,7 +118,8 @@ export function parseReviewCommand(
     .argument("<provider>")
     .option("--api-key", "store an API key instead of using OAuth");
   provider.command("logout").description("remove stored provider credentials").argument("[provider]").option("--yes", "confirm removing all credentials");
-  provider.command("auth-status").description("show stored or environment auth status").argument("[provider]");
+  provider.command("auth-status").description("list authenticated providers and their auth methods").argument("[provider]")
+    .option("--json", "show status for all selected providers in JSON");
   provider.command("models").description("list available models").argument("[query]").option("--all", "include unauthenticated providers");
   provider.command("use").description("set the default provider/model by fuzzy model id").argument("<model>")
     .option("--provider <name>", "limit model matching to this provider");

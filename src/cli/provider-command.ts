@@ -10,7 +10,7 @@ type ParseProviderCommandOptions = {
 
 type ParsedProviderCommand = {
   args: string[];
-  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin" | "provider">;
+  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin" | "provider" | "json">;
 };
 
 export async function executeProviderCommand(
@@ -77,12 +77,13 @@ export function parseProviderCommand(
     });
   provider
     .command("auth-status")
-    .description("show stored or environment auth status")
+    .description("list authenticated providers and their auth methods")
     .argument("[provider]")
-    .action((providerId: string | undefined) => {
+    .option("--json", "show status for all selected providers in JSON")
+    .action((providerId: string | undefined, options: { json?: boolean }) => {
       parsed = {
         args: providerId ? ["provider", "auth-status", providerId] : ["provider", "auth-status"],
-        options: {}
+        options
       };
     });
   provider
