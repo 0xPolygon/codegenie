@@ -10,7 +10,7 @@ type ParseProviderCommandOptions = {
 
 type ParsedProviderCommand = {
   args: string[];
-  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin">;
+  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin" | "provider">;
 };
 
 export async function executeProviderCommand(
@@ -107,9 +107,10 @@ Examples:
   const useCommand = provider
     .command("use")
     .description("set the default provider/model by fuzzy model id, with an optional :reasoning suffix (e.g. opus:max)")
-    .argument("<model>")
-    .action((modelQuery: string) => {
-      parsed = { args: ["provider", "use", modelQuery], options: {} };
+    .argument("<model>", "fuzzy model id, optionally qualified as provider/model or provider:model")
+    .option("--provider <name>", "limit model matching to this provider")
+    .action((modelQuery: string, options: { provider?: string }) => {
+      parsed = { args: ["provider", "use", modelQuery], options };
     });
   helpByPath.set("provider use", useCommand);
 

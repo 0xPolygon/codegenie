@@ -204,11 +204,16 @@ codegenie provider models [query]        # list available models (e.g. `models g
 codegenie provider use <model>           # set the default by fuzzy model id
 codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus:max)
 codegenie use <model>[:<level>]          # shorthand for `provider use`
+codegenie use luna:high --provider openai-codex
+codegenie provider use openai-codex/luna:high
+codegenie use openai-codex:luna:high
 ```
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
 
-`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked (exact id first, then prefix, then whole-name tail, then substring; ties go to the later-listed id). A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); an unsupported level is normalized to a supported one and the command prints and saves the effective level. Exact supported levels are preserved. Fallback preferences are `minimal → low`, `medium → high`, and `xhigh → max`; if that target is unavailable, choose the next supported level above it, or the highest available. This also applies to `provider config set-reasoning`; `:auto` clears the stored level. Models with no advertised reasoning levels retain the existing behavior. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
+`provider use` fuzzy-matches model IDs in this order: exact ID, prefix, tail, substring. A provider selector scopes that same search to one authenticated provider. Without a selector, the command prints the chosen provider and other close matches. If providers tie for the best match, it keeps your current provider if it is among them. Otherwise it asks you to choose. Within one provider, the later-listed model wins a tie.
+
+A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); an unsupported level is normalized to a supported one and the command prints and saves the effective level. Exact supported levels are preserved. Fallback preferences are `minimal → low`, `medium → high`, and `xhigh → max`; if that target is unavailable, choose the next supported level above it, or the highest available. This also applies to `provider config set-reasoning`; `:auto` clears the stored level. Models with no advertised reasoning levels retain the existing behavior. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
 
 ## Configuration
 

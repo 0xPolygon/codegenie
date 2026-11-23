@@ -106,6 +106,7 @@ type LoginCommandResult = {
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
+  provider?: string;
   apiKeyLogin?: boolean;
   apiKey?: string;
   homeOverride?: string;
@@ -267,7 +268,7 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       return;
     }
     case "use":
-      await commandUse(rest, services, writeOut);
+      await commandUse(rawRest[0], services, writeOut, opts.provider);
       return;
     case "config":
       await commandConfig(rest, services, writeOut, opts.env);
@@ -405,16 +406,43 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
   services.authStorage.delete(args[0]);
 }
 
-async function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): Promise<void> {
-  const query = requireArg(args[0], "provider use <model>[:reasoning]");
-  const spec = splitReasoningSuffix(query);
-  const match = await findUsableModel(spec.model, services);
-  if (!match) {
-    throw await unknownModelError(query, services);
+async function commandUse(
+  modelQuery: string | undefined,
+  services: ProviderServices,
+  writeOut: (text: string) => void,
+  flagProvider?: string
+): Promise<void> {
+  const query = requireArg(modelQuery, "provider use <model>[:reasoning] [--provider <name>]");
+  const spec = await parseUseTarget(query, flagProvider, services.modelRegistry);
+  const matches = spec.provider === undefined
+    ? await findUsableModelMatches(spec.model, services)
+    : rankModelMatches(spec.model, services.modelRegistry.listModels(spec.provider));
+  const best = matches[0];
+  if (!best) {
+    if (spec.loggedOutPrefix !== undefined) {
+      throw providerLoginRequired(spec.loggedOutPrefix);
+    }
+    throw await unknownModelError(query, spec, services);
   }
+  const settings = loadProviderSettings(services.paths);
+  const bestByProvider = new Map<string, RankedModelMatch>();
+  for (const candidate of matches) {
+    if (!bestByProvider.has(candidate.model.provider)) {
+      bestByProvider.set(candidate.model.provider, candidate);
+    }
+  }
+  const providerMatches = [...bestByProvider.values()];
+  const tiedProviders = providerMatches.filter(({ rank }) => rank === best.rank);
+  const defaultMatch = tiedProviders.find(({ model }) => model.provider === settings.defaultProvider);
+  if (tiedProviders.length > 1 && !defaultMatch) {
+    throw new CodegenieError(
+      "invalid_args",
+      `model ${spec.model} matches multiple providers: ${tiedProviders.map(({ model }) => qualifiedModelId(model)).join(", ")}. Choose with --provider <name> or <provider>:<model>.`
+    );
+  }
+  const match = (defaultMatch ?? best).model;
   const requested = spec.reasoning ?? "high";
   const reasoning = requested === "auto" ? "auto" : normalizeReasoningLevel(requested, match.thinkingLevels);
-  const settings = loadProviderSettings(services.paths);
   const next: ProviderSettings = { ...settings, defaultProvider: match.provider, defaultModel: match.id };
   if (reasoning === "auto") {
     delete next.defaultReasoning;
@@ -426,23 +454,97 @@ async function commandUse(args: string[], services: ProviderServices, writeOut: 
     `default model set to ${match.provider}/${match.id} (${match.name}); ` +
     `${reasoning === "auto" ? "reasoning override cleared" : `reasoning set to ${reasoning}${reasoning !== requested ? ` (normalized from ${requested})` : ""}`}\n`
   );
+
+  if (spec.loggedOutPrefix !== undefined) {
+    writeOut(
+      `provider ${spec.loggedOutPrefix} is not logged in; matched ${qualifiedModelId(match)} instead ` +
+      `(run codegenie provider login ${spec.loggedOutPrefix} to use it)\n`
+    );
+  }
+  if (spec.provider !== undefined) {
+    const otherModels = matches.filter(({ model, rank }) => rank === best.rank && model.id !== match.id);
+    if (otherModels.length > 0) {
+      writeOut(`other matches in ${spec.provider}: ${otherModels.map(({ model }) => model.id).join(", ")}\n`);
+    }
+  } else {
+    const alternatives = providerMatches.filter(({ model, rank }) =>
+      model.provider !== match.provider && (rank <= 2 || rank === best.rank)
+    );
+    const alternative = alternatives[0]?.model;
+    if (alternative !== undefined) {
+      writeOut(
+        `also available as ${alternatives.map(({ model }) => qualifiedModelId(model)).join(", ")}; ` +
+        `choose with --provider ${alternative.provider} or ${alternative.provider}:${alternative.id}\n`
+      );
+    }
+  }
+}
+
+type UseTarget = ReturnType<typeof splitReasoningSuffix> & {
+  provider?: string;
+  loggedOutPrefix?: string;
+};
+
+async function parseUseTarget(
+  query: string,
+  flagProvider: string | undefined,
+  registry: PiModelRegistry
+): Promise<UseTarget> {
+  const spec = splitReasoningSuffix(query);
+  const colon = spec.model.indexOf(":");
+  const colonPrefix = colon > 0 ? spec.model.slice(0, colon) : undefined;
+  const colonProvider = colonPrefix !== undefined && registry.providerExists(colonPrefix) ? colonPrefix : undefined;
+  const flag = flagProvider === undefined ? undefined : resolveProviderAlias(flagProvider);
+  if (flag !== undefined && !registry.providerExists(flag)) {
+    throw new CodegenieError("invalid_args", `unknown provider ${flagProvider}. Run codegenie provider list, then codegenie provider login <provider>.`);
+  }
+  if (flag !== undefined && colonProvider !== undefined && flag !== colonProvider) {
+    throw new CodegenieError("invalid_args", `conflicting providers ${flag} and ${colonProvider}`);
+  }
+  const provider = flag ?? colonProvider;
+  if (provider !== undefined) {
+    if (!(await registry.authStatus(provider)).configured) {
+      throw providerLoginRequired(provider);
+    }
+    return { ...spec, model: colonProvider === undefined ? spec.model : spec.model.slice(colon + 1), provider };
+  }
+
+  const slash = spec.model.indexOf("/");
+  const prefix = slash > 0 ? spec.model.slice(0, slash) : undefined;
+  if (prefix !== undefined && registry.providerExists(prefix)) {
+    return (await registry.authStatus(prefix)).configured
+      ? { ...spec, model: spec.model.slice(slash + 1), provider: prefix }
+      : { ...spec, loggedOutPrefix: prefix };
+  }
+  return spec;
+}
+
+function qualifiedModelId(model: ProviderModelInfo): string {
+  return `${model.provider}/${model.id}`;
+}
+
+function providerLoginRequired(provider: string): CodegenieError {
+  return new CodegenieError("invalid_args", `provider ${provider} is not logged in. Run codegenie provider login ${provider}.`);
 }
 
 // `model:mmm` where the model exists but the suffix is not a level reads as a
 // level typo, not a missing model: answer with the levels that model takes.
 // Ids that really contain a colon (`...-0731:batch`) never reach here because
 // the full query matched.
-async function unknownModelError(query: string, services: ProviderServices): Promise<CodegenieError> {
-  const colon = query.lastIndexOf(":");
-  const base = colon > 0 ? await findUsableModel(query.slice(0, colon), services) : undefined;
+async function unknownModelError(query: string, spec: UseTarget, services: ProviderServices): Promise<CodegenieError> {
+  const colon = spec.model.lastIndexOf(":");
+  const base = colon > 0 && spec.reasoning === undefined
+    ? await findUsableModel(spec.model.slice(0, colon), services, spec.provider)
+    : undefined;
   if (base !== undefined) {
+    const reasoning = spec.model.slice(colon + 1);
     const levels = base.thinkingLevels.length > 0
       ? `supported levels: ${base.thinkingLevels.join(", ")}`
       : "it does not expose reasoning levels";
     return new CodegenieError(
       "invalid_args",
-      `unknown reasoning level ${query.slice(colon + 1)} for ${base.provider}/${base.id}; ${levels}`,
-      { context: { provider: base.provider, model: base.id, reasoning: query.slice(colon + 1), supported: [...base.thinkingLevels] } }
+      `unknown reasoning level ${reasoning} for ${base.provider}/${base.id}; ${levels}`,
+      { context: { provider: base.provider, model: base.id, reasoning, supported: [...base.thinkingLevels] } }
     );
   }
   return new CodegenieError(
@@ -451,21 +553,31 @@ async function unknownModelError(query: string, services: ProviderServices): Pro
   );
 }
 
-async function findUsableModel(query: string, services: ProviderServices, opts: { provider?: string } = {}): Promise<ProviderModelInfo | undefined> {
+type RankedModelMatch = { model: ProviderModelInfo; rank: number };
+
+function rankModelMatches(query: string, candidates: ProviderModelInfo[]): RankedModelMatch[] {
   const normalizedQuery = normalizeModelSearch(query);
   if (normalizedQuery.length === 0) {
-    return undefined;
+    return [];
   }
-  const candidateProviders = opts.provider !== undefined ? [opts.provider] : services.modelRegistry.listProviders();
-  const candidates = candidateProviders.flatMap((provider) => services.modelRegistry.listModels(provider));
-  const ranked = candidates
+  return candidates
     .map((model, index) => ({ model, index, rank: modelMatchRank(normalizedQuery, model.id) }))
-    .filter((item): item is { model: ProviderModelInfo; index: number; rank: number } => item.rank !== undefined)
+    .filter((item): item is RankedModelMatch & { index: number } => item.rank !== undefined)
     .sort((a, b) => a.rank - b.rank || b.index - a.index);
+}
+
+async function findUsableModelMatches(query: string, services: ProviderServices, provider?: string): Promise<RankedModelMatch[]> {
+  const candidateProviders = provider === undefined ? services.modelRegistry.listProviders() : [provider];
+  const candidates = candidateProviders.flatMap((provider) => services.modelRegistry.listModels(provider));
+  const ranked = rankModelMatches(query, candidates);
   const providers = [...new Set(ranked.map(({ model }) => model.provider))];
   const statuses = await Promise.all(providers.map((provider) => services.modelRegistry.authStatus(provider)));
   const configured = new Set(statuses.filter((status) => status.configured).map((status) => status.provider));
-  return ranked.find(({ model }) => configured.has(model.provider))?.model;
+  return ranked.filter(({ model }) => configured.has(model.provider));
+}
+
+async function findUsableModel(query: string, services: ProviderServices, provider?: string): Promise<ProviderModelInfo | undefined> {
+  return (await findUsableModelMatches(query, services, provider))[0]?.model;
 }
 
 function modelMatchRank(normalizedQuery: string, modelId: string): number | undefined {
@@ -510,7 +622,7 @@ async function applyPreferredDefaultAfterLogin(
     return undefined;
   }
 
-  const model = await findUsableModel(preference.modelQuery, services, { provider });
+  const model = await findUsableModel(preference.modelQuery, services, provider);
   if (model === undefined) {
     return undefined;
   }
@@ -792,7 +904,7 @@ async function renderProviderConfig(
     `  auth       ${auth ? formatProviderAuth(auth) : "not checked; no provider selected"}`,
     "",
     "Commands:",
-    "  codegenie provider use <model>",
+    "  codegenie provider use <model>[:reasoning] [--provider <name>]",
     "  codegenie provider config set-provider <provider>",
     "  codegenie provider config set-model <provider> <model>",
     `  codegenie provider config set-reasoning ${REASONING_USAGE}`,
