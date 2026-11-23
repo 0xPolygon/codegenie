@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { packTextToolResult } from "../src/llm/search-result-packing.js";
-import { buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
+import { MISSING_FILE_GUIDANCE, withSixToolMeta } from "../src/llm/repository-tool-guidance.js";
+import { buildRepositoryToolDefinitions, buildSixReadRangeTool } from "../src/llm/tool-definitions.js";
 import { textRepository } from "./helpers/text-repository.js";
 
 describe("six-tool read_range file maps", () => {
@@ -76,5 +77,28 @@ describe("six-tool read_range file maps", () => {
     expect(unsupported.text).toContain("Declaration parsing is unavailable.");
     const missing = await read({ path: "docs/missing.txt" });
     expect(missing.meta?.lookupStatus).toBe("file_missing");
+  });
+
+  it("uses six-tool missing-file guidance for both range and map reads", async () => {
+    const args = { path: "docs/missing.txt", source: { kind: "base" as const } };
+    const bounded = { ...args, startLine: 2, endLine: 3 };
+    const [mapResult, rangeResult] = await Promise.all([read(args), read(bounded)]);
+    for (const result of [mapResult, rangeResult]) {
+      expect(result.meta).toMatchObject({ lookupStatus: "file_missing", sourceUsed: "base", deliveryStatus: "empty" });
+      expect(result.text).toContain("read_definition with name and source and without path");
+      expect(result.text).not.toContain("find_definition");
+    }
+    const currentRead = buildRepositoryToolDefinitions(fixture.tools).find(tool => tool.name === "read_range")!;
+    const current = await currentRead.execute(bounded, new AbortController().signal);
+    expect(current.text).toContain(MISSING_FILE_GUIDANCE);
+    expect(current.text).not.toContain("read_definition");
+  });
+
+  it("renders a six-tool recovery source as the argument object", () => {
+    const text = withSixToolMeta("", {
+      backend: "text", precision: "exact", degraded: false,
+      recovery: { tool: "read_range", path: "src/policy.ts", startLine: 2, endLine: 4, source: "base", reason: "resume source" }
+    });
+    expect(text).toContain('call read_range path=src/policy.ts startLine=2 endLine=4 source={"kind":"base"}');
   });
 });
