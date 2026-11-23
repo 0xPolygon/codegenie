@@ -80,6 +80,8 @@ export class SourceResolver {
     opts: {
       source?: SourceSelector;
       glob?: string;
+      /** Already selected literal paths from the pinned tree. */
+      paths?: string[];
       maxResults?: number;
       caseSensitive?: boolean;
       fixedString?: boolean;
@@ -90,7 +92,7 @@ export class SourceResolver {
   ): Promise<import("../git/git-client.js").GrepResults> {
     const commit = this.resolveSource(opts.source);
     const containedGlob = opts.glob === undefined ? undefined : containGlob(this.repoRoot, opts.glob);
-    const paths = containedGlob === undefined ? undefined : await this.listFiles(containedGlob, opts.source);
+    const paths = opts.paths ?? (containedGlob === undefined ? undefined : await this.listFiles(containedGlob, opts.source));
     const startPath = opts.startAt ? Buffer.from(opts.startAt.path) : undefined;
     const results = await this.git.grep(commit, pattern, {
       ...(paths ? { paths: startPath ? paths.filter(path => Buffer.compare(Buffer.from(path), startPath) >= 0) : paths } : {}),

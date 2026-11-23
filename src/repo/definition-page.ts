@@ -7,6 +7,14 @@ export type DefinitionPageOptions = { path?: string; source?: SymbolLookupSource
 export type DefinitionPage = { name: string; path?: string; requestedSource: "head" | "base" | "auto";
   sourceUsed: "head" | "base"; hits: DefinitionHit[]; meta: ToolResultMeta; offset: number; binding: string };
 
+export class DefinitionDirectoryBudgetError extends CodegenieError {
+  constructor(readonly scope: NonNullable<ToolResultMeta["definitionScope"]>, cause: CodegenieError) {
+    super("budget_exhausted",
+      `Directory ${JSON.stringify(scope.directory)} is too broad for read_definition. Narrow path to a subdirectory or exact file. No files searched.`,
+      { cause });
+  }
+}
+
 /** Bind a declaration-list position to both pinned trees and the original scope. */
 export function makeDefinitionPage(name: string, options: DefinitionPageOptions,
   result: { definitions: DefinitionHit[]; meta: ToolResultMeta }, trees: { headCommit: string; baseCommit: string }): DefinitionPage {
@@ -15,7 +23,9 @@ export function makeDefinitionPage(name: string, options: DefinitionPageOptions,
   const hits = [...result.definitions].sort((a, b) => Number(isTextFallbackHit(a)) - Number(isTextFallbackHit(b))
     || (a.symbol.path < b.symbol.path ? -1 : a.symbol.path > b.symbol.path ? 1 : 0)
     || a.symbol.lineRange[0] - b.symbol.lineRange[0]);
-  const binding = toolCursorBinding(["read_definition", trees.headCommit, trees.baseCommit, name, options.path ?? null, requestedSource, sourceUsed]);
+  const scope = result.meta.definitionScope;
+  const selector = scope ? { directory: scope.directory } : options.path ?? null;
+  const binding = toolCursorBinding(["read_definition", trees.headCommit, trees.baseCommit, name, selector, requestedSource, sourceUsed]);
   let offset = 0;
   if (options.cursor !== undefined) {
     const position = decodeToolCursor(options.cursor, binding) as { index?: unknown; path?: unknown; line?: unknown };
@@ -25,11 +35,15 @@ export function makeDefinitionPage(name: string, options: DefinitionPageOptions,
     }
     offset = position.index;
   }
-  const lookupNote = result.meta.lookupNote
+  const backendNote = result.meta.lookupNote
     ?.replaceAll("; use read_range or find_symbol_mentions.", "; use read_range or find_usages.")
     .replaceAll("; use find_symbol_mentions.", "; use find_usages.")
     .replaceAll(". Narrow pathGlob; this occurrence", ". Narrow the path; this occurrence");
-  const meta = { ...result.meta, ...(lookupNote !== undefined ? { lookupNote } : {}) };
+  const directoryNote = scope
+    ? `Path ${JSON.stringify(scope.directory)} is a directory at ${sourceUsed}. Searched that directory and its descendants.`
+    : undefined;
+  const lookupNote = [directoryNote, backendNote].filter(Boolean).join(" ");
+  const meta = { ...result.meta, ...(lookupNote ? { lookupNote } : {}) };
   return { name, ...(options.path !== undefined ? { path: options.path } : {}), requestedSource, sourceUsed, hits, meta, offset, binding };
 }
 
