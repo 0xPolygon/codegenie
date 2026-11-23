@@ -118,6 +118,19 @@ export class Service { process() { return 10; } }
     } finally { fixture.dispose(); }
   });
 
+  it("keeps object lookup ambiguous when a result cap omits a discovered declaration", async () => {
+    const longBody = "x".repeat(9_100);
+    const fixture = await textRepository({
+      "src/a.ts": `export const a = { run() { return '${longBody}'; } };\n`,
+      "src/b.ts": `export const b = { run() { return '${longBody}'; } };\n`
+    });
+    try {
+      const result = await buildReadDefinitionTool(fixture.tools).execute({ name: "run" }, new AbortController().signal);
+      expect(result.definitionPage?.hits).toHaveLength(1);
+      expect(result.meta).toMatchObject({ lookupStatus: "ambiguous", deliveryStatus: "truncated", omittedCount: 1 });
+    } finally { fixture.dispose(); }
+  });
+
   it("parses a literal named path directly, distinguishes absent and missing, and never broadens", async () => {
     const fixture = await textRepository({
       "src/[a].ts": "export function Widget() { return 1; }\n",

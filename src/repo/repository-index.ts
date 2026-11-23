@@ -711,7 +711,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       cappedDefinitions.definitions.length === 0
         ? cappedDefinitions.omittedCount > 0 ? "ambiguous" : unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0 ? "unavailable" : "not_found"
         : verifiedCount === 0 ? "unavailable"
-          : (objectFallbackUsed ? verifiedCount : cappedDefinitions.definitions.length) > 1 ? "ambiguous" : "found";
+          : (objectFallbackUsed ? objectMemberCount : cappedDefinitions.definitions.length) > 1 ? "ambiguous" : "found";
     const definitionDeliveryStatus =
       cappedDefinitions.definitions.length === 0
         ? "empty"
