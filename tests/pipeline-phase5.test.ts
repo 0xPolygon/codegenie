@@ -16648,7 +16648,11 @@ describe("fallback co-location of exact changed anchors", () => {
   it("keeps categories separate and does not co-locate in model composition", async () => {
     const differentCategory = second();
     differentCategory.category = "security";
-    expect((await compose([first(), differentCategory])).findings).toHaveLength(2);
-    expect((await compose([first(), second()], false)).findings).toHaveLength(2);
+    const separateEvents = vi.fn();
+    expect((await compose([first(), differentCategory], true, separateEvents)).findings).toHaveLength(2);
+    expect(separateEvents.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toHaveLength(0);
+    const modelEvents = vi.fn();
+    expect((await compose([first(), second()], false, modelEvents)).findings).toHaveLength(2);
+    expect(modelEvents.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toHaveLength(0);
   });
 });
