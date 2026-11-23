@@ -47,22 +47,25 @@ export class ReadChangeService {
   }
 
   async read(input: ReadChangeInput, currentHunks?: readonly string[]): Promise<ReadChangeResult> {
-    if (input.path !== undefined && input.hunkId !== undefined) {
-      throw new CodegenieError("invalid_args", "Provide at most one of path or hunkId.");
-    }
     const overview = input.path === undefined && input.hunkId === undefined;
     if (overview && input.context !== undefined) {
       throw new CodegenieError("invalid_args", "Function context requires path or hunkId.");
     }
     const binding = toolCursorBinding(["read_change", this.resolver.binding.baseCommit, this.resolver.binding.headCommit,
-      input.path ?? null, input.hunkId ?? null, input.context ?? null, overview ? currentHunks ?? null : null]);
+      input.hunkId === undefined ? input.path ?? null : null, input.hunkId ?? null, input.context ?? null,
+      overview ? currentHunks ?? null : null]);
     if (overview) return this.readDirectory(binding, input.cursor, currentHunks);
     this.targets ??= this.diff.files.flatMap(file => file.hunks.filter(hunk => hunk.lines.length).map(hunk => ({ file, hunk })));
-    const targets = this.targets.filter(({file, hunk}) => input.hunkId !== undefined
-      ? input.hunkId === hunk.id : file.path === input.path || file.oldPath === input.path);
+    const matchesPath = (file: DiffFile): boolean => input.path === undefined || file.path === input.path || file.oldPath === input.path;
+    const matchingHunks = input.hunkId === undefined ? this.targets
+      : this.targets.filter(({ hunk }) => hunk.id === input.hunkId);
+    const targets = matchingHunks.filter(({ file }) => matchesPath(file));
+    if (matchingHunks.length && !targets.length && input.hunkId !== undefined) {
+      throw new CodegenieError("invalid_args", `hunkId ${JSON.stringify(input.hunkId)} belongs to ${JSON.stringify(matchingHunks[0]!.file.path)}, not path ${JSON.stringify(input.path)}.`);
+    }
     if (!targets.length) {
       if (input.cursor !== undefined) throw new CodegenieError("invalid_args", "Cursor does not identify an available change.");
-      const knownPath = this.diff.files.some(file => file.path === input.path || file.oldPath === input.path);
+      const knownPath = input.hunkId === undefined && this.diff.files.some(matchesPath);
       return empty(knownPath ? "The changed path has no textual hunks. Call read_change without a selector for its status."
         : "No changed hunk matched the path or hunk ID. Call read_change without a selector for the pinned changes.");
     }

@@ -107,6 +107,10 @@ describe("positioned diff delivery", () => {
       const change = await fixture.change({ path: oldPath });
       expect(change.text).toContain(`"${oldPath}"@base: 23 lines | "${path}"@head: 23 lines`);
       expect(change.text.split(`"${oldPath}"@base: 23 lines`)).toHaveLength(2);
+      const hunkId = file.hunks[0]!.id;
+      const hunk = await fixture.change({ hunkId });
+      expect(await fixture.change({ hunkId, path: oldPath })).toEqual(hunk);
+      expect(await fixture.change({ hunkId, path })).toEqual(hunk);
     } finally {
       fixture.dispose();
     }
@@ -166,7 +170,12 @@ describe("read_change", () => {
       expect(diff.meta?.deliveryStatus).toBe("full");
       expect(diff.text).toContain(sibling.lines.map(packetDiffLine).map(renderNumberedDiffLine).join("\n"));
       expect(diff.text).toContain('pi-runner.ts"@base: 3 lines');
-      expect(await fixture.change({ path: provider, hunkId: sibling.id })).toMatchObject({ errorCode: "invalid_args" });
+      expect(await fixture.change({ path: file, hunkId: sibling.id })).toMatchObject({ text: diff.text, meta: diff.meta });
+      const mismatch = await fixture.change({ path: provider, hunkId: sibling.id });
+      expect(mismatch.errorCode).toBe("invalid_args");
+      expect(mismatch.text).toContain(file);
+      expect(mismatch.text).toContain(provider);
+      expect(await fixture.change({ path: file, hunkId: "unknown" })).toMatchObject({ meta: { lookupStatus: "not_found" } });
       expect(await fixture.change({ hunkId: "unknown" })).toMatchObject({ meta: { lookupStatus: "not_found" } });
     } finally {
       fixture.dispose();
@@ -183,7 +192,7 @@ describe("read_change", () => {
     try {
       const hunkId = fixture.diff.files[0]!.hunks[0]!.id;
       expect((await fixture.change({ hunkId })).text).not.toContain("writeArtifact('review')");
-      const args = { hunkId, context: "function" as const };
+      const args = { path, hunkId, context: "function" as const };
       const result = await fixture.change(args);
       expect(result.text).toContain("Function intervals: base composer 1-26 | head composer 1-27.");
       expect(result.text).not.toContain("Alignment unavailable");
@@ -192,8 +201,12 @@ describe("read_change", () => {
       expect(cut.meta?.deliveryStatus).toBe("truncated");
       const cursor = continuation(cut.text);
       expect(await fixture.change({ hunkId, cursor })).toMatchObject({ errorCode: "invalid_args" });
+      expect(await fixture.change({ ...args, path: "src/unrelated.ts", cursor })).toMatchObject({ errorCode: "invalid_args" });
       const resumed = await fixture.change({ ...args, cursor });
       expect(resumed.packable?.records[1]).toBe(result.packable?.records[cut.packable!.records.length]);
+      expect(await fixture.change({ hunkId, context: "function", cursor })).toEqual(resumed);
+      const byId = await fixture.change({ hunkId, context: "function" });
+      expect(continuation(packTextToolResult(byId, 850).text)).toBe(cursor);
       expect(packTextToolResult(result, 80)).toMatchObject({ isError: true, meta: { deliveryStatus: "budget_rejected" } });
       const grouped = await fixture.change({ path, context: "function" });
       const hunks = fixture.diff.files[0]!.hunks;

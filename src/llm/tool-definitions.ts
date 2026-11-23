@@ -383,7 +383,7 @@ export function buildSixReadChangeTool(tools: RepositoryTools, options: Reposito
   const currentHunks = options.currentHunks;
   return {
     name: "read_change",
-    description: "List changed files and stable hunk IDs with no selector, or read the numbered base/head diff using path or hunkId. Provide at most one selector. With a selector, context: \"function\" shows the enclosing declaration on both revisions when the syntax supports it. Continue a clipped result with the cursor and the same selector and context.",
+    description: "List changed files and stable hunk IDs with no selector, or read the numbered base/head diff using path or hunkId. If both are supplied, path must name the file of hunkId (either path for a rename). With a selector, context: \"function\" shows the enclosing declaration on both revisions when the syntax supports it. Continue a clipped result with the cursor and the same selector and context.",
     parameters: Type.Object({
       path: Type.Optional(Type.String({ minLength: 1 })),
       hunkId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
