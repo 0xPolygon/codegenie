@@ -72,7 +72,7 @@ export class Service { process() { return 10; } }
       const directory = await tool.execute({ name: "lsTree", path: "src" }, new AbortController().signal);
       expect(directory.meta).toMatchObject({ lookupStatus: "found", definitionScope: { directory: "src", glob: "src/**" } });
       expect(directory.text).toContain('Path "src" is a directory at head.');
-      expect(directory.text).toContain('Searched definitions under "src/**".');
+      expect(directory.text).toContain("Searched that directory and its descendants.");
       expect((await tool.execute({ name: "lsTree", path: "missing" }, new AbortController().signal)).meta?.lookupStatus).toBe("file_missing");
       expect(listFiles).toHaveBeenCalledTimes(1);
     } finally { fixture.dispose(); }
@@ -208,6 +208,8 @@ describe("read_definition directory scopes", () => {
       const punctuation = await tool.execute({ name: "Decode", path: "lib/[a]?{b}*" }, signal);
       expect(punctuation.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(["lib/[a]?{b}*/a.ts"]);
       expect(punctuation.meta?.definitionScope?.glob).toBe("lib/[[]a[]][?][{]b[}][*]/**");
+      expect(punctuation.text).toContain('Path "lib/[a]?{b}*" is a directory at head.');
+      expect(punctuation.text).not.toContain("lib/[[]a[]][?][{]b[}][*]/**");
 
       const bounded = await tool.execute({ name: "OnlyMentioned", path: "bounded" }, signal);
       expect(bounded.meta).toMatchObject({ lookupStatus: "incomplete", truncated: true,

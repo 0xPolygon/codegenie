@@ -40,7 +40,7 @@ export function makeDefinitionPage(name: string, options: DefinitionPageOptions,
     .replaceAll("; use find_symbol_mentions.", "; use find_usages.")
     .replaceAll(". Narrow pathGlob; this occurrence", ". Narrow the path; this occurrence");
   const directoryNote = scope
-    ? `Path ${JSON.stringify(scope.directory)} is a directory at ${sourceUsed}. Searched definitions under ${JSON.stringify(scope.glob)}.`
+    ? `Path ${JSON.stringify(scope.directory)} is a directory at ${sourceUsed}. Searched that directory and its descendants.`
     : undefined;
   const lookupNote = [directoryNote, backendNote].filter(Boolean).join(" ");
   const meta = { ...result.meta, ...(lookupNote ? { lookupNote } : {}) };
