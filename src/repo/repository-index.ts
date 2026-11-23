@@ -691,8 +691,11 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     } else if (verifiedCount === 0 && cappedDefinitions.definitions.length > 0) {
       lookupNotes.push("Text declarations are unverified leads; inspect their source.");
     }
-    if (cappedDefinitions.definitions.length > 0 && cappedDefinitions.omittedCount > 0 && omittedSymbol === undefined && omittedMatch !== undefined) {
+    if (verifiedCount > 0 && cappedDefinitions.omittedCount > 0 && omittedSymbol === undefined && omittedMatch !== undefined) {
       lookupNotes.push(`Candidate scan was bounded; first unexamined text occurrence: ${omittedMatch.path}:${omittedMatch.line}. Narrow pathGlob; this occurrence is not a verified definition.`);
+    }
+    if (verifiedCount === 0 && cappedDefinitions.omittedCount > 0 && omittedSymbol === undefined && omittedMatch !== undefined) {
+      lookupNotes.push(`Candidate scan was bounded; first unexamined text occurrence: ${omittedMatch.path}@${source.kind}:${omittedMatch.line}. This occurrence is not a verified definition. Inspect it with read_range({"path":${JSON.stringify(omittedMatch.path)},"startLine":${omittedMatch.line},"endLine":${omittedMatch.line},"source":{"kind":"${source.kind}"}}).`);
     }
     const meta: ToolResultMeta = {
       backend: fallbackCount > 0 || cappedDefinitions.definitions.length === 0 ? "text" : "tree-sitter",
