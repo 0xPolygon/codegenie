@@ -29,6 +29,7 @@
 
 ### Security
 
+- Redact registered and recognized credentials before truncating telemetry diagnostics and debug previews to prevent fragments at those caps. Persisted records also redact escaped forms of registered credentials and multiline components of at least six characters. Repair-prompt diagnostics longer than 2,000 characters apply credential redaction before truncation.
 - Updated transitive dependencies in the Vitest test stack to versions that address reported vulnerabilities.
 
 ### Evaluation and tests
