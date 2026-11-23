@@ -67,11 +67,14 @@ export class Service { process() { return 10; } }
       }
       const unknownOwner = await tool.execute({ name: "Missing.Save", path: "src/store.go" }, new AbortController().signal);
       expect(unknownOwner.meta?.lookupStatus).toBe("not_found");
+      const resolver = (fixture.tools as unknown as { opts: { resolver: { listFiles: (...args: never[]) => unknown } } }).opts.resolver;
+      const listFiles = vi.spyOn(resolver, "listFiles");
       const directory = await tool.execute({ name: "lsTree", path: "src" }, new AbortController().signal);
       expect(directory).toMatchObject({ isError: true, errorCode: "invalid_args" });
       expect(directory.text).toContain("is a directory");
       expect(directory.text).toContain("exact file path");
       expect((await tool.execute({ name: "lsTree", path: "missing" }, new AbortController().signal)).meta?.lookupStatus).toBe("file_missing");
+      expect(listFiles).toHaveBeenCalledTimes(1);
     } finally { fixture.dispose(); }
   });
 
@@ -90,6 +93,28 @@ export class Service { process() { return 10; } }
       expect(result.text).toContain("5 more not listed");
       expect(result.text).toContain('"source":{"kind":"base"}');
       expect(result.text).not.toContain("src/many-members.ts@head:");
+    } finally { fixture.dispose(); }
+  });
+
+  it("counts verified object hits separately from unverified text leads without changing the old tier", async () => {
+    const fixture = await textRepository({
+      "src/client.ts": "export function makeClient() { return { go() { return 1; }, open() { return 2; } }; }\n",
+      "src/existing.ts": "export function open() { return 3; }\n",
+      "vendor/leads.custom": "function go() {}\nfunction open() {}\n"
+    });
+    try {
+      const tool = buildReadDefinitionTool(fixture.tools);
+      const object = await tool.execute({ name: "go" }, new AbortController().signal);
+      expect(object.meta?.lookupStatus).toBe("found");
+      expect(object.definitionPage?.hits).toHaveLength(2);
+      expect(object.text).toContain("Verified declarations:");
+      expect(object.text).toContain("Unverified text leads:");
+      const oldTier = await fixture.tools.findDefinition("open");
+      const sameTier = await tool.execute({ name: "open" }, new AbortController().signal);
+      expect(oldTier.meta.lookupStatus).toBe("ambiguous");
+      expect(sameTier.meta?.lookupStatus).toBe(oldTier.meta.lookupStatus);
+      expect(sameTier.definitionPage?.hits.map(hit => hit.symbol.path)).toEqual(oldTier.definitions.map(hit => hit.symbol.path));
+      expect(sameTier.text).toContain("Verified declarations are identified above");
     } finally { fixture.dispose(); }
   });
 

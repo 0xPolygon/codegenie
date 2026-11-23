@@ -159,6 +159,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   private readonly changes: ReadChangeService;
   private readonly search: SearchService;
   private readonly limit = pLimit(8);
+  private readonly definitionFileLists = new Map<"head" | "base", Promise<string[]>>();
   private readonly toolCallContext = new AsyncLocalStorage<RepositoryToolCallContext>();
 
   constructor(
@@ -529,7 +530,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       const sides: SourceSelector[] = options.source?.kind === "auto" ? [{ kind: "head" }, { kind: "base" }]
         : [{ kind: options.source?.kind ?? "head" }];
       for (const side of sides) {
-        const files = await this.limit(() => this.opts.resolver.listFiles(undefined, side));
+        let pending = this.definitionFileLists.get(side.kind);
+        if (!pending) {
+          pending = this.limit(() => this.opts.resolver.listFiles(undefined, side));
+          this.definitionFileLists.set(side.kind, pending);
+          void pending.catch(() => { if (this.definitionFileLists.get(side.kind) === pending) this.definitionFileLists.delete(side.kind); });
+        }
+        const files = await pending;
         if (files.some(file => file.startsWith(`${path.replace(/\/$/u, "")}/`))) {
           throw new CodegenieError("invalid_args", `path ${path} is a directory at ${side.kind}; read_definition requires an exact file path. Use list_files to find a file, or omit path.`);
         }
@@ -673,6 +680,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       }
     }
     const existingVerified = definitions.some(hit => !isTextFallbackHit(hit));
+    let objectFallbackUsed = false;
     if (!existingVerified && objectMembers.length > 0) {
       const available = Math.max(0, maxDefinitions - definitions.length);
       const objectHits = objectMembers.slice(0, available).map(({ symbol, content }) => {
@@ -683,6 +691,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(snippet.nextLine !== undefined ? { nextLine: snippet.nextLine } : {}) };
       });
       definitions.unshift(...objectHits);
+      objectFallbackUsed = objectHits.length > 0;
       omittedByDefinitionCap += objectMemberCount - objectHits.length;
       firstOmittedSymbol ??= objectMembers[objectHits.length]?.symbol;
     }
@@ -701,7 +710,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     const definitionLookupStatus =
       cappedDefinitions.definitions.length === 0
         ? cappedDefinitions.omittedCount > 0 ? "ambiguous" : unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0 ? "unavailable" : "not_found"
-        : verifiedCount === 0 ? "unavailable" : cappedDefinitions.definitions.length > 1 ? "ambiguous" : "found";
+        : verifiedCount === 0 ? "unavailable"
+          : (objectFallbackUsed ? verifiedCount : cappedDefinitions.definitions.length) > 1 ? "ambiguous" : "found";
     const definitionDeliveryStatus =
       cappedDefinitions.definitions.length === 0
         ? "empty"
@@ -724,7 +734,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         })})`;
       });
       const remaining = objectMemberCount - locations.length;
-      lookupNotes.push(`The returned declaration is verified; ${objectMemberCount} additional same-name object member(s) were observed. Use read_range to inspect: ${locations.join("; ")}${remaining ? `; ${remaining} more not listed` : ""}.`);
+      lookupNotes.push(`Verified declarations are identified above; ${objectMemberCount} additional same-name object member(s) were observed. Use read_range to inspect: ${locations.join("; ")}${remaining ? `; ${remaining} more not listed` : ""}.`);
     }
     if (verifiedCount === 0 && (unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0)) {
       lookupNotes.push(exactPath !== undefined
