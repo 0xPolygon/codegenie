@@ -53,6 +53,7 @@ export type ToolResultRecords = {
 };
 
 export type ToolExecutionResult = {
+  definitionPage?: import("../repo/definition-page.js").DefinitionPage;
   /** Six-tool usage results remain canonical until packed for the current caller. */
   usagePage?: { name: string; page: import("../repo/usage-search.js").UsagePage };
   /** Canonical whole records for packing against each caller's result budget. */
