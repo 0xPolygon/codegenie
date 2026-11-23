@@ -3,6 +3,7 @@ import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig, type CliConfigOverrides, type LoadConfigOptions } from "../config/config-loader.js";
 import { MAX_REVIEW_TIME_MINUTES } from "../config/schema.js";
+import { splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { REASONING_USAGE, parseReasoningLevel, splitReasoningSuffix } from "../provider/reasoning.js";
 import type {
   OutputFormat,
@@ -89,12 +90,12 @@ export function parseReviewCommand(
     .option("--head <ref>", "head ref or commit to review with --base")
     .option("--staged", "review HEAD against the Git index")
     .option("--uncommitted", "review HEAD against the tracked working tree")
-    .option("--base <branch>", "base branch/ref for branch/head/default review")
+    .option("--base <ref>", "base ref or revision (e.g. HEAD~1) for branch/head/default review")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
-    .option("--model <model>", "model override, optionally with a :reasoning suffix (e.g. claude-opus-5:max)")
+    .option("--model <model>", "model override, optionally provider/model[:reasoning] (e.g. openai-codex/gpt-6-luna:high)")
     .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
     .option("--skip-svg-review", "skip SVG files during review (default)")
     .option("--no-skip-svg-review", "include SVG files in review, subject to other exclusion rules")
@@ -329,7 +330,11 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   }
   if (options.model !== undefined) {
     const spec = splitReasoningSuffix(requireNonEmpty(options.model, "--model"));
-    cli.model = requireNonEmpty(spec.model, "--model");
+    const model = requireNonEmpty(spec.model, "--model");
+    // An explicit --provider scopes a provider-native model ID, which can contain slashes.
+    const qualified = cli.provider === undefined ? splitProviderQualifiedModel(model) : undefined;
+    if (qualified !== undefined) cli.provider = qualified.provider;
+    cli.model = qualified?.model ?? model;
     if (spec.reasoning !== undefined) {
       if (options.reasoning !== undefined) {
         throw new CodegenieError("invalid_args", "pass reasoning as either --model <model>:<reasoning> or --reasoning, not both");

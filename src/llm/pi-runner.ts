@@ -26,7 +26,7 @@ import {
 import pLimit from "p-limit";
 import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
-import { getCodegeniePiModels } from "../provider/pi-ai-models.js";
+import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
@@ -4459,21 +4459,6 @@ export function modelResolutionMessage(failure: ModelResolutionFailure): string 
     return `no credentials for provider ${failure.provider}: configure native credentials or run \`codegenie provider login ${failure.provider}\``;
   }
   return UNRESOLVED_MODEL_MESSAGE;
-}
-
-function splitProviderQualifiedModel(
-  model: string,
-  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
-): { provider: string; model: string } | undefined {
-  const slash = model.indexOf("/");
-  if (slash <= 0 || slash === model.length - 1) {
-    return undefined;
-  }
-  const provider = model.slice(0, slash);
-  if (models.getProvider(provider) === undefined) {
-    return undefined;
-  }
-  return { provider, model: model.slice(slash + 1) };
 }
 
 async function prepareInjectedCompletion(

@@ -96,6 +96,17 @@ export function getCodegeniePiModels(credentials?: CredentialStore): Models {
   return models;
 }
 
+export function splitProviderQualifiedModel(
+  model: string,
+  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
+): { provider: string; model: string } | undefined {
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) return undefined;
+  const provider = model.slice(0, slash);
+  if (models.getProvider(provider) === undefined) return undefined;
+  return { provider, model: model.slice(slash + 1) };
+}
+
 function registerModelAuth(auth: ModelAuth): void {
   registerSecret(auth.apiKey);
   // Auth-resolved headers carry credentials (Authorization, Cloudflare AI
