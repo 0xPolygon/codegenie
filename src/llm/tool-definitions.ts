@@ -513,11 +513,27 @@ function buildBoundedReadRangeTool(tools: RepositoryTools, renderMeta = withMeta
   };
 }
 
+function normalizeSixReadRangeBounds(args: Record<string, unknown>): Record<string, unknown> {
+  const source = args.source;
+  if (source === null || typeof source !== "object" || (!("startLine" in source) && !("endLine" in source))) {
+    return args;
+  }
+  const { kind, startLine, endLine } = source as Record<string, unknown>;
+  if ("startLine" in args || "endLine" in args || "cursor" in args ||
+    (kind !== "head" && kind !== "base") || Object.keys(source).length !== 3 ||
+    typeof startLine !== "number" || typeof endLine !== "number" ||
+    !Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || startLine > endLine) {
+    throw new CodegenieError("invalid_args", "Provide both top-level startLine and endLine as inclusive integers with 1 <= startLine <= endLine. Use source only for its revision kind, and omit the declaration map cursor when giving bounds");
+  }
+  return { ...args, startLine, endLine, source: { kind } };
+}
+
 export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
   const bounded = buildBoundedReadRangeTool(tools, withSixToolMeta);
   return {
     name: "read_range",
-    description: "Read pinned repository source at head or base. Provide both inclusive line bounds for a numbered range. Omit both for a small complete file or a paged declaration map. Pass its cursor with the same path and source to continue the map.",
+    description: 'Read pinned repository source at head or base. Use top-level startLine and endLine for a numbered range and source: {kind:"head"} or {kind:"base"} for the revision. Omit both bounds for a small complete file or a paged declaration map. Pass its cursor with the same path and source to continue the map.',
+    normalizeArguments: normalizeSixReadRangeBounds,
     parameters: Type.Object({
       path: Type.String({ minLength: 1 }),
       source: SourceSelectorSchema,
