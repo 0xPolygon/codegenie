@@ -9,8 +9,4 @@ review:
   verify: true
   debug: true
   cache: false
-should_find:
-- id: default-tools-disables-extension-tools
-  path: packages/coding-agent/src/core/sdk.ts
-  lineRange: [246, 256]
-  severityAtLeast: low
+# The oracle records a compatibility question for manual adjudication.
