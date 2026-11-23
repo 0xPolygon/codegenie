@@ -4969,6 +4969,48 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(JSON.stringify(telemetry.modelCalls)).not.toContain(key);
   });
 
+  it.each([
+    ["fits before the cap", 80],
+    ["starts 13 characters before the cap", 1_987]
+  ])("scrubs a synthetic credential in model-calls.jsonl when it %s", async (_label, credentialOffset) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-invalid-reason-"));
+    const credential = "sk-" + "A1b2C3d4".repeat(4);
+    const diagnosticPrefix = "Validation failed for tool \"submit_review\": unknown reference ";
+    const diagnostic = diagnosticPrefix.padEnd(credentialOffset - 1, "x") + " " + credential + " " + "y".repeat(2_000);
+    registerSecret(credential);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: false } });
+      const attached = await run.attachRunDirectory(directory);
+      const scripted = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "invalid", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+        assistant([validSubmitReviewCall("valid")])
+      ]);
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter: { ...scripted, validateToolCall: (tools, call) => {
+          if ((call as { id?: string }).id === "invalid") throw new Error(diagnostic);
+          return scripted.validateToolCall(tools, call);
+        } },
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      await runner.runStructured(submitReviewRequest("packet-schema-invalid-jsonl", run.recorder));
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+
+      const jsonl = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8");
+      const calls = jsonl.trimEnd().split("\n").map(line => JSON.parse(line) as LlmCallRecord);
+      expect(calls.map(call => call.status)).toEqual(["schema_invalid", "ok"]);
+      expect(calls[0]?.errorMessage).toContain(diagnosticPrefix);
+      expect(jsonl).not.toContain(credential.slice(0, 13));
+    } finally {
+      clearRegisteredSecretsForTests();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("strips redundant candidate anchor fields before model repair", async () => {
     const telemetry = fakeTelemetry();
     const anchor = { path: "src/a.ts", line: 12, side: "RIGHT", hunkId: "hunk-a" };

@@ -21,6 +21,8 @@ Review base `644608d547ad4d1442b24acd55c11c00b9ba02a8` (the parent) against head
 
 Composition validation echoes unknown model-supplied references in an error message. The runner caps that reason before handing it to the telemetry interface as the raw model-call `errorMessage`, so that raw record can include sensitive text. The standard on-disk `model-calls.jsonl` writer applies `stripCredentials` during serialization (`src/telemetry/run-artifacts.ts:828-833,2256-2258`). It can scrub a complete recognized credential, but the earlier cap can cut the credential into a fragment the serializer no longer recognizes. Credit a report identifying the unsafe raw diagnostic or partial material surviving this redaction order. The default disk stream does not persist a complete recognized credential merely because it was present in the raw record.
 
+A constructed diagnostic at the pinned head demonstrates fragment persistence in the default JSONL writer. The fixture uses a synthetic token and an offline adapter. It establishes the redaction boundary for that diagnostic, without evidence of a live disclosure.
+
 ### Anchor
 
 src/llm/pi-runner.ts:3439 (`truncateDiagnostic(withoutRejectedArguments(...))` without `stripCredentials`); recorded as `errorMessage` around line 1679
