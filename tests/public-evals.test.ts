@@ -61,6 +61,15 @@ describe("public eval cases", () => {
     expect(caseDirs.length).toBeGreaterThan(0);
   });
 
+  it("keeps both go-14 Metal stall anchors optional", async () => {
+    const suite = await loadEvalSuite(path.join(root, "goinfer", "go-14"));
+    const { should_find } = suite.cases[0]!.evalCase;
+    expect(should_find?.map(({ tier, path, lineRange }) => ({ tier, path, lineRange }))).toEqual([
+      { tier: "optional", path: "gpu/decodetoken_batched.go", lineRange: [77, 84] },
+      { tier: "optional", path: "gpu/decodetoken_batched.go", lineRange: [215, 221] }
+    ]);
+  });
+
   it.each(caseDirs)("$repo/$id loads and pins an oracle outside the reviewed checkout", async ({ repo, id, dir }) => {
     const suite = await loadEvalSuite(dir);
     expect(suite.cases).toHaveLength(1);
