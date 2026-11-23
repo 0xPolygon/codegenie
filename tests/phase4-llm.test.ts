@@ -5142,17 +5142,21 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         assistant([validSubmitReviewCall("valid")])
       ]);
       const summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+      let modelPreview: string | undefined;
       const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
         telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
         hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
       await runner.runStructured({ ...submitReviewRequest("tool-boundary"), tools: [{ name: "search_files", description: "search",
         parameters: Type.Object({ name: Type.String(), pathGlob: Type.String() }),
         execute: async () => ({ text: "x".repeat(227) + secret + " trailing text" }) }],
+        toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
+        finalization: { buildPostToolNudge: ({ lastToolResults }) => { modelPreview = lastToolResults[0]?.preview; return ""; } },
         onToolResults: rows => summaries.push(...rows) });
       await run.finalize({ status: "completed_full", exitCode: 0 });
       const calls = readFileSync(path.join(attached.runDir, "tool-calls.jsonl"), "utf8");
       expect(calls).not.toContain(secret.slice(0, 13));
       expect(JSON.stringify(summaries)).not.toContain(secret.slice(0, 13));
+      expect(modelPreview).toContain(secret.slice(0, 10)); // Preserve the pre-existing model-facing nudge input.
     } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
   });
 

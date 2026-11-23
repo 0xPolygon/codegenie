@@ -27,6 +27,10 @@ export function registerSecret(value: string | undefined | null): void {
   const trimmed = value.trim();
   if (trimmed.length >= 6) {
     registeredSecrets.add(trimmed);
+    // Verifier repair serializes angle-bracket escapes into persisted requests.
+    const escaped = trimmed.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+    registeredSecrets.add(escaped);
+    registeredSecrets.add(escaped.replaceAll("\\", "\\\\"));
     if (/[\r\n]/u.test(trimmed)) {
       for (const line of trimmed.split(/\r?\n|\r/u)) {
         const component = line.trim();

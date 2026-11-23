@@ -3,7 +3,7 @@ import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
 import { compositionSources } from "../src/pipeline/composition-content.js";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
+import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
@@ -9670,6 +9671,37 @@ describe("phase 5 pipeline regressions", () => {
     }));
     expect(events.some((event) => event.message === "verification_primary_submit_accepted")).toBe(false);
     expect(events.some((event) => event.message === "verification_schema_repair_attempted")).toBe(false);
+  });
+
+  it("keeps candidate credentials in verifier repair input and redacts the persisted prompt", async () => {
+    const token = "sk-" + "A1b2C3d4".repeat(4);
+    const registered = "secret<inside>long-value";
+    registerSecret(registered);
+    const finding = { ...fakeFinding(), evidence: { changedCode: `bad ${token} ${registered}`, relatedCode: [] } };
+    let repairPrompt = "";
+    const runner: LlmRunner = { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+      repairPrompt = request.schemaRepair?.buildPrompt?.({ stage: 9, submitTool: "submit_verdict", error: "schema invalid",
+        submitCalls: [{ id: "bad", arguments: {} }], extraToolNames: [] }) ?? "";
+      return { verdict: "keep", reason: "verified", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+    } };
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-verifier-redaction-"));
+    try {
+      await verifyFindings({ packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [finding],
+        followUpHints: [], uncertainties: [], status: "completed" }], packets: [fakePacket()] }, fakeTools(), config(), nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" });
+      expect(repairPrompt).toContain(token);
+      expect(repairPrompt).toContain("secret\\\\u003cinside\\\\u003elong-value");
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(dir);
+      await run.recorder.writeDebug("llm-calls", "verifier-repair", { prompt: repairPrompt });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(stored).not.toContain(token);
+      expect(stored).not.toContain("secret\\\\u003cinside");
+      expect(stored).toContain("[redacted:pattern]");
+      expect(stored).toContain("[redacted:secret]");
+    } finally { clearRegisteredSecretsForTests(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("preserves verifier context during schema repair and records XML classification", async () => {
