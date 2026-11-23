@@ -3,7 +3,7 @@ import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
 import { compositionSources } from "../src/pipeline/composition-content.js";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -3247,6 +3247,29 @@ describe("phase 5 pipeline regressions", () => {
       expect(protectedPackets[0]?.contextText).toContain("function changed() { return 1; }");
       expect(protectedPackets[0]?.contextText?.length).toBe(baseline[0]?.contextText?.length);
     } finally { clearRegisteredSecretsForTests(); }
+  });
+
+  it("keeps token-bearing planner notes in the Stage 7 prompt while redacting persisted telemetry", async () => {
+    const token = "sk-" + "A1b2C3d4".repeat(4);
+    const note = `Check code handling ${token}`;
+    const plan = fakePlan("app.ts");
+    plan.coverage[0]!.focusNotes = [note];
+    const [packet] = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+    expect(packet!.attentionNotes).toContain(note);
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packet!, skills: [] }).prompt;
+    expect(prompt).toContain(note);
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-note-redaction-"));
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(dir);
+      await run.recorder.writeDebug("llm-calls", "planner-note", { prompt });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(stored).not.toContain(token);
+      expect(stored).toContain("[redacted:pattern]");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("keeps non-call-site symbol hints on the symbol definition path", async () => {

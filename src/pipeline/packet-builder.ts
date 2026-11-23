@@ -1,5 +1,5 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { protectedSourceSlice, protectedSignaturePrefix, stripCredentials } from "../telemetry/redaction.js";
+import { normalizeSourceWhitespace, protectedSourceSlice, protectedSignaturePrefix } from "../telemetry/redaction.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
@@ -1207,7 +1207,7 @@ function bareIdentifier(value: string): string {
 }
 
 function normalizeNote(value: string): string {
-  return truncateTail(stripCredentials(value).trim().replace(/\s+/gu, " "), MAX_ATTENTION_NOTE_CHARS);
+  return truncateTail(normalizeSourceWhitespace(value), MAX_ATTENTION_NOTE_CHARS);
 }
 
 function stripLocationSuffix(value: string): string {
