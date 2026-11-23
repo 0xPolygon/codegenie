@@ -5079,6 +5079,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(stored).not.toContain("long-secret-line");
       expect(stored).not.toContain("short\\u003ckey");
       expect(stored).not.toContain("short\\\\u003ckey");
+      expect(stored).not.toContain("short");
       expect(stored).toContain("X"); // Individual lines shorter than six are the documented residual.
     } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
   });
