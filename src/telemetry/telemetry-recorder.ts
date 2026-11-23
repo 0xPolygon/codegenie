@@ -37,6 +37,9 @@ export type LlmCallRecord = {
   reasoningSelected?: string;
   reasoningPolicy?: "configured" | "one_level_lower" | "lowest_supported";
   reasoningRequested?: string;
+  wireEffort?: string;
+  toolPlacement?: "top_level" | "none";
+  configurationUpdate?: false;
   // Headers can arrive before any model output; streamProgress measures Pi events.
   streamProgress?: StreamProgress;
   ttfbMs?: number;

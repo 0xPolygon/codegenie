@@ -8,7 +8,7 @@ import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
-import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
+import { applyModelOverrides, codexWireProtocol, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
 import { createToolArgumentStreamGuard, type ToolArgumentStreamLimit } from "./tool-argument-stream-limit.js";
 import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
@@ -1490,12 +1490,13 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
+  const codexProtocol = codexWireProtocol(model.raw, reasoning, tools.length);
   const protocol = { ...describeProviderProtocol(
     model,
     toolChoice,
     forcedSubmitThinkingOff ? undefined : reasoning,
     forceSubmit
-  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy };
+  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy, ...codexProtocol };
   if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
     input.protocolFlags.downgradeWarned = true;
     opts.telemetry.event({
@@ -1522,6 +1523,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     // disabled (plan 86 step 3), which is a different request than the same
     // messages at the configured reasoning level.
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
+    ...codexProtocol,
     stage: request.stage,
     ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
@@ -1970,6 +1972,9 @@ function canonicalModelRequest(input: {
   provider: string;
   model: string;
   reasoning: string;
+  wireEffort?: string;
+  toolPlacement?: "top_level" | "none";
+  configurationUpdate?: false;
   stage: ReviewStage;
   cacheDraw?: LlmStructuredRequest<unknown>["cacheDraw"];
   templateVersion: string;
@@ -1991,6 +1996,12 @@ function canonicalModelRequest(input: {
     model: input.model,
     ...(input.providerRouting !== undefined ? { providerRouting: input.providerRouting } : {}),
     reasoning: input.reasoning,
+    // Keep Codex responses from the earlier tool and effort framing out of this cache.
+    ...(input.toolPlacement === undefined ? {} : {
+      ...(input.wireEffort === undefined ? {} : { wireEffort: input.wireEffort }),
+      toolPlacement: input.toolPlacement,
+      configurationUpdate: input.configurationUpdate
+    }),
     stage: input.stage,
     ...(input.cacheDraw !== undefined ? { cacheDraw: input.cacheDraw } : {}),
     templateVersion: input.templateVersion,
@@ -2145,6 +2156,9 @@ type ProviderProtocolFields = {
   toolChoiceEffective: string;
   toolChoiceDowngraded: boolean;
   reasoningRequested?: string;
+  wireEffort?: string;
+  toolPlacement?: "top_level" | "none";
+  configurationUpdate?: false;
 };
 
 // Describes the protocol for this call (plan 86): requested vs effective tool
@@ -3206,6 +3220,9 @@ function writeModelCallRequestDebug(
   }
 ): void {
   const schemaName = submitToolNameForStage(request.stage);
+  const reasoningConfigured = opts.llmConfig.reasoning ?? "high";
+  const reasoningPolicy = callReasoningPolicy(request, meta.kind);
+  const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   writeDebugRecord(opts, request, "llm-calls", `${meta.callId}.request`, definedRecord({
     schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
     artifactKind: "llm_call_request",
@@ -3223,10 +3240,10 @@ function writeModelCallRequestDebug(
       provider: model.provider,
       model: model.id,
       routing: modelProviderRouting(model.raw),
-      reasoning: selectReasoningEffort(opts.llmConfig.reasoning ?? "high", modelThinkingLevels(model.raw),
-        callReasoningPolicy(request, meta.kind)),
-      reasoningPolicy: callReasoningPolicy(request, meta.kind),
-      reasoningConfigured: opts.llmConfig.reasoning ?? "high"
+      reasoning,
+      reasoningPolicy,
+      reasoningConfigured,
+      ...codexWireProtocol(model.raw, reasoning, meta.tools.length)
     },
     cache: definedRecord({
       enabled: Boolean(opts.cache),

@@ -1,10 +1,27 @@
-import type { Api, Model, OpenAICompletionsCompat, OpenRouterRouting } from "@earendil-works/pi-ai";
+import {
+  clampThinkingLevel,
+  type Api, type Model, type ModelThinkingLevel,
+  type OpenAICompletionsCompat, type OpenAIResponsesCompat, type OpenRouterRouting
+} from "@earendil-works/pi-ai";
 
 const DEEPSEEK_UPSTREAMS = ["deepseek", "fireworks", "together"];
 
-// Apply family-specific upstream routing on OpenRouter. Preserve Pi's catalog
-// capabilities, prices, and reasoning mappings.
+// Apply request compatibility overrides without mutating Pi's catalog.
 export function applyModelOverrides(model: Model<Api>): Model<Api> {
+  if (model.provider === "openai-codex" && model.api === "openai-codex-responses") {
+    // Codex Luna can skip reasoning when tools are declared in input (#375).
+    // Request-level effort also avoids in-band effort updates
+    // (earendil-works/pi#12361 and openai/codex#47843).
+    return {
+      ...model,
+      compat: {
+        ...model.compat,
+        supportsAdditionalTools: false,
+        supportsToolSearch: false,
+        supportsMidConvoEffort: false
+      }
+    };
+  }
   if (model.provider !== "openrouter" || model.api !== "openai-completions") {
     return model;
   }
@@ -25,6 +42,31 @@ export function applyModelOverrides(model: Model<Api>): Model<Api> {
         allow_fallbacks: false
       }
     }
+  };
+}
+
+export type CodexWireProtocol = {
+  wireEffort?: string;
+  toolPlacement: "top_level" | "none";
+  configurationUpdate: false;
+};
+
+export function codexWireProtocol(raw: unknown, effort: string, toolCount: number): CodexWireProtocol | undefined {
+  const model = raw as Model<Api>;
+  if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") return undefined;
+  const compat = model.compat as OpenAIResponsesCompat | undefined;
+  if (compat?.supportsAdditionalTools !== false || compat.supportsToolSearch !== false
+    || compat.supportsMidConvoEffort !== false) return undefined;
+
+  const selected = clampThinkingLevel(model, effort as ModelThinkingLevel);
+  const levels = model.thinkingLevelMap;
+  const wireEffort = selected === "off"
+    ? model.reasoning && levels?.off !== null ? levels?.off ?? "none" : undefined
+    : levels?.[selected] ?? selected;
+  return {
+    ...(wireEffort === undefined ? {} : { wireEffort }),
+    toolPlacement: toolCount > 0 ? "top_level" : "none",
+    configurationUpdate: false
   };
 }
 
