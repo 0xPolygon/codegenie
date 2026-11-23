@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3
+
+- `openai-codex` now declares tools at the top level and sends the selected reasoning effort directly on each request. In tests, this restored reported reasoning on most tool turns for two of three fixtures. The third reported reasoning on one of five draws with either format. OpenRouter request bodies matched the previous release byte for byte. [Codegenie #385](https://github.com/0xPolygon/codegenie/pull/385), [Pi #12361](https://github.com/earendil-works/pi/issues/12361), [Codex #47843](https://github.com/openai/codex/issues/47843).
+
 ## 0.9.2
 
 ### Repository tool fixes
