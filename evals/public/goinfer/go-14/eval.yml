@@ -11,6 +11,7 @@ review:
   cache: false
 should_find:
 - id: metal-batched-forward-blocks-before-submit
+  tier: optional
   path: gpu/decodetoken_batched.go
   lineRange: [77, 84]
   severityAtLeast: low
