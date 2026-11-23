@@ -14,6 +14,7 @@ export type ToolArgumentStreamLimit = {
   observedChars: number;
   toolArgumentChars: number;
   contentIndex: number;
+  toolName?: string;
 };
 
 export function createToolArgumentStreamGuard(

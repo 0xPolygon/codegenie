@@ -1,4 +1,5 @@
 import type { StreamProgress } from "../llm/stream-progress.js";
+import type { ToolArgumentStreamLimit } from "../llm/tool-argument-stream-limit.js";
 import type { ContextPressureSummary, ReviewStage, ReviewToolSurface, TelemetryEvent, ToolCallRecord } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 
@@ -42,6 +43,7 @@ export type LlmCallRecord = {
   configurationUpdate?: false;
   // Headers can arrive before any model output; streamProgress measures Pi events.
   streamProgress?: StreamProgress;
+  toolArgumentStreamLimit?: ToolArgumentStreamLimit;
   ttfbMs?: number;
   providerHttpStatus?: number;
   providerRequestId?: string;

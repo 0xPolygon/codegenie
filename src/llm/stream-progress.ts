@@ -1,6 +1,8 @@
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 
 export type StreamProgress = {
+  /** Characters and chunks observed on an aborted call. */
+  partial?: true;
   eventCount: number;
   firstEventMs?: number;
   firstContentMs?: number;
