@@ -511,7 +511,7 @@ describe("Phase 4 provider commands", () => {
     const opts = { services, writeOut: (text: string) => output.push(text) };
 
     await executeProviderCommand(["provider", "auth-status"], opts);
-    expect(output.splice(0).join("")).toBe("anthropic (stored API key)\nopenrouter (API key from environment)\n");
+    expect(output.splice(0).join("")).toBe("anthropic (stored credentials)\nopenrouter (credentials from environment)\n");
 
     await executeProviderCommand(["provider", "auth-status", "--json"], opts);
     expect(JSON.parse(output.splice(0).join(""))).toEqual([
@@ -524,6 +524,30 @@ describe("Phase 4 provider commands", () => {
     expect(JSON.parse(output.join(""))).toEqual({
       provider: "openrouter", configured: true, source: "environment", kind: "api_key"
     });
+  });
+
+  it("describes ambient Bedrock authentication without calling an AWS profile an API key", async () => {
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", undefined);
+    vi.stubEnv("AWS_PROFILE", "synthetic-private-profile");
+    try {
+      const services = {
+        ...fakeProviderServices(tempDir()),
+        modelRegistry: createPiModelRegistry(memoryAuthStorage())
+      };
+      const output: string[] = [];
+      const opts = { services, writeOut: (text: string) => output.push(text) };
+      const args = ["provider", "auth-status", "amazon-bedrock"];
+
+      await executeProviderCommand(args, opts);
+      expect(output.splice(0).join("")).toBe("amazon-bedrock (credentials from environment)\n");
+
+      await executeProviderCommand([...args, "--json"], opts);
+      expect(JSON.parse(output.join(""))).toEqual({
+        provider: "amazon-bedrock", configured: true, source: "environment", kind: "api_key"
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("prints provider models grouped by authenticated provider by default", async () => {

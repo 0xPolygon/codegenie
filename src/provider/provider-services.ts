@@ -817,9 +817,10 @@ async function renderAuthStatus(provider: string | undefined, services: Provider
   }
 
   const rows = statuses.filter((status) => status.configured).map((status) => {
+    // Pi reports AWS profiles and other ambient credentials as api_key too.
     const method = status.kind === "oauth"
       ? "stored OAuth login"
-      : status.source === "environment" ? "API key from environment" : "stored API key";
+      : status.source === "environment" ? "credentials from environment" : "stored credentials";
     return `${status.provider} (${method})`;
   });
   if (rows.length === 0) {
