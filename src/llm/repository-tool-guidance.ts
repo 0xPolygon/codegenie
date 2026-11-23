@@ -2,6 +2,7 @@ import type { ToolResultMeta } from "../types.js";
 
 // Shared by normal tool delivery and bounded result packing.
 export const MISSING_FILE_GUIDANCE = "The requested file does not exist at the selected revision. Discover an existing path with list_files (head only), or search_files/find_definition with the intended source revision, then read that path. Do not infer that the implementation is absent or retry a guessed filename with different line bounds.";
+const SIX_MISSING_FILE_GUIDANCE = "The requested file does not exist at the selected revision. Find an existing path with list_files (head only), search_files with the intended source, or read_definition with name and source and without path. Then read the returned path. Do not infer that the implementation is absent or retry a guessed filename with different line bounds.";
 
 export function renderSourceBlockHeader(
   path: string, source: string, range: readonly [number, number], totalLines: number, kind?: "declaration"
@@ -14,6 +15,14 @@ export function numberSourceLine(line: string, lineNumber: number): string {
 }
 
 export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: string[] = []): string {
+  return renderMeta(text, meta, deliveryNotes, false);
+}
+
+export function withSixToolMeta(text: string, meta: ToolResultMeta, deliveryNotes: string[] = []): string {
+  return renderMeta(text, meta, deliveryNotes, true);
+}
+
+function renderMeta(text: string, meta: ToolResultMeta, deliveryNotes: string[], six: boolean): string {
   const notes: string[] = [];
   if (meta.requestedSource !== undefined || meta.sourceUsed !== undefined) {
     notes.push(`source: requested ${meta.requestedSource ?? "unspecified"}, used ${meta.sourceUsed ?? "unknown"}`);
@@ -31,14 +40,15 @@ export function withMeta(text: string, meta: ToolResultMeta, deliveryNotes: stri
     notes.push(meta.lookupNote);
   }
   if (meta.lookupStatus === "file_missing") {
-    notes.push(MISSING_FILE_GUIDANCE);
+    notes.push(six ? SIX_MISSING_FILE_GUIDANCE : MISSING_FILE_GUIDANCE);
   }
   if (meta.deliveryStatus !== undefined) {
     notes.push(`delivery: ${meta.deliveryStatus}`);
   }
   if (meta.recovery !== undefined) {
+    const sourceArgument = six ? JSON.stringify({ kind: meta.recovery.source }) : meta.recovery.source;
     notes.push(
-      `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${meta.recovery.source}`
+      `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${sourceArgument}`
     );
     notes.push(`recovery reason: ${meta.recovery.reason}`);
   }

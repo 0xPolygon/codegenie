@@ -1,4 +1,4 @@
-import { withMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
+import { withMeta, withSixToolMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
 import { createPackableToolResult, renderOutlineToolResult } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
@@ -466,7 +466,7 @@ function optionalOptions<T extends Record<string, unknown>>(input: T): Partial<T
   return output;
 }
 
-function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
+function buildBoundedReadRangeTool(tools: RepositoryTools, renderMeta = withMeta): ToolDefinition {
   return {
     name: "read_range",
     description: "Read committed text at head (default) or base. Works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns numbered source with file length and delivered range. Reads up to 400 lines / 16,000 source characters before local budget limits. A cut gives the next line. An end beyond EOF is clipped. A start beyond EOF returns no source and gives the file length. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
@@ -484,7 +484,7 @@ function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
       const { text, meta } = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
       if (meta.deliveryStatus === "budget_rejected") {
         return {
-          text: withMeta(`Source line ${input.startLine} exceeds the source character limit. Use search_files scoped to this file to locate a match.`, meta),
+          text: renderMeta(`Source line ${input.startLine} exceeds the source character limit. Use search_files scoped to this file to locate a match.`, meta),
           meta,
           isError: true,
           errorCode: "budget_exhausted"
@@ -500,7 +500,7 @@ function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
         if (meta.requestedRange && meta.deliveryStatus === "empty") {
           return createPackableToolResult({ open: "", records: [], separator: "\n", close: "" }, meta);
         }
-        return { text: withMeta(text, meta), meta, ...placement };
+        return { text: renderMeta(text, meta), meta, ...placement };
       }
       const terminalNewline = records.length > range[1] - range[0] + 1;
       if (terminalNewline) records.pop();
@@ -514,7 +514,7 @@ function buildBoundedReadRangeTool(tools: RepositoryTools): ToolDefinition {
 }
 
 export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
-  const bounded = buildBoundedReadRangeTool(tools);
+  const bounded = buildBoundedReadRangeTool(tools, withSixToolMeta);
   return {
     name: "read_range",
     description: "Read pinned repository source at head or base. Provide both inclusive line bounds for a numbered range. Omit both for a small complete file or a paged declaration map. Pass its cursor with the same path and source to continue the map.",
@@ -565,7 +565,7 @@ export function buildSixReadRangeTool(tools: RepositoryTools): ToolDefinition {
 
 function renderSourceFileMap(map: SourceFileMap): ToolExecutionResult {
   const { meta, path, declarations, totalDeclarations, offset, next } = map;
-  if (meta.totalLines === undefined) return { text: withMeta("", meta), meta };
+  if (meta.totalLines === undefined) return { text: withSixToolMeta("", meta), meta };
   const header = `${path}@${meta.sourceUsed} file map, ${meta.totalLines} lines`;
   if (!declarations.length) {
     const note = meta.lookupStatus === "unavailable" ? "Declaration parsing is unavailable." : "No declarations found.";
