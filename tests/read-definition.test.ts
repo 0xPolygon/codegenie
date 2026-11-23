@@ -131,6 +131,21 @@ export class Service { process() { return 10; } }
     } finally { fixture.dispose(); }
   });
 
+  it("keeps the verified location when the only object body exceeds the serialization cap", async () => {
+    const quotes = '"'.repeat(9_000);
+    const fixture = await textRepository({ "src/a.ts": `export const a = { run() { return '${quotes}'; } };\n` });
+    try {
+      const result = await buildReadDefinitionTool(fixture.tools).execute({ name: "run" }, new AbortController().signal);
+      expect(result.meta).toMatchObject({ lookupStatus: "found", deliveryStatus: "truncated", truncated: true, omittedCount: 1 });
+      expect(result.definitionPage?.hits).toHaveLength(1);
+      expect(result.definitionPage?.hits[0]).toMatchObject({ symbol: { path: "src/a.ts", lineRange: [1, 1] }, nextLine: 1 });
+      expect(result.definitionPage?.hits[0]?.text).toBeUndefined();
+      expect(result.text).toContain("src/a.ts@head");
+      expect(result.text).toContain("read_range");
+      expect(result.rawSource).toBeUndefined();
+    } finally { fixture.dispose(); }
+  });
+
   it("parses a literal named path directly, distinguishes absent and missing, and never broadens", async () => {
     const fixture = await textRepository({
       "src/[a].ts": "export function Widget() { return 1; }\n",

@@ -706,6 +706,14 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     const cappedDefinitions = exactPath !== undefined
       ? { definitions, omittedCount: omittedBeforePacking, omittedDefinitions: [] as DefinitionHit[] }
       : capDefinitionResultsTotal(definitions, omittedBeforePacking);
+    // Preserve a verified location when JSON escaping alone would evict the
+    // first object body. The omitted body remains resumable via read_range.
+    if (objectFallbackUsed && !cappedDefinitions.definitions.some(hit => hit.symbol.nativeKind === "object method")) {
+      const firstObject = cappedDefinitions.omittedDefinitions.find(hit => hit.symbol.nativeKind === "object method");
+      if (firstObject) cappedDefinitions.definitions.unshift({ symbol: firstObject.symbol,
+        ...(firstObject.totalLines !== undefined ? { totalLines: firstObject.totalLines } : {}),
+        nextLine: firstObject.symbol.lineRange[0] });
+    }
     const verifiedCount = cappedDefinitions.definitions.filter(hit => !isTextFallbackHit(hit)).length;
     const definitionLookupStatus =
       cappedDefinitions.definitions.length === 0
