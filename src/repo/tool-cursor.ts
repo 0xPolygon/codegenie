@@ -10,14 +10,21 @@ export function encodeToolCursor(binding: string, position: unknown): string {
 }
 
 export function decodeToolCursor(cursor: string, binding: string): unknown {
+  let reason: "malformed" | "binding_mismatch" = "malformed";
   if (/^[\w-]{1,4096}$/u.test(cursor)) {
     try {
       const payload: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
       if (payload && typeof payload === "object" && "version" in payload && payload.version === 1 &&
-          "binding" in payload && payload.binding === binding && "position" in payload) return payload.position;
+          "binding" in payload && typeof payload.binding === "string" && "position" in payload) {
+        if (payload.binding === binding) return payload.position;
+        reason = "binding_mismatch";
+      }
     } catch {
-      // Report the same typed error for malformed and mismatched cursors.
+      // Keep malformed cursors distinct from a valid cursor for another query.
     }
   }
-  throw new CodegenieError("invalid_args", "Cursor does not match the pinned revision and tool query.");
+  const detail = reason === "malformed" ? " The cursor is malformed or incomplete." : "";
+  throw new CodegenieError("invalid_args", `Cursor does not match the pinned revision and tool query.${detail} ` +
+    "Cursors are opaque: copy the entire cursor verbatim and reuse the original arguments and revision, or omit the cursor to restart.",
+  { context: { reason } });
 }
