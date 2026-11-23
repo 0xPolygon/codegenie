@@ -7,7 +7,10 @@ import { isTextFallbackHit } from "../repo/repository-index.js";
 export function packDefinitionPage(page: DefinitionPage, allowance: number): ToolExecutionResult {
   const remaining = page.hits.slice(page.offset);
   if (!remaining.length) {
-    const text = withSixToolMeta(`No declaration locations in the selected ${page.sourceUsed} scope.${page.meta.truncated ? " Discovery was bounded; narrow the path and retry." : ""}`, page.meta);
+    const message = page.meta.lookupStatus === "incomplete"
+      ? `No declaration locations were verified in the selected ${page.sourceUsed} scope; discovery was bounded. Narrow the path and retry.`
+      : `No declaration locations in the selected ${page.sourceUsed} scope.${page.meta.truncated ? " Discovery was bounded; narrow the path and retry." : ""}`;
+    const text = withSixToolMeta(message, page.meta);
     if (text.length > allowance) return { text: "The definition status does not fit the result budget. No source was delivered.",
       isError: true, errorCode: "budget_exhausted", meta: { ...page.meta, deliveryStatus: "budget_rejected", degradationReason: "tool_result_budget" } };
     return { text, meta: page.meta, definitions: [] };

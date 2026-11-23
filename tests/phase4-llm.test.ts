@@ -5602,6 +5602,31 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       .toMatchObject({ remainingSourceReserveChars: remainingReserve, discoveryResultChars: discovery });
   });
 
+  it.each(["find_definition", "read_definition"])("does not credit or retain incomplete %s results", async name => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "lookup", name, arguments: {} }]),
+      assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: {} }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("incomplete-definition"), tools: [
+      { name, description: "lookup", parameters: Type.Object({}), execute: async () => ({ text: "unverified lead",
+        definitions: [{ symbol: { path: "a.ts", name: "x", kind: "function" as const, lineRange: [1, 1] as [number, number] }, text: "source" }],
+        meta: { backend: "text" as const, precision: "text" as const, degraded: false, lookupStatus: "incomplete" as const,
+          sourceUsed: "head" as const, deliveryStatus: "full" as const } }) },
+      { name: "search_files", description: "search", parameters: Type.Object({}), execute: async () => ({ text: "hit" }) }
+    ], onToolResults: results => captured.push(...results),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 10000, reservedSourceResultChars: 4000 } });
+    expect(telemetry.toolCalls[1]).toMatchObject({ budgetState: { remainingSourceReserveChars: 4000, sourceResultCharsUsed: 0 } });
+    expect(telemetry.toolCalls[0]).toMatchObject({ lookupStatus: "incomplete" });
+    expect(captured[0]).toMatchObject({ lookupStatus: "incomplete" });
+    expect(captured[0]!.repositoryEvidence).toBeUndefined();
+  });
+
   it("allows a final discovery request after the source reserve has already been satisfied", async () => {
     const telemetry = fakeTelemetry();
     const calls = [1198, 1497, 1927, 1215, 3941].map((size, i): PiToolCall => ({
