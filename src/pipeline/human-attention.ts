@@ -3,7 +3,8 @@ import type {
   NeedsHumanAttentionNote,
   PacketReviewResult,
   ReviewPacket,
-  UnifiedDiff
+  UnifiedDiff,
+  VerificationVerdict
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
@@ -67,6 +68,52 @@ export type SelectedHumanAttention = {
   notes: NeedsHumanAttentionNote[];
   omittedCount: number;
 };
+
+function questionIdentity(question: string): string {
+  return question.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim().replace(/[?.]$/u, "").trimEnd().replace(/`/gu, "");
+}
+
+/** Remove only exact copies of a promoted question that verification refuted. */
+export function suppressRefutedPromotedHints(
+  packetResults: PacketReviewResult[],
+  verdicts: VerificationVerdict[],
+  telemetry?: TelemetryRecorder
+): PacketReviewResult[] {
+  const verdictsById = new Map(verdicts.map(verdict => [verdict.candidateId, verdict]));
+  const settled = new Map<string, { candidateId: string; provenance: NonNullable<PacketReviewResult["findings"][number]["provenance"]> }>();
+  const open = new Set<string>();
+  for (const candidate of packetResults.flatMap(result => result.findings)) {
+    const provenance = candidate.provenance;
+    if (provenance?.source !== "uncertainty_promotion") continue;
+    const key = questionIdentity(provenance.question);
+    if (!key) continue;
+    const verdict = verdictsById.get(candidate.id);
+    if (verdict?.verdict === "reject" && verdict.proofAssessment?.status === "refuted"
+      && verdict.proofAssessment.assumptions.length === 0 && !verdict.unresolvedConcern && !verdict.verificationIncomplete) {
+      if (!settled.has(key)) settled.set(key, { candidateId: candidate.id, provenance });
+    } else {
+      open.add(key);
+    }
+  }
+  return packetResults.map(result => {
+    const keep = (question: string, source: RawAttentionHint["source"]): boolean => {
+      const key = questionIdentity(question);
+      const match = settled.get(key);
+      if (!match || open.has(key)) return true;
+      const { candidateId, provenance } = match;
+      const kind = result.packetId === provenance.sourcePacketId && source === provenance.sourceKind
+        ? "own_source"
+        : provenance.relatedSignals?.some(signal => signal.packetId === result.packetId && signal.sourceKind === source
+          && questionIdentity(signal.question) === key) ? "related_identical" : "other_identical";
+      telemetry?.event({ stage: 10, level: "info", message: "refuted_promoted_hint_suppressed",
+        packetId: result.packetId, data: { candidateId, kind, source } });
+      return false;
+    };
+    return { ...result,
+      followUpHints: result.followUpHints.filter(hint => keep(hint.question, "follow_up_hint")),
+      uncertainties: result.uncertainties.filter(hint => keep(hint.question, "uncertainty")) };
+  });
+}
 
 export function buildHumanAttentionNotes(
   packetResults: PacketReviewResult[],

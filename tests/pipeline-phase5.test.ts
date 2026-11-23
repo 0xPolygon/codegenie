@@ -199,6 +199,9 @@ describe("phase 5 pipeline regressions", () => {
 
   it.each(["resolved", "partial", "missing-ref", "fallback", "fully-resolved"] as const)("reconciles packet questions with rejected-candidate evidence even with zero findings: %s", async mode => {
     const candidate = verifierResolutionCandidate();
+    // This is a distinct packet concern; a verdict on a differently worded
+    // promoted question must not suppress it before reconciliation.
+    candidate.provenance!.question += " Does the alternate caller also enforce the guard?";
     const packet = verifierResolutionPacket();
     const packetResult = packetResultWithFindingAndHint(candidate, "billing/fee.ts");
     packetResult.followUpHints.push({ ...packetResult.followUpHints[0]!, question: "Does the remote payment provider enforce currency limits?" });

@@ -35,6 +35,27 @@ const DIFF = [
 ].join("\n");
 
 describe("suppressed findings preserve their source concerns (#52)", () => {
+  it("does not send a conclusively refuted promoted question to the reader", async () => {
+    const diff = parseDiff(DIFF);
+    const question = "Does the changed handler reject a missing token?";
+    const promoted = candidate({ id: "refuted", title: "Missing token", path: "src/service.ts", failureMode: "Token is accepted.",
+      provenance: { source: "uncertainty_promotion", sourceKind: "follow_up_hint", sourcePacketId: "packet-1",
+        question, files: ["src/service.ts"], symbols: ["handler"], reason: "Check the guard." } });
+    const packetResult: PacketReviewResult = { packetId: "packet-1", lenses: ["core/code-review"], findings: [promoted],
+      followUpHints: [{ question, files: ["src/service.ts"], symbols: ["handler"], suggestedLenses: [],
+        projectedSkillIds: [], reason: "Check the guard.", confidence: "medium" }], uncertainties: [], status: "completed" };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [{ candidateId: promoted.id, verdict: "reject", reason: "The guard rejects it.",
+        requiredEvidencePresent: true, falsePositiveRisk: "low", proofAssessment: { status: "refuted", evidence: "The guard rejects it.", assumptions: [] } }] },
+      fakePlan(), fakeResolved(), fakeCoverage(), defaultConfig, nullTelemetry(), {
+        runner: { runStructured: async <T>() => ({ summary: "No credible findings.", composedFindings: [], attentionResolutions: [] }) as T },
+        promptBuilder: fakePromptBuilder(), packets: [fakePacket(diff.files[0]!.hunks[0]!.id)], packetResults: [packetResult], diff
+      }
+    );
+    expect(result.needsHumanAttention).toEqual([]);
+    expect(packetResult.followUpHints).toHaveLength(1);
+  });
+
   it("preserves a packet concern and tool diagnostic when its kept low-confidence promoted finding is suppressed by confidence-threshold", async () => {
     const diff = parseDiff(DIFF);
     const hunk = diff.files[0]!.hunks[0]!;
