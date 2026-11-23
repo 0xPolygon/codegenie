@@ -89,6 +89,13 @@ const GENERATED_MARKERS = [
   /automatically generated/iu
 ];
 
+const C_STYLE_HEADER_COMMENT = /^(?:\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$))/u;
+const HASH_HEADER_COMMENT = /^#[^\r\n]*/u;
+const DASH_HEADER_COMMENT = /^(?:--[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$))/u;
+const MARKUP_HEADER_COMMENT = /^<!--[\s\S]*?(?:-->|$)/u;
+const INI_HEADER_COMMENT = /^[#;][^\r\n]*/u;
+const PHP_HEADER_COMMENT = /^(?:[#][^\r\n]*|\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$))/u;
+
 export async function detectFile(
   resolved: ResolvedReviewInput,
   file: DiffFile,
@@ -101,7 +108,8 @@ export async function detectFile(
   const binary = detectBinary(file);
   const submodule = detectSubmodule(file);
   const generated = await detectGenerated(resolved, file, git, {
-    allowContentRead: !(binary.value || lockfile.value || vendored.value || submodule.value)
+    allowContentRead: !(binary.value || lockfile.value || vendored.value || submodule.value),
+    language: language.value
   });
   return {
     generated,
@@ -234,7 +242,7 @@ async function detectGenerated(
   resolved: ResolvedReviewInput,
   file: DiffFile,
   git: InternalGitClient,
-  opts: { allowContentRead: boolean }
+  opts: { allowContentRead: boolean; language: string }
 ): Promise<DetectorFact<boolean>> {
   if (GENERATED_NAME_PATTERNS.some((pattern) => pattern.test(file.path))) {
     return {
@@ -252,7 +260,7 @@ async function detectGenerated(
 
   try {
     const content = await readDetectionContent(resolved, file, git);
-    if (content !== undefined && GENERATED_MARKERS.some((pattern) => pattern.test(content))) {
+    if (content !== undefined && hasGeneratedHeader(content, opts.language, file.path)) {
       return {
         value: true,
         provenance: provenance("isGenerated", "generated_detector", "high", "generated marker in reviewed revision")
@@ -269,6 +277,41 @@ async function detectGenerated(
     value: false,
     provenance: provenance("isGenerated", "generated_detector", "high", "no generated marker found")
   };
+}
+
+function hasGeneratedHeader(content: string, language: string, filePath: string): boolean {
+  if (language === "json") return false;
+  const extension = path.posix.extname(filePath).toLowerCase();
+  const comment = generatedHeaderComment(language, extension);
+  const directive = language === "yaml"
+    ? /^(?:%YAML[ \t]+[0-9]+\.[0-9]+|---)(?=[ \t]*(?:#|\r?\n|$))/u
+    : extension === ".php"
+      ? /^<\?php(?=\s|$)/iu
+      : comment === MARKUP_HEADER_COMMENT ? /^(?:<\?xml[ \t]+[^>\r\n]*\?>|<!doctype[ \t]+[^>\r\n]*>)/iu : undefined;
+
+  let remaining = content.trimStart();
+  if (remaining.startsWith("#!")) remaining = remaining.replace(/^#![^\r\n]*/u, "").trimStart();
+  while (remaining) {
+    const prefix = directive?.exec(remaining)?.[0];
+    if (prefix !== undefined) {
+      remaining = remaining.slice(prefix.length).trimStart();
+      continue;
+    }
+    const header = comment.exec(remaining)?.[0];
+    if (header === undefined) return false;
+    if (GENERATED_MARKERS.some(pattern => pattern.test(header))) return true;
+    remaining = remaining.slice(header.length).trimStart();
+  }
+  return false;
+}
+
+function generatedHeaderComment(language: string, extension: string): RegExp {
+  if (["python", "ruby", "shell", "yaml", "toml", "dockerfile", "make"].includes(language)) return HASH_HEADER_COMMENT;
+  if (language === "sql" || extension === ".lua" || extension === ".hs") return DASH_HEADER_COMMENT;
+  if (language === "markdown" || [".html", ".htm", ".xml", ".svg"].includes(extension)) return MARKUP_HEADER_COMMENT;
+  if ([".ini", ".el", ".lisp", ".scm"].includes(extension)) return INI_HEADER_COMMENT;
+  if (extension === ".php") return PHP_HEADER_COMMENT;
+  return C_STYLE_HEADER_COMMENT;
 }
 
 function detectVendored(file: DiffFile): DetectorFact<boolean> {
