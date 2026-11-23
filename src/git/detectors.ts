@@ -95,6 +95,11 @@ const DASH_HEADER_COMMENT = /^(?:--[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$))/u;
 const MARKUP_HEADER_COMMENT = /^<!--[\s\S]*?(?:-->|$)/u;
 const INI_HEADER_COMMENT = /^[#;][^\r\n]*/u;
 const PHP_HEADER_COMMENT = /^(?:[#][^\r\n]*|\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$))/u;
+const UNKNOWN_HEADER_COMMENT = new RegExp(
+  [C_STYLE_HEADER_COMMENT, HASH_HEADER_COMMENT, DASH_HEADER_COMMENT, MARKUP_HEADER_COMMENT]
+    .map(pattern => pattern.source).join("|"),
+  "u"
+);
 
 export async function detectFile(
   resolved: ResolvedReviewInput,
@@ -311,6 +316,7 @@ function generatedHeaderComment(language: string, extension: string): RegExp {
   if (language === "markdown" || [".html", ".htm", ".xml", ".svg"].includes(extension)) return MARKUP_HEADER_COMMENT;
   if ([".ini", ".el", ".lisp", ".scm"].includes(extension)) return INI_HEADER_COMMENT;
   if (extension === ".php") return PHP_HEADER_COMMENT;
+  if (language === "unknown") return UNKNOWN_HEADER_COMMENT;
   return C_STYLE_HEADER_COMMENT;
 }
 
