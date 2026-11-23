@@ -48,7 +48,7 @@ export function stripCredentials<T>(input: T): T {
 /** Original-text spans protected by exactly the same rules as writer redaction. */
 export function credentialSpans(text: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
-  for (const secret of registeredSecrets) {
+  for (const secret of [...registeredSecrets, ...registeredSecretLines]) {
     for (let start = text.indexOf(secret); start >= 0; start = text.indexOf(secret, start + 1)) spans.push([start, start + secret.length]);
   }
   for (const [pattern] of CREDENTIAL_RULES) {
@@ -57,19 +57,45 @@ export function credentialSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
-/** Clip source without cutting through a credential or token; offsets are UTF-16 indices. */
+/** Normalize prose whitespace without changing recognized credential values. */
+export function normalizeSourceWhitespace(input: string): string {
+  const spans = credentialSpans(input).sort((a, b) => a[0] - b[0]);
+  if (!spans.length) return input.replace(/\s+/gu, " ").trim();
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of spans) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let output = "", pendingSpace = false, index = 0;
+  for (const [start, end] of merged) {
+    for (; index < start; index++) {
+      const char = input[index]!;
+      if (/\s/u.test(char)) pendingSpace = output.length > 0;
+      else { if (pendingSpace) output += " "; output += char; pendingSpace = false; }
+    }
+    if (pendingSpace) output += " ";
+    output += input.slice(start, end);
+    pendingSpace = false;
+    index = end;
+  }
+  for (; index < input.length; index++) {
+    const char = input[index]!;
+    if (/\s/u.test(char)) pendingSpace = output.length > 0;
+    else { if (pendingSpace) output += " "; output += char; pendingSpace = false; }
+  }
+  return output.trim();
+}
+
+/** Clip source without cutting through a registered or recognized credential. */
 export function protectedSourceSlice(text: string, requestedStart: number, requestedEnd: number): { text: string; start: number; end: number } {
   let start = Math.max(0, Math.min(text.length, requestedStart));
   let end = Math.max(start, Math.min(text.length, requestedEnd));
   const spans = credentialSpans(text);
-  const token = (character: string | undefined) => character !== undefined && /[A-Za-z0-9._~+/=:-]/u.test(character);
-  // Recheck overlaps after moving a boundary; a credential may overlap a
-  // token or another credential. Only scan the token runs at the boundaries.
+  // Recheck overlaps after moving a boundary: credentials can overlap.
   let changed: boolean;
   do {
     const previousStart = start, previousEnd = end;
-    if (start > 0 && token(text[start - 1]) && token(text[start])) while (token(text[start])) start++;
-    if (end < text.length && token(text[end - 1]) && token(text[end])) while (end > 0 && token(text[end - 1])) end--;
     for (const [a, b] of spans) {
       if (a < start && start < b) start = b;
       if (a < end && end < b) end = a;
@@ -81,6 +107,17 @@ export function protectedSourceSlice(text: string, requestedStart: number, reque
   if (end > 0 && /[\uD800-\uDBFF]/u.test(text[end - 1]!) && /[\uDC00-\uDFFF]/u.test(text[end] ?? "")) end--;
   if (start > end) start = end;
   return { text: text.slice(start, end), start, end };
+}
+
+/** Preserve the original cap's packing charge while omitting a cut credential. */
+export function protectedSignaturePrefix(text: string, limit: number, trimEnd = true): string {
+  const rawPrefix = text.slice(0, limit);
+  const safe = protectedSourceSlice(text, 0, limit).text;
+  const oldPrefix = trimEnd ? rawPrefix.trimEnd() : rawPrefix;
+  const safePrefix = trimEnd ? safe.trimEnd() : safe;
+  const space = oldPrefix.length - safePrefix.length;
+  const notice = space >= 5 ? "[...]" : "";
+  return (safePrefix + notice).padEnd(oldPrefix.length, " ");
 }
 
 /** Redact before applying a character cap, including incomplete credential tails. */

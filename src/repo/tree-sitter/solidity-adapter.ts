@@ -1,4 +1,4 @@
-import { protectedSourceSlice } from "../../telemetry/redaction.js";
+import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -238,19 +238,13 @@ function declarationSignature(node: Node): string {
 }
 
 function compactSolidityText(text: string): string {
-  return text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join(" ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return normalizeSourceWhitespace(text);
 }
 
 function boundedSignature(signature: string): string {
   return signature.length <= MAX_SIGNATURE_CHARS
     ? signature
-    : (protectedSourceSlice(signature, 0, MAX_SIGNATURE_CHARS).text.trimEnd() || "[long token omitted]");
+    : protectedSignaturePrefix(signature, MAX_SIGNATURE_CHARS);
 }
 
 function fallbackReceiveName(node: Node): "fallback" | "receive" {

@@ -1,4 +1,4 @@
-import { protectedSourceSlice } from "../../telemetry/redaction.js";
+import { normalizeSourceWhitespace, protectedSignaturePrefix } from "../../telemetry/redaction.js";
 import type { Node } from "web-tree-sitter";
 import type {
   ChangedSymbol,
@@ -301,13 +301,7 @@ function declarationHeader(node: Node): string {
 }
 
 function compactRustText(text: string): string {
-  return text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join(" ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return normalizeSourceWhitespace(text);
 }
 
 function compactRustImport(node: Node): string {
@@ -355,7 +349,7 @@ function boundedSignature(signature: string): string {
   if (signature.length <= MAX_SIGNATURE_CHARS) {
     return signature;
   }
-  return (protectedSourceSlice(signature, 0, MAX_SIGNATURE_CHARS).text.trimEnd() || "[long token omitted]");
+  return protectedSignaturePrefix(signature, MAX_SIGNATURE_CHARS);
 }
 
 function nominalOwner(typeNode: Node | null, projectionRoots: ReadonlySet<string>): string | undefined {

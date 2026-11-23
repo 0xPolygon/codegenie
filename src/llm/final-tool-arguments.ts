@@ -144,7 +144,7 @@ function finalizeMessage(
         if (offset !== undefined) syntaxErrorOffset = Number(offset);
       }
       // Redact before slicing so a boundary cannot expose part of a secret.
-      const prefix = protectedSourceSlice(sample, 0, 8192).text;
+      const prefix = redactThenTruncate(sample, 8192);
       const suffix = sample.length > prefix.length ? protectedSourceSlice(sample, Math.max(8192, sample.length - 8192), sample.length).text : "";
       hooks.onRejectedArguments({ contentIndex, toolCallId: block.id, name: block.name, parse,
         capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),

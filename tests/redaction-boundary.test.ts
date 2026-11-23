@@ -97,10 +97,10 @@ describe("protected source boundaries", () => {
       }
     }
   });
-  it("omits an overlong token, preserves ordinary complete spans, and retains correct offsets", () => {
+  it("preserves ordinary identifier cuts and retains correct offsets", () => {
     const text = "aaa " + "x".repeat(100) + " end";
-    expect(protectedSourceSlice(text, 0, 20)).toEqual({ text: "aaa ", start: 0, end: 4 });
-    expect(protectedSourceSlice(text, 10, 20).text).toBe("");
+    expect(protectedSourceSlice(text, 0, 20)).toEqual({ text: text.slice(0, 20), start: 0, end: 20 });
+    expect(protectedSourceSlice(text, 10, 20).text).toBe("x".repeat(10));
     expect(protectedSourceSlice("one two three", 4, 7)).toEqual({ text: "two", start: 4, end: 7 });
   });
   it("never leaves registered fragments at either random cut boundary", () => {

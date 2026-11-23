@@ -16,6 +16,7 @@ import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
+import { clearRegisteredSecretsForTests, protectedSignaturePrefix, registerSecret } from "../src/telemetry/redaction.js";
 import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
@@ -3222,6 +3223,30 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(packets).toHaveLength(2);
     expect(packets.every((packet) => packet.relatedChangedContext.length === 0)).toBe(true);
+  });
+
+  it("preserves subsequent packet context admission when a signature cut crosses a credential", async () => {
+    const secret = "registered-secret-unique-123456";
+    const signature = "x".repeat(590) + secret + " trailing";
+    const tools = { ...fakeTools(), readSymbol: async () => ({ text: "function changed() { return 1; }",
+      symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [1, 1] as [number, number] },
+      meta: { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false } }) };
+    const build = async (boundedSignature: string) => buildReviewPackets(fakePlan(), [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")], { ...fakeRepositoryIndex(tools), symbolFacts: [{ path: "app.ts", hunkId: "h1",
+        enclosingSymbol: "changed", symbolKind: "function", symbolRange: [1, 1], changedLines: [1], changedLinesSide: "new",
+        signature: boundedSignature, source: "tree-sitter", confidence: "syntactic" }] }, nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] });
+    try {
+      const baseline = await build(protectedSignaturePrefix(signature, 600));
+      registerSecret(secret);
+      const bounded = protectedSignaturePrefix(signature, 600);
+      const protectedPackets = await build(bounded);
+      expect(bounded).not.toContain(secret.slice(0, 10));
+      expect(bounded.length).toBe(signature.slice(0, 600).trimEnd().length);
+      expect(protectedPackets.map(packet => packet.id)).toEqual(baseline.map(packet => packet.id));
+      expect(protectedPackets[0]?.contextText).toContain("function changed() { return 1; }");
+      expect(protectedPackets[0]?.contextText?.length).toBe(baseline[0]?.contextText?.length);
+    } finally { clearRegisteredSecretsForTests(); }
   });
 
   it("keeps non-call-site symbol hints on the symbol definition path", async () => {

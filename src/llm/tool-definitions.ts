@@ -294,7 +294,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
               ...(includeContext && hit.enclosingSymbol ? [`Enclosing ${hit.enclosingSymbol.name}, lines ${hit.enclosingSymbol.lineRange.join("-")}`] : []),
               ...before.map((line, index) => numberSourceLine(line, start + index)),
               ...(excerpt ? [excerpt] : []),
-              ...(hit.excerptOmitted ? [`Match at ${hit.path}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because its token exceeds the excerpt limit. Use read_range.`]
+              ...(hit.excerptOmitted ? [`Match at ${hit.path}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because a protected span crosses the excerpt boundary. Use read_range.`]
                 : [`${hit.line}:${hit.column ?? 1}\t${hit.matchText}`]),
               ...after.map((line, index) => numberSourceLine(line, hit.line + index + 1))].join("\n");
           });
@@ -660,7 +660,7 @@ function renderSearchRows(page: SearchPage, revision: SourceSelector["kind"], no
       ...header,
       ...(enclosing ? [`Enclosing ${enclosing.name}, lines ${enclosing.lineRange.join("-")}`] : []),
       ...before.map((line, index) => numberSourceLine(line, hit.line - before.length + index)),
-      ...(hit.excerptOmitted ? [`Match at ${JSON.stringify(hit.path)}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because its token exceeds the excerpt limit. Use read_range.`]
+      ...(hit.excerptOmitted ? [`Match at ${JSON.stringify(hit.path)}@${revision}:${hit.line}:${hit.column ?? 1}; source line omitted because a protected span crosses the excerpt boundary. Use read_range.`]
         : [`${hit.line}:${hit.column ?? 1}${excerpt}\t${hit.matchText}`]),
       ...after.slice(0, totalLines - hit.line).map((line, index) => numberSourceLine(line, hit.line + index + 1))
     ].join("\n");
