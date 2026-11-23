@@ -19,7 +19,7 @@ export type UsageOccurrence = {
 
 const IDENTIFIERS = new Set(["identifier", "property_identifier", "field_identifier", "type_identifier",
   "shorthand_property_identifier", "shorthand_property_identifier_pattern"]);
-const DECLARATIONS = new Set(["function_declaration", "function_expression", "method_definition", "method_declaration", "func_literal", "arrow_function", "generator_function_declaration"]);
+const DECLARATIONS = new Set(["function_declaration", "function_expression", "method_definition", "method_declaration", "func_literal", "arrow_function", "generator_function_declaration", "public_field_definition", "field_definition"]);
 const NAMED_BINDINGS = new Set(["variable_declarator", "class_declaration", "interface_declaration", "type_alias_declaration",
   "type_spec", "const_spec", "var_spec", "method_elem", "parameter_declaration", "required_parameter", "optional_parameter"]);
 
@@ -40,7 +40,7 @@ export function classifyUsageSyntax(file: ParsedFile, name: string): UsageOccurr
       const member = parent && ["member_expression", "selector_expression"].includes(parent.type)
         && sameNode(parent.childForFieldName("property") ?? parent.childForFieldName("field"), node) ? parent : undefined;
       const spelling = member?.text ?? node.text;
-      const compactSpelling = spelling.replace(/\s+/gu, "");
+      const compactSpelling = spelling.replace(/\s+/gu, "").replace(/\?\./gu, ".");
       const compactName = name.replace(/\s+/gu, "");
       if (!dotted || compactSpelling === compactName || compactSpelling.endsWith(`.${compactName}`)) {
         const role = syntaxRole(node, member);
@@ -148,7 +148,10 @@ function enclosingDeclaration(node: Node, root: Node): UsageOccurrence["enclosin
   for (let p = node.parent; p; p = p.parent) {
     if (!DECLARATIONS.has(p.type)) continue;
     const display = declarationName(p);
-    if (display) return { name: display, searchName: p.childForFieldName("name")?.text ?? display,
+    const memberName = ["arrow_function", "function_expression"].includes(p.type)
+      && ["public_field_definition", "field_definition"].includes(p.parent?.type ?? "")
+      ? p.parent?.childForFieldName("name")?.text : undefined;
+    if (display) return { name: display, searchName: p.childForFieldName("name")?.text ?? memberName ?? display,
       lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], startColumn: p.startPosition.column + 1, endColumnExclusive: p.endPosition.column + 1, kind: "declaration" };
     let nearestNamed: { name: string; lineRange: [number, number] } | undefined;
     for (let outer = p.parent; outer; outer = outer.parent) {
@@ -159,7 +162,10 @@ function enclosingDeclaration(node: Node, root: Node): UsageOccurrence["enclosin
     return { lineRange: [p.startPosition.row + 1, p.endPosition.row + 1], startColumn: p.startPosition.column + 1, endColumnExclusive: p.endPosition.column + 1,
       kind: "anonymous", ...(nearestNamed ? { nearestNamed } : {}) };
   }
-  return { kind: "module", lineRange: [1, Math.max(1, root.endPosition.row + (root.endPosition.column > 0 ? 1 : 0))] };
+  let top = node;
+  while (top.parent && !sameNode(top.parent, root)) top = top.parent;
+  return { kind: "module", lineRange: [top.startPosition.row + 1, top.endPosition.row + 1],
+    startColumn: top.startPosition.column + 1, endColumnExclusive: top.endPosition.column + 1 };
 }
 
 function declarationName(node: Node): string | undefined {
@@ -172,7 +178,13 @@ function declarationName(node: Node): string | undefined {
     const owner = node.parent?.parent?.childForFieldName("name")?.text;
     return owner ? `${owner}.${name}` : name;
   }
+  if (name && (node.type === "public_field_definition" || node.type === "field_definition")) {
+    const owner = node.parent?.parent?.childForFieldName("name")?.text;
+    return owner ? `${owner}.${name}` : name;
+  }
   if (name) return name;
+  if (["arrow_function", "function_expression"].includes(node.type)
+    && ["public_field_definition", "field_definition"].includes(node.parent?.type ?? "")) return declarationName(node.parent!);
   return ["arrow_function", "function_expression", "func_literal"].includes(node.type) && node.parent?.type === "variable_declarator"
     ? node.parent.childForFieldName("name")?.text : undefined;
 }
