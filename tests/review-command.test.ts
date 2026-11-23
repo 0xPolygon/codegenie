@@ -140,6 +140,22 @@ describe("review command", () => {
     expect(parsed.config.llm).toMatchObject({ provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high" });
   });
 
+  it.each(["provider-settings", "environment", "user-config"] as const)(
+    "preserves an exact slash-containing OpenRouter model with the %s default",
+    (source) => {
+      const ctx = testContext();
+      const paths = getCodegeniePaths(ctx.homeOverride);
+      if (source === "provider-settings") saveProviderSettings({ defaultProvider: "openrouter" }, paths);
+      if (source === "environment") ctx.env.CODEGENIE_PROVIDER = "openrouter";
+      if (source === "user-config") writeFileSync(paths.configTomlPath, '[llm]\nprovider = "openrouter"\n');
+
+      const parsed = parseReviewCommand(["review", "--model", "openai/gpt-6-luna:high"], ctx);
+
+      expect(parsed.config.llm).toMatchObject({ provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high" });
+      expect(parsed.configSources).toMatchObject({ "llm.provider": source, "llm.model": "cli", "llm.reasoning": "cli" });
+    }
+  );
+
   it("accepts a :reasoning suffix on --model and rejects combining it with --reasoning", () => {
     const parsed = parseReviewCommand(["review", "feature", "--model", "deepseek/deepseek-v4.1-flash:max"], testContext());
     expect(parsed.config.llm).toMatchObject({ provider: "deepseek", model: "deepseek-v4.1-flash" });

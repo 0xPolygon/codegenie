@@ -10,6 +10,7 @@ import {
   type RawCodegenieConfig
 } from "./schema.js";
 import { getCodegeniePaths } from "./paths.js";
+import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { loadProviderSettings } from "../provider/provider-settings.js";
 import type {
   ClassificationPathRule,
@@ -521,12 +522,23 @@ function applyCliOverrides(
     config.lenses.restrictTo = [...cli.lenses];
     sources["lenses.restrictTo"] = "cli";
   }
-  if (cli.provider !== undefined) {
-    config.llm.provider = cli.provider;
+  let provider = cli.provider;
+  let model = cli.model;
+  if (provider === undefined && model !== undefined) {
+    const qualified = splitProviderQualifiedModel(model);
+    const currentProvider = config.llm.provider;
+    // Preserve exact provider-native IDs such as OpenRouter's openai/gpt-6-luna.
+    if (qualified !== undefined && (currentProvider === undefined
+      || getCodegeniePiModels().getModel(currentProvider, model) === undefined)) {
+      ({ provider, model } = qualified);
+    }
+  }
+  if (provider !== undefined) {
+    config.llm.provider = provider;
     sources["llm.provider"] = "cli";
   }
-  if (cli.model !== undefined) {
-    config.llm.model = cli.model;
+  if (model !== undefined) {
+    config.llm.model = model;
     sources["llm.model"] = "cli";
   }
   if (cli.reasoning !== undefined && cli.reasoning !== "auto") {
