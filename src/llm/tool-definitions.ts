@@ -55,6 +55,15 @@ export function assertRepositoryToolSurfaceAvailable(surface: ReviewToolSurface 
   }
 }
 
+export function normalizeRepositoryToolArguments(tool: ToolDefinition, args: Record<string, unknown>): Record<string, unknown> {
+  const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
+  if (properties?.cursor && args?.cursor === "") {
+    const { cursor: _emptyCursor, ...firstPageArgs } = args;
+    return tool.normalizeArguments?.(firstPageArgs) ?? firstPageArgs;
+  }
+  return tool.normalizeArguments?.(args) ?? args;
+}
+
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
   const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
