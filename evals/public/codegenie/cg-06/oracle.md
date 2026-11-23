@@ -19,7 +19,7 @@ Review base `86f90c90d443d4f8f628b1ce375a7d9fde954c37` (the parent) against head
 
 ### Expected finding
 
-Removing the original-assessments block from published findings also drops caveats that were only published there: secondary proof assumptions, legacy verification text with no structured proof, and unresolved-reconciliation sources. When the model-written verification section omits them, a published finding can read as unconditionally proven. With telemetry off, the originals are not retained anywhere.
+Removing the original-assessments block from published findings also drops caveats that were only published there: secondary proof assumptions, legacy verification text with no structured proof, and unresolved-reconciliation sources. When the model-written verification section omits them, a published finding can read as unconditionally proven. The omission affects the published `finalBody` and Markdown even with telemetry disabled. The structured JSON result can still retain the representative finding's proof fields (including its secondary assumptions) separately from `finalBody`. Merged nonrepresentative candidates can lose their original details in the final result. Credit the reader-visible missing caveat regardless of whether the corresponding representative proof survives in JSON.
 
 ### Anchor
 
