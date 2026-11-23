@@ -63,5 +63,7 @@ describe("refuted promoted attention", () => {
     expect(suppressRefutedPromotedHints([packet("own", ["Does cafe\u0301 work."], [first])], [verdict()])[0]!.followUpHints).toHaveLength(0);
     first.provenance!.question = 'Does "admin" work?';
     expect(suppressRefutedPromotedHints([packet("own", ["Does admin work?"], [first])], [verdict()])[0]!.followUpHints).toHaveLength(1);
+    first.provenance!.question = "Should we preserve `field?`";
+    expect(suppressRefutedPromotedHints([packet("own", ["Should we preserve `field`?"], [first])], [verdict()])[0]!.followUpHints).toHaveLength(1);
   });
 });

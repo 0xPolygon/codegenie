@@ -70,7 +70,7 @@ export type SelectedHumanAttention = {
 };
 
 function questionIdentity(question: string): string {
-  return question.normalize("NFC").toLowerCase().replace(/`/gu, "").replace(/\s+/gu, " ").trim().replace(/[?.]$/u, "").trimEnd();
+  return question.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim().replace(/[?.]$/u, "").trimEnd().replace(/`/gu, "");
 }
 
 /** Remove only exact copies of a promoted question that verification refuted. */
