@@ -33,7 +33,7 @@
 
 ### Evaluation and tests
 
-- Expanded the public Codegenie, Pi, and goinfer cases, corrected oracle labels and control expectations, added verifier analyses, froze a reproducible 20-case development and 31-case confirmation split, and removed incidental retry jitter from integration tests.
+- Expanded the public Codegenie, Pi, and goinfer cases, corrected oracle labels and compatibility controls, added verifier analyses and offline tools for partial receipts and source adjudication, froze a reproducible 20-case development and 31-case confirmation split, and removed incidental retry jitter from integration tests.
 
 ## 0.9.1
 
