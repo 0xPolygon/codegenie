@@ -176,6 +176,7 @@ export type LlmStructuredRequest<T> = {
   finalization?: {
     noResultInstruction?: string;
     buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
+    softTargetNotice?: string;
   };
 };
 

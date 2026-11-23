@@ -1,3 +1,4 @@
+import { packetHasRepositoryTools } from "../util/packet-tools.js";
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
@@ -459,7 +460,7 @@ async function runPacket(
     packet.language
   );
   const toolSurface = config.review.toolSurface ?? "current";
-  const hasTools = packet.reviewProfile !== "simple" && packet.toolBudget.maxToolCalls > 0;
+  const hasTools = packetHasRepositoryTools(packet);
   const currentHunks = toolSurface === "six" ? packet.hunks.map(hunk => hunk.hunkId) : undefined;
   const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
@@ -490,7 +491,9 @@ async function runPacket(
     },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
-      buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface])
+      ...(toolSurface === "six"
+        ? { softTargetNotice: "The local investigation target has been reached. Continue only while a removed or added line in this packet's hunks is still unaccounted for; then submit." }
+        : { buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface]) })
     }
   });
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
