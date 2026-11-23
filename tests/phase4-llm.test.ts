@@ -5065,16 +5065,20 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codegenie-multiline-secret-"));
     registerSecret("BEGIN\nshort-key-123\nEND");
     registerSecret("BEGIN\nX\nlong-secret-line");
+    registerSecret("BEGIN\nshort<key>123\nEND");
     try {
       const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
       const attached = await run.attachRunDirectory(directory);
       await run.recorder.writeDebug("tool-calls", "first-page", { text: "BEGIN\nshort-key-123" });
       await run.recorder.writeDebug("tool-calls", "second-page", { text: "END\nX\nlong-secret-line" });
+      await run.recorder.writeDebug("tool-calls", "escaped-page", { text: "short\\u003ckey\\u003e123 and short\\\\u003ckey\\\\u003e123" });
       await run.finalize({ status: "completed_full", exitCode: 0 });
       const folder = path.join(attached.runDir, "debug", "tool-calls");
       const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
       expect(stored).not.toContain("short-key-123");
       expect(stored).not.toContain("long-secret-line");
+      expect(stored).not.toContain("short\\u003ckey");
+      expect(stored).not.toContain("short\\\\u003ckey");
       expect(stored).toContain("X"); // Individual lines shorter than six are the documented residual.
     } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
   });

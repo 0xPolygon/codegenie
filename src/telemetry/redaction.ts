@@ -26,18 +26,22 @@ export function registerSecret(value: string | undefined | null): void {
   }
   const trimmed = value.trim();
   if (trimmed.length >= 6) {
-    registeredSecrets.add(trimmed);
-    // Verifier repair serializes angle-bracket escapes into persisted requests.
-    const escaped = trimmed.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
-    registeredSecrets.add(escaped);
-    registeredSecrets.add(JSON.stringify(escaped).slice(1, -1));
+    addSecretVariants(registeredSecrets, trimmed);
     if (/[\r\n]/u.test(trimmed)) {
       for (const line of trimmed.split(/\r?\n|\r/u)) {
         const component = line.trim();
-        if (component.length >= 6) registeredSecretLines.add(component);
+        if (component.length >= 6) addSecretVariants(registeredSecretLines, component);
       }
     }
   }
+}
+
+function addSecretVariants(target: Set<string>, value: string): void {
+  target.add(value);
+  // Verifier repair serializes angle-bracket escapes into persisted requests.
+  const escaped = value.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  target.add(escaped);
+  target.add(JSON.stringify(escaped).slice(1, -1));
 }
 
 export function clearRegisteredSecretsForTests(): void {
