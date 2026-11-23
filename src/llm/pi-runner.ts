@@ -29,7 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
-import { stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
+import { redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage } from "../provider/provider-services.js";
@@ -524,6 +524,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
       let budgetForceFinalize = false;
       let candidateDrafted = false;
       const toolResultSummaries: LlmToolResultSummary[] = [];
+      const recordedToolResultSummaries: LlmToolResultSummary[] = [];
       // Soft/hard deadline pair (plan 85): the soft deadline stops new
       // investigation calls and routes the pass to finalize; the hard deadline
       // (soft + grace) aborts. A pass that finished investigating is never
@@ -988,6 +989,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               }
               recordToolCall(opts, request, providerResult.callId, toolCall, outcome);
               toolResultSummaries.push(summarizeToolResult(toolCall, outcome, resultText));
+              recordedToolResultSummaries.push(summarizeToolResult(toolCall, outcome, resultText, true));
               toolResults.push({
                 role: "toolResult",
                 toolCallId: toolCall.id,
@@ -1083,7 +1085,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
         taskTimeout.cleanup();
         // Evidence delivery is independent of structured-output success. A
         // callback failure must not mask the original cancellation/failure.
-        try { request.onToolResults?.(structuredClone(toolResultSummaries)); }
+        try { request.onToolResults?.(structuredClone(recordedToolResultSummaries)); }
         catch { opts.telemetry.event({ stage: request.stage, level: "warn", message: "tool_evidence_delivery_failed" }); }
       }
     }
@@ -1294,7 +1296,7 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
     lookupStatus: "found", source, text: outcome.result.rawSource === undefined ? text : stripCredentials(outcome.result.rawSource) }];
 }
 
-function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string): LlmToolResultSummary {
+function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string, recorded = false): LlmToolResultSummary {
   const meta = outcome.result.meta;
   const sourceArg = toolCall.arguments.source;
   const requestedSource = sourceArg && typeof sourceArg === "object" ? (sourceArg as Record<string, unknown>).kind : sourceArg;
@@ -1305,11 +1307,11 @@ function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resu
   return definedRecord({
     id: toolCall.id || safeFenceLabelPart(toolCall.name),
     tool: toolCall.name,
-    target: toolTargetSummary(toolCall),
+    target: toolTargetSummary(toolCall, recorded),
     requestKey: sha256Hex(stableJson({ tool: toolCall.name, arguments: toolCall.arguments })),
     status: outcome.status,
     resultChars: resultText.length,
-    preview: firstMeaningfulLine(resultText),
+    preview: firstMeaningfulLine(resultText, recorded),
     repositoryEvidence: retainedToolEvidence(toolCall, outcome, resultText, evidenceSource),
     errorCode: outcome.errorCode,
     rejectionReason: outcome.rejectionReason,
@@ -1322,7 +1324,7 @@ function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resu
   }) as LlmToolResultSummary;
 }
 
-function toolTargetSummary(toolCall: PiToolCall): string {
+function toolTargetSummary(toolCall: PiToolCall, recorded = false): string {
   const args = stripCredentials(toolCall.arguments) as Record<string, unknown>;
   const parts: string[] = [];
   const path = typeof args.path === "string" ? args.path : undefined;
@@ -1346,21 +1348,21 @@ function toolTargetSummary(toolCall: PiToolCall): string {
     parts.push(`lines=${String(args.startLine ?? "?")}-${String(args.endLine ?? "?")}`);
   }
   if (query) {
-    parts.push(`query=${truncateDiagnosticPart(query, 80)}`);
+    parts.push(`query=${recorded ? redactThenTruncate(query, 80, "…") : truncateDiagnosticPart(query, 80)}`);
   }
   if (glob) {
     parts.push(`glob=${glob}`);
   }
-  return parts.length > 0 ? parts.join(" ") : stableJson(args).slice(0, 200);
+  return parts.length > 0 ? parts.join(" ") : recorded ? redactThenTruncate(stableJson(args), 200) : stableJson(args).slice(0, 200);
 }
 
-function firstMeaningfulLine(text: string): string | undefined {
-  for (const line of text.split(/\r?\n/u)) {
+function firstMeaningfulLine(text: string, recorded = false): string | undefined {
+  for (const line of (recorded ? stripCredentialsAtSink(text) : text).split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("```") || trimmed.startsWith("The following block is")) {
       continue;
     }
-    return truncateDiagnosticPart(trimmed, 240);
+    return recorded ? redactThenTruncate(trimmed, 240, "…") : truncateDiagnosticPart(trimmed, 240);
   }
   return undefined;
 }
@@ -3334,7 +3336,7 @@ function fitDebugArtifact(
     kind,
     originalChars: serialized.length,
     maxChars: MAX_DEBUG_ARTIFACT_CHARS,
-    preview: serialized.slice(0, Math.max(0, MAX_DEBUG_ARTIFACT_CHARS - 256)),
+    preview: redactThenTruncate(serialized, Math.max(0, MAX_DEBUG_ARTIFACT_CHARS - 256)),
     redaction: valueRedactionSummary(artifact)
   };
 }
@@ -3671,7 +3673,7 @@ function schemaValidityForResponse(
 // a cut cannot leave an unmatched key prefix, and keep within truncateDiagnostic's
 // 2,000-character limit including the marker.
 function recordedSchemaError(error: string): string {
-  return truncateDiagnosticPart(stripCredentials(error), 2_000);
+  return redactThenTruncate(error, 2_000, "…");
 }
 
 function submitResponseDisciplineError(
@@ -4092,7 +4094,7 @@ function providerFailureSummary(raw: string, status: number | undefined, body: R
   }
   const message = body?.message;
   const summary = typeof message === "string" && message.trim().length > 0 ? message : raw;
-  const collapsed = summary.replace(/\s+/gu, " ").trim();
+  const collapsed = stripCredentialsAtSink(summary).replace(/\s+/gu, " ").trim();
   if (collapsed.length === 0) {
     return status !== undefined ? `HTTP ${status}` : undefined;
   }
@@ -4102,7 +4104,7 @@ function providerFailureSummary(raw: string, status: number | undefined, body: R
     status !== undefined && !new RegExp(`\\b${status}\\b`, "u").test(collapsed)
       ? `HTTP ${status}: ${collapsed}`
       : collapsed;
-  return truncateDiagnosticPart(withStatus, PROVIDER_MESSAGE_MAX_CHARS);
+  return redactThenTruncate(withStatus, PROVIDER_MESSAGE_MAX_CHARS, "…");
 }
 
 function providerErrorBody(raw: string): Record<string, unknown> | undefined {
@@ -4339,7 +4341,7 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
   return definedRecord({
-    name: typeof args.name === "string" ? args.name.slice(0, 500) : undefined,
+    name: typeof args.name === "string" ? redactThenTruncate(args.name, 500) : undefined,
     scope: typeof args.scope === "string" ? args.scope : undefined,
     path: typeof args.path === "string" ? args.path : undefined,
     packetId: typeof args.packetId === "string" ? args.packetId : undefined,
@@ -4351,7 +4353,7 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
     endLine: typeof args.endLine === "number" ? args.endLine : undefined,
     query: typeof args.query === "string" ? args.query : undefined,
     mode: typeof args.mode === "string" ? args.mode : undefined,
-    pathGlob: typeof args.pathGlob === "string" ? args.pathGlob.slice(0, 500) : undefined,
+    pathGlob: typeof args.pathGlob === "string" ? redactThenTruncate(args.pathGlob, 500) : undefined,
     maxResults: typeof args.maxResults === "number" ? args.maxResults : undefined,
     glob: typeof args.glob === "string" ? args.glob : undefined,
     source: sourceForRecord(args.source),

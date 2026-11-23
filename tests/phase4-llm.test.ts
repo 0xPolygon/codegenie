@@ -5061,6 +5061,147 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it("keeps sink-only secret variants in nudge and retained evidence while redacting their persisted copy", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-sink-variant-"));
+    const escaped = "secret\\u003cinside\\u003elong-value";
+    const component = "short-key-123";
+    registerSecret("secret<inside>long-value");
+    registerSecret(`BEGIN\n${component}\nEND`);
+    const source = `literal ${escaped} ${component}`;
+    const tool: ToolDefinition = { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: source, rawSource: source, sourceLineRange: [1, 1],
+        meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "head", deliveryStatus: "full", lookupStatus: "found" } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: { path: source } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    let target = "";
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("sink-variants"), tools: [tool],
+        toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
+        finalization: { buildPostToolNudge: ({ lastToolResults }) => { target = lastToolResults[0]?.target ?? ""; return `inspect ${target}`; } },
+        onToolResults: rows => captured.push(...rows) });
+      expect(target).toContain(source);
+      expect(adapter.contexts[1]).toContain(component);
+      expect(captured[0]?.repositoryEvidence?.[0]?.text).toBe(source);
+      await run.recorder.writeDebug("llm-calls", "variant-evidence", { target, evidence: captured[0]?.repositoryEvidence });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(stored).not.toContain("u003cinside");
+      expect(stored).not.toContain(component);
+      expect(stored).toContain("[redacted:secret]");
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("redacts multiline secret components in separately persisted records", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-multiline-secret-"));
+    registerSecret("BEGIN\nshort-key-123\nEND");
+    registerSecret("BEGIN\nX\nlong-secret-line");
+    registerSecret("BEGIN\nshort<key>123\nEND");
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      await run.recorder.writeDebug("tool-calls", "first-page", { text: "BEGIN\nshort-key-123" });
+      await run.recorder.writeDebug("tool-calls", "second-page", { text: "END\nX\nlong-secret-line" });
+      await run.recorder.writeDebug("tool-calls", "escaped-page", { text: "short\\u003ckey\\u003e123 and short\\\\u003ckey\\\\u003e123" });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "tool-calls");
+      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(stored).not.toContain("short-key-123");
+      expect(stored).not.toContain("long-secret-line");
+      expect(stored).not.toContain("short\\u003ckey");
+      expect(stored).not.toContain("short\\\\u003ckey");
+      expect(stored).not.toContain("short");
+      expect(stored).toContain("X"); // Individual lines shorter than six are the documented residual.
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["thrown provider error", "provider response error"])("redacts a credential crossing the diagnostic cap in persisted %s", async mode => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-provider-boundary-"));
+    const secret = "uniqueBoundaryCredential1234567890";
+    const diagnostic = "HTTP status 400 " + "x".repeat(1_987 - "HTTP status 400 ".length) + secret + "y".repeat(2_000);
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const adapter = scriptedAdapter([assistantError(diagnostic)]);
+      if (mode === "thrown provider error") adapter.complete = vi.fn(async () => {
+        const error = new Error(diagnostic) as Error & { status: number }; error.status = 400; throw error;
+      });
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await expect(runner.runStructured(submitReviewRequest("provider-boundary"))).rejects.toBeDefined();
+      await run.finalize({ status: "completed_partial", exitCode: 1 });
+      const record = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8");
+      expect(record).toContain("HTTP status 400");
+      expect(record).not.toContain(secret.slice(0, 13));
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("redacts a capped repair input before the real event writer", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-repair-boundary-"));
+    const secret = "uniqueRepairCredential1234567890";
+    const diagnostic = "invalid " + "x".repeat(1_987 - 8) + secret + "y".repeat(2_000);
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const scripted = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "invalid", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+        assistant([validSubmitReviewCall("valid")])
+      ]);
+      const adapter: typeof scripted = { ...scripted, validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "invalid") throw new Error(diagnostic);
+        return scripted.validateToolCall(tools, call);
+      } };
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured(submitReviewRequest("repair-boundary", run.recorder));
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const events = readFileSync(path.join(attached.runDir, "events.jsonl"), "utf8");
+      const models = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8");
+      expect(events).toContain("stage7_schema_repair");
+      expect(events + models).not.toContain(secret.slice(0, 13));
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("redacts a secret crossing tool-call argument and preview caps before the real writer", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-tool-boundary-"));
+    const secret = "uniqueToolCredential1234567890";
+    registerSecret(secret);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const adapter = scriptedAdapter([
+        assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: { name: "x".repeat(487) + secret, pathGlob: "z".repeat(487) + secret } }]),
+        assistant([validSubmitReviewCall("valid")])
+      ]);
+      const summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+      let modelPreview: string | undefined;
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("tool-boundary"), tools: [{ name: "search_files", description: "search",
+        parameters: Type.Object({ name: Type.String(), pathGlob: Type.String() }),
+        execute: async () => ({ text: "x".repeat(227) + secret + " trailing text" }) }],
+        toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
+        finalization: { buildPostToolNudge: ({ lastToolResults }) => { modelPreview = lastToolResults[0]?.preview; return ""; } },
+        onToolResults: rows => summaries.push(...rows) });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const calls = readFileSync(path.join(attached.runDir, "tool-calls.jsonl"), "utf8");
+      expect(calls).not.toContain(secret.slice(0, 13));
+      expect(JSON.stringify(summaries)).not.toContain(secret.slice(0, 13));
+      expect(modelPreview).toContain(secret.slice(0, 10)); // Preserve the pre-existing model-facing nudge input.
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("strips redundant candidate anchor fields before model repair", async () => {
     const telemetry = fakeTelemetry();
     const anchor = { path: "src/a.ts", line: 12, side: "RIGHT", hunkId: "hunk-a" };

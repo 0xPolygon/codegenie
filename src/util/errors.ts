@@ -1,4 +1,4 @@
-import { stripCredentials } from "../telemetry/redaction.js";
+import { redactThenTruncate, stripCredentials } from "../telemetry/redaction.js";
 
 export type CodegenieErrorCode =
   | "not_git_worktree"
@@ -94,8 +94,7 @@ export function errorExitCode(error: unknown): number {
 // identical cap so event payloads stay byte-compatible).
 export function truncateDiagnostic(input: string): string {
   const maxChars = 2_000;
-  if (input.length <= maxChars) {
-    return input;
-  }
-  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codegenie]`;
+  if (input.length <= maxChars) return input;
+  const marker = "\n[validation error truncated by codegenie]";
+  return `${redactThenTruncate(input, maxChars, "", true).trimEnd()}${marker}`;
 }
