@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
 import { buildReadDefinitionTool } from "../src/llm/definition-tool.js";
-import { definitionCursor } from "../src/repo/definition-page.js";
+import { definitionCursor, makeDefinitionPage } from "../src/repo/definition-page.js";
 import { packDefinitionPage, packDefinitionToolResult } from "../src/llm/definition-result-packing.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 
@@ -13,7 +13,8 @@ describe("exact definition lookup", () => {
       "src/no-match.ts": "export function Other() {}\n",
       "src/broken.ts": "export const = ;\n",
       "src/quoted.ts": `export function Quoted() { return '${'"'.repeat(9_000)}'; }\n`,
-      "data/example.custom": "Widget is mentioned here.\n"
+      "data/example.custom": "Widget is mentioned here.\n",
+      "data/lead.custom": "function Widget() {}\n"
     });
     try {
       const resolver = (fixture.tools as unknown as { opts: { resolver: { grep: (...args: never[]) => unknown } } }).opts.resolver;
@@ -26,9 +27,16 @@ describe("exact definition lookup", () => {
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "src/broken.ts" })).meta.lookupStatus).toBe("unavailable");
       expect((await fixture.tools.findDefinition("Quoted", { exactPath: "src/quoted.ts" })).definitions).toHaveLength(1);
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "src/missing.ts" })).meta.lookupStatus).toBe("file_missing");
+      const missing = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "src/missing.ts" }, new AbortController().signal);
+      expect(missing.text).toContain("read_definition with name and source and without path");
+      expect(missing.text).not.toContain("find_definition");
       expect((await fixture.tools.findDefinition("Widget", { exactPath: "data/example.custom" })).meta.lookupStatus).toBe("unavailable");
       const unavailable = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "data/example.custom" }, new AbortController().signal);
       expect(unavailable.meta?.lookupStatus).toBe("unavailable");
+      expect(unavailable.text).toContain("use read_range or find_usages");
+      expect(unavailable.text).not.toContain("find_symbol_mentions");
+      const lead = await buildReadDefinitionTool(fixture.tools).execute({ name: "Widget", path: "data/lead.custom" }, new AbortController().signal);
+      expect(lead.text).toContain("Unverified text lead: data/lead.custom@head lines 1-1 of 1");
       expect(packDefinitionToolResult(unavailable, 9)).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { lookupStatus: "unavailable" } });
       expect(grep).not.toHaveBeenCalled();
       await expect(fixture.tools.findDefinition("Widget", { exactPath: "../outside.ts" })).rejects.toMatchObject({ code: "path_outside_repo" });
@@ -77,6 +85,14 @@ describe("read_definition delivery", () => {
       const absent = await tool.execute({ name: "Missing", path: "src/one.ts" }, new AbortController().signal);
       expect(absent.meta?.lookupStatus).toBe("not_found");
       expect(packDefinitionToolResult(absent, 9)).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { lookupStatus: "not_found" } });
+      const bounded = makeDefinitionPage("run", {}, { definitions: page.hits, meta: { ...page.meta,
+        lookupNote: "Candidate scan was bounded. Narrow pathGlob; this occurrence is not a verified definition." } }, { headCommit: "head", baseCommit: "base" });
+      expect(packDefinitionPage(bounded, 100_000).text).toContain("Narrow the path");
+      expect(packDefinitionPage(bounded, 100_000).text).not.toContain("pathGlob");
+      const unchecked = makeDefinitionPage("run", {}, { definitions: [], meta: { ...page.meta,
+        lookupStatus: "unavailable", lookupNote: "Not checked: 1 text mention in docs/example.md; use find_symbol_mentions." } }, { headCommit: "head", baseCommit: "base" });
+      expect(packDefinitionPage(unchecked, 100_000).text).toContain("use find_usages");
+      expect(packDefinitionPage(unchecked, 100_000).text).not.toContain("find_symbol_mentions");
       expect(packDefinitionPage(page, 1)).toMatchObject({ isError: true, errorCode: "budget_exhausted" });
       const single = await tool.execute({ name: "Alone", path: "src/one.ts" }, new AbortController().signal);
       expect(single.rawSource).toBe("export function Alone() { return 7; }");

@@ -51,6 +51,9 @@ describe("six-tool result guidance", () => {
     const missing = await run("read_range", { path: "src/missing.ts", startLine: 1, endLine: 3, source: { kind: "base" } });
     expect(missing.meta?.lookupStatus).toBe("file_missing");
     expect(missing.text).toContain("read_definition with name and source and without path");
+    const missingDefinition = await run("read_definition", { name: "choose", path: "src/missing.ts", source: { kind: "base" } });
+    expect(missingDefinition.meta?.lookupStatus).toBe("file_missing");
+    expect(missingDefinition.text).toContain("read_definition with name and source and without path");
 
     const textLead = await run("find_usages", { name: "track", pathGlob: "docs/**" });
     expect(textLead.text).toContain("text-only mention");
@@ -70,7 +73,7 @@ describe("six-tool result guidance", () => {
     expect(next.packable?.records[0]).toContain('"src/policy.ts"@base: 32 lines');
     expect(next.packable?.records[0]?.split("\n").at(-1)).toBe(firstUnread);
 
-    for (const { text } of [missing, textLead, ambiguous, cut, next]) expect(text).not.toMatch(RETIRED_TOOL);
+    for (const { text } of [missing, missingDefinition, textLead, ambiguous, cut, next]) expect(text).not.toMatch(RETIRED_TOOL);
   });
 
   it.each([

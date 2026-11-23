@@ -1,5 +1,5 @@
 import type { ToolExecutionResult } from "./llm-runner.js";
-import { numberSourceLine, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
+import { numberSourceLine, renderSourceBlockHeader, withSixToolMeta } from "./repository-tool-guidance.js";
 import { definitionCursor, type DefinitionPage } from "../repo/definition-page.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 
@@ -7,7 +7,7 @@ import { isTextFallbackHit } from "../repo/repository-index.js";
 export function packDefinitionPage(page: DefinitionPage, allowance: number): ToolExecutionResult {
   const remaining = page.hits.slice(page.offset);
   if (!remaining.length) {
-    const text = withMeta(`No declaration locations in the selected ${page.sourceUsed} scope.${page.meta.truncated ? " Discovery was bounded; narrow the path and retry." : ""}`, page.meta);
+    const text = withSixToolMeta(`No declaration locations in the selected ${page.sourceUsed} scope.${page.meta.truncated ? " Discovery was bounded; narrow the path and retry." : ""}`, page.meta);
     if (text.length > allowance) return { text: "The definition status does not fit the result budget. No source was delivered.",
       isError: true, errorCode: "budget_exhausted", meta: { ...page.meta, deliveryStatus: "budget_rejected", degradationReason: "tool_result_budget" } };
     return { text, meta: page.meta, definitions: [] };
@@ -27,7 +27,7 @@ export function packDefinitionPage(page: DefinitionPage, allowance: number): Too
     }
     for (const hit of hits.slice(0, bodyCount)) {
       if (hit.text === undefined || !hit.deliveredLineRange || hit.totalLines === undefined) continue;
-      lines.push(renderSourceBlockHeader(hit.symbol.path, page.sourceUsed, hit.deliveredLineRange, hit.totalLines));
+      lines.push(`${isTextFallbackHit(hit) ? "Unverified text lead: " : ""}${renderSourceBlockHeader(hit.symbol.path, page.sourceUsed, hit.deliveredLineRange, hit.totalLines)}`);
       lines.push(...hit.text.split("\n").map((line, index) => numberSourceLine(line, hit.deliveredLineRange![0] + index)));
       if (hit.nextLine !== undefined) lines.push(`Body continues: read_range ${hit.symbol.path}@${page.sourceUsed}:${hit.nextLine}-${hit.symbol.lineRange[1]}.`);
     }
@@ -46,7 +46,7 @@ export function packDefinitionPage(page: DefinitionPage, allowance: number): Too
     const { recovery: _recovery, deliveredLineRange: _range, requestedRange: _request, ...base } = page.meta;
     const meta = { ...base, ...(truncated ? { truncated: true, deliveryStatus: "truncated" as const,
       degradationReason: base.degradationReason ?? "definition_delivery_limit" } : { deliveryStatus: "full" as const }) };
-    const text = withMeta(lines.join("\n"), meta);
+    const text = withSixToolMeta(lines.join("\n"), meta);
     const single = page.hits.length === 1 && page.offset === 0 && page.meta.lookupStatus === "found"
       && count === 1 && bodyCount === 1 && !truncated && !isTextFallbackHit(hits[0]!) ? hits[0] : undefined;
     return { text, meta, definitions: hits.slice(0, bodyCount), ...(single?.text !== undefined && single.deliveredLineRange
