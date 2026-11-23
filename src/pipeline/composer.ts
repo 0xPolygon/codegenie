@@ -1,12 +1,13 @@
 import { deriveReviewHealth, factualReviewSummary, renderReviewHealth, requiredDiagnosticsAfterComposition } from "../util/review-health.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
-import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
+import { type CompositionMetrics, MAX_PRIMARY_EVIDENCE_REFS, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
+import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js";
 import type {
   CandidateFinding,
   Confidence,
@@ -56,6 +57,8 @@ type FindingGroup = {
   representative: CandidateFinding;
   findings: CandidateFinding[];
 };
+
+type FallbackGrouping = "colocated" | "same_cause";
 
 type SelectionRecord = {
   findingId: string;
@@ -129,6 +132,7 @@ export async function dedupeRankAndComposeReview(
   let compositionFailed = false;
   let compositionFailure: unknown;
   const colocatedFallbackIds = new Set<string>();
+  const mergedFallbackCauseIds = new Set<string>();
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
@@ -153,7 +157,8 @@ export async function dedupeRankAndComposeReview(
       data: composerFallbackTelemetry(error, groups, fallbackReason, fallbackMode)
     });
     coverage.reasons.push(fallbackReason);
-    const fallbackGroups = colocateFallbackGroups(groups, opts.diff, packetsById, colocatedFallbackIds);
+    const causeGroups = mergeFallbackCauseGroups(groups, opts.diff, packetsById, telemetry, mergedFallbackCauseIds);
+    const fallbackGroups = colocateFallbackGroups(causeGroups, opts.diff, packetsById, colocatedFallbackIds);
     for (const group of fallbackGroups) {
       if (!group.findings.some(finding => colocatedFallbackIds.has(finding.id))) continue;
       const anchor = group.representative.anchor!;
@@ -224,9 +229,10 @@ export async function dedupeRankAndComposeReview(
       compositionDegraded = true;
       telemetry.event({ stage: 10, level: "warn", message: "composition_legacy_content_fallback", data: { findingIds: ids } });
     }
-    const colocated = ids.some(id => colocatedFallbackIds.has(id));
-    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept, colocated);
-    if (colocated) final.severity = strongest(mergedFindings).severity;
+    const fallbackGrouping = ids.some(id => mergedFallbackCauseIds.has(id)) ? "same_cause"
+      : ids.some(id => colocatedFallbackIds.has(id)) ? "colocated" : undefined;
+    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept, fallbackGrouping);
+    if (fallbackGrouping) final.severity = strongest(mergedFindings).severity;
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -955,6 +961,86 @@ function fallbackComposition(groups: FindingGroup[], link?: EvidenceLinker): Sub
   };
 }
 
+type FallbackCauseEvidence = {
+  anchor: DiffAnchor;
+  ranges: Array<[number, number]>;
+};
+
+function mergeFallbackCauseGroups(groups: FindingGroup[], diff: UnifiedDiff | undefined,
+  packetsById: Map<string, ReviewPacket>, telemetry: TelemetryRecorder, mergedIds: Set<string>): FindingGroup[] {
+  if (!diff || groups.length < 2) return groups;
+
+  const anchorIndex = buildDiffAnchorIndex(diff);
+  const known = new Map(groups.flatMap(group => group.findings.map(finding => [finding.id, finding] as const)));
+  const evidence = new Map<CandidateFinding, FallbackCauseEvidence>();
+  for (const { findings } of groups) {
+    // A fallback merge must cover the same members that will reach publication.
+    if (expandClusterFindingIds(findings.map(finding => finding.id), known).length !== findings.length) continue;
+    for (const finding of findings) {
+      const anchor = finding.anchor;
+      if (!anchor || anchor.path !== finding.path || finding.anchorSource === "backfill_packet_representative" ||
+        !validateDiffAnchor(anchor, anchorIndex).valid) continue;
+      const ranges: FallbackCauseEvidence["ranges"] = [];
+      for (const related of finding.evidence.relatedCode ?? []) {
+        if (related.path !== anchor.path) continue;
+        const text = related.lines.trim();
+        for (const range of text.matchAll(/(?<![\w.])(lines?[ \t]+|L)?(\d+)(?:[ \t]*[-–][ \t]*L?(\d+))?(?!\w|\.\d)/giu)) {
+          // Unlabelled single numbers inside code or prose may be values, not line references.
+          if (!range[1] && !range[3] && range[0] !== text) continue;
+          const start = Number(range[2]);
+          const end = Number(range[3] ?? range[2]);
+          if (start > 0 && start <= end && Number.isSafeInteger(end)) ranges.push([start, end]);
+        }
+      }
+      if (ranges.length) evidence.set(finding, { anchor, ranges });
+    }
+  }
+
+  const merged: FindingGroup[] = [];
+  for (const group of groups) {
+    let matches: ReturnType<typeof fallbackCauseMatches>;
+    const index = merged.findIndex(candidate => {
+      matches = fallbackCauseMatches(candidate, group, evidence);
+      return matches !== undefined;
+    });
+    if (index < 0) {
+      merged.push(group);
+      continue;
+    }
+    const combined = combineFindingGroups([merged[index]!, group], packetsById);
+    merged[index] = combined;
+    combined.findings.forEach(finding => mergedIds.add(finding.id));
+    telemetry.event({
+      stage: 10, level: "info", message: "fallback_cause_merged", file: combined.representative.path,
+      data: { candidateIds: combined.findings.map(finding => finding.id), matches }
+    });
+  }
+  return merged;
+}
+
+function fallbackCauseMatches(left: FindingGroup, right: FindingGroup, evidence: Map<CandidateFinding, FallbackCauseEvidence>) {
+  // Each merged finding gets a visible changed-line excerpt.
+  if (left.findings.length + right.findings.length > MAX_PRIMARY_EVIDENCE_REFS) return undefined;
+  const matches = [];
+  for (const a of left.findings) {
+    const aEvidence = evidence.get(a);
+    if (!aEvidence) return undefined;
+    for (const b of right.findings) {
+      const bEvidence = evidence.get(b);
+      if (!bEvidence || a.path !== b.path || a.category !== b.category || aEvidence.anchor.side !== bEvidence.anchor.side ||
+        aEvidence.anchor.hunkId === bEvidence.anchor.hunkId) return undefined;
+      const aRange = aEvidence.ranges.find(([start, end]) => start <= bEvidence.anchor.line && bEvidence.anchor.line <= end);
+      const bRange = bEvidence.ranges.find(([start, end]) => start <= aEvidence.anchor.line && aEvidence.anchor.line <= end);
+      if (!aRange || !bRange || (!diagnosesMatch(a, b) && !conciseDiagnosesMatch(a, b))) return undefined;
+      matches.push({
+        leftId: a.id, rightId: b.id, leftAnchor: aEvidence.anchor, rightAnchor: bEvidence.anchor,
+        leftReferencedRange: aRange, rightReferencedRange: bRange
+      });
+    }
+  }
+  return matches;
+}
+
 // Fallback cannot judge whether reports at the same line have the same cause.
 // Co-locate them only when every member has the same validated changed anchor;
 // the final template retains each report independently.
@@ -1073,13 +1159,13 @@ function toFinalFinding(
   attributed = false,
   onFallbackMetrics?: (metrics: CompositionMetrics) => void,
   assessmentFindings = mergedFindings,
-  colocated = false
+  fallbackGrouping?: FallbackGrouping
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   // Only attributed output can replace verified prose. Legacy or invalid output
   // uses one deterministic rendering, never narrative plus every source section.
-  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings, colocated);
+  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings, fallbackGrouping);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, attributed ? normalizedFinalBody : undefined);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
@@ -2089,9 +2175,9 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
   return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
-function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings, colocated = false): string {
-  const body = renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
-  if (!colocated) return body;
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings, fallbackGrouping?: FallbackGrouping): string {
+  const body = renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings, fallbackGrouping === "same_cause");
+  if (fallbackGrouping !== "colocated") return body;
   const reports = groupedFindings.filter(member => member.id !== finding.id).map((member, index) => {
     const consequence = member.whyThisMatters === member.failureMode ? "" : `\n\n${safeReportProse(member.whyThisMatters)}`;
     return `**${index + 1}. ${safeReportProse(member.title)}**\n\n${safeReportProse(member.failureMode)}${consequence}`;

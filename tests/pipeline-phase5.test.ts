@@ -16830,3 +16830,147 @@ describe("fallback co-location of exact changed anchors", () => {
     expect(modelEvents.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toHaveLength(0);
   });
 });
+
+describe("fallback same-cause merging across changed hunks", () => {
+  const path = "pool.go";
+  const lines = [
+    { path, hunkId: "reserve", line: 45, content: "slot.busy = true" },
+    { path, hunkId: "release", line: 58, content: "pool.commitResident(slot)" },
+    { path, hunkId: "rollback", line: 70, content: "pool.rollback(slot)" }
+  ];
+  const files = fakeChangedLineDiff(lines).files;
+  const diff = { files: [{ ...files[0]!, hunks: files.flatMap(file => file.hunks) }] };
+
+  function findings(): [CandidateFinding, CandidateFinding, CandidateFinding] {
+    const makeFinding = (index: number, title: string, failureMode: string, references: string): CandidateFinding => {
+      const { hunkId, line, content } = lines[index]!;
+      return {
+        ...fakeFinding(), id: hunkId, path, title, failureMode,
+        anchor: { path, hunkId, line, side: "RIGHT" }, anchorSource: "model",
+        evidence: {
+          changedCode: content,
+          relatedCode: [{ path, lines: references, whyRelevant: "Shows the transition and the error exit." }]
+        }
+      };
+    };
+    return [
+      makeFinding(0, "Verification errors leave busy pool slots reserved",
+        "An early error return never clears the busy slot assignment, exhausting the available pool.",
+        "73–75 returns on error; 54-60 releases only through commit. Line 70 is the rollback."),
+      makeFinding(1, "Busy pool slots stay reserved after verification errors",
+        "Committing alone frees reservations. If verification fails first, affected slots cannot be reused.",
+        "44-46 marks busy. Lines 73-75: errors return directly. The rollback is at line 70."),
+      makeFinding(2, "Rollback runs after unlocking",
+        "A parallel updater can overwrite the rollback before the previous transaction finishes.",
+        "44-60 modifies shared state; 68-75 runs rollback without holding the mutex.")
+    ];
+  }
+
+  function compose(verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] }, event = vi.fn(), fallback = true) {
+    return dedupeRankAndComposeReview(verified, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), { ...nullTelemetry(), event }, {
+        runner: { async runStructured<T>() {
+          if (fallback) throw composerTransientError();
+          return {
+            summary: "Verified findings",
+            composedFindings: verified.verified.map(finding => ({
+              findingIds: [finding.id], ...attributedSources([finding], finding.failureMode), publication: "inline"
+            }))
+          } as T;
+        } },
+        promptBuilder: fakePromptBuilder(), diff
+      });
+  }
+
+  it("merges mutually linked verifier-revised evidence only in fallback and keeps both anchors and sources", async () => {
+    const [reserve, release, rollback] = findings();
+    const rawRelease = { ...release, evidence: { changedCode: release.evidence.changedCode } };
+    const packet = fakePacket({ path });
+    const verified = await verifyFindings({
+      packets: [packet],
+      packetResults: [{ packetId: packet.id, lenses: packet.lenses, status: "completed",
+        findings: [reserve, rawRelease, rollback], followUpHints: [], uncertainties: [] }]
+    }, fakeTools(), config(), nullTelemetry(), {
+      runner: { async runStructured<T>(request: LlmStructuredRequest<T>) {
+        const common = { reason: "Confirmed from the pinned change", requiredEvidencePresent: true, falsePositiveRisk: "low",
+          proofAssessment: { status: "established", evidence: "Both paths were checked.", assumptions: [] } };
+        return (request.telemetryContext?.candidateId === release.id
+          ? { ...common, verdict: "revise", findingUpdates: { evidence: release.evidence } }
+          : { ...common, verdict: "keep" }) as T;
+      } },
+      lensRegistry: fakeLensRegistry(), promptBuilder: fakePromptBuilder(), diff
+    });
+    expect(verified.verified.find(finding => finding.id === release.id)?.evidence).toEqual(release.evidence);
+    const event = vi.fn();
+    const result = await compose(verified, event);
+    expect(result.findings).toHaveLength(2);
+    const merged = result.findings.find(finding => finding.id === reserve.id)!;
+    expect(merged.mergedCandidateIds).toEqual(expect.arrayContaining([reserve.id, release.id]));
+    expect(merged.mergedCandidateIds).toHaveLength(2);
+    expect(merged.mergedAnchors).toEqual(expect.arrayContaining([reserve.anchor, release.anchor]));
+    expect(merged.mergedAnchors).toHaveLength(2);
+    for (const member of [reserve, release]) {
+      expect(merged.finalBody).toContain(member.evidence.changedCode);
+      expect(merged.finalBody).toContain(`${path}:${member.anchor!.line}`);
+    }
+    expect(result.findings.find(finding => finding.id === rollback.id)?.mergedCandidateIds).toEqual([rollback.id]);
+    expect(event.mock.calls.filter(([value]) => value.message === "fallback_cause_merged")).toEqual([
+      [expect.objectContaining({ data: {
+        candidateIds: [reserve.id, release.id],
+        matches: [{ leftId: reserve.id, rightId: release.id, leftAnchor: reserve.anchor, rightAnchor: release.anchor,
+          leftReferencedRange: [54, 60], rightReferencedRange: [44, 46] }]
+      } })]
+    ]);
+
+    const reversed = await compose({ ...verified, verified: [...verified.verified].reverse() });
+    expect(reversed.findings).toEqual(result.findings);
+    const modelEvents = vi.fn();
+    const modelResult = await compose(verified, modelEvents, false);
+    expect(modelResult.findings).toHaveLength(3);
+    expect(modelEvents.mock.calls.some(([value]) => value.message === "fallback_cause_merged")).toBe(false);
+  });
+
+  it("keeps similar diagnoses separate when reciprocal changed-line links are absent", async () => {
+    const [reserve, release] = findings();
+    const withoutReferences = (finding: CandidateFinding) => ({ ...finding, evidence: { changedCode: finding.evidence.changedCode } });
+    const withNumericValue = (finding: CandidateFinding, value: number) => ({
+      ...finding, evidence: { ...finding.evidence, relatedCode: [{ path, lines: `const maxSlots = ${value}`, whyRelevant: "Sets the capacity." }] }
+    });
+    for (const pair of [[reserve, withoutReferences(release)], [withoutReferences(reserve), withoutReferences(release)],
+      [withNumericValue(reserve, 58), withNumericValue(release, 45)]]) {
+      const result = await compose({ verified: pair, verdicts: [] });
+      expect(result.findings).toHaveLength(2);
+    }
+  });
+
+  it("preserves the highest severity and withholds conflicting remedies", async () => {
+    const [reserve, release] = findings();
+    release.severity = "high";
+    for (const [finding, suggestionText] of [[reserve, "Release the slot on error."], [release, "Reserve only after verification."]] as const) {
+      finding.suggestedFix = suggestionText;
+      finding.suggestionAssessments = { suggestedFix: {
+        status: "supported", suggestionText, rationale: "Verified against the slot contract.",
+        contractCheck: { status: "established", requirement: "Return reusable slots to the pool." },
+        evidence: [{ path, lines: String(finding.anchor!.line), whyRelevant: "Shows the slot lifetime." }]
+      } };
+    }
+    const result = await compose({ verified: [reserve, release], verdicts: [] });
+    expect(result.findings).toHaveLength(1);
+    const merged = result.findings[0]!;
+    expect(merged.severity).toBe("high");
+    expect(merged.mergedSeverities).toEqual(expect.arrayContaining(["high", "medium"]));
+    expect(merged.finalBody).toContain("Remediation remains unreconciled");
+    expect(merged.finalBody).not.toContain(reserve.suggestedFix);
+    expect(merged.finalBody).not.toContain(release.suggestedFix);
+  });
+
+  it("does not let reciprocal links through a middle finding merge an unlinked pair", async () => {
+    const [reserve, release, rollback] = findings();
+    const third: CandidateFinding = {
+      ...rollback, title: release.title,
+      evidence: { ...rollback.evidence, relatedCode: [{ path, lines: "54–60", whyRelevant: "Shows the release path." }] }
+    };
+    const result = await compose({ verified: [third, release, reserve], verdicts: [] });
+    expect(result.findings.map(finding => [...finding.mergedCandidateIds].sort())).toEqual([[release.id, reserve.id], [third.id]]);
+  });
+});
