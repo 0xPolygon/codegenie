@@ -1,4 +1,4 @@
-import { packetHasRepositoryTools } from "./packet-tools.js";
+import { packetHasRepositoryTools } from "../util/packet-tools.js";
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
