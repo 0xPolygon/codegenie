@@ -21,7 +21,7 @@ import type {
   ToolCallRecord
 } from "../types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "./telemetry-recorder.js";
-import { stripCredentials } from "./redaction.js";
+import { stripCredentialsAtSink } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import { STAGE_LABELS, STAGES } from "../review-stages.js";
@@ -611,7 +611,7 @@ class RunTelemetryImpl {
 
   private log(level: LogLevel, event: Omit<LogEvent, "timestamp" | "level">): void {
     if (level === "warn" || level === "error") {
-      process.stderr.write(stripCredentials(`[${level}] ${event.stage}: ${event.message}\n`));
+      process.stderr.write(stripCredentialsAtSink(`[${level}] ${event.stage}: ${event.message}\n`));
     }
 
     if (!this.config.enabled || LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[this.config.logLevel]) {
@@ -2236,7 +2236,7 @@ function createRunId(date: Date): string {
 }
 
 function serialize(data: unknown, space?: number): string {
-  return JSON.stringify(canonicalize(stripCredentials(data)), null, space);
+  return JSON.stringify(canonicalize(stripCredentialsAtSink(data)), null, space);
 }
 
 function durationBetween(startIso: string, endIso: string): number {

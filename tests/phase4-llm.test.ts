@@ -5061,6 +5061,43 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it("keeps sink-only secret variants in nudge and retained evidence while redacting their persisted copy", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-sink-variant-"));
+    const escaped = "secret\\u003cinside\\u003elong-value";
+    const component = "short-key-123";
+    registerSecret("secret<inside>long-value");
+    registerSecret(`BEGIN\n${component}\nEND`);
+    const source = `literal ${escaped} ${component}`;
+    const tool: ToolDefinition = { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: source, rawSource: source, sourceLineRange: [1, 1],
+        meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "head", deliveryStatus: "full", lookupStatus: "found" } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: { path: source } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    let target = "";
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("sink-variants"), tools: [tool],
+        toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
+        finalization: { buildPostToolNudge: ({ lastToolResults }) => { target = lastToolResults[0]?.target ?? ""; return `inspect ${target}`; } },
+        onToolResults: rows => captured.push(...rows) });
+      expect(target).toContain(source);
+      expect(adapter.contexts[1]).toContain(component);
+      expect(captured[0]?.repositoryEvidence?.[0]?.text).toBe(source);
+      await run.recorder.writeDebug("llm-calls", "variant-evidence", { target, evidence: captured[0]?.repositoryEvidence });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
+      expect(stored).not.toContain("u003cinside");
+      expect(stored).not.toContain(component);
+      expect(stored).toContain("[redacted:secret]");
+    } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("redacts multiline secret components in separately persisted records", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codegenie-multiline-secret-"));
     registerSecret("BEGIN\nshort-key-123\nEND");

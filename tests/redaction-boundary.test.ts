@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearRegisteredSecretsForTests, redactThenTruncate, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
+import { clearRegisteredSecretsForTests, redactThenTruncate, registerSecret, stripCredentials, stripCredentialsAtSink } from "../src/telemetry/redaction.js";
 import { truncateDiagnostic } from "../src/util/errors.js";
 
 afterEach(clearRegisteredSecretsForTests);
@@ -8,13 +8,13 @@ describe("redaction before text caps", () => {
   const secret = "uniqueCredentialABCDEFGHIJKL987654321";
   it("redacts multiline secret components of at least six characters on either page", () => {
     registerSecret("BEGIN\nshort-key-123\nEND");
-    expect(stripCredentials("BEGIN\nshort-key-123")).not.toContain("short-key-123");
-    expect(stripCredentials("short-key-123\nEND")).not.toContain("short-key-123");
+    expect(stripCredentialsAtSink("BEGIN\nshort-key-123")).not.toContain("short-key-123");
+    expect(stripCredentialsAtSink("short-key-123\nEND")).not.toContain("short-key-123");
     registerSecret("-----BEGIN PRIVATE KEY-----\nYWJjZGVmZ2hpamtsbW5vcA==\n-----END PRIVATE KEY-----");
-    expect(stripCredentials("YWJjZGVmZ2hpamtsbW5vcA==\n-----END PRIVATE KEY-----")).not.toContain("YWJjZGVmZ2hpamtsbW5vcA==");
+    expect(stripCredentialsAtSink("YWJjZGVmZ2hpamtsbW5vcA==\n-----END PRIVATE KEY-----")).not.toContain("YWJjZGVmZ2hpamtsbW5vcA==");
     registerSecret("BEGIN\nX\nlong-secret-line");
-    expect(stripCredentials("BEGIN\nX\n")).toContain("X"); // Components below the existing six-character registration floor remain visible.
-    expect(stripCredentials("X\nlong-secret-line")).not.toContain("long-secret-line");
+    expect(stripCredentialsAtSink("BEGIN\nX\n")).toContain("X"); // Components below the existing six-character registration floor remain visible.
+    expect(stripCredentialsAtSink("X\nlong-secret-line")).not.toContain("long-secret-line");
   });
   it.each([1, 4, 13, 20, 0])("does not persist a registered secret with %i characters before the old 2,000-character cut", before => {
     registerSecret(secret);
@@ -46,7 +46,7 @@ describe("redaction before text caps", () => {
   });
   it("redacts overlapping registered values before either replacement obscures the other", () => {
     registerSecret("ABCDEF"); registerSecret("CDEFGH");
-    expect(stripCredentials("prefix ABCDEFGH suffix")).toBe("prefix [redacted:secret] suffix");
+    expect(stripCredentialsAtSink("prefix ABCDEFGH suffix")).toBe("prefix [redacted:secret] suffix");
   });
   it("preserves ordinary text and identifier boundaries and does not split surrogate pairs", () => {
     registerSecret(secret);

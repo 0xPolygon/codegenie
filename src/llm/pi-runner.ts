@@ -29,7 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
-import { redactThenTruncate, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
+import { redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage } from "../provider/provider-services.js";
@@ -1357,7 +1357,7 @@ function toolTargetSummary(toolCall: PiToolCall, recorded = false): string {
 }
 
 function firstMeaningfulLine(text: string, recorded = false): string | undefined {
-  for (const line of (recorded ? stripCredentials(text) : text).split(/\r?\n/u)) {
+  for (const line of (recorded ? stripCredentialsAtSink(text) : text).split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("```") || trimmed.startsWith("The following block is")) {
       continue;
@@ -4094,7 +4094,7 @@ function providerFailureSummary(raw: string, status: number | undefined, body: R
   }
   const message = body?.message;
   const summary = typeof message === "string" && message.trim().length > 0 ? message : raw;
-  const collapsed = stripCredentials(summary).replace(/\s+/gu, " ").trim();
+  const collapsed = stripCredentialsAtSink(summary).replace(/\s+/gu, " ").trim();
   if (collapsed.length === 0) {
     return status !== undefined ? `HTTP ${status}` : undefined;
   }

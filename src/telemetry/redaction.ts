@@ -1,6 +1,6 @@
 const registeredSecrets = new Set<string>();
 // Multiline component lines are redacted at telemetry sinks.
-const registeredSecretLines = new Set<string>();
+const sinkOnlySecrets = new Set<string>();
 
 const URL_USERINFO_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi;
 const AUTH_HEADER_PATTERN = /\b(Authorization\s*:\s*)([^\r\n]+)/gi;
@@ -26,11 +26,12 @@ export function registerSecret(value: string | undefined | null): void {
   }
   const trimmed = value.trim();
   if (trimmed.length >= 6) {
-    addSecretVariants(registeredSecrets, trimmed);
+    registeredSecrets.add(trimmed);
+    addSecretVariants(sinkOnlySecrets, trimmed);
     if (/[\r\n]/u.test(trimmed)) {
       for (const line of trimmed.split(/\r?\n|\r/u)) {
         const component = line.trim();
-        if (component.length >= 6) addSecretVariants(registeredSecretLines, component);
+        if (component.length >= 6) addSecretVariants(sinkOnlySecrets, component);
       }
     }
   }
@@ -46,16 +47,21 @@ function addSecretVariants(target: Set<string>, value: string): void {
 
 export function clearRegisteredSecretsForTests(): void {
   registeredSecrets.clear();
-  registeredSecretLines.clear();
+  sinkOnlySecrets.clear();
 }
 
 export function stripCredentials<T>(input: T): T {
-  return stripValue(input, new WeakSet()) as T;
+  return stripValue(input, new WeakSet(), false) as T;
+}
+
+/** Include additional component and encoded variants only for persisted output. */
+export function stripCredentialsAtSink<T>(input: T): T {
+  return stripValue(input, new WeakSet(), true) as T;
 }
 
 /** Redact before applying a character cap, including incomplete credential tails. */
 export function redactThenTruncate(text: string, maxChars: number, marker = "", preserveUtf16Boundary = false): string {
-  const redacted = stripCredentials(text);
+  const redacted = stripCredentialsAtSink(text);
   const limit = Math.max(0, Math.floor(maxChars));
   if (redacted.length <= limit) return redacted;
   const suffix = marker.slice(0, limit);
@@ -65,7 +71,7 @@ export function redactThenTruncate(text: string, maxChars: number, marker = "", 
   let prefix = redacted.slice(0, end);
   if (suffix) prefix = prefix.trimEnd();
   let registeredStart = prefix.length;
-  for (const secret of [...registeredSecrets, ...registeredSecretLines]) {
+  for (const secret of [...registeredSecrets, ...sinkOnlySecrets]) {
     for (let size = Math.min(secret.length - 1, prefix.length); size >= 4; size--) {
       if (prefix.endsWith(secret.slice(0, size))) { registeredStart = Math.min(registeredStart, prefix.length - size); break; }
     }
@@ -84,7 +90,7 @@ export function redactThenTruncate(text: string, maxChars: number, marker = "", 
     const replacement = "[REDACTED]".slice(0, Math.max(0, limit - suffix.length));
     prefix = prefix.slice(0, Math.min(redactStart, Math.max(0, limit - suffix.length - replacement.length))) + replacement;
   }
-  const final = stripCredentials(prefix);
+  const final = stripCredentialsAtSink(prefix);
   let finalEnd = Math.max(0, limit - suffix.length);
   if (!preserveUtf16Boundary && finalEnd > 0 && /[\uD800-\uDBFF]/u.test(final[finalEnd - 1] ?? "") && /[\uDC00-\uDFFF]/u.test(final[finalEnd] ?? "")) finalEnd--;
   return final.slice(0, finalEnd) + suffix;
@@ -96,7 +102,7 @@ export type RedactionSummary = {
 };
 
 export function stripCredentialsWithSummary<T>(input: T): { value: T; summary: RedactionSummary } {
-  const value = stripCredentials(input);
+  const value = stripCredentialsAtSink(input);
   const markerCounts = countRedactionMarkers(stableInspectableText(value));
   return {
     value,
@@ -107,9 +113,9 @@ export function stripCredentialsWithSummary<T>(input: T): { value: T; summary: R
   };
 }
 
-function stripValue(input: unknown, active: WeakSet<object>): unknown {
+function stripValue(input: unknown, active: WeakSet<object>, sink: boolean): unknown {
   if (typeof input === "string") {
-    return stripString(input);
+    return stripString(input, sink);
   }
 
   if (Array.isArray(input)) {
@@ -118,7 +124,7 @@ function stripValue(input: unknown, active: WeakSet<object>): unknown {
     }
     active.add(input);
     try {
-      return input.map((item) => stripValue(item, active));
+      return input.map((item) => stripValue(item, active, sink));
     } finally {
       active.delete(input);
     }
@@ -137,7 +143,7 @@ function stripValue(input: unknown, active: WeakSet<object>): unknown {
 
       const output: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(input)) {
-        output[key] = stripValue(value, active);
+        output[key] = stripValue(value, active, sink);
       }
       return output;
     } finally {
@@ -148,11 +154,17 @@ function stripValue(input: unknown, active: WeakSet<object>): unknown {
   return input;
 }
 
-function stripString(input: string): string {
+function stripString(input: string, sink: boolean): string {
+  if (!sink) {
+    let output = input;
+    for (const secret of registeredSecrets) output = output.split(secret).join("[redacted:secret]");
+    for (const [pattern, replacement] of CREDENTIAL_RULES) output = output.replace(pattern, replacement);
+    return output;
+  }
   // Match all registered values against the original input: replacing one
   // first can otherwise hide an overlapping secret from later replacements.
   const spans: Array<[number, number]> = [];
-  for (const secret of [...registeredSecrets, ...registeredSecretLines]) {
+  for (const secret of [...registeredSecrets, ...sinkOnlySecrets]) {
     for (let start = input.indexOf(secret); start >= 0; start = input.indexOf(secret, start + 1)) spans.push([start, start + secret.length]);
   }
   spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
