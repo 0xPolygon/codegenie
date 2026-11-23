@@ -14,13 +14,13 @@ should_find:
   path: src/pipeline/composer.ts
   lineRange: [346, 406]
   severityAtLeast: low
-  failureModePattern: '(?:\b(?:artifact|writeArtifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|writeArtifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b)'
+  failureModePattern: '(?:\b(?:artifact|writeArtifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|writeArtifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b|^(?=[\s\S]*\b(?:i/o\s+error|disk\s+(?:is\s+)?full|ENOSPC)\b)(?=[\s\S]*\b(?:sav(?:e|es|ed|ing)|writ(?:e|es|ing|ten))\b[\s\S]{0,80}\b(?:final-findings|composition-sources|final-selection|human-attention-notes)\.json\b))'
 - id: write-failure-loses-verified-output-runner
   tier: optional
   path: src/pipeline/review-runner.ts
   lineRange: [400, 416]
   severityAtLeast: low
-  failureModePattern: '(?:\b(?:artifact|writeArtifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|writeArtifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b)'
+  failureModePattern: '(?:\b(?:artifact|writeArtifact|persist\w*)\b[^.\n]{0,100}\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b|\b(?:fail\w*|throw\w*|error\w*|reject\w*)\b[^.\n]{0,100}\b(?:artifact|writeArtifact|persist\w*)\b|\b(?:write|writing|writes)\b\s+(?:itself\s+)?(?:fail\w*|throw\w*|error\w*)\b|\bfail\w*\s+to\s+write\b|\bwrite\s+(?:fail\w*|error\w*)\b|^(?=[\s\S]*\b(?:i/o\s+error|disk\s+(?:is\s+)?full|ENOSPC)\b)(?=[\s\S]*\b(?:sav(?:e|es|ed|ing)|writ(?:e|es|ing|ten))\b[\s\S]{0,80}\b(?:final-findings|composition-sources|final-selection|human-attention-notes)\.json\b))'
 - id: primitive-composer-rejection
   path: src/pipeline/composer.ts
   lineRange: [400, 408]
