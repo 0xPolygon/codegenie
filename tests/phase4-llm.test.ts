@@ -923,7 +923,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       packetId: "packet-debug",
       provider: { provider: "fake", model: "fake-model", reasoning: "high" },
       request: {
-        runnerMessageVersion: "pi-runner-loop-v24",
+        runnerMessageVersion: "pi-runner-loop-v25",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
         schemaVersion: 5,
@@ -5462,6 +5462,49 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "tool_budget_extension_granted")).toHaveLength(0);
   });
 
+  it.each([
+    { profile: "standard", softCalls: 4, softChars: 10_000, batches: [[1934], [5875], [859, 6337, 979]], calls: 3, rounds: 1, chars: 4016 },
+    { profile: "investigate", softCalls: 6, softChars: 12_000, batches: [[1228], [2568, 6112, 3073, 1461, 340]], calls: 6, rounds: 2, chars: 9218 }
+  ])("shows positive hard calls, rounds and characters after the $profile target reaches zero", async fixture => {
+    const telemetry = fakeTelemetry();
+    const lengths = new Map<string, number>();
+    const assistantTurns = fixture.batches.map((batch, round) => assistant(batch.map((length, index): PiToolCall => {
+      const id = `read-${round}-${index}`;
+      const directory = round === 0;
+      lengths.set(directory ? "directory" : id, length);
+      return { type: "toolCall", id, name: "read_change", arguments: directory ? {} : { hunkId: id } };
+    })));
+    const adapter = scriptedAdapter([...assistantTurns, assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const scopedNotice = "The local investigation target has been reached. Continue only while a removed or added line in this packet's hunks is still unaccounted for; then submit.";
+    await runner.runStructured({ ...submitReviewRequest("soft-budget-fixture"), finalization: { softTargetNotice: scopedNotice }, tools: [{
+      name: "read_change", description: "read", parameters: Type.Object({ hunkId: Type.Optional(Type.String()) }),
+      execute: async args => {
+        const { hunkId } = args as { hunkId?: string };
+        return { text: "x".repeat(lengths.get(hunkId ?? "directory")!) };
+      }
+    }], toolBudget: {
+      maxToolCalls: fixture.softCalls, maxInvestigationRounds: 2, maxResultChars: fixture.softChars,
+      maxDiscoveryResultChars: 4000, reservedSourceResultChars: 4000
+    } });
+
+    const expected = { toolCalls: fixture.calls, investigationRounds: fixture.rounds, resultChars: fixture.chars };
+    const finalNotice = JSON.parse(adapter.contexts.at(-1)!).at(-1).content as string;
+    expect(finalNotice).toContain("Local investigation target remaining: 0 tool calls; 0 investigation rounds; 0 result characters");
+    expect(finalNotice).toContain(`Hard limits remaining: ${expected.toolCalls} tool calls; ${expected.investigationRounds} investigation rounds; ${expected.resultChars} result characters.`);
+    expect(finalNotice).toContain(scopedNotice);
+    expect(finalNotice).not.toContain("Finish with the evidence collected where possible");
+    expect(telemetry.events.some(event => event.message === "post_tool_close_nudge")).toBe(false);
+    expect(adapter.toolNames.at(-1)).toContain("read_change");
+    expect(telemetry.events.filter(event => event.message === "tool_budget_remaining").at(-1)?.data).toMatchObject({
+      hardRemaining: expected, softTargetReached: true
+    });
+    expect(telemetry.modelCalls.at(-1)?.kind).toBe("tool-continuation");
+    expect(telemetry.toolCalls.every(call => call.status === "ok")).toBe(true);
+  });
+
   it("bounds invalid requests separately without consuming source-call slots", async () => {
     const telemetry = fakeTelemetry();
     const read = vi.fn(async () => ({ text: "source" }));
@@ -5865,7 +5908,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await runner.runStructured({ ...submitReviewRequest("cg-12-budget"), tools: [tool],
       toolBudget: { maxToolCalls: 6, maxInvestigationRounds: 4, maxResultChars: 12_000 } });
     expect(execute).toHaveBeenCalledTimes(3);
-    expect(adapter.contexts[1]).toContain("Hard result characters remaining: 105.");
+    expect(adapter.contexts[1]).toContain("Hard limits remaining: 10 tool calls; 7 investigation rounds; 105 result characters.");
     expect(adapter.contexts[2]).toContain("The result budget is used up; further calls will be refused.");
     expect(adapter.contexts[2]).toContain("next undelivered line: 405");
     expect(adapter.toolNames[2]).toEqual(["submit_review"]);

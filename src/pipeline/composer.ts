@@ -37,6 +37,7 @@ import {
   buildHumanAttentionNotes,
   humanAttentionArtifact,
   selectHumanAttentionGroups,
+  suppressRefutedPromotedHints,
   MAX_HUMAN_ATTENTION_NOTES
 } from "./human-attention.js";
 
@@ -99,7 +100,8 @@ export async function dedupeRankAndComposeReview(
   const publishable = verified.verified.map((candidate) => withholdRepresentativeAnchor(candidate, telemetry));
   const pretrim = pretrimComposerInput(publishable);
   const groups = groupFindings(pretrim.kept, packetsById);
-  const attention = buildHumanAttentionNotes(opts.packetResults ?? [], {
+  const attentionResults = suppressRefutedPromotedHints(opts.packetResults ?? [], verified.verdicts, telemetry);
+  const attention = buildHumanAttentionNotes(attentionResults, {
     packets: opts.packets ?? [],
     ...(opts.repositoryPaths !== undefined ? { repositoryPaths: opts.repositoryPaths } : {}),
     ...(opts.diff !== undefined ? { diff: opts.diff } : {}),

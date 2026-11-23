@@ -161,6 +161,9 @@ describe("read_change", () => {
       expect(prompt.indexOf(assigned.id)).toBeLessThan(prompt.indexOf(sibling.id));
       expect(prompt.length).toBeLessThanOrEqual(2400);
       expect(prompt).toContain("use read_change without a selector");
+      const scope = "Entries marked [current packet] are this review's hunks; other entries are optional context from the same change.";
+      expect(prompt.split("\n")[1]).toBe(scope);
+      expect(first.text).not.toContain(scope);
       expect(fixture.tools.readChangePromptDirectory([assigned.id], false)).not.toContain("use read_change");
       const diff = await fixture.change({ hunkId: sibling.id });
       expect(diff.meta?.deliveryStatus).toBe("full");

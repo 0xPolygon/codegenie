@@ -39,9 +39,10 @@ export class ReadChangeService {
     const inPacket = (row: DirectoryRow) => row.hunkId !== undefined && current.has(row.hunkId);
     const prioritized = [...directory.filter(inPacket).map(markCurrent), ...directory.filter(row => !inPacket(row))];
     const heading = this.directoryHeading();
-    const retained = fitDirectoryRows(prioritized, MAX_PROMPT_DIRECTORY_CHARS - heading.length - 170);
+    const scope = "Entries marked [current packet] are this review's hunks; other entries are optional context from the same change.";
+    const retained = fitDirectoryRows(prioritized, MAX_PROMPT_DIRECTORY_CHARS - heading.length - scope.length - 171);
     const omitted = prioritized.length - retained.length;
-    return [heading, ...retained.map(row => row.text),
+    return [heading, scope, ...retained.map(row => row.text),
       ...(omitted ? [`Omitted ${omitted} change entries${canContinue ? "; use read_change without a selector to page through the directory" : ""}.`] : [])
     ].join("\n");
   }
