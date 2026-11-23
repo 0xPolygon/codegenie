@@ -87,6 +87,33 @@ describe("review command pipeline", () => {
     expect(stdout).toContain("Fake finding in app.ts");
   });
 
+  it.each([
+    ["--base HEAD~1", ["--base", "HEAD~1"], "HEAD~1", "HEAD"],
+    ["--base HEAD^ --head HEAD", ["--base", "HEAD^", "--head", "HEAD"], "HEAD^", "HEAD"],
+    ["HEAD^", ["HEAD^"], "HEAD~2", "HEAD^"]
+  ] as const)("reviews the requested ancestry revision with %s", async (_label, args, base, head) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "first");
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "second");
+    writeRepoFile(repo, "app.ts", "export const value = 3;\n");
+    commitAll(repo, "third");
+
+    const parsed = parseReviewCommand(["review", ...args], {
+      repoRoot: repo,
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const result = await executeReviewCommand(enableTelemetry(parsed));
+    const resolved = JSON.parse(readFileSync(runFilePath(result.runDir, "resolved-input.json"), "utf8"));
+    expect(resolved).toMatchObject({
+      baseRef: git(repo, ["rev-parse", base]).trim(),
+      headSha: git(repo, ["rev-parse", head]).trim()
+    });
+    expect(result.review.coverage).toMatchObject({ totalHunks: 1, reviewedHunks: 1, partial: false });
+  });
+
   it("forwards repo config trust warnings into stage-0 logger and telemetry records", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "codegenie.toml", "[llm]\nprovider = \"ignored\"\n");

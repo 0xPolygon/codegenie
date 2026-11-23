@@ -59,7 +59,7 @@ export async function resolveReviewCommandTarget(
 
   if (target.mode === "single_ref") {
     await ensureWorktree(git);
-    const branch = await resolveBranchWithShallowRecovery(target.ref, git, telemetry);
+    const branch = /[~^]/u.test(target.ref) ? undefined : await resolveBranchWithShallowRecovery(target.ref, git, telemetry);
     if (branch) {
       return resolveBranchReview(
         { mode: "branch", branchName: target.ref, ...(target.baseBranch ? { baseBranch: target.baseBranch } : {}) },
@@ -420,6 +420,10 @@ async function resolveBaseBranch(
   telemetry: TelemetryRecorder
 ): Promise<ResolvedBranch> {
   if (input.baseBranch !== undefined) {
+    if (/[~^]/u.test(input.baseBranch)) {
+      const sha = await revParseWithShallowRecovery(input.baseBranch, git, telemetry);
+      return { sha, ref: sha, shortName: input.baseBranch };
+    }
     return resolveRequiredBase(input.baseBranch, git, telemetry, "CLI --base");
   }
   if (config.git.baseBranch !== undefined) {

@@ -5,6 +5,7 @@ import {
   assertSafeLogRange,
   assertSafePath,
   assertSafePathspec,
+  assertSafeCommitRevision,
   assertSafeRef,
   assertSafeRefspec,
   runGit,
@@ -114,9 +115,9 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       });
     },
     async revParse(ref: string): Promise<string> {
-      assertSafeRef(ref);
+      assertSafeCommitRevision(ref);
       return trimSha(
-        await run(["rev-parse", "--verify", `${ref}^{commit}`], {
+        await run(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
           errorCode: "git_ref_missing"
         })
       );
