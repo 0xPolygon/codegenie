@@ -500,7 +500,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource, exactPath, options.includeObjectMethods);
         }
         const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto", exactPath, options.includeObjectMethods);
-        if (head.resultCount && head.resultCount > 0 && head.meta.lookupStatus !== "unavailable") {
+        if (head.resultCount && head.resultCount > 0 && !["unavailable", "incomplete"].includes(head.meta.lookupStatus ?? "")) {
           return withSourceMeta(head, "auto", "head", false, false);
         }
         const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto", exactPath, options.includeObjectMethods);
@@ -512,9 +512,11 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           const meta = { ...measurement.meta, candidateScans };
           return { ...measurement, meta, value: { ...measurement.value, meta } };
         };
-        if (base.resultCount && base.resultCount > 0 && base.meta.lookupStatus !== "unavailable") {
+        if (base.resultCount && base.resultCount > 0 && !["unavailable", "incomplete"].includes(base.meta.lookupStatus ?? "")) {
           return withScans(withSourceMeta(base, "auto", "base", true, head.meta.lookupStatus === "not_found"));
         }
+        if (head.meta.lookupStatus === "incomplete") return withScans(withSourceMeta(head, "auto", "head", false, false));
+        if (base.meta.lookupStatus === "incomplete") return withScans(withSourceMeta(base, "auto", "base", true, false));
         if (head.meta.lookupStatus === "unavailable") return withScans(withSourceMeta(head, "auto", "head", false, false));
         return withScans(withSourceMeta(base, "auto", "base", true, false));
       }
@@ -715,8 +717,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         nextLine: firstObject.symbol.lineRange[0] });
     }
     const verifiedCount = cappedDefinitions.definitions.filter(hit => !isTextFallbackHit(hit)).length;
+    const discoveryIncomplete = omittedByCap + omittedByDefinitionCap + omittedCandidatePaths + omittedDiscoveryMatches > 0
+      && objectMemberCount === 0 && definitions.every(isTextFallbackHit);
     const definitionLookupStatus =
-      cappedDefinitions.definitions.length === 0
+      discoveryIncomplete ? "incomplete" : cappedDefinitions.definitions.length === 0
         ? cappedDefinitions.omittedCount > 0 ? "ambiguous" : unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0 ? "unavailable" : "not_found"
         : verifiedCount === 0 ? "unavailable"
           : (objectFallbackUsed ? objectMemberCount : cappedDefinitions.definitions.length) > 1 ? "ambiguous" : "found";

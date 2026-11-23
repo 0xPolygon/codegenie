@@ -982,7 +982,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 if (sourceRead
                   && outcome.status === "ok" && !outcome.result.isError
                   && outcome.result.meta?.deliveryStatus !== "empty"
-                  && !["not_found", "ambiguous", "file_missing", "unavailable"].includes(outcome.result.meta?.lookupStatus ?? "")) {
+                  && !["not_found", "ambiguous", "incomplete", "file_missing", "unavailable"].includes(outcome.result.meta?.lookupStatus ?? "")) {
                   sourceResultCharsUsed += resultText.length;
                 }
               }

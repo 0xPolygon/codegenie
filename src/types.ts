@@ -384,7 +384,7 @@ export type ToolResultMeta = {
   discoveryLimited?: boolean;
   searchDelivery?: SearchDelivery;
   pathListDelivery?: PathListDelivery;
-  lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
+  lookupStatus?: "found" | "not_found" | "ambiguous" | "incomplete" | "file_missing" | "unavailable";
   lookupNote?: string;
   unparsedCandidatePaths?: string[];
   incompleteCandidatePaths?: string[];
