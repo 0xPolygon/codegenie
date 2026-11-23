@@ -19,7 +19,7 @@ Review base `644608d547ad4d1442b24acd55c11c00b9ba02a8` (the parent) against head
 
 ### Expected finding
 
-The new schema-invalid reason recorded on model calls is the validator or semantic-validation message, truncated but not passed through credential redaction. Composition validation details echo model-supplied unknown references, so a credential the model writes into a submission can be persisted in model-call records. Truncating before redaction can also leave a partial key that the redaction patterns no longer match.
+Composition validation echoes unknown model-supplied references in an error message. The runner caps that reason before handing it to the telemetry interface as the raw model-call `errorMessage`, so that raw record can include sensitive text. The standard on-disk `model-calls.jsonl` writer applies `stripCredentials` during serialization (`src/telemetry/run-artifacts.ts:828-833,2256-2258`). It can scrub a complete recognized credential, but the earlier cap can cut the credential into a fragment the serializer no longer recognizes. Credit a report identifying the unsafe raw diagnostic or partial material surviving this redaction order. The default disk stream does not persist a complete recognized credential merely because it was present in the raw record.
 
 ### Anchor
 
