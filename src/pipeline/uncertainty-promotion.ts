@@ -29,6 +29,8 @@ type PromotionInput = {
 export type UncertaintyPromotionSummary = {
   considered: number;
   promoted: number;
+  originalLimit: number;
+  maxPromotions: number;
   laneLimited: number;
   representedRelatedSignals: number;
   unrepresentedLaneLimited: number;
@@ -163,6 +165,8 @@ export async function promoteUncertaintiesForVerification(
   const summary: UncertaintyPromotionSummary = {
     considered: sources.length,
     promoted: selected.length,
+    originalLimit,
+    maxPromotions,
     laneLimited: laneLimited.length,
     representedRelatedSignals: relatedAssociations.size,
     unrepresentedLaneLimited: laneLimited.length,
@@ -182,6 +186,7 @@ export async function promoteUncertaintiesForVerification(
       laneLimited: summary.laneLimited,
       representedRelatedSignals: summary.representedRelatedSignals,
       unrepresentedLaneLimited: summary.unrepresentedLaneLimited,
+      originalLimit,
       maxPromotions,
       notPromoted: summary.notPromoted,
       promotedCandidateIds: summary.promotedCandidateIds

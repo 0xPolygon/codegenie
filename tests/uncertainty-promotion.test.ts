@@ -175,6 +175,37 @@ describe("uncertainty promotion", () => {
     expect(result.summary.decisions.filter((decision) => decision.selectedBy === "additional_locality")).toHaveLength(2);
   });
 
+  it.each([
+    { packetCount: 10, boost: 0.5, original: 1, max: 2 },
+    { packetCount: 10, boost: 2, original: 4, max: 8 },
+    { packetCount: 101, boost: 0.5, original: 2, max: 2 }
+  ])("scales both promotion limits without replacing original selections: $boost / $packetCount", async ({ packetCount, boost, original, max }) => {
+    const packets = Array.from({ length: packetCount }, (_, index) => fakePacket(
+      `boost-${index}`, `src/boost-${index}.ts`,
+      { symbol: `changed${index}`, line: `+ return changed${index}(value)` }
+    ));
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => ({
+      packetId: packet.id, lenses: packet.lenses, findings: [], uncertainties: [], status: "completed",
+      followUpHints: index >= 10 ? [] : [{
+        question: `Does changed${index} allow a request when its authorization token is missing?`,
+        files: [packet.path], symbols: [`changed${index}`],
+        reason: "The changed authorization path affects the production access contract.",
+        confidence: "high", suggestedLenses: [], projectedSkillIds: []
+      }]
+    }));
+    const telemetry = captureTelemetry();
+    const result = await promoteUncertaintiesForVerification({ packets, packetResults, budgetBoost: boost }, telemetry.recorder);
+    expect(result.summary).toMatchObject({ originalLimit: original, maxPromotions: max, promoted: max });
+    const selected = result.summary.decisions.filter(decision => decision.promoted);
+    expect(selected.slice(0, original).every(decision => decision.selectedBy !== "additional_locality")).toBe(true);
+    expect(selected.slice(original).every(decision => decision.selectedBy === "additional_locality")).toBe(true);
+    expect(result.summary.decisions.filter(decision => decision.selectedBy === "additional_locality")).toHaveLength(max - original);
+    expect(telemetry.artifacts.get("uncertainty-promotion.json")).toMatchObject({ originalLimit: original, maxPromotions: max });
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "uncertainty_promotion", data: expect.objectContaining({ originalLimit: original, maxPromotions: max })
+    }));
+  });
+
   it("does not promote same-scope follow-ups when the packet already produced a finding", async () => {
     const packet = fakePacket("packet-existing", "src/divide.ts", {
       symbol: "divide",
