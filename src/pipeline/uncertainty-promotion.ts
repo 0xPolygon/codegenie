@@ -29,6 +29,8 @@ type PromotionInput = {
 export type UncertaintyPromotionSummary = {
   considered: number;
   promoted: number;
+  originalLimit: number;
+  maxPromotions: number;
   laneLimited: number;
   representedRelatedSignals: number;
   unrepresentedLaneLimited: number;
@@ -67,7 +69,7 @@ type PromotionSource = {
 
 type PromotionSourceKind = "uncertainty" | "follow_up_hint";
 type PromotionClass = "local_behavior_delta" | "broad_behavior_delta" | "test_boundary" | "security_boundary" | "other";
-type PromotionSelectionReason = "rank" | "local_behavior_delta_reserve";
+type PromotionSelectionReason = "rank" | "local_behavior_delta_reserve" | "additional_locality";
 type RankedPromotionSource = {
   source: PromotionSource;
   rank: number;
@@ -91,7 +93,9 @@ export async function promoteUncertaintiesForVerification(
 ): Promise<{ packetResults: PacketReviewResult[]; summary: UncertaintyPromotionSummary }> {
   const packetsById = new Map(input.packets.map((packet) => [packet.id, packet]));
   const sources = input.packetResults.flatMap((result) => promotionSources(result, packetsById));
-  const maxPromotions = promotionLimit(input.packetResults.length, input.budgetBoost ?? 1);
+  const boost = input.budgetBoost ?? 1;
+  const originalLimit = promotionLimit(input.packetResults.length, boost);
+  const maxPromotions = scaleBudgetValue(MAX_PROMOTIONS, boost);
   const decisions: PromotionDecision[] = [];
   const promotedByPacket = new Map<string, CandidateFinding[]>();
   const notPromoted: Record<string, number> = {};
@@ -106,10 +110,26 @@ export async function promoteUncertaintiesForVerification(
     return [rankPromotionSource(source)];
   }).sort((a, b) => b.rank - a.rank || a.source.question.localeCompare(b.source.question));
 
-  const selected = selectPromotionSources(eligible, maxPromotions);
+  const selected = selectPromotionSources(eligible, originalLimit);
+  const originalSet = new Set(selected.map((item) => item.source));
+  const initiallyUnselected = eligible.filter((item) => !originalSet.has(item.source));
+  // Keep existing winners and their associated signals stable. Only previously
+  // unrepresented questions can consume the additional verification slots.
+  const relatedAssociations = associateRelatedPromotionSignals(initiallyUnselected, selected);
+  const additional = initiallyUnselected
+    .filter((item) => !relatedAssociations.has(item.source))
+    .sort((a, b) => b.localityScore - a.localityScore || b.rank - a.rank || a.source.question.localeCompare(b.source.question))
+    .slice(0, Math.max(0, maxPromotions - selected.length));
+  const originalCount = selected.length;
+  selected.push(...additional.map((item): SelectedPromotionSource => ({ ...item, selectedBy: "additional_locality" })));
   const selectedSet = new Set(selected.map((item) => item.source));
   const unselected = eligible.filter((item) => !selectedSet.has(item.source));
-  const relatedAssociations = associateRelatedPromotionSignals(unselected, selected);
+  const newlyAssociated = associateRelatedPromotionSignals(
+    unselected.filter((item) => !relatedAssociations.has(item.source)), selected.slice(originalCount)
+  );
+  for (const [source, association] of newlyAssociated) {
+    relatedAssociations.set(source, { ...association, selectedIndex: association.selectedIndex + originalCount });
+  }
   const laneLimited = unselected.filter((item) => !relatedAssociations.has(item.source));
   for (const unselectedItem of unselected) {
     const association = relatedAssociations.get(unselectedItem.source);
@@ -145,6 +165,8 @@ export async function promoteUncertaintiesForVerification(
   const summary: UncertaintyPromotionSummary = {
     considered: sources.length,
     promoted: selected.length,
+    originalLimit,
+    maxPromotions,
     laneLimited: laneLimited.length,
     representedRelatedSignals: relatedAssociations.size,
     unrepresentedLaneLimited: laneLimited.length,
@@ -164,6 +186,7 @@ export async function promoteUncertaintiesForVerification(
       laneLimited: summary.laneLimited,
       representedRelatedSignals: summary.representedRelatedSignals,
       unrepresentedLaneLimited: summary.unrepresentedLaneLimited,
+      originalLimit,
       maxPromotions,
       notPromoted: summary.notPromoted,
       promotedCandidateIds: summary.promotedCandidateIds
