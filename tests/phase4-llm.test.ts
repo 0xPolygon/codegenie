@@ -5956,6 +5956,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(captured[0]?.repositoryEvidence).toMatchObject([{ path: "src/guard.ts", source: "head", lineRange: [1, 1],
         text: "export function guard() { return 1; }" }]);
       expect(adapter.contexts[1]).toContain("1\\texport function guard()");
+      expect(telemetry.toolCalls[0]?.args).toEqual(
+        path === "src/" ? { name: "guard", path, glob: "src/**" } : { name: "guard", path }
+      );
     } finally { fixture.dispose(); }
   });
 
