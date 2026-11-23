@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CliDisplayExit, parseReviewCommand } from "../src/cli/review-command.js";
+import { getCodegeniePaths } from "../src/config/paths.js";
 import { MAX_REVIEW_TIME_MINUTES } from "../src/config/schema.js";
+import { saveProviderSettings } from "../src/provider/provider-settings.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
@@ -109,9 +111,54 @@ describe("review command", () => {
     expect(parsed.config.cache.enabled).toBe(true);
   });
 
+  it.each(["openai-codex", "openrouter", undefined])(
+    "uses the qualified review model with stored provider %s",
+    (defaultProvider) => {
+      const ctx = testContext();
+      if (defaultProvider) {
+        saveProviderSettings({
+          defaultProvider,
+          defaultModel: defaultProvider === "openrouter" ? "openai/gpt-6-luna" : "gpt-6-luna",
+          defaultReasoning: "low"
+        }, getCodegeniePaths(ctx.homeOverride));
+      }
+
+      const parsed = parseReviewCommand(["review", "--model", "openai-codex/gpt-6-luna:high"], ctx);
+
+      expect(parsed.config.llm).toMatchObject({ provider: "openai-codex", model: "gpt-6-luna", reasoning: "high" });
+      expect(parsed.configSources).toMatchObject({
+        "llm.provider": "cli", "llm.model": "cli", "llm.reasoning": "cli"
+      });
+    }
+  );
+
+  it.each([
+    ["--provider", "openrouter", "--model", "openai/gpt-6-luna:high"],
+    ["--model", "openrouter/openai/gpt-6-luna:high"]
+  ])("preserves the provider-native slash in the model id (%s)", (...args) => {
+    const parsed = parseReviewCommand(["review", ...args], testContext());
+    expect(parsed.config.llm).toMatchObject({ provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high" });
+  });
+
+  it.each(["provider-settings", "environment", "user-config"] as const)(
+    "preserves an exact slash-containing OpenRouter model with the %s default",
+    (source) => {
+      const ctx = testContext();
+      const paths = getCodegeniePaths(ctx.homeOverride);
+      if (source === "provider-settings") saveProviderSettings({ defaultProvider: "openrouter" }, paths);
+      if (source === "environment") ctx.env.CODEGENIE_PROVIDER = "openrouter";
+      if (source === "user-config") writeFileSync(paths.configTomlPath, '[llm]\nprovider = "openrouter"\n');
+
+      const parsed = parseReviewCommand(["review", "--model", "openai/gpt-6-luna:high"], ctx);
+
+      expect(parsed.config.llm).toMatchObject({ provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high" });
+      expect(parsed.configSources).toMatchObject({ "llm.provider": source, "llm.model": "cli", "llm.reasoning": "cli" });
+    }
+  );
+
   it("accepts a :reasoning suffix on --model and rejects combining it with --reasoning", () => {
     const parsed = parseReviewCommand(["review", "feature", "--model", "deepseek/deepseek-v4.1-flash:max"], testContext());
-    expect(parsed.config.llm.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(parsed.config.llm).toMatchObject({ provider: "deepseek", model: "deepseek-v4.1-flash" });
     expect(parsed.config.llm.reasoning).toBe("max");
     expect(parsed.configSources["llm.reasoning"]).toBe("cli");
 

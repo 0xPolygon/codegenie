@@ -22,6 +22,21 @@ describe("git client", () => {
     } satisfies Partial<CodegenieError>);
   });
 
+  it("keeps ancestry syntax in commit resolution and out of named refs", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "file.txt", "base\n");
+    commitAll(repo, "base");
+    const client = createGitClient(repo);
+
+    await expect(client.revParse("HEAD^!")).rejects.toMatchObject({
+      code: "invalid_args",
+      message: expect.stringContaining("or a commit SHA")
+    });
+    await expect(client.revParse("HEAD^\n")).rejects.toMatchObject({ code: "invalid_args" });
+    await expect(client.resolveBranch("HEAD~1")).rejects.toMatchObject({ code: "invalid_args" });
+    expect(() => assertSafeRefspec("HEAD^:refs/heads/review")).toThrow(/invalid git ref characters/);
+  });
+
   it("redacts argv values in subprocess error messages", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "file.txt", "base\n");

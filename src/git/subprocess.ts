@@ -334,6 +334,18 @@ export function assertSafeRef(ref: string, label = "ref"): void {
   }
 }
 
+export function assertSafeCommitRevision(ref: string, label = "ref"): void {
+  const ancestry = typeof ref === "string" ? ref.search(/[~^]/u) : -1;
+  if (ancestry === -1) {
+    assertSafeRef(ref, label);
+    return;
+  }
+  assertSafeRef(ref.slice(0, ancestry), label);
+  if (/[^~^0-9]/u.test(ref.slice(ancestry))) {
+    throw new CodegenieError("invalid_args", `${label} must use an ancestry revision such as HEAD~1 or HEAD^, or a commit SHA in an explicit base/head review`);
+  }
+}
+
 export function assertSafePath(path: string, label = "path"): void {
   if (typeof path !== "string" || path.length === 0) {
     throw new CodegenieError("invalid_args", `${label} must be non-empty`);
