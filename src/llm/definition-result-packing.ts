@@ -27,7 +27,7 @@ export function packDefinitionPage(page: DefinitionPage, allowance: number): Too
     }
     for (const hit of hits.slice(0, bodyCount)) {
       if (hit.text === undefined || !hit.deliveredLineRange || hit.totalLines === undefined) continue;
-      lines.push(renderSourceBlockHeader(hit.symbol.path, page.sourceUsed, hit.deliveredLineRange, hit.totalLines));
+      lines.push(`${isTextFallbackHit(hit) ? "Unverified text lead: " : ""}${renderSourceBlockHeader(hit.symbol.path, page.sourceUsed, hit.deliveredLineRange, hit.totalLines)}`);
       lines.push(...hit.text.split("\n").map((line, index) => numberSourceLine(line, hit.deliveredLineRange![0] + index)));
       if (hit.nextLine !== undefined) lines.push(`Body continues: read_range ${hit.symbol.path}@${page.sourceUsed}:${hit.nextLine}-${hit.symbol.lineRange[1]}.`);
     }
