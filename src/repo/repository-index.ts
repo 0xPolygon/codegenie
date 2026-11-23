@@ -46,6 +46,7 @@ import { LanguageAdapterRegistry, treeFromParsed, walkNamed, lineRange } from ".
 import { findLikelyTestsForInput } from "./likely-tests.js";
 import { assemblePacketContext, readOutline } from "./packet-context.js";
 import { SearchBudgetError, searchDeliveryMeta, SearchService, type SearchEngine } from "./search.js";
+import { makeDefinitionPage, type DefinitionPage, type DefinitionPageOptions } from "./definition-page.js";
 import { SourceResolver } from "./source-resolver.js";
 import { findUsages as searchUsages, type UsagePage, type UsageSearchOptions } from "./usage-search.js";
 import { readSourceFileMap } from "./source-file-map.js";
@@ -476,16 +477,18 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
 
   async findDefinition(
     symbolName: string,
-    options: { pathGlob?: string; source?: SymbolLookupSourceSelector } = {}
+    options: { pathGlob?: string; exactPath?: string; source?: SymbolLookupSourceSelector } = {}
   ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }> {
     return this.measure(
       "find_definition",
-      { symbolName, glob: options.pathGlob, source: options.source?.kind },
+      { symbolName, glob: options.pathGlob, path: options.exactPath, source: options.source?.kind },
       7,
       async () => {
         if (symbolName.length === 0) {
           throw new CodegenieError("invalid_args", "symbolName must be non-empty");
         }
+        if (options.pathGlob !== undefined && options.exactPath !== undefined) throw new CodegenieError("invalid_args", "Choose a pathGlob or exactPath, not both.");
+        const exactPath = options.exactPath === undefined ? undefined : containPath(this.opts.resolver.repoRoot, options.exactPath, this.guardTelemetry("find_definition"));
         const pathGlob =
           options.pathGlob === undefined
             ? undefined
@@ -493,13 +496,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const requestedSource = options.source?.kind ?? "head";
         if (requestedSource !== "auto") {
           const exactSource: SourceSelector = requestedSource === "base" ? { kind: "base" } : { kind: "head" };
-          return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource);
+          return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource, exactPath);
         }
-        const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto");
+        const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto", exactPath);
         if (head.resultCount && head.resultCount > 0 && head.meta.lookupStatus !== "unavailable") {
           return withSourceMeta(head, "auto", "head", false, false);
         }
-        const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto");
+        const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto", exactPath);
         const candidateScans = {
           head: { unparsedCandidatePaths: head.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: head.meta.incompleteCandidatePaths ?? [] },
           base: { unparsedCandidatePaths: base.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: base.meta.incompleteCandidatePaths ?? [] }
@@ -517,12 +520,27 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     );
   }
 
+  async readDefinitionPage(name: string, options: DefinitionPageOptions = {}): Promise<DefinitionPage> {
+    const path = options.path === undefined ? undefined : containPath(this.opts.resolver.repoRoot, options.path, this.guardTelemetry("read_definition"));
+    const normalized = { ...options, ...(path !== undefined ? { path } : {}) };
+    const result = await this.findDefinition(name, { ...(path !== undefined ? { exactPath: path } : {}),
+      ...(options.source !== undefined ? { source: options.source } : {}) });
+    return makeDefinitionPage(name, normalized, result, this.opts.resolver.binding);
+  }
+
   private async findDefinitionAtSource(
     symbolName: string,
     pathGlob: string | undefined,
     source: SourceSelector,
-    requestedSource: "head" | "base" | "auto"
+    requestedSource: "head" | "base" | "auto",
+    exactPath?: string
   ): Promise<ToolMeasurement<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>> {
+    if (exactPath !== undefined && !(await this.limit(() => this.opts.resolver.readFile(exactPath, source)))) {
+      const meta: ToolResultMeta = { backend: "text", precision: "text", degraded: false,
+        lookupStatus: "file_missing", deliveryStatus: "empty", requestedSource, sourceUsed: source.kind,
+        unparsedCandidatePaths: [], incompleteCandidatePaths: [] };
+      return { value: { definitions: [], meta }, meta, args: { symbolName, path: exactPath, source: requestedSource }, resultCount: 0, resultChars: 0 };
+    }
     const discoveryName = bareIdentifierForDiscovery(symbolName);
     const grepOptions = {
       source,
@@ -531,12 +549,18 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       word: true,
       ...(pathGlob !== undefined ? { glob: pathGlob } : {})
     };
-    const discoveryMatches = await this.limit(() => this.opts.resolver.grep(discoveryName, grepOptions));
+    // A named file is already the complete discovery scope; parse it directly,
+    // including when the requested name does not appear in its source.
+    const discoveryMatches = exactPath !== undefined ? [{ path: exactPath, line: 1, matchText: "" }]
+      : await this.limit(() => this.opts.resolver.grep(discoveryName, grepOptions));
     const matches = discoveryMatches.slice(0, FIND_DEFINITION_DISCOVERY_MATCHES);
     const omittedDiscoveryMatches = Math.max(0, discoveryMatches.length - matches.length);
     const allCandidatePaths = [...new Set(matches.map((match) => match.path))];
     const candidatePaths = allCandidatePaths.slice(0, FIND_DEFINITION_CANDIDATES);
     const omittedCandidatePaths = Math.max(0, allCandidatePaths.length - candidatePaths.length);
+    // A named file can page beyond the global discovery cap. Keep an explicit
+    // larger safety bound for pathological files, with the usual omission note.
+    const maxDefinitions = exactPath === undefined ? FIND_DEFINITION_MAX : 200;
     const definitions: DefinitionHit[] = [];
     let fallbackCount = 0;
     let syntaxFallbacks = 0;
@@ -549,7 +573,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     let firstOmittedSymbol: SymbolInfo | undefined;
     let processedCandidates = 0;
     for (const candidate of candidatePaths) {
-      if (definitions.length >= FIND_DEFINITION_MAX) {
+      if (definitions.length >= maxDefinitions) {
         break;
       }
       processedCandidates += 1;
@@ -591,7 +615,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         }
         if (parsed.hasErrors && matchingSymbols.length === 0) incompleteParsePaths.push(candidate);
         for (let index = 0; index < matchingSymbols.length; index += 1) {
-          if (definitions.length >= FIND_DEFINITION_MAX) {
+          if (definitions.length >= maxDefinitions) {
             omittedByDefinitionCap += matchingSymbols.length - index;
             firstOmittedSymbol ??= matchingSymbols[index];
             break;
@@ -633,12 +657,14 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     // When the definition cap is hit, omissions are remaining same-file
     // definition symbols plus unprocessed candidate files, not raw grep
     // line-match counts.
-    const cappedAtMax = definitions.length >= FIND_DEFINITION_MAX;
+    const cappedAtMax = definitions.length >= maxDefinitions;
     const omittedByCap = cappedAtMax ? Math.max(0, candidatePaths.length - processedCandidates) : 0;
-    const cappedDefinitions = capDefinitionResultsTotal(
-      definitions,
-      omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
-    );
+    const omittedBeforePacking = omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches;
+    // The exact-path surface pages its locations and bodies independently; a
+    // JSON serialization cap must not erase a declaration in the named file.
+    const cappedDefinitions = exactPath !== undefined
+      ? { definitions, omittedCount: omittedBeforePacking, omittedDefinitions: [] as DefinitionHit[] }
+      : capDefinitionResultsTotal(definitions, omittedBeforePacking);
     const verifiedCount = cappedDefinitions.definitions.filter(hit => !isTextFallbackHit(hit)).length;
     const definitionLookupStatus =
       cappedDefinitions.definitions.length === 0
@@ -659,7 +685,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         : undefined;
     const lookupNotes: string[] = [];
     if (verifiedCount === 0 && (unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0)) {
-      lookupNotes.push(`Not checked: ${matches.filter(match => unparsedMentionPaths.includes(match.path) || incompleteParsePaths.includes(match.path)).length} text mention(s) in ${[...unparsedMentionPaths, ...incompleteParsePaths].length} unparsed or incomplete file(s) (${[...unparsedMentionPaths, ...incompleteParsePaths].slice(0, 3).join(", ")}); use find_symbol_mentions.`);
+      lookupNotes.push(exactPath !== undefined
+        ? `Could not verify declarations in ${exactPath}: the file is unparsed or incompletely parsed; use read_range or find_symbol_mentions.`
+        : `Not checked: ${matches.filter(match => unparsedMentionPaths.includes(match.path) || incompleteParsePaths.includes(match.path)).length} text mention(s) in ${[...unparsedMentionPaths, ...incompleteParsePaths].length} unparsed or incomplete file(s) (${[...unparsedMentionPaths, ...incompleteParsePaths].slice(0, 3).join(", ")}); use find_symbol_mentions.`);
     } else if (verifiedCount === 0 && cappedDefinitions.definitions.length > 0) {
       lookupNotes.push("Text declarations are unverified leads; inspect their source.");
     }
@@ -684,7 +712,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     return {
       value: { definitions: cappedDefinitions.definitions, meta },
       meta,
-      args: { symbolName, glob: pathGlob, source: requestedSource },
+      args: { symbolName, glob: pathGlob, path: exactPath, source: requestedSource },
       resultCount: cappedDefinitions.definitions.length,
       resultChars: JSON.stringify(cappedDefinitions.definitions).length
     };

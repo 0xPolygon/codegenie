@@ -10,10 +10,11 @@ import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import { parseStageModels } from "../src/github-action/models.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
+import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
 import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
-import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket, ReviewPlan } from "../src/types.js";
+import type { CodegenieConfig, PlannerDossier, RepositoryTools, ResolvedReviewInput, ReviewPacket, ReviewPlan } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
@@ -62,15 +63,11 @@ describe("phase 6 live review path", () => {
     }
   });
 
-  it("rejects the unfinished six-tool surface before any model setup", async () => {
-    const resolveModel = vi.fn();
-    const complete = vi.fn();
-    const config: CodegenieConfig = { ...defaultConfig, review: { ...defaultConfig.review, toolSurface: "six" } };
-    await expect(runReview({ mode: "commit_range", startCommit: "base", endCommit: "head" }, config, {
-      piAdapter: { resolveModel, complete, validateToolCall }
-    })).rejects.toMatchObject({ code: "config_error", message: expect.stringContaining("requires a build with all six repository tools") });
-    expect(resolveModel).not.toHaveBeenCalled();
-    expect(complete).not.toHaveBeenCalled();
+  it("registers all six tools when the six-tool surface is selected", () => {
+    const definitions = buildRepositoryToolDefinitions({} as RepositoryTools, { toolSurface: "six" });
+    expect(definitions.map(tool => tool.name)).toEqual([
+      "read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"
+    ]);
   });
 
   it("ignores stage settings when the deterministic fake runner is selected", async () => {
