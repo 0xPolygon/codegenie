@@ -477,7 +477,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
 
   async findDefinition(
     symbolName: string,
-    options: { pathGlob?: string; exactPath?: string; source?: SymbolLookupSourceSelector } = {}
+    options: { pathGlob?: string; exactPath?: string; source?: SymbolLookupSourceSelector; includeObjectMethods?: boolean } = {}
   ): Promise<{ definitions: DefinitionHit[]; meta: ToolResultMeta }> {
     return this.measure(
       "find_definition",
@@ -496,13 +496,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const requestedSource = options.source?.kind ?? "head";
         if (requestedSource !== "auto") {
           const exactSource: SourceSelector = requestedSource === "base" ? { kind: "base" } : { kind: "head" };
-          return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource, exactPath);
+          return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource, exactPath, options.includeObjectMethods);
         }
-        const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto", exactPath);
+        const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto", exactPath, options.includeObjectMethods);
         if (head.resultCount && head.resultCount > 0 && head.meta.lookupStatus !== "unavailable") {
           return withSourceMeta(head, "auto", "head", false, false);
         }
-        const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto", exactPath);
+        const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto", exactPath, options.includeObjectMethods);
         const candidateScans = {
           head: { unparsedCandidatePaths: head.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: head.meta.incompleteCandidatePaths ?? [] },
           base: { unparsedCandidatePaths: base.meta.unparsedCandidatePaths ?? [], incompleteCandidatePaths: base.meta.incompleteCandidatePaths ?? [] }
@@ -523,8 +523,18 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   async readDefinitionPage(name: string, options: DefinitionPageOptions = {}): Promise<DefinitionPage> {
     const path = options.path === undefined ? undefined : containPath(this.opts.resolver.repoRoot, options.path, this.guardTelemetry("read_definition"));
     const normalized = { ...options, ...(path !== undefined ? { path } : {}) };
-    const result = await this.findDefinition(name, { ...(path !== undefined ? { exactPath: path } : {}),
+    const result = await this.findDefinition(name, { ...(path !== undefined ? { exactPath: path } : {}), includeObjectMethods: true,
       ...(options.source !== undefined ? { source: options.source } : {}) });
+    if (path !== undefined && result.meta.lookupStatus === "file_missing") {
+      const sides: SourceSelector[] = options.source?.kind === "auto" ? [{ kind: "head" }, { kind: "base" }]
+        : [{ kind: options.source?.kind ?? "head" }];
+      for (const side of sides) {
+        const files = await this.limit(() => this.opts.resolver.listFiles(undefined, side));
+        if (files.some(file => file.startsWith(`${path.replace(/\/$/u, "")}/`))) {
+          throw new CodegenieError("invalid_args", `path ${path} is a directory at ${side.kind}; read_definition requires an exact file path. Use list_files to find a file, or omit path.`);
+        }
+      }
+    }
     return makeDefinitionPage(name, normalized, result, this.opts.resolver.binding);
   }
 
@@ -533,7 +543,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     pathGlob: string | undefined,
     source: SourceSelector,
     requestedSource: "head" | "base" | "auto",
-    exactPath?: string
+    exactPath?: string,
+    includeObjectMethods = false
   ): Promise<ToolMeasurement<{ definitions: DefinitionHit[]; meta: ToolResultMeta }>> {
     if (exactPath !== undefined && !(await this.limit(() => this.opts.resolver.readFile(exactPath, source)))) {
       const meta: ToolResultMeta = { backend: "text", precision: "text", degraded: false,
@@ -562,6 +573,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     // larger safety bound for pathological files, with the usual omission note.
     const maxDefinitions = exactPath === undefined ? FIND_DEFINITION_MAX : 200;
     const definitions: DefinitionHit[] = [];
+    const objectMembers: Array<{ symbol: SymbolInfo; content: string }> = [];
+    let objectMemberCount = 0;
     let fallbackCount = 0;
     let syntaxFallbacks = 0;
     const unparsedMentionPaths: string[] = [];
@@ -599,7 +612,12 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       if (parsed.tree !== undefined) {
         if (parsed.hasErrors) parseErrorPaths.push(candidate);
         const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
-        for (const symbol of nestedDefinitionSymbols(parsed, symbolName)) {
+        for (const symbol of nestedDefinitionSymbols(parsed, symbolName, includeObjectMethods)) {
+          if (symbol.nativeKind === "object method") {
+            objectMemberCount += 1;
+            if (objectMembers.length <= maxDefinitions) objectMembers.push({ symbol, content: content.content });
+            continue;
+          }
           if (!matchingSymbols.some(existing => existing.name === symbol.name && existing.lineRange[0] === symbol.lineRange[0])) {
             matchingSymbols.push(symbol);
           }
@@ -654,6 +672,20 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         }
       }
     }
+    const existingVerified = definitions.some(hit => !isTextFallbackHit(hit));
+    if (!existingVerified && objectMembers.length > 0) {
+      const available = Math.max(0, maxDefinitions - definitions.length);
+      const objectHits = objectMembers.slice(0, available).map(({ symbol, content }) => {
+        const snippet = definitionSourceSnippet(content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS);
+        if (snippet.truncated) omittedByTruncation += snippet.omittedCount;
+        return { symbol, text: snippet.text, totalLines: snippet.totalLines,
+          ...(snippet.deliveredLineRange ? { deliveredLineRange: snippet.deliveredLineRange } : {}),
+          ...(snippet.nextLine !== undefined ? { nextLine: snippet.nextLine } : {}) };
+      });
+      definitions.unshift(...objectHits);
+      omittedByDefinitionCap += objectMemberCount - objectHits.length;
+      firstOmittedSymbol ??= objectMembers[objectHits.length]?.symbol;
+    }
     // When the definition cap is hit, omissions are remaining same-file
     // definition symbols plus unprocessed candidate files, not raw grep
     // line-match counts.
@@ -684,6 +716,16 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         ? recoveryReadRange(omittedSymbol.path, omittedSymbol.lineRange, source, "read the first omitted definition")
         : undefined;
     const lookupNotes: string[] = [];
+    if (existingVerified && objectMemberCount > 0) {
+      const locations = objectMembers.slice(0, FIND_DEFINITION_MAX).map(({ symbol }) => {
+        const [startLine, endLine] = symbol.lineRange;
+        return `${symbol.path}@${source.kind}:${startLine}-${endLine}: read_range(${JSON.stringify({
+          path: symbol.path, startLine, endLine, source: { kind: source.kind }
+        })})`;
+      });
+      const remaining = objectMemberCount - locations.length;
+      lookupNotes.push(`The returned declaration is verified; ${objectMemberCount} additional same-name object member(s) were observed. Use read_range to inspect: ${locations.join("; ")}${remaining ? `; ${remaining} more not listed` : ""}.`);
+    }
     if (verifiedCount === 0 && (unparsedMentionPaths.length > 0 || incompleteParsePaths.length > 0)) {
       lookupNotes.push(exactPath !== undefined
         ? `Could not verify declarations in ${exactPath}: the file is unparsed or incompletely parsed; use read_range or find_symbol_mentions.`
@@ -1128,12 +1170,32 @@ export function isTextFallbackHit(hit: { symbol: SymbolInfo }): boolean {
   return hit.symbol.nativeKind === "text declaration" || hit.symbol.nativeKind === "text match";
 }
 
-function nestedDefinitionSymbols(parsed: ParsedFile, query: string): SymbolInfo[] {
+function nestedDefinitionSymbols(parsed: ParsedFile, query: string, includeObjectMethods = false): SymbolInfo[] {
   const tree = treeFromParsed(parsed);
-  // Qualified names need owner-aware resolution from the adapter, not a bare-name guess.
-  if (!tree?.rootNode || bareIdentifierForDiscovery(query) !== query) return [];
+  if (!tree?.rootNode) return [];
+  const qualified = bareIdentifierForDiscovery(query) !== query;
   const symbols: SymbolInfo[] = [];
   walkNamed(tree.rootNode, (node) => {
+    if (includeObjectMethods && ["typescript", "tsx", "javascript"].includes(parsed.adapterId)
+      && node.parent?.type === "object" && (node.type === "method_definition" || node.type === "pair")) {
+      const name = node.childForFieldName(node.type === "pair" ? "key" : "name");
+      const value = node.type === "pair" ? node.childForFieldName("value") : undefined;
+      const callable = node.type === "method_definition" || value?.type === "function_expression" || value?.type === "arrow_function";
+      const accessor = node.type === "method_definition" && node.children.some(child => child.type === "get" || child.type === "set");
+      // Computed keys and spreads do not establish a literal member name.
+      if (callable && name && ["property_identifier", "identifier"].includes(name.type)
+        && !accessor) {
+        const declaration = node.parent.parent;
+        const binding = declaration?.type === "variable_declarator" ? declaration.childForFieldName("name") : undefined;
+        const ownerType = binding?.type === "identifier" ? binding.text : undefined;
+        const symbol: SymbolInfo = { path: parsed.path, name: name.text, kind: "method", nativeKind: "object method",
+          ...(ownerType ? { ownerType } : {}), lineRange: lineRange(node) };
+        if (symbolMatches(symbol, query)) symbols.push(symbol);
+      }
+      return;
+    }
+    // Qualified names need a syntactically established owner, not a bare-name guess.
+    if (qualified) return;
     const isVariable = node.type === "variable_declarator" || node.type === "const_spec" || node.type === "var_spec";
     const isFunction = node.type === "function_declaration" || node.type === "generator_function_declaration";
     const isType = ["type_spec", "type_alias_declaration", "class_declaration", "interface_declaration", "enum_declaration"].includes(node.type);
