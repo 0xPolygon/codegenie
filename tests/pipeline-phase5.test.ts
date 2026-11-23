@@ -16590,3 +16590,69 @@ it("retains every ambiguous definition hit across a worker retry with distinct h
   expect(result!.repositoryEvidence!.map(read => read.origin?.attempt)).toEqual([1, 1, 2, 2]);
   expect(result!.repositoryEvidence!.every(read => read.lookupStatus === "ambiguous" && read.origin?.toolCallId === "lookup")).toBe(true);
 });
+
+describe("fallback co-location of exact changed anchors", () => {
+  const path = "internal/inproc/transport.go";
+  const anchor = { path, side: "RIGHT" as const, line: 98, hunkId: "38763030" };
+  const buildCandidate = (id: string, title: string, failureMode: string, fix: string): CandidateFinding => ({
+    ...fakeFinding(), id, path, anchor, anchorSource: "model", category: "correctness", title, failureMode,
+    whyThisMatters: failureMode, evidence: { changedCode: "if status >= 100 && status < 200 { return }" }, suggestedFix: fix,
+    suggestionAssessments: { suggestedFix: { status: "supported", suggestionText: fix, rationale: "Supported by the verifier.", contractCheck: { status: "established", requirement: "Preserve the observable response contract." }, evidence: [{ path, lines: "98", whyRelevant: "The changed status branch." }] } }
+  });
+  const first = () => buildCandidate("first", "WriteHeader treats 101 as informational",
+    "A handler that writes status 101 receives a synthesized 200 instead.", "Treat 101 as a final status.");
+  const second = () => buildCandidate("second", "WriteHeader discards final 101 status",
+    "A handler that responds with the valid final status 101 is observed by the client as 200 instead.", "Reject unsupported protocol switching.");
+  async function compose(findings: CandidateFinding[], fallback = true, event = vi.fn()) {
+    return dedupeRankAndComposeReview({ verified: findings, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), { ...nullTelemetry(), event }, {
+        runner: { runStructured: async <T>() => {
+          if (fallback) throw composerTransientError();
+          return { summary: "Confirmed defects", composedFindings: findings.map(finding => ({ findingIds: [finding.id],
+            ...attributedSources([finding], finding.failureMode), publication: "inline" })) } as T;
+        } }, promptBuilder: fakePromptBuilder(), diff: fakeChangedLineDiff([{ path, hunkId: "38763030", line: 98, content: "if status >= 100 && status < 200 { return }" }])
+      });
+  }
+  it("co-locates the historical 101-to-200 reports without dropping either cause or recommending unreconciled remedies", async () => {
+    const event = vi.fn();
+    const result = await compose([first(), second()], true, event);
+    expect(result.findings).toHaveLength(1);
+    const finding = result.findings[0]!;
+    expect(finding.mergedCandidateIds).toEqual(expect.arrayContaining(["first", "second"]));
+    expect(finding.finalBody).toContain(first().failureMode);
+    expect(finding.finalBody).toContain(second().failureMode);
+    expect(finding.finalBody).not.toContain(first().suggestedFix);
+    expect(finding.finalBody).not.toContain(second().suggestedFix);
+    expect(finding.finalBody).toContain("Remediation remains unreconciled");
+    expect(finding.finalBody.split(first().failureMode)).toHaveLength(2);
+    expect(event.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toEqual([
+      [expect.objectContaining({ data: expect.objectContaining({ candidateIds: ["first", "second"],
+        path, side: "RIGHT", line: 98, hunkId: "38763030", category: "correctness" }) })]
+    ]);
+  });
+  it("retains distinct causes at the line and withholds an unsupported remedy", async () => {
+    const other = second();
+    other.failureMode = "The same branch also loses the response trailer.";
+    other.whyThisMatters = "The caller cannot observe trailer integrity.";
+    other.severity = "high";
+    other.suggestionAssessments!.suggestedFix!.status = "unverified";
+    const result = await compose([first(), other]);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.finalBody).toContain(other.failureMode);
+    expect(result.findings[0]!.finalBody).toContain(other.whyThisMatters);
+    expect(result.findings[0]!.severity).toBe("high");
+    expect(result.findings[0]!.finalBody).toContain(first().suggestedFix);
+    expect(result.findings[0]!.finalBody.split(first().suggestedFix!)).toHaveLength(2);
+    expect(result.findings[0]!.finalBody).not.toContain(other.suggestedFix);
+  });
+  it("keeps categories separate and does not co-locate in model composition", async () => {
+    const differentCategory = second();
+    differentCategory.category = "security";
+    const separateEvents = vi.fn();
+    expect((await compose([first(), differentCategory], true, separateEvents)).findings).toHaveLength(2);
+    expect(separateEvents.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toHaveLength(0);
+    const modelEvents = vi.fn();
+    expect((await compose([first(), second()], false, modelEvents)).findings).toHaveLength(2);
+    expect(modelEvents.mock.calls.filter(([value]) => value.message === "fallback_colocated")).toHaveLength(0);
+  });
+});
