@@ -30,7 +30,7 @@ export function registerSecret(value: string | undefined | null): void {
     // Verifier repair serializes angle-bracket escapes into persisted requests.
     const escaped = trimmed.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
     registeredSecrets.add(escaped);
-    registeredSecrets.add(escaped.replaceAll("\\", "\\\\"));
+    registeredSecrets.add(JSON.stringify(escaped).slice(1, -1));
     if (/[\r\n]/u.test(trimmed)) {
       for (const line of trimmed.split(/\r?\n|\r/u)) {
         const component = line.trim();
