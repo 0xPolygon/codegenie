@@ -24,9 +24,9 @@ function frontMatter(text: string): Record<string, string> {
 // title pattern. A clean change is only contradicted by a material finding.
 function matcherContractViolations(evalCase: EvalCase, role: string | undefined): string[] {
   const lists = { should_find: evalCase.should_find ?? [], should_find_candidate: evalCase.should_find_candidate ?? [], should_not_find: evalCase.should_not_find ?? [] };
-  if (role === "contaminated-control") {
+  if (role === "contaminated-control" || role === "compatibility-question") {
     return Object.values(lists).some((expectations) => expectations.length > 0)
-      ? ["contaminated control with scored expectations"]
+      ? [`${role} with scored expectations`]
       : [];
   }
   const violations = Object.entries(lists).flatMap(([list, expectations]) => expectations.flatMap((expectation) => [
@@ -50,7 +50,8 @@ describe("public eval matcher contract", () => {
     ["should_find_candidate", { should_find_candidate: [{ id: "c", path: "a.ts" }] }, "positive", ["should_find_candidate/c: missing severityAtLeast"]],
     ["a low negative-control floor", { should_not_find: [{ id: "n", path: "a.ts", severityAtLeast: "low" }] }, "negative-control", ["should_not_find/n: floor below medium"]],
     ["a missing negative-control floor", { should_not_find: [{ id: "n", path: "a.ts" }] }, "negative-control", ["should_not_find/n: missing severityAtLeast", "should_not_find/n: floor below medium"]],
-    ["a scored contaminated control", { should_not_find: [{ id: "n", path: "a.ts", severityAtLeast: "medium" }] }, "contaminated-control", ["contaminated control with scored expectations"]]
+    ["a scored contaminated control", { should_not_find: [{ id: "n", path: "a.ts", severityAtLeast: "medium" }] }, "contaminated-control", ["contaminated-control with scored expectations"]],
+    ["a scored compatibility question", { should_find: [{ id: "q", path: "a.ts", severityAtLeast: "medium" }] }, "compatibility-question", ["compatibility-question with scored expectations"]]
   ] as const)("rejects %s", (_label, lists, role, expected) => {
     expect(matcherContractViolations({ ...base, ...lists } as unknown as EvalCase, role)).toEqual(expected);
   });
@@ -73,7 +74,7 @@ describe("public eval cases", () => {
     const oracle = frontMatter(readFileSync(path.join(dir, "oracle.md"), "utf8"));
     expect(oracle).toMatchObject({ repo, case: id, intro: evalCase.command?.head, base: evalCase.command?.base });
     expect(oracle.introDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
-    expect(["positive", "negative-control", "contaminated-control", "spare"]).toContain(oracle.role);
+    expect(["positive", "negative-control", "contaminated-control", "compatibility-question", "spare"]).toContain(oracle.role);
     expect(matcherContractViolations(evalCase, oracle.role)).toEqual([]);
   });
 });
