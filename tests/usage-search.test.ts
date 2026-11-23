@@ -31,9 +31,9 @@ describe("pinned usage search", () => {
   it("reports an empty bounded scan as incomplete with a continuation", async () => {
     const paths = Array.from({ length: 501 }, (_, index) => `src/${String(index).padStart(3, "0")}.ts`);
     const source = { kind: "head" as const };
-    const parsed = await new TreeSitterService().parse({ path: paths[0]!, language: "typescript", content: "// run\n", source });
+    const parsed = await new TreeSitterService().parse({ path: paths[0]!, language: "typescript", content: "// running\n", source });
     const resolver = { resolveSource: () => "pinned", grepFiles: async () => paths,
-      readFile: async (file: string) => ({ path: file, source, content: "// run\n", contentSha: "same", commit: "pinned" }) } as unknown as SourceResolver;
+      readFile: async (file: string) => ({ path: file, source, content: "// running\n", contentSha: "same", commit: "pinned" }) } as unknown as SourceResolver;
     const registry = { forPath: () => ({ parse: async () => parsed }), languageForPath: () => "typescript" } as unknown as LanguageAdapterRegistry;
     const page = await findUsages(resolver, registry, "run");
     expect(page).toMatchObject({ filesScanned: 500, candidateFiles: 501, scanComplete: false, coverageComplete: false });
@@ -49,6 +49,34 @@ describe("pinned usage search", () => {
     expect(outcome).toMatchObject({ isError: true, errorCode: "budget_exhausted", meta: { deliveryStatus: "budget_rejected", degradationReason: "usage_scan_limit" } });
   });
 
+  it("keeps unclassified text as leads, identifies class and top-level scopes, and excludes substring noise", async () => {
+    const fixture = await textRepository({
+      "src/sessions.ts": "export function load() { return 1; }\n",
+      "src/strings.ts": 'import { load } from "./sessions";\nconst handlers = { ["load"]: load };\nexport function dispatch() { return handlers["load"](); }\n// load by name\nemit("load");\n',
+      "src/module.ts": 'import * as sessions from "./sessions";\nexport const table = {\n  a: 1,\n  run: sessions.load,\n};\nexport class Svc {\n  loader = () => sessions?.load();\n  field = sessions.load;\n}\n',
+      "docs/notes.md": "download reload payload\nload\n",
+      "scripts/tool.py": "def preload():\n    autoload()\nload()\n"
+    });
+    try {
+      const page = (await fixture.tools.findUsages("load")).page;
+      const text = page.textMatches.map(row => `${row.path}:${row.line}`);
+      expect(text).toEqual(expect.arrayContaining(["src/strings.ts:2", "src/strings.ts:3", "src/strings.ts:4", "src/strings.ts:5", "docs/notes.md:2", "scripts/tool.py:3"]));
+      expect(text).not.toContain("docs/notes.md:1");
+      expect(text).not.toContain("scripts/tool.py:1");
+      expect(text).not.toContain("scripts/tool.py:2");
+      expect(page.coverageComplete).toBe(false);
+      const output = packUsagePage(page, "load", 100_000).text;
+      expect(output).not.toContain("Scan complete for the selected scope");
+      expect(output).toContain("At module level (lines 2-5)");
+      expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 7)?.enclosing.name).toBe("Svc.loader");
+      expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 7)?.enclosing.searchName).toBe("loader");
+      expect(output).toContain('next-hop name "loader"');
+      expect(page.rows.find(row => row.path === "src/module.ts" && row.line === 8)?.enclosing.name).toBe("Svc.field");
+      const dotted = (await fixture.tools.findUsages("sessions.load")).page;
+      expect(dotted.rows.filter(row => row.path === "src/module.ts").map(row => row.line)).toEqual([4, 7, 8]);
+    } finally { fixture.dispose(); }
+  });
+
   it("pages source-backed calls and text leads without gaps, and binds cursors to the lookup", async () => {
     const fixture = await textRepository({
       "src/caller.ts": 'import { run as invoke } from "./worker";\nexport function caller() { invoke(); invoke(); }\n',
@@ -56,6 +84,7 @@ describe("pinned usage search", () => {
       "src/esm.ts": 'import { run } from "./worker.js";\nexport function call() { run(); }\n',
       "src/long.ts": `export function long() { run(); /* ${"x".repeat(2_100)} */ }\n`,
       "src/nested.ts": 'function outer() {\n  run();\n  consume(() => run());\n  run();\n}\n',
+      "src/textmixed.ts": '// run first\nexport function mixed() { run(); return "run"; }\n',
       "src/worker.test.ts": 'import { run } from "./worker";\ntest("run", () => run());\n',
       "docs/guide.md": 'run appears here\n'
     }, { "src/worker.ts": 'export function run() { return 1; }\n' });
@@ -78,6 +107,9 @@ describe("pinned usage search", () => {
       expect(new Set(positions).size).toBe(positions.length);
       expect(positions.filter(x => x.startsWith("src/caller.ts:2:"))).toHaveLength(2);
       expect(positions.some(x => x.startsWith("docs/guide.md:1:"))).toBe(true);
+      expect(positions.filter(x => x.startsWith("src/textmixed.ts:"))).toEqual([
+        "src/textmixed.ts:2:27", "src/textmixed.ts:1:4", "src/textmixed.ts:2:42"
+      ]);
       expect(finalCoverage).toBe(false);
       const nested = positions.filter(x => x.startsWith("src/nested.ts:"));
       expect(nested).toEqual(["src/nested.ts:2:3", "src/nested.ts:4:3", "src/nested.ts:3:17"]);

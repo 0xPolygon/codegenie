@@ -87,13 +87,13 @@ function renderEntry(entry: UsageEntry): string {
   const details = entry.kind === "text" ? "text-only mention" : [entry.row.role,
     `spelling=${JSON.stringify(entry.row.spelling)}`,
     ...(entry.row.receiver ? [`receiver=${JSON.stringify(entry.row.receiver)}`] : []),
-    ...(entry.row.packageName ? [`package=${JSON.stringify(entry.row.packageName)}`] : [])].join("; ");
+    ...(entry.row.packageName ? [`file package=${JSON.stringify(entry.row.packageName)}`] : [])].join("; ");
   return `${location} ${details}\n${row.line}\t${row.excerpt === undefined
     ? `[source line omitted: too long to deliver; inspect ${JSON.stringify(row.path)}@${row.revision} line ${row.line}]` : row.excerpt}`;
 }
 
 function formatEnclosing(enclosing: Extract<UsageEntry, { kind: "syntactic" }>["row"]["enclosing"]): string {
-  if (enclosing.kind === "module") return "At module level:";
+  if (enclosing.kind === "module") return `At module level (lines ${enclosing.lineRange.join("-")}):`;
   const range = `lines ${enclosing.lineRange[0]}-${enclosing.lineRange[1]}`;
   if (enclosing.kind === "anonymous") return `In anonymous callback (${range})${enclosing.nearestNamed
     ? ` inside ${JSON.stringify(enclosing.nearestNamed.name)} (lines ${enclosing.nearestNamed.lineRange.join("-")})` : ""}:`;
