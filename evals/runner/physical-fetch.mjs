@@ -12,7 +12,7 @@ function costUnits(value, precision) {
 
 // One closure per logical call; attemptPrefix uniquely binds campaign slot and
 // review attempt. The caller supplies the normal fetch and typed error class.
-export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError, healthBoundary }) {
+export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError, healthBoundary, healthPurpose }) {
   if (typeof fetchImpl !== 'function' || typeof AdmissionError !== 'function' || typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(attemptPrefix)) throw new TypeError('transport dependencies and attempt identity required');
   let ordinal = 0;
   let current;
@@ -63,7 +63,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
           ledger.recordRefusal({ id, logicalId, reason: 'binding_mismatch' });
           throw new AdmissionError('binding_mismatch');
         }
-        const admission = ledger.reservePhysical({ id, logicalId, kind: healthBoundary === undefined ? call.kind : 'health', provider: call.provider, ...(healthBoundary !== undefined ? { healthBoundary } : {}) });
+        const admission = ledger.reservePhysical({ id, logicalId, kind: healthBoundary === undefined ? call.kind : 'health', provider: call.provider, ...(healthBoundary !== undefined ? { healthBoundary, healthPurpose } : {}) });
         if (!admission.admitted) {
           const reason = admission.reason;
           const mapped = reason.startsWith('provider_') ? 'provider_denied'

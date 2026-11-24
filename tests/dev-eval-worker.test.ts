@@ -30,7 +30,7 @@ describe("development eval worker", () => {
     try {
       const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
       const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
-      const health = evidence(dir, { kind: "health", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
+      const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
       ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baseline.hash });
       const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file }, nowMs: 2 };
@@ -42,7 +42,7 @@ describe("development eval worker", () => {
       ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash });
       expect(boundaryDecision(args)).toMatchObject({ action: "admit" });
       expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "probe" });
-      const wrongHealth = evidence(dir, { kind: "health", physicalId: "other", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
+      const wrongHealth = evidence(dir, { kind: "health", purpose: "admission", physicalId: "other", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       ledger.db.prepare('UPDATE health_receipt SET evidence_sha256=?').run(wrongHealth.hash);
       expect(() => boundaryDecision({ ...args, evidenceFiles: { ...args.evidenceFiles, [wrongHealth.hash]: wrongHealth.file } })).toThrow(BoundaryBindingError);
       ledger.db.prepare('UPDATE health_receipt SET evidence_sha256=?').run(health.hash);
@@ -92,7 +92,7 @@ describe("development eval worker", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-guard-"));
     const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
     const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
-    const health = evidence(dir, { kind: "health", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
+    const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
     const db = path.join(dir, "ledger.sqlite"), suite = path.join(dir, "suite");
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));

@@ -9,7 +9,36 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void }) {
+  ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 50 });
+  ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 100 });
+}
+function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void; recordHealth(args: object): void }, id: string, purpose: string, startedAtMs: number) {
+  ledger.reservePhysical({ id, logicalId: id, kind: 'health', provider: 'openrouter', healthBoundary: 'one', healthPurpose: purpose, startedAtMs });
+  ledger.settlePhysical({ id, httpStatus: 200, providerCostMicros: 0, costConfirmed: true, settledAtMs: startedAtMs + 1 });
+  ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
+}
 describe('campaign admission custody', () => {
+  it('revalidates the first failed receipt after a successful retry on restart', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-successful-retry-'));
+    try {
+      const bytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }, { id: 'two', boundaryId: 'two', provider: 'openrouter' }] }));
+      const binding = { binding: 'b', scheduleBytes: bytes, scheduleSHA256: digest(bytes) };
+      let supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      const realLedger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
+      const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
+      const yes = () => true, first = digest('first'), proof = digest('proof'), args = { ledger, evidenceFiles: {}, verifyReceipt: yes, verifyRetry: yes };
+      supervisor.begin('one', args);
+      prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
+      supervisor.sealFailure('one', 1, first, { verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
+      supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
+      supervisor.begin('one', args); supervisor.seal('one', 2, digest('success'), yes, yes, ledger);
+      supervisor.close(); supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      expect(() => supervisor.begin('two', { ...args, verifyReceipt: (_slot: string, _attempt: number, hash: string) => hash !== first })).toThrow('retry authorization');
+      expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM attempt WHERE slot_id='two'").get()).toEqual({ total: 0 });
+      supervisor.close(); realLedger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('excludes after an interrupted retry while retaining its physical hold', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-second-interrupt-'));
     try {
@@ -19,13 +48,14 @@ describe('campaign admission custody', () => {
       const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       const yes = () => true, args = { ledger, evidenceFiles: {}, verifyReceipt: yes, verifyRetry: yes };
       supervisor.begin('one', args);
+      prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
       supervisor.sealFailure('one', 1, digest('first'), { verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
-      supervisor.authorizeRetry('one', 1, digest('proof'), { verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
+      supervisor.authorizeRetry('one', 1, digest('proof'), { ledger, retryProbeId: 'retry-probe', verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
       supervisor.begin('one', args);
       realLedger.reservePhysical({ id: 'one/attempt-02/mc-1/physical-1', logicalId: 'one/attempt-02/mc-1', kind: 'initial', provider: 'openrouter' });
       supervisor.reconcile('one', 2, { ledger, verifyWorkerExited: yes, findTerminalReceipt: () => null, sealInterrupted: () => digest('second'), verifyReceipt: yes, verifyRetry: yes });
       expect(supervisor.db.prepare('SELECT state FROM outcome').get()).toEqual({ state: 'excluded' });
-      expect(realLedger.totals()).toMatchObject({ starts: 1, open: 1, chargedMicros: 400_000 });
+      expect(realLedger.totals()).toMatchObject({ starts: 3, open: 1, chargedMicros: 800_000 });
       expect(() => supervisor.begin('one', args)).toThrow('next unadmitted');
       supervisor.close(); realLedger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -35,26 +65,30 @@ describe('campaign admission custody', () => {
     try {
       const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }, { id: 'paired', boundaryId: 'paired', provider: 'openrouter' }] }));
       const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) });
-      const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
+      const realLedger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
+      const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       const verifyReceipt = vi.fn(() => true), verifyFailure = vi.fn(() => true), verifyRetry = vi.fn(() => true);
       const args = { ledger, evidenceFiles: {}, verifyReceipt, verifyRetry }, first = digest('first'), second = digest('second'), proof = digest('proof');
       expect(supervisor.begin('one', args)).toMatchObject({ attempt: 1 });
+      prepareProbe(realLedger, 'old-probe', 'admission', 10); prepareProbe(realLedger, 'early-retry', 'retry', 20); prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
       supervisor.sealFailure('one', 1, first, { verifyReceipt, verifyFailure, verifyRetry });
       expect(() => supervisor.begin('one', args)).toThrow('retry authorization');
-      expect(() => supervisor.authorizeRetry('one', 1, proof, { verifyReceipt, verifyFailure, verifyRetry: async () => false })).toThrow('retry evidence');
-      supervisor.authorizeRetry('one', 1, proof, { verifyReceipt, verifyFailure, verifyRetry });
+      expect(() => supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'old-probe', verifyReceipt, verifyFailure, verifyRetry })).toThrow('fresh clean');
+      expect(() => supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'early-retry', verifyReceipt, verifyFailure, verifyRetry })).toThrow('fresh clean');
+      expect(() => supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt, verifyFailure, verifyRetry: async () => false })).toThrow('retry evidence');
+      supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt, verifyFailure, verifyRetry });
       expect(supervisor.begin('one', args)).toMatchObject({ attempt: 2, attemptPrefix: 'one/attempt-02' });
       const config = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-02', ledgerBinding: 'b' }));
       expect(supervisor.verifyWorkerBinding('one', 2, config, digest(config))).toBe(true);
       const wrongConfig = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-01', ledgerBinding: 'b' }));
       expect(() => supervisor.verifyWorkerBinding('one', 2, wrongConfig, digest(wrongConfig))).toThrow('binding mismatch');
-      supervisor.sealFailure('one', 2, second, { verifyReceipt, verifyFailure, verifyRetry });
+      supervisor.sealFailure('one', 2, second, { ledger, verifyReceipt, verifyFailure, verifyRetry });
       expect(supervisor.db.prepare('SELECT state FROM outcome WHERE slot_id=?').get('one')).toEqual({ state: 'excluded' });
       expect(supervisor.db.prepare('SELECT first_sha256,second_sha256 FROM exclusion WHERE slot_id=?').get('one')).toEqual({ first_sha256: first, second_sha256: second });
       expect(supervisor.begin('paired', args)).toMatchObject({ action: 'started' });
       supervisor.db.prepare('DELETE FROM retry_authorization WHERE slot_id=?').run('one');
       expect(() => supervisor.begin('paired', args)).toThrow('retry authorization');
-      supervisor.close();
+      supervisor.close(); realLedger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   it('seals a physically started interruption and preserves its hold without re-admission', () => {
@@ -81,7 +115,7 @@ describe('campaign admission custody', () => {
       const evidenceFiles: Record<string, string> = {};
       const evidence = (value: object) => { const text = JSON.stringify(value), hash = digest(text), name = path.join(dir, hash); writeFileSync(name, text); evidenceFiles[hash] = name; return hash; };
       const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0 }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1 });
-      const healthHash = evidence({ kind: 'health', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
+      const healthHash = evidence({ kind: 'health', purpose: 'admission', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baselineHash });
       ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshotHash });
