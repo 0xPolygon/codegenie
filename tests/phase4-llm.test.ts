@@ -5189,6 +5189,51 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it("redacts credentials in persisted model response keys and keeps every colliding value", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-redacted-key-"));
+    const first = "synthetic-debug-credential-a";
+    const second = "synthetic-debug-credential-b";
+    const marker = "[redacted:secret]";
+    const data = { [second]: "second", [first]: first, [marker]: "literal marker",
+      [marker + "#2"]: "literal suffix" };
+    const adapter = scriptedAdapter([assistant([{
+      type: "toolCall", id: "submit-key", name: "submit_verdict", arguments: { verdict: "reject", data }
+    }])]);
+    registerSecret(first);
+    registerSecret(second);
+
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ stage: 9, prompt: "verify", templateVersion: "test", timeoutMs: 1_000,
+        schema: Type.Object({ verdict: Type.String(), data: Type.Unknown() }) });
+      // Replay sanitization precedes response debug collection. Exercise own
+      // __proto__ separately at the actual writer boundary.
+      await run.recorder.writeDebug("llm-calls", "own-key", { nested: { ["__proto__"]: { kept: true } } });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+
+      const debugRoot = path.join(attached.runDir, "debug", "llm-calls");
+      for (const filename of ["mc-000001.json", "mc-000001.response.json"]) {
+        const persisted = readFileSync(path.join(debugRoot, filename), "utf8");
+        expect(persisted.includes(first) || persisted.includes(second)).toBe(false);
+        const record = JSON.parse(persisted);
+        const written = record.response.content[0].arguments.data;
+        expect(written).toEqual({ [marker]: "literal marker", [marker + "#2"]: "literal suffix",
+          [marker + "#3"]: marker, [marker + "#4"]: "second" });
+        expect(record.redaction).toEqual({ applied: true, markerCounts: { secret: 5 } });
+      }
+      const ownKey = JSON.parse(readFileSync(path.join(debugRoot, "own-key.json"), "utf8")).nested;
+      expect(Object.hasOwn(ownKey, "__proto__")).toBe(true);
+      expect(ownKey.__proto__).toEqual({ kept: true });
+    } finally {
+      clearRegisteredSecretsForTests();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("redacts multiline secret components in separately persisted records", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codegenie-multiline-secret-"));
     registerSecret("BEGIN\nshort-key-123\nEND");

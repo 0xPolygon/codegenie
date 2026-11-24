@@ -181,9 +181,17 @@ function stripValue(input: unknown, active: WeakSet<object>, sink: boolean): unk
         return input.toISOString();
       }
 
+      const entries = Object.entries(input);
+      if (sink) {
+        const names = redactSinkKeys(entries);
+        return Object.fromEntries(entries.map(([key, value]) => [
+          names.get(key) ?? key, stripValue(value, active, true)
+        ]));
+      }
+
       const output: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(input)) {
-        output[key] = stripValue(value, active, sink);
+      for (const [key, value] of entries) {
+        output[key] = stripValue(value, active, false);
       }
       return output;
     } finally {
@@ -192,6 +200,34 @@ function stripValue(input: unknown, active: WeakSet<object>, sink: boolean): unk
   }
 
   return input;
+}
+
+function redactSinkKeys(entries: Array<[string, unknown]>): Map<string, string> {
+  const used = new Set<string>();
+  const changed = new Map<string, string>();
+  for (const [key] of entries) {
+    const redacted = stripString(key, true);
+    if (redacted === key) used.add(key);
+    else changed.set(key, redacted);
+  }
+
+  // Reserve literal keys before allocating suffixes. Sort only allocation,
+  // then emit properties in the caller's original order.
+  const nextSuffix = new Map<string, number>();
+  for (const key of [...changed.keys()].sort()) {
+    const redacted = changed.get(key)!;
+    let name = redacted;
+    if (used.has(name)) {
+      let suffix = nextSuffix.get(redacted) ?? 2;
+      do {
+        name = `${redacted}#${suffix++}`;
+      } while (used.has(name));
+      nextSuffix.set(redacted, suffix);
+    }
+    changed.set(key, name);
+    used.add(name);
+  }
+  return changed;
 }
 
 function stripString(input: string, sink: boolean): string {

@@ -1,8 +1,47 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearRegisteredSecretsForTests, credentialSafeCut, redactThenTruncate, registerSecret, stripCredentials, stripCredentialsAtSink } from "../src/telemetry/redaction.js";
+import { clearRegisteredSecretsForTests, credentialSafeCut, redactThenTruncate, registerSecret, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../src/telemetry/redaction.js";
 import { truncateDiagnostic } from "../src/util/errors.js";
 
 afterEach(clearRegisteredSecretsForTests);
+
+describe("persisted property names", () => {
+  const first = "synthetic-credential-a";
+  const second = "synthetic-credential-b";
+  const marker = "[redacted:secret]";
+
+  it("reserves literal names and allocates suffixes independently of insertion order", () => {
+    registerSecret(first);
+    registerSecret(second);
+    const entries = [[second, "second"], [marker, "literal"], [first, "first"], [marker + "#2", "literal suffix"]];
+    const redacted = stripCredentialsAtSink(Object.fromEntries(entries));
+    expect(Object.entries(redacted)).toEqual([
+      [marker + "#4", "second"], [marker, "literal"], [marker + "#3", "first"], [marker + "#2", "literal suffix"]
+    ]);
+    expect(stripCredentialsAtSink(Object.fromEntries([...entries].reverse()))).toEqual(redacted);
+    expect(Object.entries(stripCredentialsAtSink(redacted))).toEqual(Object.entries(redacted));
+    expect(stripCredentialsAtSink({ [second]: 2, [first]: 1 })).toEqual({ [marker]: 1, [marker + "#2"]: 2 });
+  });
+
+  it("counts nested key and value redactions while preserving model-facing names", () => {
+    registerSecret(first);
+    const input = { nested: { [first]: first } };
+    expect(stripCredentialsWithSummary(input)).toEqual({
+      value: { nested: { [marker]: marker } },
+      summary: { applied: true, markerCounts: { secret: 2 } }
+    });
+    expect(stripCredentials(input)).toEqual({ nested: { [first]: marker } });
+    expect(input).toEqual({ nested: { [first]: first } });
+  });
+
+  it("preserves own __proto__ properties without changing the output's prototype", () => {
+    const input = { ["__proto__"]: { kept: "literal" } };
+    const redacted = stripCredentialsAtSink(input);
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+    expect(Object.hasOwn(redacted, "__proto__")).toBe(true);
+    expect(JSON.stringify(redacted)).toBe(JSON.stringify(input));
+    expect(JSON.stringify(stripCredentials(input))).toBe("{}");
+  });
+});
 
 describe("model-facing credential cuts", () => {
   it.each([
