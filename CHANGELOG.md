@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.7
+
+- `review.assignedEffects` was removed (it was an experimental opt-in, off by default). Configs that set it now fail validation with an unknown-key error. Delete the key.
+
 ## 0.9.6
 
 ### Telemetry

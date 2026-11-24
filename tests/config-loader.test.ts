@@ -16,15 +16,12 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
-  it("loads explicit assignedEffects without adding the field to default configuration", () => {
+  it.each(["user", "repository"])("names the removed review.assignedEffects key in %s config errors", (layer) => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
-    expect(loadConfig({ repoRoot, homeOverride, env: {} }).config.review).not.toHaveProperty("assignedEffects");
-    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nassignedEffects = true\n");
-    const loaded = loadConfig({ repoRoot, homeOverride, env: {} });
-    expect(loaded.config.review.assignedEffects).toBe(true);
-    expect(loaded.sources["review.assignedEffects"]).toBe("user-config");
-    expect(rawConfigSchema.safeParse({ review: { assignedEffects: "true" } }).success).toBe(false);
+    const file = layer === "user" ? path.join(homeOverride, "config.toml") : path.join(repoRoot, "codegenie.toml");
+    writeFileSync(file, "[review]\nassignedEffects = false\n");
+    expect(() => loadConfig({ repoRoot, homeOverride, env: {} })).toThrow(/unknown keys: review\.assignedEffects/);
   });
 
   it("loads the repository tool surface and validates its value", () => {

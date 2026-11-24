@@ -170,8 +170,6 @@ export type LlmStructuredRequest<T> = {
     replacementGroups?: readonly (readonly string[])[];
     /** Optional constrained patch contract; the runner still validates the full merged submission. */
     createFieldRepair?(schema: TSchema, retained: unknown): FieldRepair | undefined;
-    /** Observe a scheduled repair before the next provider-call admission. */
-    onRepairScheduled?(fieldPaths?: readonly string[]): void;
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;

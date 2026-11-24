@@ -892,10 +892,8 @@ export function reviewCacheFingerprint(
   // The resolved target and registry already identify the inputs selected by
   // the base-branch setting and skill paths. The model-call key also hashes
   // the actual prompts and tools, including changes caused by runtime limits.
-  // Assigned effects alter only the Stage 7 prompt and submit schema.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
-  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, assignedEffects: _assignedEffects,
-    toolSurface, ...review } = config.review;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,

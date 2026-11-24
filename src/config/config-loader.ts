@@ -21,6 +21,7 @@ import type {
   ReasoningLevel
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
 
 type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>["pathRules"]>[number];
 
@@ -197,7 +198,10 @@ function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodegen
 
   const result = rawConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new CodegenieError("config_error", `invalid config file at ${filePath}`, {
+    const unknownKeys = result.error.issues.flatMap(issue => issue.code === "unrecognized_keys"
+      ? issue.keys.map(key => [...issue.path.map(String), key].join(".")) : []);
+    const diagnostic = unknownKeys.length > 0 ? ` (unknown keys: ${safeDiagnosticLine(unknownKeys.join(", "))})` : "";
+    throw new CodegenieError("config_error", `invalid config file at ${filePath}${diagnostic}`, {
       context: { path: filePath, issues: result.error.issues }
     });
   }
@@ -282,10 +286,6 @@ function applyRawConfig(
   if (raw.review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
     sources["review.adaptiveSecondPass"] = source;
-  }
-  if (raw.review?.assignedEffects !== undefined) {
-    config.review.assignedEffects = raw.review.assignedEffects;
-    sources["review.assignedEffects"] = source;
   }
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;

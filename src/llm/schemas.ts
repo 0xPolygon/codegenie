@@ -157,8 +157,6 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
-const SUBMIT_PACKET_REVIEW_DESCRIPTION = "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields.";
-
 export const SubmitPacketReviewSchema = Type.Object(
   {
     reviewStatus: Type.Optional(StringEnum(["findings", "no_findings", "incomplete"] as const, {
@@ -178,31 +176,9 @@ export const SubmitPacketReviewSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    description: SUBMIT_PACKET_REVIEW_DESCRIPTION
+    description: "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields."
   }
 );
-
-export const AssignedEffectSchema = Type.Object({
-  hunkId: Type.String({ minLength: 1 }),
-  effect: Type.String({ minLength: 1, maxLength: 300 }),
-  kind: StringEnum(["removed_guarantee", "skipped_path", "relied_guard", "none"] as const),
-  disposition: StringEnum(["safe", "finding", "question"] as const),
-  basis: Type.String({ minLength: 1, maxLength: 300, description: "The source call or line supporting safety, or the resulting finding or question." })
-}, { additionalProperties: false });
-
-export type AssignedEffect = Static<typeof AssignedEffectSchema>;
-
-export function submitPacketReviewSchema(assignedHunkIds?: readonly string[]) {
-  if (assignedHunkIds === undefined) return SubmitPacketReviewSchema;
-  const hunkIds = [...new Set(assignedHunkIds)];
-  const effect = hunkIds.length
-    ? Type.Object({ ...AssignedEffectSchema.properties, hunkId: StringEnum(hunkIds) }, { additionalProperties: false })
-    : AssignedEffectSchema;
-  return Type.Object({
-    ...SubmitPacketReviewSchema.properties,
-    assignedEffects: Type.Array(effect, { maxItems: Math.max(20, hunkIds.length) })
-  }, { additionalProperties: false, description: SUBMIT_PACKET_REVIEW_DESCRIPTION });
-}
 
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;
 export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;

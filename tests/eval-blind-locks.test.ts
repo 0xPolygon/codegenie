@@ -4,18 +4,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { verifyPrimaryLocks, verifyMechanismFreeze } from '../evals/runner/blind-locks.mjs';
-// @ts-expect-error Development-only ESM has no emitted types.
-import { projectMechanism } from '../evals/runner/blind-mechanism.mjs';
-// @ts-expect-error Development-only ESM has no emitted types.
-import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
+import { verifyPrimaryLocks } from '../evals/runner/blind-locks.mjs';
 const sha = (x: string) => createHash('sha256').update(x).digest('hex');
 describe('blind export lock gate', () => {
-  it('requires complete grades, two distinct locks, reconciliation and coding', () => {
+  it('requires complete grades, two distinct locks, and reconciliation', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-locks-'));
     try {
       const file = (name: string, value: unknown) => { const bytes = JSON.stringify(value), dest = path.join(dir, name); writeFileSync(dest, bytes); return { path: dest, sha256: sha(bytes) }; };
-      const manifestSHA256 = 'a'.repeat(64), mechanismManifestSHA256 = 'b'.repeat(64), id = 'c'.repeat(24);
+      const manifestSHA256 = 'a'.repeat(64), id = 'c'.repeat(24);
       const manifest = { sheets: [{ id, causes: [] }] }, sheets = [{ id, discovery: { findings: [] }, verification: [], published: { findings: [], summaryOnly: [], attentionQuestions: [] } }];
       const grades = [{ id, noApplicableCauses: true, causes: [], otherClaims: { survivingMediumPlus: [], published: [] } }];
       const a = file('a', { analyst: 'one', manifestSHA256, grades }), b = file('b', { analyst: 'two', manifestSHA256, grades });
@@ -38,11 +34,6 @@ describe('blind export lock gate', () => {
         const published = [{ ...sheets[0], published: { findings: [{ id: 'f-1', severity }], summaryOnly: [], attentionQuestions: [] } }];
         expect(() => verifyPrimaryLocks({ ...args, sheets: published })).toThrow('invalid graded item evidence');
       }
-      const coding = file('coding', { frozen: true, mechanismManifestSHA256, reviews: [{ id, noApplicableCauses: true, causes: [] }] });
-      const binding = { mechanismManifestSHA256, manifest, mapping: { selections: [{ id, arm: 'treatment' }] }, mechanismReviews: [{ id, passes: [], diagnostics: [] }] };
-      expect(() => verifyMechanismFreeze(binding)).toThrow();
-      expect(verifyMechanismFreeze({ ...binding, coding })).toMatchObject({ codingSHA256: coding.sha256 });
-      expect(() => verifyMechanismFreeze({ ...binding, mechanismManifestSHA256: 'd'.repeat(64), coding })).toThrow();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -64,39 +55,5 @@ it('requires every published control claim and every required or optional cause 
     const missing = structuredClone(grades); missing[0]!.causes.pop();
     const broken = file('broken', { analyst: 'two', manifestSHA256, grades: missing });
     expect(() => verifyPrimaryLocks({ manifestSHA256, manifest, sheets, locks: [a, broken], reconciliation })).toThrow('cause coverage');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-it('accepts a source-valid assigned caller row for a callee-anchored cause, but not an uncovered row', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'eval-mechanism-cause-'));
-  try {
-    const id = 'a'.repeat(24), mechanismManifestSHA256 = 'b'.repeat(64);
-    const manifest = { sheets: [{ id, causes: [{ id: 'callee', optional: false }, { id: 'topical', optional: true }] }] };
-    const mapping = { selections: [{ id, arm: 'treatment' }] };
-    const packet = { id: 'packet', path: 'caller.ts', hunks: [{ hunkId: 'caller' }, { hunkId: 'uncovered' }] };
-    const record = { packetId: 'packet', pass: 1, reviewStatus: 'incomplete', assignedHunkIds: ['caller', 'uncovered'], assignedEffects: [{ hunkId: 'caller', effect: 'removed callee check', kind: 'skipped_path', disposition: 'safe', basis: 'caller and callee source' }, { hunkId: 'caller', effect: 'topical only', kind: 'none', disposition: 'safe', basis: 'source' }] };
-    const mechanismReviews = [projectMechanism({ id, packets: [packet], records: [record], anchorMappings: [{ id: 'callee', hunkIds: ['callee'], unmapped: false }, { id: 'topical', hunkIds: [], unmapped: true }] })];
-    const citation = { packetId: 'packet', pass: 1, hunkId: 'caller', rowIndex: 0, sourceValid: true, sourceReason: 'The caller reaches the removed callee guard.' };
-    const cause = (causeId: string, matchingEffect: boolean, citations: unknown[]) => ({ causeId, matchingEffect, citations, safetyBasis: 'supported', missingSupport: false, duplicateBoilerplate: false, note: 'Source reviewed.' });
-    const write = (name: string, reviews: unknown[]) => { const bytes = JSON.stringify({ frozen: true, mechanismManifestSHA256, reviews }), file = path.join(dir, name); writeFileSync(file, bytes); return { path: file, sha256: sha(bytes) }; };
-    const reviews = [{ id, causes: [cause('callee', true, [citation]), cause('topical', false, [{ ...citation, rowIndex: 1, sourceValid: false }])] }];
-    expect(verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: write('ok', reviews) })).toMatchObject({ derived: [{ causeId: 'callee', dispositions: ['safe'], mapping: 'mapped' }, { causeId: 'topical', dispositions: [], mapping: 'unmapped' }] });
-    // Both codings are structurally valid, but a revealed cause judgment cannot be changed.
-    const initial = write('initial-freeze', reviews);
-    const flipped = write('flipped-freeze', [{ id, causes: [cause('callee', false, []), cause('topical', false, [])] }]);
-    expect(verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: flipped }).codingSHA256).toBe(flipped.sha256);
-    const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
-    const dbPath = path.join(dir, 'supervisor.db'), binding = { binding: 'campaign', scheduleBytes, scheduleSHA256: sha(scheduleBytes.toString()), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'output') };
-    let supervisor = new CampaignSupervisor(dbPath, binding), token = supervisor.claimDriver();
-    supervisor.bindBlindExport('c'.repeat(64), 'd'.repeat(64)); supervisor.bindMechanismExport(mechanismManifestSHA256);
-    expect(supervisor.bindCodingFreeze(initial.sha256)).toBe(true); supervisor.releaseDriver(token); supervisor.close();
-    supervisor = new CampaignSupervisor(dbPath, binding); token = supervisor.claimDriver();
-    expect(supervisor.bindCodingFreeze(initial.sha256)).toBe(true);
-    expect(() => supervisor.bindCodingFreeze(flipped.sha256)).toThrow('coding freeze changed');
-    supervisor.releaseDriver(token); supervisor.close();
-    const noRow = [{ id, causes: [cause('callee', true, []), cause('topical', false, [])] }];
-    expect(() => verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: write('none', noRow) })).toThrow('source-valid');
-    const uncovered = [{ id, causes: [cause('callee', true, [{ ...citation, hunkId: 'uncovered' }]), cause('topical', false, [])] }];
-    expect(() => verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: write('uncovered', uncovered) })).toThrow('citation');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
