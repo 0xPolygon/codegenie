@@ -8,6 +8,29 @@ import { describe, expect, it } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it('requires a covering snapshot after multiple 25-start marks and retains unknown holds', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-prefix-'));
+    try {
+      const file = path.join(dir, 'db'), config = { binding: 'fixture', limitMicros: 10_000_000 }, evidence = 'a'.repeat(64);
+      let ledger = new CampaignLedger(file, config);
+      const fingerprint = ledger.fingerprint('synthetic-key');
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 0, keyFingerprint: fingerprint, evidenceSHA256: evidence });
+      for (let n = 0; n < 51; n++) {
+        const id = `p${n}`; ledger.reservePhysical({ id, logicalId: id, kind: 'review' });
+        ledger.settlePhysical({ id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true });
+      }
+      ledger.reservePhysical({ id: 'unknown', logicalId: 'unknown', kind: 'review' }); ledger.settlePhysical({ id: 'unknown', httpStatus: 500 });
+      expect(ledger.keyDecision({ boundaryId: 'one', verifyEvidence: () => true })).toEqual({ action: 'snapshot' });
+      expect(ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: evidence }).fresh).toBe(false);
+      expect(ledger.keyDecision({ boundaryId: 'one', verifyEvidence: () => true })).toEqual({ action: 'wait' });
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 51, observedMs: 2, keyFingerprint: fingerprint, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.keyDecision({ boundaryId: 'one', verifyEvidence: () => true })).toEqual({ action: 'admit' });
+      expect(ledger.db.prepare('SELECT physical_starts FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get()).toEqual({ physical_starts: 52 });
+      expect(ledger.totals()).toMatchObject({ starts: 52, unknown: 1, chargedMicros: 400_051 }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("never admits a pending meter read even if a covering snapshot exists", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-meter-crash-"));
     try {

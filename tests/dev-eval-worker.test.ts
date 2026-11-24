@@ -48,7 +48,7 @@ describe("development eval worker", () => {
       const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
       const fingerprint = ledger.fingerprint('synthetic-key');
       const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
-      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "one" });
+      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "one", physicalStarts: 0 });
       const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash });
       const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file }, nowMs: 2 };
@@ -116,7 +116,7 @@ describe("development eval worker", () => {
     const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
     const fingerprint = ledger.fingerprint('synthetic-key');
     const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
-    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "boundary-1" });
+    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "boundary-1", physicalStarts: 0 });
     const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
     const supervisorPath = path.join(dir, "supervisor.sqlite"), workerToken = "b".repeat(64), workerConfigSHA256 = "c".repeat(64);

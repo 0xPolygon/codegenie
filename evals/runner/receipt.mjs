@@ -92,8 +92,8 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
       if (digest(bytes) !== hash) return false;
       const receipt = JSON.parse(bytes.toString('utf8'));
       if (receipt.version !== 1 || receipt.binding !== binding || receipt.slot !== slot || receipt.attempt !== attempt ||
-          !['pass', 'fail', 'error'].includes(receipt.status) || typeof receipt.caseName !== 'string' || !receipt.caseName || typeof receipt.caseId !== 'string' || !receipt.caseId || !Number.isSafeInteger(receipt.recoveredResets) || receipt.recoveredResets < 0 || typeof receipt.runDir !== 'string') return false;
-      if (receipt.status === 'error' ? !errors.has(receipt.error) : receipt.error !== undefined) return false;
+          !['pass', 'fail', 'error', 'stop'].includes(receipt.status) || typeof receipt.caseName !== 'string' || !receipt.caseName || typeof receipt.caseId !== 'string' || !receipt.caseId || typeof receipt.runDir !== 'string') return false;
+      if (receipt.status === 'stop' ? (receipt.reason !== 'terminal_evidence' || receipt.recoveredResets !== null || receipt.error !== undefined) : (!Number.isSafeInteger(receipt.recoveredResets) || receipt.recoveredResets < 0 || (receipt.status === 'error' ? !errors.has(receipt.error) : receipt.error !== undefined))) return false;
       if (receipt.failureCallId !== undefined && (receipt.status !== 'error' || receipt.error !== 'provider_failure' || typeof receipt.failureCallId !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(receipt.failureCallId))) return false;
       const allowed = checkedPath(runRootFor(slot, attempt));
       const runDir = checkedPath(receipt.runDir);
@@ -122,6 +122,18 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
     if (!verify(slot, attempt, hash)) throw new Error('receipt verification failed');
     return hash;
   };
+  const sealStop = (slot, attempt, result) => {
+    if (!safeSlot(slot) || !Number.isSafeInteger(attempt) || attempt < 1 || typeof result?.caseName !== 'string' || !result.caseName || typeof result.caseId !== 'string' || !result.caseId || typeof result.runDir !== 'string') throw new Error('invalid stop receipt');
+    const allowed = checkedPath(runRootFor(slot, attempt)), runDir = checkedPath(result.runDir);
+    if (!runDir.startsWith(allowed + path.sep)) throw new Error('receipt outside attempt root');
+    assertStore();
+    const bytes = Buffer.from(JSON.stringify({ version: 1, binding, slot, attempt, caseName: result.caseName, caseId: result.caseId,
+      recoveredResets: null, status: 'stop', reason: 'terminal_evidence', runDir, files: inventory(runDir) }));
+    const hash = digest(bytes);
+    freeze(runDir); publish(pointerFor(slot, attempt), bytes);
+    if (!verify(slot, attempt, hash)) throw new Error('stop receipt verification failed');
+    return hash;
+  };
   const find = (slot, attempt) => {
     if (!safeSlot(slot) || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error('invalid receipt identity');
     assertStore();
@@ -136,5 +148,5 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
     if (!verify(slot, attempt, hash)) throw new Error('attempt receipt missing or changed');
     return { hash, receipt: JSON.parse(bytes.toString('utf8')) };
   };
-  return { seal, verify, find };
+  return { seal, sealStop, verify, find };
 }

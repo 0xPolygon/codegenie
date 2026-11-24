@@ -115,10 +115,10 @@ describe('campaign boundary preparation', () => {
     vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
     const globalFetch = vi.fn(async () => { throw new Error('unexpected network'); }); vi.stubGlobal('fetch', globalFetch);
     try {
-      const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
+      let ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
       let gets = 0, posts = 0;
       const fetchImpl = vi.fn(async (input: string) => {
-        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : 0.0001}}}`); }
+        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : gets <= 3 ? 0.0001 : 0.0002}}}`); }
         posts++; return response();
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
@@ -134,7 +134,13 @@ describe('campaign boundary preparation', () => {
       expect(() => listEvidenceFiles(args.receiptDirectory)).toThrow('invalid evidence');
       rmSync(path.join(args.receiptDirectory, 'f'.repeat(64)));
       expect(await prepareAdmission({ ...args, boundaryId: 'two', attemptPrefix: 'health/two' })).toMatchObject({ status: 'clean' });
-      expect({ gets, posts }).toEqual({ gets: 3, posts: 2 }); ledger.close();
+      expect({ gets, posts }).toEqual({ gets: 3, posts: 2 });
+      const final = { ...args, ledger, boundaryId: 'final', attemptPrefix: 'health/final', keyOnly: true };
+      expect(await prepareAdmission(final)).toMatchObject({ action: 'admit' });
+      expect({ gets, posts }).toEqual({ gets: 4, posts: 2 }); ledger.close();
+      ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
+      expect(await prepareAdmission({ ...final, ledger })).toMatchObject({ action: 'admit' });
+      expect({ gets, posts }).toEqual({ gets: 4, posts: 2 }); ledger.close();
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 });

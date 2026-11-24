@@ -41,7 +41,7 @@ function receiptStore(directory) {
 
 // One invocation performs at most one key GET and one native health probe.
 // The caller decides when an authorized boundary may invoke it.
-export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, attemptPrefix, purpose = 'admission', retryFor, failureReceiptSHA256, llmConfig, expected, fetchImpl = globalThis.fetch, models }) {
+export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, attemptPrefix, purpose = 'admission', retryFor, failureReceiptSHA256, llmConfig, expected, fetchImpl = globalThis.fetch, models, beforeProbe, keyOnly = false }) {
   if (typeof boundaryId !== 'string' || !boundaryId || !['admission', 'retry'].includes(purpose) || expected?.provider !== 'openrouter') throw new Error('invalid admission binding');
   ledger.assertRestartSafe();
   const stop = ledger.totals().stopped;
@@ -61,6 +61,7 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
   if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) current = { source: 'key', action: 'snapshot' };
   else current = decision();
   if (current.source === 'key' && ['snapshot', 'wait'].includes(current.action)) {
+    const physicalStarts = ledger.physicalPrefix();
     const poll = ledger.beginMeterPoll(boundaryId, Date.now());
     if (poll.action !== 'read') return poll;
     const reading = await readConfiguredKeyUsage({ ledger, fetchImpl, models });
@@ -71,12 +72,13 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
         return baseline.action === 'stop' ? baseline : finished;
       }
     }
-    const snapshot = applyKeyObservation({ ledger, kind: 'snapshot', reading, sealReceipt: store.seal, boundaryId, completePoll: true });
+    const snapshot = applyKeyObservation({ ledger, kind: 'snapshot', reading, sealReceipt: store.seal, boundaryId, completePoll: true, physicalStarts });
     const finished = snapshot.pollCompleted ? snapshot : ledger.finishMeterPoll(boundaryId, Date.now(), false);
     if (snapshot.action !== 'recorded') return snapshot.action === 'stop' ? snapshot : finished;
     current = decision();
   }
   if (current.action === 'stop' || current.action === 'wait' || current.action === 'reconcile' || current.action === 'snapshot') return current;
+  if (keyOnly) return { action: 'admit' };
   if (purpose === 'retry' && current.action === 'admit') {
     const prior = ledger.db.prepare(`SELECT p.id,p.started_at_ms,p.settled_at_ms,p.state,p.http_status,h.observed_ms,h.evidence_sha256 FROM physical p JOIN health_receipt h ON h.physical_id=p.id
       WHERE p.provider='openrouter' AND p.health_boundary=? AND p.health_purpose='retry' AND p.retry_for=? AND p.retry_failure_sha256=? AND h.outcome='clean'
@@ -88,6 +90,10 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
     }
   }
   if (current.action === 'probe' || (purpose === 'retry' && current.action === 'admit')) {
+    if (beforeProbe !== undefined) {
+      try { if (typeof beforeProbe !== 'function' || beforeProbe() !== true) throw new Error('binding'); }
+      catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch' }; }
+    }
     return runHealthProbe({ ledger, boundaryId, purpose, retryFor, failureReceiptSHA256, attemptPrefix, llmConfig, expected, fetchImpl, sealReceipt: store.seal });
   }
   return current;

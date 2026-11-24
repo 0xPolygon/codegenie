@@ -47,14 +47,14 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   const roots = new Map();
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
-    if (!wc || typeof slot.caseId !== 'string' || !slot.caseId || !Array.isArray(slot.expectedPacketIds) || slot.provider !== 'openrouter' ||
+    if (!wc || slot.boundaryId === `final-${sha(config.binding)}` || typeof slot.caseId !== 'string' || !slot.caseId || !Array.isArray(slot.expectedPacketIds) || slot.provider !== 'openrouter' ||
         wc.supervisorPath !== config.supervisorPath || wc.ledgerPath !== config.ledgerPath || wc.ledgerBinding !== config.binding || wc.boundaryId !== slot.boundaryId ||
         wc.evidenceDirectory !== config.evidenceDirectory || wc.evidenceFiles !== undefined || wc.limitMicros !== config.limitMicros || wc.reserveMicros !== config.reserveMicros || wc.errorHoldMicros !== config.errorHoldMicros || !hash(wc.caseConfigSHA256) || typeof wc.caseConfig !== 'string' || !path.isAbsolute(wc.caseConfig) || outsideCheckout(wc.caseConfig) !== wc.caseConfig) throw new Error('worker schedule binding mismatch');
     const caseBytes = readBytes(wc.caseConfig);
     if (sha(caseBytes) !== wc.caseConfigSHA256) throw new Error('case config binding mismatch');
     const caseConfig = JSON.parse(caseBytes.toString('utf8'));
     if (typeof caseConfig.caseDir !== 'string' || wc.integrity?.suiteDir !== path.resolve(path.dirname(wc.caseConfig), caseConfig.caseDir) ||
-        !wc.integrity?.build || ['dist', 'runner', 'lockfile', 'package'].some((key) => wc.integrity.build[key] !== config.build?.[key])) throw new Error('case integrity binding mismatch');
+        !wc.integrity?.build || Object.keys(wc.integrity.build).some((key) => wc.integrity.build[key] !== config.build?.[key]) || Object.keys(config.build ?? {}).length !== Object.keys(wc.integrity.build).length) throw new Error('case integrity binding mismatch');
     assertIntegrity(wc.integrity);
     const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1));
     roots.set(slot.id, path.dirname(bounds.outputDir));
@@ -69,6 +69,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   };
   const existing = existsSync(config.supervisorPath), ledgerExists = existsSync(config.ledgerPath);
   if (existing !== ledgerExists) throw new Error('campaign ledger custody requires reconciliation');
+  if (!existing && [config.receiptDirectory, config.evidenceDirectory, config.workDirectory, `${config.supervisorPath}-wal`, `${config.supervisorPath}-shm`, `${config.ledgerPath}-wal`, `${config.ledgerPath}-shm`, ...roots.values()].some((file) => existsSync(file))) throw new Error('campaign namespace requires reconciliation');
   if (existing && (!existsSync(config.receiptDirectory) || !existsSync(config.evidenceDirectory) || !existsSync(config.workDirectory))) throw new Error('campaign directory custody requires reconciliation');
   if (!existing) {
     for (const directory of [path.dirname(config.supervisorPath), path.dirname(config.ledgerPath), config.evidenceDirectory, config.workDirectory]) mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -92,6 +93,10 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     } catch { return false; }
   };
   const verifyReceipt = supervisor.receipts.verify;
+  const assertCase = (slot) => {
+    assertIntegrity(slot.workerConfig.integrity);
+    if (sha(readBytes(slot.workerConfig.caseConfig)) !== slot.workerConfig.caseConfigSHA256) throw new Error('case config binding mismatch');
+  };
   const verifyFailure = (slot, attempt, receiptHash) => {
     const found = supervisor.receipts.find(slot, attempt);
     return found?.hash === receiptHash && found.receipt.status === 'error' && found.receipt.error === 'provider_failure' && typeof found.receipt.failureCallId === 'string';
@@ -106,7 +111,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     supervisor.seal(slot.id, attempt, receiptHash, verifyReceipt, verifyRetry, ledger);
     return { action: 'selected', slot: slot.id, receiptSHA256: receiptHash, recoveredResets: recorded.total };
   };
-  const step = async () => {
+  const stepInternal = async () => {
     supervisor.assertDriver();
     const stopped = ledger.totals().stopped;
     if (stopped) return { action: 'stop', reason: stopped };
@@ -118,14 +123,23 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       if (claim.spawn_state === 'claimed') supervisor.recordWorkerExit(next.slot_id, next.attempt_no, true);
       if (!supervisor.workerExited(next.slot_id, next.attempt_no)) return { action: 'wait', reason: 'worker_exit' };
       if (claim.spawn_state === 'started') supervisor.recordWorkerExit(next.slot_id, next.attempt_no);
+      if (found?.receipt.status === 'stop') { ledger.stop('terminal_evidence'); return { action: 'stop', reason: 'terminal_evidence', receiptSHA256: found.hash }; }
       if (found) return finish(slot, next.attempt_no, found.receipt, found.hash);
       const prefix = `${attemptPrefix(next.slot_id, next.attempt_no)}/`;
       if (ledger.db.prepare('SELECT 1 FROM physical WHERE substr(id,1,?)=? LIMIT 1').get(prefix.length, prefix)) return { action: 'reconcile', reason: 'interrupted_physical_call', slot: next.slot_id };
       return { action: 'recovered', ...supervisor.reconcile(next.slot_id, next.attempt_no, { ledger, verifyWorkerExited: () => supervisor.workerExited(next.slot_id, next.attempt_no), findTerminalReceipt: () => supervisor.receipts.find(next.slot_id, next.attempt_no) }) };
     }
+    if (next.action === 'completed') {
+      for (const slot of supervisor.slots) assertCase(slot);
+      const final = await prepareAdmission({ ledger, boundaryId: `final-${sha(config.binding)}`, receiptDirectory: config.evidenceDirectory,
+        attemptPrefix: 'health/final', purpose: 'admission', keyOnly: true, llmConfig: config.health.llmConfig,
+        expected: config.health.expected, fetchImpl, ...(models ? { models } : {}) });
+      if (ledger.totals().stopped) return { action: 'stop', reason: ledger.totals().stopped };
+      return final.action === 'admit' ? { action: 'completed', physicalStarts: ledger.physicalPrefix() } : final;
+    }
     if (next.action !== 'next') return next;
     const slot = next.slot;
-    try { assertIntegrity(slot.workerConfig.integrity); }
+    try { assertCase(slot); }
     catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch' }; }
     const failed = supervisor.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no DESC LIMIT 1").get(slot.id);
     const auth = failed && supervisor.db.prepare('SELECT 1 FROM retry_authorization WHERE slot_id=?').get(slot.id);
@@ -134,8 +148,10 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     const admission = await prepareAdmission({ ledger, boundaryId: slot.boundaryId, receiptDirectory: config.evidenceDirectory,
       attemptPrefix: `health/${slot.id}/${purpose}-${healthOrdinal}`,
       purpose, ...(failed && !auth ? { retryFor: attemptPrefix(slot.id, failed.attempt_no), failureReceiptSHA256: failed.receipt_sha256 } : {}),
-      llmConfig: config.health.llmConfig, expected: config.health.expected, fetchImpl, ...(models ? { models } : {}) });
+      llmConfig: config.health.llmConfig, expected: config.health.expected, fetchImpl, beforeProbe: () => { assertCase(slot); return true; }, ...(models ? { models } : {}) });
     if (ledger.totals().stopped) return { action: 'stop', reason: ledger.totals().stopped };
+    try { assertCase(slot); }
+    catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch' }; }
     if (failed && !auth && admission.status === 'clean') {
       const proof = proofHash(config.binding, slot.id, failed.attempt_no, failed.receipt_sha256, admission.physicalId);
       supervisor.authorizeRetry(slot.id, failed.attempt_no, proof, { ledger, retryProbeId: admission.physicalId, verifyReceipt, verifyFailure, verifyRetry });
@@ -149,16 +165,34 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     try {
       const file = publishConfig(config.workDirectory, `${slot.id}-${started.attempt}.json`, worker);
       result = await spawnAttempt({ supervisor, slotId: slot.id, attemptNo: started.attempt, configFile: file, configSHA256: sha(worker) });
-    } catch { return { action: 'reconcile', slot: slot.id }; }
+    } catch {
+      try { assertCase(slot); }
+      catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch', slot: slot.id }; }
+      return { action: 'reconcile', slot: slot.id };
+    }
     if (result.status === 'worker_failed') return { action: 'reconcile', slot: slot.id, reason: result.error };
     let recoveredResets;
     try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds, priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
     catch (error) {
       if (error instanceof RecoveredResetLimitError) recoveredResets = error.recoveredResets;
-      else { ledger.stop('terminal_evidence'); return { action: 'stop', reason: 'terminal_evidence', slot: slot.id }; }
+      else {
+        const receiptSHA256 = supervisor.receipts.sealStop(slot.id, started.attempt, { ...result, caseId: slot.caseId });
+        ledger.stop('terminal_evidence');
+        return { action: 'stop', reason: 'terminal_evidence', slot: slot.id, receiptSHA256 };
+      }
     }
     const receiptHash = supervisor.receipts.seal(slot.id, started.attempt, { ...result, caseId: slot.caseId, recoveredResets });
     return finish(slot, started.attempt, result, receiptHash);
+  };
+  let localStop;
+  const step = async () => {
+    if (localStop) return { action: 'stop', reason: localStop };
+    try { return await stepInternal(); }
+    catch {
+      localStop = 'custody_refused';
+      try { ledger.stop(localStop); } catch { localStop = 'accounting_failed'; }
+      return { action: 'stop', reason: localStop };
+    }
   };
   return { step, supervisor, ledger, close() { supervisor.releaseDriver(token); ledger.close(); supervisor.close(); } };
 }

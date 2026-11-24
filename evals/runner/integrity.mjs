@@ -24,11 +24,14 @@ export function treeDigest(directory) {
   return digest(JSON.stringify(entries));
 }
 export function buildDigest() {
+  const pi = realpathSync(path.join(checkout, 'node_modules/@earendil-works/pi-ai'));
   return { dist: treeDigest(path.join(checkout, 'dist')), runner: treeDigest(path.join(checkout, 'evals/runner')),
+    skills: treeDigest(path.join(checkout, 'bundled-skills')), grammars: treeDigest(path.join(checkout, 'bundled-grammars')),
+    models: digest(readFileSync(path.join(checkout, 'models.md'))), pi: treeDigest(path.join(pi, 'dist')), piPackage: digest(readFileSync(path.join(pi, 'package.json'))),
     lockfile: digest(readFileSync(path.join(checkout, 'pnpm-lock.yaml'))), package: digest(readFileSync(path.join(checkout, 'package.json'))) };
 }
 export function assertIntegrity(integrity) {
   if (!integrity || typeof integrity.suiteDir !== 'string' || typeof integrity.suiteSHA256 !== 'string' || !integrity.build) throw new Error('campaign input binding mismatch');
   const actual = buildDigest();
-  if (Object.keys(integrity.build).length !== 4 || Object.keys(actual).some((key) => integrity.build[key] !== actual[key]) || treeDigest(integrity.suiteDir) !== integrity.suiteSHA256) throw new Error('campaign input binding mismatch');
+  if (Object.keys(integrity.build).length !== Object.keys(actual).length || Object.keys(actual).some((key) => integrity.build[key] !== actual[key]) || treeDigest(integrity.suiteDir) !== integrity.suiteSHA256) throw new Error('campaign input binding mismatch');
 }

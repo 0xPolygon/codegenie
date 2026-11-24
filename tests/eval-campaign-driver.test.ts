@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,11 @@ import { openCampaign } from '../evals/runner/campaign.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { buildDigest, treeDigest } from '../evals/runner/integrity.mjs';
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
+function makeWritable(dir: string) {
+  const stat = lstatSync(dir); if (stat.isSymbolicLink()) return;
+  chmodSync(dir, stat.isDirectory() ? 0o700 : 0o600);
+  if (stat.isDirectory()) for (const name of readdirSync(dir)) makeWritable(path.join(dir, name));
+}
 
 function healthResponse() {
   const base = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'openai/gpt-6-luna' };
@@ -19,7 +24,7 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
-  it('uses bound admission and a real child, then stops on unqualified terminal evidence', async () => {
+  it.each(['case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     const preload = path.join(dir, 'block.mjs'); writeFileSync(preload, 'globalThis.fetch = async () => { throw new Error("network blocked"); };\n');
@@ -40,14 +45,31 @@ describe('campaign driver', () => {
       const file = path.join(dir, 'campaign.json'); writeFileSync(file, config);
       let gets = 0, posts = 0;
       const fetchImpl = vi.fn(async (input: string) => {
-        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : 0.0001}}}`); }
+        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; if (scenario === 'case-during') appendFileSync(caseFile, ' '); return new Response(`{"data":{"usage":${gets === 1 ? 0 : 0.0001}}}`); }
         posts++; return healthResponse();
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       await expect(openCampaign(file, '0'.repeat(64), { fetchImpl, models })).rejects.toThrow('config digest');
       const campaign = await openCampaign(file, sha(config), { fetchImpl, models });
+      if (scenario === 'case-before') {
+        appendFileSync(caseFile, ' ');
+        expect(await campaign.step()).toMatchObject({ action: 'stop', reason: 'binding_mismatch' });
+        expect({ gets, posts }).toEqual({ gets: 0, posts: 0 }); campaign.close(); return;
+      }
+      if (scenario === 'case-during') {
+        expect(await campaign.step()).toMatchObject({ action: 'stop', reason: 'binding_mismatch' });
+        expect({ gets, posts }).toEqual({ gets: 1, posts: 0 }); campaign.close(); return;
+      }
       expect(await campaign.step()).toMatchObject({ action: 'health', status: 'clean' });
+      if (scenario === 'case-after') {
+        appendFileSync(caseFile, ' ');
+        expect(await campaign.step()).toMatchObject({ action: 'stop', reason: 'binding_mismatch' });
+        expect({ gets, posts }).toEqual({ gets: 1, posts: 1 }); campaign.close(); return;
+      }
       expect(await campaign.step()).toMatchObject({ action: 'stop', reason: 'terminal_evidence' });
+      const stopReceipt = campaign.supervisor.receipts.find('one', 1);
+      expect(stopReceipt).toMatchObject({ receipt: { status: 'stop', reason: 'terminal_evidence' } });
+      expect(lstatSync(stopReceipt.receipt.runDir).mode & 0o222).toBe(0);
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
       expect(campaign.ledger.totals().starts).toBe(1);
       expect(campaign.supervisor.db.prepare('SELECT COUNT(*) AS total FROM outcome').get()).toEqual({ total: 0 });
@@ -56,6 +78,9 @@ describe('campaign driver', () => {
       const reopened = await openCampaign(file, sha(config), { fetchImpl, models });
       expect(await reopened.step()).toMatchObject({ action: 'stop', reason: 'terminal_evidence' });
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 }); reopened.close();
-    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+      renameSync(base.supervisorPath, `${base.supervisorPath}-moved`); renameSync(base.ledgerPath, `${base.ledgerPath}-moved`);
+      await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toThrow('namespace requires reconciliation');
+      expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 });

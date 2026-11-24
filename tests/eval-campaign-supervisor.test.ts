@@ -324,7 +324,7 @@ describe('campaign admission custody', () => {
       const evidence = (value: object) => { const text = JSON.stringify(value), hash = digest(text), name = path.join(dir, hash); writeFileSync(name, text); evidenceFiles[hash] = name; return hash; };
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       const fingerprint = ledger.fingerprint('synthetic-key');
-      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0, fingerprint }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1, fingerprint, boundaryId: 'one' });
+      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0, fingerprint }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1, fingerprint, boundaryId: 'one', physicalStarts: 0 });
       const healthHash = evidence({ kind: 'health', purpose: 'admission', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baselineHash });
       ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshotHash });
