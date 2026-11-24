@@ -34,6 +34,10 @@ describe('campaign admission custody', () => {
       supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
       supervisor.begin('one', args); supervisor.seal('one', 2, digest('success'), yes, yes, ledger);
       supervisor.close(); supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      realLedger.db.prepare('DELETE FROM health_receipt WHERE physical_id=?').run('retry-probe');
+      expect(() => supervisor.begin('two', args)).toThrow('retry probe');
+      expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM attempt WHERE slot_id='two'").get()).toEqual({ total: 0 });
+      realLedger.recordHealth({ physicalId: 'retry-probe', outcome: 'clean', observedMs: 201, evidenceSHA256: digest('retry-probe') });
       expect(() => supervisor.begin('two', { ...args, verifyReceipt: (_slot: string, _attempt: number, hash: string) => hash !== first })).toThrow('retry authorization');
       expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM attempt WHERE slot_id='two'").get()).toEqual({ total: 0 });
       supervisor.close(); realLedger.close();
