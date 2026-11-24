@@ -118,8 +118,8 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
       if ([...adviceGroups.keys()].some(path => list.path.startsWith(path + "."))) continue;
       const ids = sources.filter(source => eligibleCompositionPlacement(source, list.kind)).map(source => source.id);
       properties[list.path] = Type.Optional(Type.Array(Type.String(ids.length ? { enum: ids } : {}), {
-        ...(ids.length ? {} : { maxItems: 0 }), uniqueItems: true,
-        description: "Complete replacement reference list. Remove incorrect entries; keep all correct entries. Omit this property to retain its current list."
+        ...(ids.length ? {} : { maxItems: 0 }),
+        description: "Complete replacement reference list with no duplicate IDs. Remove incorrect entries; keep all correct entries. Omit this property to retain its current list."
       }));
     }
     return { findingIds: group.findingIds, diagnostics,
@@ -127,7 +127,7 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
       sections: group.sections.map(({ kind, text }, index) => ({ kind, text, path: lists[index]!.path })),
       referenceLists: lists, sources };
   });
-  const patchSchema = Type.Object(properties, { additionalProperties: false, minProperties: 1 });
+  const patchSchema = Type.Object(properties, { additionalProperties: false, description: "Include at least one field." });
   const paths = Object.keys(properties);
   const baseline = structuredClone(original);
   const exampleEntry = Object.entries(properties as Record<string, TSchema & { type?: string; items?: { type?: string; enum?: string[] } }>).find(([, shape]) => shape.type === "array" && shape.items?.type === "string" && shape.items.enum?.length);
@@ -153,6 +153,10 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
             throw new Error("Advice repair must preserve impact and verification sections");
           }
         } else if (!strings(refs)) throw new Error("Attribution updates must be reference lists");
+        else {
+          const duplicate = refs.find((ref, index) => refs.indexOf(ref) !== index);
+          if (duplicate !== undefined) throw new Error(`Attribution update ${path} contains duplicate reference ${duplicate}`);
+        }
         const parts = path.split(".");
         const key = parts.pop()!;
         let parent: unknown = result;

@@ -101,6 +101,7 @@ export function expandVerifierRevision(
   verdict = (canonicalizeVerifierRejection(verdict)?.value ?? verdict) as SubmitVerificationVerdict;
   requirePromotedCompletion(candidate, verdict);
   if (verdict.findingUpdates === undefined) return verdict;
+  if (Object.keys(verdict.findingUpdates).length === 0) throw new Error("findingUpdates must include at least one changed field.");
   validateToolCall(
     [{ name: "updates", description: "", parameters: FindingUpdatesSchema }],
     { type: "toolCall", id: "updates", name: "updates", arguments: verdict.findingUpdates }

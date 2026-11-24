@@ -18,25 +18,26 @@ export type FieldRepair = {
 
 // Optional input properties describe an update, not the final submission. Final
 // required fields and all container constraints are checked after merging.
-function updateSchema(input: Schema, baseline: unknown, semanticRequired: ReadonlySet<string>, path = ""): Schema {
+function updateSchema(input: Schema, baseline: unknown, semanticRequired: ReadonlySet<string>, path = "", partialItems = false): Schema {
   const schema = structuredClone(input);
   if (schema.anyOf || schema.oneOf || schema.allOf || schema.patternProperties) return schema;
-  if (schema.type === "object" && object(baseline)) {
+  if (schema.type === "object" && (object(baseline) || partialItems)) {
     const required = new Set(schema.required ?? []);
     delete schema.required;
     if (schema.properties) schema.properties = Object.fromEntries(Object.entries(schema.properties).map(([key, child]) => {
       const childPath = path ? `${path}.${key}` : key;
-      const updated = updateSchema(child, baseline[key], semanticRequired, childPath);
+      const updated = updateSchema(child, object(baseline) ? baseline[key] : undefined, semanticRequired, childPath, partialItems);
       updated.description = `${child.description ?? ""} ${semanticRequired.has(childPath)
         ? "Required by stage validation for the retained submission; omission from this update does not waive that requirement."
         : required.has(key) ? "Required in the final merged result; omit from this update only if already retained." : "Optional in the final result and in this update."}`.trim();
       return [key, updated];
     }));
   } else if (schema.type === "array" && schema.items) {
-    if (Array.isArray(baseline) && baseline.length && baseline.some(object)) {
+    if (!Array.isArray(schema.items) && schema.items.type === "object" &&
+        (partialItems || (Array.isArray(baseline) && baseline.length > 0 && baseline.some(object)))) {
       const items = schema.items;
-      schema.items = baseline.map((value, index) => updateSchema((Array.isArray(items) ? items[index] : items) ?? {} as Schema, value, semanticRequired, `${path}.${index}`));
-      schema.additionalItems = Array.isArray(items) ? false : items;
+      schema.items = updateSchema(items, undefined, semanticRequired, `${path}.*`, true);
+      schema.items.description = `${schema.items.description ?? ""} Items keep their index; required fields for retained items are listed in the repair diagnostics.`.trim();
     }
   }
   return schema;
@@ -75,6 +76,23 @@ export function mergeRepairDraft(before: Record<string, unknown>, update: Record
     }
   }
   return mergeSubmissionDraft(retained, update) as Record<string, unknown>;
+}
+
+function rejectIncompleteNewItems(schema: Schema, before: unknown, after: unknown, path = ""): void {
+  if (schema.type === "array" && Array.isArray(after) && schema.items && !Array.isArray(schema.items)) {
+    const old = Array.isArray(before) ? before : [];
+    after.forEach((value, index) => {
+      const itemPath = path ? `${path}.${index}` : String(index);
+      if (index >= old.length && submissionIssues(schema.items as TSchema, value, itemPath).length) {
+        throw new Error(`New field repair item ${itemPath} must be complete`);
+      }
+      if (index < old.length) rejectIncompleteNewItems(schema.items as Schema, old[index], value, itemPath);
+    });
+  } else if (schema.type === "object" && object(after) && schema.properties) {
+    for (const [key, child] of Object.entries(schema.properties)) {
+      if (Object.hasOwn(after, key)) rejectIncompleteNewItems(child, object(before) ? before[key] : undefined, after[key], path ? `${path}.${key}` : key);
+    }
+  }
 }
 
 export function createFieldRepair(schema: TSchema, original: unknown, allowSemanticRepair = false, replacementGroups: readonly (readonly string[])[] = [], semanticIssues: readonly ValidationIssue[] = []): FieldRepair | undefined {
@@ -147,6 +165,7 @@ export function createFieldRepair(schema: TSchema, original: unknown, allowSeman
         }
         Object.defineProperty(parent, key, { value: structuredClone(patch[path]), enumerable: true, writable: true, configurable: true });
       }
+      rejectIncompleteNewItems(schema as Schema, baseline, result);
       return result;
     }
   };

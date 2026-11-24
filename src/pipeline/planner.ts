@@ -1,6 +1,7 @@
 import { normalizePlannerBookkeeping, normalizePlannerSubmission } from "../llm/submit-preservation.js";
 import type { LlmRunner, LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
+import { isOrderedLineRange } from "../util/line-range.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
 import {
   fenceUntrusted,
@@ -334,6 +335,7 @@ async function runPlannerCall(
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
     normalizeSubmit: normalizePlannerSubmission,
+    validateSubmit: validatePlannerLineRanges,
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: false,
@@ -348,6 +350,14 @@ async function runPlannerCall(
     ...validated,
     plan: finalizePlannerRecovery(validated.plan, dossier, opts.lenses, telemetry, recovery)
   };
+}
+
+export function validatePlannerLineRanges(value: SubmitPlan) {
+  return value.coverage.some(decision => decision.surroundingContextHints?.some(hint =>
+    hint.lineRange !== undefined && !isOrderedLineRange(hint.lineRange)))
+    ? { ok: false as const, classification: "invalid_tool_arguments" as const,
+      details: "Each lineRange must be [startLine, endLine] with startLine <= endLine." }
+    : { ok: true as const };
 }
 
 function recoverPlannerInvalidSubmit(

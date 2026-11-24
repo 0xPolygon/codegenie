@@ -6,6 +6,8 @@ import { compositionAttributionDiagnostics, compositionSources, proofVisibilityD
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
+import { portableSchemaIssues } from "./helpers/portable-schema.js";
+import { __piRunnerTestHooks } from "../src/llm/pi-runner.js";
 
 function fixture(build: typeof contractComposition = contractComposition) {
   const { findings, sections, evidenceRefs, presentation } = build();
@@ -60,6 +62,10 @@ describe("composition attribution repair", () => {
     group.sections[testIndex]!.sourceRefs.pop();
     const repair = createCompositionAttributionRepair(schema, original, findings)!;
     const path = `composedFindings.0.sections.${testIndex}.sourceRefs`;
+    const emitted = __piRunnerTestHooks.toolSpec({ name: "repair", description: "", parameters: repair.schema, execute: async () => ({ text: "" }) }).parameters;
+    expect(portableSchemaIssues("composition-repair", emitted)).toEqual([]);
+    expect(() => repair.merge({})).toThrow("Invalid attribution patch");
+    expect(() => repair.merge({ [path]: [fixRef, fixRef] })).toThrow(`duplicate reference ${fixRef}`);
     expect(repair.paths).toContain(path);
     const patchSchema = repair.schema as unknown as { properties: Record<string, { items: { enum: string[] } }> };
     expect(patchSchema.properties[path]!.items.enum).toContain(fixRef);

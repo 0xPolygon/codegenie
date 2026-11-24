@@ -1,6 +1,7 @@
 import { StringEnum } from "./string-enum.js";
 import { Type, type Static } from "typebox";
 import type { ReviewStage } from "../types.js";
+import { LineRangeSchema } from "./line-range-schema.js";
 
 const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);
 
@@ -40,9 +41,7 @@ const SurroundingContextHintSchema = Type.Object(
       maxLength: 200,
       description: "For enclosing_symbol, the symbol body to read. For call_site, the callee/helper whose callers or usages should be inspected."
     })),
-    lineRange: Type.Optional(Type.Tuple([Type.Integer({ minimum: 1 }), Type.Integer({ minimum: 1 })], {
-      description: "Explicit inclusive line range to include when line-based context is more precise than a symbol hint."
-    })),
+    lineRange: Type.Optional(LineRangeSchema),
     reason: Type.String({ minLength: 1, maxLength: 1000 }),
     expectedUse: StringEnum(["packet_context", "tool_lookup"] as const, {
       description: "Use packet_context for context Stage 6 should attach now; use tool_lookup for guidance the reviewer can inspect later."
@@ -69,7 +68,6 @@ export const SubmitPlanSchema = Type.Object(
           lenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 }),
           surroundingContextHints: Type.Optional(Type.Array(SurroundingContextHintSchema, {
             maxItems: 20,
-            default: [],
             description: "Optional mechanical context hints. Omit this field when there are no hints."
           })),
           reason: Type.String({ minLength: 1, maxLength: 1000 }),
@@ -195,8 +193,8 @@ const VerificationVerdictSharedProperties = {
 
 export const FindingUpdatesSchema = Type.Partial(
   Type.Omit(SubmittedFindingSchema, ["path", "anchor", "behaviorChange", "intentEvidence"]),
-  { additionalProperties: false, minProperties: 1,
-    description: "Only changed finding fields. Omitted fields stay unchanged. Nested evidence is replaced as a whole. Use revisedAnchor for placement." }
+  { additionalProperties: false,
+    description: "Include at least one changed finding field. Omitted fields stay unchanged. Nested evidence is replaced as a whole. Use revisedAnchor for placement." }
 );
 
 export const ProofAssessmentSchema = Type.Object({
