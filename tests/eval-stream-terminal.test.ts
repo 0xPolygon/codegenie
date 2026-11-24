@@ -25,6 +25,17 @@ describe('physical SSE terminal observation', () => {
     const stream = observeStreamTerminal(response([chunk]), { record: (value: string) => terminals.push(value) });
     const reader = stream.body!.getReader(); await reader.read(); await reader.cancel(); expect(terminals).toEqual(['done']);
   });
+  it('flushes a final complete SSE event at EOF without a blank line', async () => {
+    for (const [text, expected] of [
+      ['data: [DONE]', 'done'],
+      ['event: error\ndata: {"error":"synthetic"}', 'provider_error_event'],
+      ['data: {"choices":[{"finish_reason":"stop"}]}', 'done']
+    ] as const) {
+      const terminals: string[] = [];
+      await observeStreamTerminal(response([text]), { record: (value: string) => terminals.push(value) }).text();
+      expect(terminals).toEqual([expected]);
+    }
+  });
   it('distinguishes resets, clean EOF, usage-only, invalid and oversized evidence', async () => {
     for (const [chunks, fail, expected] of [
       [['data: {"choices":[]}\n\n'], true, 'body_reset'],

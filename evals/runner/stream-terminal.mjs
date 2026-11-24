@@ -56,7 +56,15 @@ export function observeStreamTerminal(response, { signal, record }) {
       try {
         const result = await reader.read();
         if (result.done) {
-          try { scan(decoder.decode()); } catch { uncertain = true; }
+          try {
+            scan(decoder.decode());
+            // The SDK flushes a final SSE event even without a trailing blank
+            // line, but never flushes a partial event after a reader error.
+            if (!uncertain && !terminal) {
+              if (lineHasChars) consumeLine();
+              if (data.length || event) frame();
+            }
+          } catch { uncertain = true; }
           persist(terminal ?? (sawFinish && !uncertain ? 'done' : signal?.aborted ? 'local_cancel' : 'unknown'));
           controller.close();
           return;
