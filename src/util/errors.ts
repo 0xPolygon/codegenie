@@ -16,6 +16,7 @@ export type CodegenieErrorCode =
   | "path_outside_repo"
   | "review_failed"
   | "provider_unavailable"
+  | "provider_policy_block"
   | "llm_call_failed"
   | "llm_schema_invalid"
   | "github_post_failed"

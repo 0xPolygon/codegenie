@@ -898,7 +898,8 @@ function expandClusterFindingIds(findingIds: string[], known: Map<string, Candid
 }
 
 function canUseComposerFallback(error: unknown): boolean {
-  return isBudgetExhaustedError(error) || isRecoverableLlmError(error);
+  return isBudgetExhaustedError(error) || isRecoverableLlmError(error) ||
+    (isCodegenieError(error) && error.code === "provider_policy_block");
 }
 
 // A "backfill_packet_representative" anchor exists to prove on-diff-ness at
@@ -922,6 +923,9 @@ function withholdRepresentativeAnchor(candidate: CandidateFinding, telemetry: Te
 }
 
 function composerFallbackCoverageReason(mode: CompositionMode, error: unknown): string {
+  if (isCodegenieError(error) && error.code === "provider_policy_block") {
+    return `${error.message}; deterministic fallback used`;
+  }
   if (isCodegenieError(error) && typeof error.context?.providerUnavailableSummary === "string") {
     return `${error.context.providerUnavailableSummary}; deterministic fallback used`;
   }

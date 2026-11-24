@@ -474,7 +474,7 @@ function providerMessageFromError(error: unknown): string | undefined {
     return undefined;
   }
   const value = error.context?.providerMessage;
-  if (error.code === "provider_unavailable") {
+  if (error.code === "provider_unavailable" || error.code === "provider_policy_block") {
     return boundedPublishedText(typeof value === "string" ? `${error.message}: ${value}` : error.message, 600);
   }
   return typeof value === "string" ? boundedPublishedText(value) : undefined;

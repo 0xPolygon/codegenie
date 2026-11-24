@@ -8225,6 +8225,189 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   );
 
+  it.each(["http", "stream", "composer"] as const)("classifies a real OpenRouter %s policy block without retries or outage latch", async mode => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    const onProviderUnavailable = vi.fn();
+    let starts = 0;
+    const explanation = "Resource temporarily blocked by content policy";
+    const body = { provider: "Other", error: { message: "Provider returned error", metadata: { provider_name: "Azure", raw: JSON.stringify({ error: { message: explanation } }) } } };
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          starts++;
+          return mode === "http" ? Response.json(body, { status: 502 })
+            : new Response(`data: ${JSON.stringify(body)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+        } }),
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn(), onProviderUnavailable }
+      });
+      const request = mode === "composer"
+        ? { stage: 10 as const, prompt: "compose", schema: SubmitCompositionSchema, templateVersion: "test", timeoutMs: 10_000 }
+        : { ...submitReviewRequest("policy"), timeoutMs: 10_000 };
+      await expect(runner.runStructured(request)).rejects.toMatchObject({
+        code: "provider_policy_block", recoverable: false,
+        context: { provider: "openrouter", model: "openai/gpt-6-luna", providerMessage: expect.stringContaining("content policy") }
+      });
+      expect(starts).toBe(1);
+      expect(onProviderUnavailable).not.toHaveBeenCalled();
+      expect(telemetry.modelCalls).toHaveLength(1);
+      expect(telemetry.modelCalls[0]).toMatchObject({ errorCode: "provider_policy_block", retryable: false, retryReason: "provider_policy_block", upstreamProvider: "Azure" });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([
+    { values: ["Azure"], expected: "Azure" },
+    { values: [], expected: undefined },
+    { values: ["Azure", "OpenAI"], expected: "indeterminate" }
+  ])("records OpenRouter upstream from ordinary stream chunks: $values", async ({ values, expected }) => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          const args = JSON.stringify(validSubmitReviewCall("submit").arguments);
+          const common = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture" };
+          const chunks = [
+            ...values.map(provider => ({ ...common, provider, choices: [{ index: 0, delta: {}, finish_reason: null }] })),
+            { ...common, choices: [{ index: 0, finish_reason: "tool_calls", delta: { tool_calls: [{ index: 0, id: "submit", type: "function", function: { name: "submit_review", arguments: args } }] } }] }
+          ];
+          return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+        } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("upstream"), timeoutMs: 10_000 })).resolves.toMatchObject({ findings: [] });
+      expect(telemetry.modelCalls[0]?.upstreamProvider).toBe(expected);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not attribute a previous chunk's upstream to a later unlabelled stream failure", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          const long = { provider: "OpenAI", choices: [{ index: 0, delta: { content: "x".repeat(70_000) }, finish_reason: null }] };
+          const error = { error: { message: "Resource temporarily blocked by content policy" } };
+          return new Response(`data: ${JSON.stringify(long)}\n\ndata: ${JSON.stringify(error)}\n\n`, { headers: { "content-type": "text/event-stream" } });
+        } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("unlabelled"), timeoutMs: 10_000 })).rejects.toMatchObject({ code: "provider_policy_block" });
+      expect(telemetry.modelCalls[0]?.upstreamProvider).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["coalesced", "thread", "named"] as const)("follows SDK error ordering for %s SSE", async mode => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          const ordinary = 'data: {"error":{"message":"service unavailable"}}\n\n';
+          const policy = 'data: {"provider":"Wrong","error":{"message":"content policy"}}\n\n';
+          const prefix = 'data: {"provider":"Previous","choices":[{"index":0,"delta":{},"finish_reason":null}]}\n\n';
+          const frames = mode === "coalesced" ? ordinary + policy
+            : mode === "thread" ? 'event: thread.foo\ndata: {"error":{"message":"content policy"}}\n\n' + ordinary
+            : prefix + 'event: error\ndata: {"message":"content policy"}\n\n';
+          return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+        } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const error: CodegenieError = await runner.runStructured({ ...submitReviewRequest("ordering"), purpose: "location_clarification", timeoutMs: 10_000 }).catch(error => error) as CodegenieError;
+      expect(error.code).toBe(mode === "named" ? "provider_policy_block" : "llm_call_failed");
+      expect(telemetry.modelCalls[0]?.upstreamProvider).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not carry an earlier physical attempt's upstream into an unlabelled retry", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    let starts = 0;
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          starts++;
+          return Response.json(starts === 1
+            ? { provider: "OpenAI", error: { message: "service unavailable" } }
+            : { error: { message: "Resource temporarily blocked by content policy" } },
+          { status: 502, headers: { "retry-after": "0" } });
+        } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("retry-upstream"), timeoutMs: 10_000 })).rejects.toMatchObject({ code: "provider_policy_block" });
+      expect(starts).toBe(2);
+      expect(telemetry.modelCalls.map(row => row.upstreamProvider)).toEqual(["OpenAI", undefined]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("ignores stale metadata from an earlier physical response in the same logical call", async () => {
+    const telemetry = fakeTelemetry();
+    let starts = 0;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "openrouter", id: "fixture", raw: { id: "fixture" } }),
+      complete: async (_model, _context, options) => {
+        const fetch = options.fetch as typeof globalThis.fetch;
+        const first = await fetch("https://example.invalid");
+        const second = await fetch("https://example.invalid");
+        await second.text();
+        await first.text(); // A delayed old reader must not overwrite the new response.
+        throw new Error("service unavailable");
+      }, validateToolCall
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "openrouter", model: "fixture", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      fetchForCall: () => ({ fetch: async () => {
+        starts++;
+        return Response.json(starts === 1
+          ? { provider: "Previous", error: { message: "content policy" } }
+          : { provider: "Current", error: { message: "service unavailable" } }, { status: 502 });
+      } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const error: CodegenieError = await runner.runStructured({ ...submitReviewRequest("generation"), purpose: "location_clarification" }).catch(error => error) as CodegenieError;
+    expect(error.code).toBe("llm_call_failed");
+    expect(telemetry.modelCalls[0]?.upstreamProvider).toBe("Current");
+  });
+
+  it("does not record OpenRouter upstream metadata on other providers", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: async (_model, _context, options) => {
+        await (options.onProviderStreamEvent as (chunk: unknown) => Promise<void>)({ provider: "Azure" });
+        return assistant([validSubmitReviewCall("submit")]);
+      },
+      validateToolCall
+    };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured(submitReviewRequest("other-provider"));
+    expect(telemetry.modelCalls[0]?.upstreamProvider).toBeUndefined();
+  });
+
+  it("does not treat JSON embedded in a provider error message as its envelope", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => Response.json({ error: {
+          message: 'content policy {"provider":"Wrong"}'
+        } }, { status: 502 }) }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await expect(runner.runStructured(submitReviewRequest("embedded-provider"))).rejects.toMatchObject({ code: "provider_policy_block" });
+      expect(telemetry.modelCalls[0]?.upstreamProvider).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("labels exhausted HTTP 5xx as a fatal provider outage", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
