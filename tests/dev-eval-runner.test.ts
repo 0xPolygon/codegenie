@@ -30,7 +30,7 @@ describe("development eval entry point", () => {
   }, 90_000);
 
   it("prepares a pinned detached checkout and refuses to overwrite a dirty one", () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), "codegenie-dev-eval-git-"));
+    const tmp = mkdtempSync(path.join(tmpdir(), "codegenie-%20-dev-eval-git-"));
     try {
       const source = path.join(tmp, "source"), target = path.join(tmp, "target");
       mkdirSync(source);
@@ -44,12 +44,12 @@ describe("development eval entry point", () => {
       git(source, "commit", "--quiet", "-am", "head");
       const head = git(source, "rev-parse", "HEAD");
       const script = `import {prepareTarget} from ${JSON.stringify(caseModule)}; prepareTarget(...process.argv.slice(1));`;
-      const invoke = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${source}`, base, head], { stdio: "pipe" });
+      const invoke = () => execFileSync("node", ["--input-type=module", "-e", script, target, pathToFileURL(source).href, base, head], { stdio: "pipe" });
       const badTarget = path.join(tmp, "bad-parent");
-      expect(() => execFileSync("node", ["--input-type=module", "-e", script, badTarget, `file://${source}`, head, head], { stdio: "pipe" })).toThrow();
+      expect(() => execFileSync("node", ["--input-type=module", "-e", script, badTarget, pathToFileURL(source).href, head, head], { stdio: "pipe" })).toThrow();
       expect(existsSync(badTarget)).toBe(false);
       expect(readdirSync(tmp).filter((name) => name.startsWith(".bad-parent-staging-"))).toEqual([]);
-      const failing = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${tmp}/missing`, base, head], { stdio: "pipe" });
+      const failing = () => execFileSync("node", ["--input-type=module", "-e", script, target, pathToFileURL(path.join(tmp, "missing")).href, base, head], { stdio: "pipe" });
       expect(failing).toThrow();
       expect(existsSync(target)).toBe(false);
       expect(readdirSync(tmp).filter((name) => name.startsWith(".target-staging-"))).toEqual([]);
