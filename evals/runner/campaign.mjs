@@ -231,7 +231,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       else {
         const receiptSHA256 = supervisor.receipts.sealStop(slot.id, started.attempt, { ...result, caseId: slot.caseId });
         ledger.stop('terminal_evidence');
-        return { action: 'stop', reason: 'terminal_evidence', slot: slot.id, receiptSHA256 };
+        return { action: 'stop', reason: ledger.totals().stopped, slot: slot.id, receiptSHA256 };
       }
     }
     const receiptHash = supervisor.receipts.seal(slot.id, started.attempt, { ...result, caseId: slot.caseId, recoveredResets });

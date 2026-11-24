@@ -111,7 +111,7 @@ describe('campaign driver', () => {
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
-  it.each(['single', 'checkpoint'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
+  it.each(['single', 'checkpoint', 'quota'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-success-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
@@ -125,7 +125,7 @@ describe('campaign driver', () => {
       expect(packetIds.length).toBeGreaterThan(0);
       const yaml = path.join(suiteDir, 'core.yml');
       let suiteYaml = readFileSync(yaml, 'utf8').replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna\n  reasoning: high\n  compositionReasoningStepDown: false\n  debug: true');
-      if (scenario === 'single') suiteYaml = suiteYaml.replace('verify: true', 'verify: false');
+      if (scenario !== 'checkpoint') suiteYaml = suiteYaml.replace('verify: true', 'verify: false');
       let plannerReplayBinding;
       if (scenario === 'checkpoint') {
         const repo = path.join(baseline.runDir, 'fixture-repo');
@@ -146,6 +146,7 @@ describe('campaign driver', () => {
         const body = JSON.parse(init.body); const names = body.tools.map(x => x.function.name);
         const name = ['submit_plan','submit_review','submit_verdict','submit_composition'].find(x => names.includes(x));
         if (!name) throw new Error('unexpected submit tool');
+        if (${scenario === 'quota'} && name === 'submit_plan') return new Response(JSON.stringify({error:{message:'quota exceeded',type:'insufficient_quota'}}), {status:400,headers:{'content-type':'application/json'}});
         let findings = [];
         if (name === 'submit_review' && ${scenario === 'checkpoint'}) {
           const prompt = body.messages.map(x => typeof x.content === 'string' ? x.content : (x.content || []).map(y => y.text || '').join('')).join('\\n');
@@ -190,6 +191,15 @@ describe('campaign driver', () => {
       let selectedCount = 0, restarted = false, paused = false;
       while (true) {
         const outcome = await campaign.step();
+        if (scenario === 'quota' && outcome.action === 'stop') {
+          expect(outcome).toMatchObject({ reason: 'provider_quota', slot: 'slot-01', receiptSHA256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+          expect(campaign.supervisor.receipts.find('slot-01', 1).hash).toBe(outcome.receiptSHA256);
+          expect(campaign.ledger.totals()).toMatchObject({ starts: 2, unknown: 1, stopped: 'provider_quota' });
+          const priorGets = gets, priorPosts = healthPosts; campaign.close();
+          const reopened = await openCampaign(file, sha(config), { fetchImpl, models });
+          expect(await reopened.step()).toMatchObject({ action: 'stop', reason: 'provider_quota' });
+          expect({ gets, healthPosts }).toEqual({ gets: priorGets, healthPosts: priorPosts }); reopened.close(); return;
+        }
         if (outcome.action === 'selected') {
           selectedCount++;
           expect(campaign.supervisor.receipts.find(outcome.slot, 1)).toMatchObject({ receipt: { status: 'fail', recoveredResets: 0 } });
