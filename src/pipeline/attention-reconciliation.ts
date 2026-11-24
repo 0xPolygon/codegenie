@@ -204,7 +204,7 @@ export function linkPromotedAttention(
   }
   const links = new Map<string, string>();
   for (const hint of hints) {
-    const id = byOrigin.get(JSON.stringify([hint.packetId, hint.source, hint.question]));
+    const id = byOrigin.get(JSON.stringify([hint.packetId, hint.source, hint.question.trim()]));
     if (id) links.set(`packet/${hint.id}`, id);
   }
   return links;
