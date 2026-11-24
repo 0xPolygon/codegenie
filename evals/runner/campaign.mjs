@@ -14,6 +14,7 @@ import { exportFirstLock, exportMechanism, revealPairing } from './blind-export.
 import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
 import { ASSIGNED_EFFECTS_PLAN_SHA256, ASSIGNED_EFFECTS_SEED, generate405Order, validate405Schedule } from './qualification-405.mjs';
 import { derivePacketTemplates, validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
+import { readCheckedFile } from './safe-read.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -114,11 +115,11 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   if (registered405) {
     const q = config.qualification405;
     if (typeof q.packetReceiptFile !== 'string' || outsideCheckout(q.packetReceiptFile) !== q.packetReceiptFile || !hash(q.packetReceiptSHA256)) throw new Error('405 packet qualification missing');
-    const receiptBytes = readBytes(q.packetReceiptFile);
+    const receiptBytes = readCheckedFile(q.packetReceiptFile);
     if (sha(receiptBytes) !== q.packetReceiptSHA256) throw new Error('405 packet qualification mismatch');
     const receipt = JSON.parse(receiptBytes.toString('utf8'));
     if (receipt.productDist !== config.build?.dist || receipt.runner !== config.build?.runner || receipt.total !== 40 || receipt.passed !== 40 || receipt.providerAttempts !== 0 || typeof receipt.inventoryFile !== 'string' || outsideCheckout(receipt.inventoryFile) !== receipt.inventoryFile || !hash(receipt.inventorySHA256)) throw new Error('405 packet qualification mismatch');
-    const inventoryBytes = readBytes(receipt.inventoryFile);
+    const inventoryBytes = readCheckedFile(receipt.inventoryFile);
     if (sha(inventoryBytes) !== receipt.inventorySHA256) throw new Error('405 packet qualification mismatch');
     packetQualification = JSON.parse(inventoryBytes.toString('utf8'));
     if (!Array.isArray(packetQualification.results) || packetQualification.results.length !== 40) throw new Error('405 packet qualification mismatch');
@@ -153,7 +154,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
             qualified[0].hunkInventorySHA256 !== sha(JSON.stringify(wc.plannerReplayBinding.hunks.map(({ hunkId, path }) => ({ hunkId, path })))) || !Array.isArray(qualified[0].packetInventory)) throw new Error('405 packet qualification mismatch');
         const packets = qualified[0].packetInventory.map((item) => {
           if (!item || typeof item.path !== 'string' || outsideCheckout(item.path) !== item.path || !hash(item.sha256)) throw new Error('405 packet qualification mismatch');
-          const bytes = readBytes(item.path);
+          const bytes = readCheckedFile(item.path);
           if (sha(bytes) !== item.sha256) throw new Error('405 packet qualification mismatch');
           const packet = JSON.parse(bytes.toString('utf8'));
           if (packet.id !== item.id) throw new Error('405 packet qualification mismatch');
