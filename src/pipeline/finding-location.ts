@@ -10,7 +10,7 @@ import type { CandidateFinding, CodegenieConfig, ReviewStage, ReviewPacket, Unif
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { findingDiffContext, isRunFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
 
-const LocationSchema = Type.Object({
+export const LocationSchema = Type.Object({
   status: StringEnum(["located", "unavailable"] as const),
   anchor: Type.Optional(DiffAnchorSchema)
 }, { additionalProperties: false });

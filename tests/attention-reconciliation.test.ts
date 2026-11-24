@@ -6,6 +6,8 @@ import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { compositionSources, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import type { PacketReviewResult, VerificationVerdict } from "../src/types.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
+import { portableSchemaIssues } from "./helpers/portable-schema.js";
+import { __piRunnerTestHooks } from "../src/llm/pi-runner.js";
 
 function fixture(questions = ["Does head include a revoked-session test?", "Is this endpoint deployed?"]) {
   const candidate = authorizationComposition().findings[0]!;
@@ -97,6 +99,8 @@ describe("evidence-backed attention reconciliation", () => {
     const schema = composerSubmissionSchema([], input);
     const original = { summary: "Review completed with questions.", composedFindings: [] };
     const repair = createAttentionResolutionRepair(schema, original, input)!;
+    const emitted = __piRunnerTestHooks.toolSpec({ name: "attention-repair", description: "", parameters: repair.schema, execute: async () => ({ text: "" }) }).parameters;
+    expect(portableSchemaIssues("attention-repair", emitted)).toEqual([]);
     const values = { attentionResolutions: input.inventory.concerns.map(concern => ({ concernId: concern.id,
       disposition: "unresolved" as const, supportingRefs: [], rationale: "The supplied evidence does not establish this condition." })) };
     expect(submissionIssues(repair.schema, values)).toEqual([]);

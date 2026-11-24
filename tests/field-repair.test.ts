@@ -32,6 +32,21 @@ describe("field-only and full-object repair merging", () => {
     expect(submissionIssues(schema, merged)).toEqual([]);
   });
 
+  it("uses one partial object item schema while retaining per-index diagnostics and final validation", () => {
+    const s = Type.Object({ findings: Type.Array(Type.Object({ title: Type.String(), proof: Type.String() }, { additionalProperties: false })) });
+    const original = { findings: [{ title: "First", proof: "Proof" }, { title: "Second" }] };
+    const repair = createFieldRepair(s, original)!;
+    expect(repair.paths).toContain("findings.1.proof");
+    expect(repair.diagnostics.issues).toContainEqual(expect.objectContaining({ path: "findings.1.proof", kind: "missing" }));
+    const findings = (repair.schema as unknown as { properties: { findings: { items: unknown } } }).properties.findings;
+    expect(Array.isArray(findings.items)).toBe(false);
+    expect(submissionIssues(s, repair.merge({}))).toContainEqual({ path: "findings.1.proof", kind: "missing" });
+    const merged = repair.merge({ findings: [{}, { proof: "Second proof" }] });
+    expect(merged.findings).toEqual([{ title: "First", proof: "Proof" }, { title: "Second", proof: "Second proof" }]);
+    expect(submissionIssues(s, merged)).toEqual([]);
+    expect(() => repair.merge({ findings: [{}, {}, { title: "Incomplete new item" }] })).toThrow("must be complete");
+  });
+
   it("retains omitted object-array entries even when the update has an empty array", () => {
     const repair = createFieldRepair(schema, draft())!;
     expect(repair.merge({ findings: [], "hints.0.symbols": [] }).findings).toEqual(draft().findings);

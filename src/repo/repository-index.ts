@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isOrderedLineRange } from "../util/line-range.js";
 import pLimit from "p-limit";
 import type {
   CodegenieConfig,
@@ -916,6 +917,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       async () => {
         if (input.path === undefined && input.symbol === undefined) {
           throw new CodegenieError("invalid_args", "find_likely_tests requires at least one of path or symbol");
+        }
+        if (input.symbol !== undefined && !isOrderedLineRange(input.symbol.lineRange)) {
+          throw new CodegenieError("invalid_args", "symbol.lineRange must be [startLine, endLine] with startLine <= endLine");
         }
         const normalizedInput = this.normalizeLikelyTestsInput(input);
         const result = await findLikelyTestsForInput(this.opts.resolver, this.opts.registry, normalizedInput);

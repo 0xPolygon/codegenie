@@ -34,6 +34,14 @@ export type RecommendationJudgment = {
 const PROMPT_VERSION = "recommendation-judge-v1";
 const TOOL = "submit_recommendation_judgment";
 
+export function recommendationJudgeTool(checks: RecommendationJudgeConfig["checks"]) {
+  return { name: TOOL, description: "Submit independent recommendation quality judgments.", parameters: Type.Object({ results: Type.Array(Type.Object({
+    id: Type.String({ enum: checks.map(check => check.id) }),
+    status: Type.String({ enum: ["correct", "incorrect", "withheld", "uncertain"] }),
+    rationale: Type.String({ minLength: 1 }), quotes: Type.Array(Type.String({ minLength: 1 }))
+  }, { additionalProperties: false }), { minItems: checks.length, maxItems: checks.length }) }, { additionalProperties: false }) };
+}
+
 // Exclude the renderer's explicitly historical provenance, not arbitrary report
 // text or advice. Keep summary, human-attention notes and all primary findings.
 export function publishedRecommendationReport(report: string): string {
@@ -71,11 +79,7 @@ export async function judgeRecommendations(
     const model = await Promise.race([adapter.resolveModel(judge, controller.signal), deadline]);
     if (!model) throw new Error("Judge model could not be resolved");
     assertReasoningSupported({ provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) }, judge.reasoning);
-    const tool = { name: TOOL, description: "Submit independent recommendation quality judgments.", parameters: Type.Object({ results: Type.Array(Type.Object({
-      id: Type.String({ enum: checks.map(check => check.id) }),
-      status: Type.String({ enum: ["correct", "incorrect", "withheld", "uncertain"] }),
-      rationale: Type.String({ minLength: 1 }), quotes: Type.Array(Type.String({ minLength: 1 }))
-    }, { additionalProperties: false }), { minItems: checks.length, maxItems: checks.length }) }, { additionalProperties: false }) };
+    const tool = recommendationJudgeTool(checks);
     response = await Promise.race([
       adapter.complete(model, { messages: [{ role: "user", content: prompt, timestamp: 0 }], tools: [tool] },
         { submitToolName: TOOL, reasoning: judge.reasoning, toolChoice: "auto", maxRetries: 0, maxTokens: 6000, signal: controller.signal }),

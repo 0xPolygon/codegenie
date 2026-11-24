@@ -4539,7 +4539,8 @@ function definedRecord<T extends Record<string, unknown>>(input: T): T {
 }
 
 export const __piRunnerTestHooks = {
-  parseHttpStatus
+  parseHttpStatus,
+  toolSpec
 };
 
 function submissionItemCounts(value: Record<string, unknown>): Record<string, number> {

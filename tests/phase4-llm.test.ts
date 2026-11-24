@@ -5961,7 +5961,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "tool_budget_soft_target_reached")).toHaveLength(1);
   });
 
-  it("normalizes tuple schemas to draft 2020-12 for provider tool registration", async () => {
+  it("registers the planner's line range as a portable fixed-length array", async () => {
     const providerToolsSeen: Array<Array<{ name: string; parameters: Record<string, unknown> }>> = [];
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
@@ -6004,9 +6004,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     const lineRangeSchema = hintProperties.lineRange as Record<string, unknown>;
     expect(lineRangeSchema).toMatchObject({
-      prefixItems: [expect.objectContaining({ type: "integer" }), expect.objectContaining({ type: "integer" })],
-      items: false
+      type: "array", items: expect.objectContaining({ type: "integer" }), minItems: 2, maxItems: 2
     });
+    expect(lineRangeSchema).not.toHaveProperty("prefixItems");
     expect(lineRangeSchema).not.toHaveProperty("additionalItems");
   });
 

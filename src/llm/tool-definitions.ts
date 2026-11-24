@@ -11,6 +11,7 @@ import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 import { buildReadDefinitionTool } from "./definition-tool.js";
 import type { ReadChangeInput } from "../repo/read-change.js";
+import { LineRangeSchema } from "./line-range-schema.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -333,6 +334,13 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     {
       name: "find_likely_tests",
       description: "Find likely tests using deterministic test conventions; provide at least one of path or symbol. If results are cut, use read_range at the next returned test path and line.",
+      normalizeArguments: args => {
+        const symbol = args.symbol;
+        if (!symbol || typeof symbol !== "object" || Array.isArray(symbol)) return args;
+        const fields = symbol as Record<string, unknown>;
+        return { ...args, symbol: Object.fromEntries(["path", "name", "kind", "lineRange"]
+          .filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]])) };
+      },
       parameters: Type.Object(
         {
           path: Type.Optional(Type.String({ minLength: 1, description: "Provide at least one of path or symbol." })),
@@ -342,9 +350,9 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
                 path: Type.String({ minLength: 1 }),
                 name: Type.String({ minLength: 1 }),
                 kind: Type.String({ minLength: 1 }),
-                lineRange: Type.Tuple([Type.Integer({ minimum: 1 }), Type.Integer({ minimum: 1 })])
+                lineRange: LineRangeSchema
               },
-              { additionalProperties: true, description: "Provide at least one of path or symbol." }
+              { additionalProperties: false, description: "Provide at least one of path or symbol." }
             )
           ),
           source: SourceSelectorSchema
