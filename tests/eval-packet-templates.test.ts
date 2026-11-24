@@ -29,6 +29,8 @@ it('verifies per-call packet assignments, rejecting swaps, omissions and duplica
   expect(() => verify()).not.toThrow();
   const swapped = calls.map((item) => ({ ...item, templateVersion: item.templateVersion === 'p7.16' ? 'p7.17' : 'p7.16' }));
   expect(() => verify(swapped)).toThrow('packet call evidence');
+  const wrongPacket = modelCalls.map((row, index) => index === 0 ? { ...row, packetId: 'shortened' } : row);
+  expect(() => verify(calls, wrongPacket)).toThrow('packet call evidence');
   expect(() => verify(calls.slice(1))).toThrow('packet call evidence');
   expect(() => verify([...calls, calls[0]!])).toThrow('packet call evidence');
   expect(() => verify(calls, modelCalls.slice(1))).toThrow('packet call evidence');
