@@ -20,10 +20,11 @@ function jsonl(file, expected) {
 
 // Check terminal evidence before a receipt becomes selectable. No error text,
 // model prose, or tool arguments are used to classify a row.
-export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0 }) {
+export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId }) {
   if (typeof attemptPrefix !== 'string' || !attemptPrefix || !ledger?.db || !Array.isArray(expectedPacketIds) || expectedPacketIds.some((id) => typeof id !== 'string' || !id) || new Set(expectedPacketIds).size !== expectedPacketIds.length || !count(priorRecoveredResets)) throw new Error('invalid terminal binding');
   const root = path.join(outsideCheckout(runDir), 'telemetry'), run = json(path.join(root, 'run.json')), summary = json(path.join(root, 'telemetry.json'));
-  if (typeof run.runId !== 'string' || !run.runId || summary.runId !== run.runId || !['completed_full', 'completed_partial'].includes(run.outcome?.status)) throw new Error('terminal review missing or failed');
+  const failureMode = typeof failureCallId === 'string' && /^[A-Za-z0-9._-]+$/u.test(failureCallId);
+  if (typeof run.runId !== 'string' || !run.runId || summary.runId !== run.runId || (failureMode ? run.outcome?.status !== 'failed' : !['completed_full', 'completed_partial'].includes(run.outcome?.status))) throw new Error('terminal review missing or failed');
   const events = jsonl(path.join(root, 'events.jsonl'), summary.events);
   const models = jsonl(path.join(root, 'model-calls.jsonl'), summary.modelCalls?.totalRecords);
   const tools = jsonl(path.join(root, 'tool-calls.jsonl'), summary.toolCalls?.totalCalls);
@@ -36,15 +37,21 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
     if (!['ok', 'error', 'rejected', 'skipped'].includes(row.status)) throw new Error('invalid tool status');
   }
   const packetDir = path.join(root, 'stages/06-packets/packets');
-  const packetIds = readdirSync(packetDir).filter((name) => name.endsWith('.json')).map((name) => json(path.join(packetDir, name)).id);
-  if (packetIds.some((id) => typeof id !== 'string' || !id) || new Set(packetIds).size !== packetIds.length || summary.packets?.generated !== packetIds.length || expectedPacketIds.length !== packetIds.length || expectedPacketIds.some((id) => !packetIds.includes(id))) throw new Error('invalid packet inventory');
+  let packetFiles;
+  try { packetFiles = readdirSync(packetDir); } catch (error) { if (failureMode && error?.code === 'ENOENT') packetFiles = []; else throw error; }
+  const packetIds = packetFiles.filter((name) => name.endsWith('.json')).map((name) => json(path.join(packetDir, name)).id);
+  if (packetIds.some((id) => typeof id !== 'string' || !id) || new Set(packetIds).size !== packetIds.length || summary.packets?.generated !== packetIds.length || packetIds.some((id) => !expectedPacketIds.includes(id)) || (!failureMode && (expectedPacketIds.length !== packetIds.length || expectedPacketIds.some((id) => !packetIds.includes(id))))) throw new Error('invalid packet inventory');
   const accepted = new Set(events.filter((event) => event.stage === 7 && event.message === 'structured_submission_accepted' && typeof event.data?.packetId === 'string').map((event) => event.data.packetId));
-  if (packetIds.some((id) => !accepted.has(id)) || [...accepted].some((id) => !expectedPacketIds.includes(id))) throw new Error('packet submit missing');
+  if ((!failureMode && packetIds.some((id) => !accepted.has(id))) || [...accepted].some((id) => !packetIds.includes(id))) throw new Error('packet submit missing');
   const prefix = `${attemptPrefix}/`;
   const physical = ledger.db.prepare('SELECT id,logical_id,state,charge,http_status,evidence_json FROM physical WHERE substr(id,1,?)=? ORDER BY rowid').all(prefix.length, prefix);
   if (physical.some((row) => row.state === 'open' || [401, 402, 429].includes(row.http_status))) throw new Error('physical call requires reconciliation');
   const byCall = new Map(models.map((row) => [`${attemptPrefix}/${row.callId}`, row]));
   if (physical.some((row) => !byCall.has(row.logical_id))) throw new Error('physical call missing telemetry');
+  if (failureMode) {
+    const row = models.find((item) => item.callId === failureCallId), starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${failureCallId}`), last = starts.at(-1);
+    if (!row || row.errorCode !== 'llm_call_failed' || row.status !== 'transient_error' || !last || last.http_status < 500 || last.http_status >= 600 || last.state === 'open') throw new Error('transient failure evidence missing');
+  }
   let recoveredResets = 0;
   for (const [index, row] of models.entries()) {
     const starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${row.callId}`);
@@ -69,7 +76,7 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
       nextStart && nextStart.http_status >= 200 && nextStart.http_status < 300 && nextUsage?.usagePresent === true &&
       ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => count(nextUsage[key]) && nextUsage[key] === next[key]);
     if (reset) recoveredResets++;
-    if (!abort && !reset && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
+    if (!abort && !reset && !(failureMode && row.callId === failureCallId) && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
     for (const start of starts) {
       if (start.http_status >= 200 && start.http_status < 300) {
         const usage = start.evidence_json ? JSON.parse(start.evidence_json) : null;

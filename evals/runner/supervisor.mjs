@@ -50,7 +50,7 @@ export class CampaignSupervisor {
     this.dbPath = outsideCheckout(file);
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL, config_sha256 TEXT, receipt_directory TEXT);
+      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL, config_sha256 TEXT, receipt_directory TEXT, schema_version INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, spawn_state TEXT NOT NULL DEFAULT 'claimed', pid INTEGER, host TEXT, process_start TEXT, pid_namespace TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
@@ -59,9 +59,12 @@ export class CampaignSupervisor {
       CREATE TABLE IF NOT EXISTS case_reset_event(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, case_id TEXT NOT NULL, receipt_sha256 TEXT NOT NULL, resets INTEGER NOT NULL, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);`);
     try {
+      const columns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
+      if (!['binding', 'schedule_sha256', 'config_sha256', 'receipt_directory', 'schema_version'].every((name) => columns.includes(name))) throw new Error('unsupported campaign supervisor schema');
       this.transaction(() => {
         const old = this.db.prepare('SELECT * FROM campaign').get();
-        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
+        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?,1)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
+        else if (old.schema_version !== 1) throw new Error('unsupported campaign supervisor schema');
         else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256 || old.receipt_directory !== boundReceiptDirectory) throw new Error('campaign schedule binding mismatch');
         if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
@@ -132,8 +135,9 @@ export class CampaignSupervisor {
       if (!slot || typeof slot.caseId !== 'string' || !slot.caseId || !attempt || attempt.state !== 'started' || !claim || !found || found.hash !== receiptSHA256 || found.receipt.caseId !== slot.caseId) throw new Error('case reset evidence mismatch');
       const existing = this.db.prepare('SELECT case_id,receipt_sha256,resets FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
       const priorRecoveredResets = this.caseResetCount(slot.caseId) - (existing?.resets ?? 0);
+      if (found.receipt.status === 'error' && (found.receipt.error !== 'provider_failure' || typeof found.receipt.failureCallId !== 'string')) throw new Error('failure requires reconciliation');
       let observed;
-      try { observed = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(slotId, attemptNo), ledger, expectedPacketIds: slot.expectedPacketIds, priorRecoveredResets }).recoveredResets; }
+      try { observed = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(slotId, attemptNo), ledger, expectedPacketIds: slot.expectedPacketIds, priorRecoveredResets, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) }).recoveredResets; }
       catch (error) { if (error instanceof RecoveredResetLimitError) observed = error.recoveredResets; else throw error; }
       if (observed !== found.receipt.recoveredResets) throw new Error('case reset count mismatch');
       if (existing) {

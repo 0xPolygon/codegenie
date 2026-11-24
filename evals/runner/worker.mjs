@@ -109,7 +109,10 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
     const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, onFailure(error) {
       if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
     } });
-    return result.status === 'error' ? { ...result, operationalError: operationalError(ledger, attemptPrefix, failure) } : result;
+    if (result.status !== 'error') return result;
+    const operational = operationalError(ledger, attemptPrefix, failure);
+    return { ...result, operationalError: operational,
+      ...(operational === 'provider_failure' && failure?.reason === 'transient_error' && typeof failure.callId === 'string' ? { failureCallId: failure.callId } : {}) };
   } finally { ledger.close(); }
 }
 
@@ -122,7 +125,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const workerToken = readWorkerToken();
     const result = await runWorker(JSON.parse(raw.toString('utf8')), { workerConfigSHA256: expectedDigest, workerToken });
     console.log(JSON.stringify({ caseName: result.caseName, status: result.status, runDir: result.runDir,
-      ...(result.status === 'error' ? { error: result.operationalError } : {}) }));
+      ...(result.status === 'error' ? { error: result.operationalError, ...(result.failureCallId ? { failureCallId: result.failureCallId } : {}) } : {}) }));
     // A score failure is an observed outcome, not a harness failure.
   } catch (error) {
     const reason = error?.context?.reason;

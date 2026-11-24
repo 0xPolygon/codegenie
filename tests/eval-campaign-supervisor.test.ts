@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
@@ -26,6 +27,54 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('retains a receipt-backed 503, authorizes one fresh retry and excludes a second failure', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-bound-retry-')), runs: string[] = [];
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', caseId: 'case', expectedPacketIds: ['packet'], boundaryId: 'one', provider: 'openrouter' }] }));
+      const root = (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${attempt}`);
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: root };
+      const db = path.join(dir, 'supervisor.db'); let supervisor = new CampaignSupervisor(db, binding);
+      const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 5_000_000 });
+      ledger.keyDecision = () => ({ action: 'admit' }); ledger.healthDecision = () => ({ action: 'admit' });
+      const yes = () => true;
+      const fail = (attempt: number) => {
+        const prefix = `one/attempt-0${attempt}`, runId = `run-${attempt}`, runDir = path.join(root('one', attempt), 'run'), telemetry = path.join(runDir, 'telemetry');
+        mkdirSync(telemetry, { recursive: true }); runs.push(runDir);
+        writeFileSync(path.join(telemetry, 'run.json'), JSON.stringify({ runId, outcome: { status: 'failed' } }));
+        writeFileSync(path.join(telemetry, 'telemetry.json'), JSON.stringify({ runId, events: 0, packets: { generated: 0 }, modelCalls: { totalRecords: 1 }, toolCalls: { totalCalls: 0 } }));
+        writeFileSync(path.join(telemetry, 'model-calls.jsonl'), JSON.stringify({ runId, callId: 'mc-1', cacheStatus: 'disabled', status: 'transient_error', errorCode: 'llm_call_failed' }) + '\n');
+        const id = `${prefix}/mc-1/physical-1`;
+        ledger.reservePhysical({ id, logicalId: `${prefix}/mc-1`, kind: 'initial', provider: 'openrouter', startedAtMs: attempt * 100 });
+        ledger.settlePhysical({ id, httpStatus: 503, settledAtMs: attempt * 100 + 1 });
+        const hash = supervisor.receipts.seal('one', attempt, { caseName: 'case', caseId: 'case', recoveredResets: 0, status: 'error', error: 'provider_failure', failureCallId: 'mc-1', runDir });
+        expect(supervisor.recordCaseResets('one', attempt, hash, ledger)).toEqual({ total: 0, stop: false });
+        supervisor.sealFailure('one', attempt, hash, { ledger, verifyReceipt: supervisor.receipts.verify, verifyFailure: yes, verifyRetry: yes });
+        return hash;
+      };
+      supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify, verifyRetry: yes }); claim(supervisor, 'one', 1);
+      const first = fail(1), probe = 'health/retry/physical-1';
+      ledger.reservePhysical({ id: probe, logicalId: 'health/retry', kind: 'health', provider: 'openrouter', healthBoundary: 'one', healthPurpose: 'retry', retryFor: 'one/attempt-01', failureReceiptSHA256: first, startedAtMs: 150 });
+      ledger.settlePhysical({ id: probe, httpStatus: 200, providerCostMicros: 0, costConfirmed: true, settledAtMs: 151 });
+      ledger.recordHealth({ physicalId: probe, outcome: 'clean', observedMs: 151, evidenceSHA256: digest('health') });
+      supervisor.authorizeRetry('one', 1, digest('proof'), { ledger, retryProbeId: probe, verifyReceipt: supervisor.receipts.verify, verifyFailure: yes, verifyRetry: yes });
+      supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+      supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify, verifyRetry: yes }); claim(supervisor, 'one', 2);
+      const second = fail(2);
+      expect(supervisor.db.prepare('SELECT state,receipt_sha256 FROM outcome').get()).toEqual({ state: 'excluded', receipt_sha256: second });
+      supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+      expect(supervisor.checkedOutcomes(supervisor.receipts.verify, yes, ledger)).toHaveLength(1);
+      expect(ledger.totals().starts).toBe(3); supervisor.close(); ledger.close();
+    } finally { for (const run of runs) makeWritable(run); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('rejects an obsolete supervisor schema with a clear error', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-schema-'));
+    try {
+      const file = path.join(dir, 'supervisor.db'), old = new DatabaseSync(file);
+      old.exec('CREATE TABLE campaign(binding TEXT, schedule_sha256 TEXT)'); old.close();
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      expect(() => new CampaignSupervisor(file, { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) })).toThrow('unsupported campaign supervisor schema');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('persists recovered resets across slots and restart for the same case', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-resets-'));
     const runs: string[] = [];

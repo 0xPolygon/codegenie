@@ -56,7 +56,8 @@ export async function spawnAttempt({ supervisor, slotId, attemptNo, configFile, 
         if (!runDir.startsWith(bounds.outputDir + path.sep)) throw new Error('wrong attempt output');
         const allowed = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'provider_failure', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'unclassified'];
         if (result.status === 'error' && !allowed.includes(result.error)) throw new Error('missing operational error');
-        resolve({ caseName: result.caseName, status: result.status, runDir, ...(result.status === 'error' ? { error: result.error } : {}) });
+        if (result.failureCallId !== undefined && (result.status !== 'error' || result.error !== 'provider_failure' || typeof result.failureCallId !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(result.failureCallId))) throw new Error('invalid failure identity');
+        resolve({ caseName: result.caseName, status: result.status, runDir, ...(result.status === 'error' ? { error: result.error, ...(result.failureCallId !== undefined ? { failureCallId: result.failureCallId } : {}) } : {}) });
       } catch { reject(new Error('invalid worker result')); }
     });
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {

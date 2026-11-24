@@ -94,6 +94,7 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
       if (receipt.version !== 1 || receipt.binding !== binding || receipt.slot !== slot || receipt.attempt !== attempt ||
           !['pass', 'fail', 'error'].includes(receipt.status) || typeof receipt.caseName !== 'string' || !receipt.caseName || typeof receipt.caseId !== 'string' || !receipt.caseId || !Number.isSafeInteger(receipt.recoveredResets) || receipt.recoveredResets < 0 || typeof receipt.runDir !== 'string') return false;
       if (receipt.status === 'error' ? !errors.has(receipt.error) : receipt.error !== undefined) return false;
+      if (receipt.failureCallId !== undefined && (receipt.status !== 'error' || receipt.error !== 'provider_failure' || typeof receipt.failureCallId !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(receipt.failureCallId))) return false;
       const allowed = checkedPath(runRootFor(slot, attempt));
       const runDir = checkedPath(receipt.runDir);
       if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) return false;
@@ -109,11 +110,12 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
     const allowed = checkedPath(runRootFor(slot, attempt)), runDir = checkedPath(result.runDir);
     if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) throw new Error('receipt outside attempt root');
     if (result.status === 'error' && !errors.has(result.error)) throw new Error('invalid receipt error');
+    if (result.failureCallId !== undefined && (result.status !== 'error' || result.error !== 'provider_failure' || typeof result.failureCallId !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(result.failureCallId))) throw new Error('invalid failure identity');
     const { caseId, recoveredResets } = result;
     if (typeof caseId !== 'string' || !caseId || !Number.isSafeInteger(recoveredResets) || recoveredResets < 0) throw new Error('invalid receipt case evidence');
     assertStore();
     const record = { version: 1, binding, slot, attempt, caseName: result.caseName, caseId, recoveredResets, status: result.status,
-      ...(result.status === 'error' ? { error: result.error } : {}), runDir, files: inventory(runDir) };
+      ...(result.status === 'error' ? { error: result.error, ...(result.failureCallId !== undefined ? { failureCallId: result.failureCallId } : {}) } : {}), runDir, files: inventory(runDir) };
     const bytes = Buffer.from(JSON.stringify(record)), hash = digest(bytes);
     freeze(runDir);
     publish(pointerFor(slot, attempt), bytes);
