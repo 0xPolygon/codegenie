@@ -107,12 +107,12 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "read_symbol",
-      description: "Requires path; discover an unknown path with find_definition first. Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Without syntax support, returns a text window around a matching name/line, not a verified symbol body; prefer read_range for known locations. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base. " + PATH_DISCOVERY_GUIDANCE,
+      description: "Requires path; discover an unknown path with find_definition first. Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one of symbolName or line. Without syntax support, returns a text window around a matching name/line, not a verified symbol body; prefer read_range for known locations. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
-          symbolName: Type.Optional(Type.String({ minLength: 1 })),
-          line: Type.Optional(Type.Integer({ minimum: 1 })),
+          symbolName: Type.Optional(Type.String({ minLength: 1, description: "Provide exactly one of symbolName or line." })),
+          line: Type.Optional(Type.Integer({ minimum: 1, description: "Provide exactly one of symbolName or line." })),
           source: SymbolLookupSourceSelectorSchema
         },
         { additionalProperties: false }
@@ -212,11 +212,11 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "read_diff_blocks",
-      description: "Read rendered diff hunks by packetId or path; provide exactly one selector.",
+      description: "Read rendered diff hunks; provide exactly one of packetId or path.",
       parameters: Type.Object(
         {
-          packetId: Type.Optional(Type.String({ minLength: 1 })),
-          path: Type.Optional(Type.String({ minLength: 1 }))
+          packetId: Type.Optional(Type.String({ minLength: 1, description: "Provide exactly one of packetId or path." })),
+          path: Type.Optional(Type.String({ minLength: 1, description: "Provide exactly one of packetId or path." }))
         },
         { additionalProperties: false }
       ),
@@ -332,10 +332,10 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_likely_tests",
-      description: "Find likely tests for a path or symbol using deterministic test conventions. If results are cut, use read_range at the next returned test path and line.",
+      description: "Find likely tests using deterministic test conventions; provide at least one of path or symbol. If results are cut, use read_range at the next returned test path and line.",
       parameters: Type.Object(
         {
-          path: Type.Optional(Type.String({ minLength: 1 })),
+          path: Type.Optional(Type.String({ minLength: 1, description: "Provide at least one of path or symbol." })),
           symbol: Type.Optional(
             Type.Object(
               {
@@ -344,7 +344,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
                 kind: Type.String({ minLength: 1 }),
                 lineRange: Type.Tuple([Type.Integer({ minimum: 1 }), Type.Integer({ minimum: 1 })])
               },
-              { additionalProperties: true }
+              { additionalProperties: true, description: "Provide at least one of path or symbol." }
             )
           ),
           source: SourceSelectorSchema
