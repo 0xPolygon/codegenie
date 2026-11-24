@@ -32,7 +32,8 @@ export function renderCodegenieError(error: RenderableError): string {
   const providerMessage =
     typeof error.context?.providerMessage === "string" ? error.context.providerMessage.trim() : undefined;
   if (providerMessage !== undefined && providerMessage.length > 0) {
-    return `${error.code}: ${error.message}\n${providerMessage}\n`;
+    const separator = error.code === "provider_unavailable" ? ": " : "\n";
+    return `${error.code}: ${error.message}${separator}${providerMessage}\n`;
   }
   return `${error.code}: ${error.message}\n`;
 }

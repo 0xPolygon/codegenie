@@ -11112,9 +11112,80 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.finalBody).not.toContain("Compact repaired body.");
   });
 
+  it("cancels sibling and queued Stage 7 packets after an exhausted provider outage", async () => {
+    const repo = initRepo();
+    const artifactDir = mkdtempSync(path.join(tmpdir(), "codegenie-provider-outage-"));
+    const files = Array.from({ length: 4 }, (_, index) => `file-${index}.ts`);
+    for (const file of files) writeRepoFile(repo, file, "export const value = 1;\n");
+    const base = commitAll(repo, "base");
+    for (const file of files) writeRepoFile(repo, file, "export const value = 2;\n");
+    const head = commitAll(repo, "change");
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let failingPrompt: unknown;
+    let attempts = 0;
+    let siblingAborted = false;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model" } }),
+      complete: async (_model, context, options) => {
+        const tools = context.tools.map(tool => tool.name);
+        if (tools.includes("submit_plan")) return assistantMessage([toolCall("plan", "submit_plan", {
+          diffUnderstanding: { declaredIntent: "test", inferredBehavior: "update constants" }, coverage: []
+        })]);
+        expect(tools).toContain("submit_review");
+        const prompt = JSON.stringify((context.messages[0] as { content: unknown }).content);
+        failingPrompt ??= prompt;
+        if (prompt === failingPrompt) {
+          attempts += 1;
+          throw Object.assign(new Error("Fixture outage"), { status: 503 });
+        }
+        const signal = options.signal as AbortSignal;
+        return new Promise<PiAssistantMessage>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            siblingAborted = true;
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+      validateToolCall: (_tools, call) => call.arguments
+    };
+    const cfg = config();
+    try {
+      await expect(runReview({ mode: "head", baseRef: base, headRef: head }, {
+        ...cfg, review: { ...cfg.review, concurrency: 2 },
+        llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 2 }
+      }, { repoRoot: repo, runArtifactDir: artifactDir, piAdapter: adapter })).rejects.toMatchObject({
+        code: "provider_unavailable", context: { provider: "scripted", model: "scripted-model", providerHttpStatus: 503 }
+      });
+      expect(attempts).toBe(4);
+      expect(siblingAborted).toBe(true);
+      const events = readFileSync(path.join(artifactDir, "events.jsonl"), "utf8").trim().split("\n")
+        .map(line => JSON.parse(line) as TelemetryEvent);
+      const starts = events.filter(event => event.stage === 7 && event.message === "model_call_started");
+      expect(starts).toHaveLength(5);
+      expect(new Set(starts.map(event => event.workerId)).size).toBe(2);
+      expect(events.some(event => event.message === "model_task_deadline_reached")).toBe(false);
+      expect(events.some(event => event.stage >= 9 && event.message === "stage_started")).toBe(false);
+      const calls = readFileSync(path.join(artifactDir, "model-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+      const packetCalls = calls.filter(call => call.stage === 7);
+      expect(packetCalls).toHaveLength(5);
+      expect(packetCalls).toContainEqual(expect.objectContaining({
+        status: "aborted", errorCode: "provider_unavailable", retryReason: "provider_outage_cancelled"
+      }));
+      const run = JSON.parse(readFileSync(path.join(artifactDir, "run.json"), "utf8"));
+      expect(run.outcome).toMatchObject({ status: "failed", errorCode: "provider_unavailable", exitCode: 1 });
+      const review = JSON.parse(readFileSync(path.join(artifactDir, "final-review.json"), "utf8"));
+      expect(review.findings).toEqual([]);
+    } finally {
+      random.mockRestore();
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
   it.each([
-    { status: 503, message: "provider unavailable", reason: "transient_error", calls: 4, error: "LLM provider call failed" },
-    { status: 400, message: "You have reached your specified API usage limits.", reason: "usage_limit", calls: 1, error: "LLM provider usage limit reached" }
+    { status: 503, message: "provider unavailable", code: "provider_unavailable", reason: "server_error", calls: 4,
+      error: "Review failed: Provider scripted (model scripted-model) returned HTTP 503 after 4 attempts" },
+    { status: 400, code: "llm_call_failed", message: "You have reached your specified API usage limits.", reason: "usage_limit", calls: 1, error: "LLM provider usage limit reached" }
   ])("reports planning failures and unavailable coverage for provider HTTP $status", async (providerFailure) => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -11147,12 +11218,12 @@ describe("phase 5 pipeline regressions", () => {
           },
           { repoRoot: repo, runArtifactDir, piAdapter: adapter }
         )
-      ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: providerFailure.reason } });
+      ).rejects.toMatchObject({ code: providerFailure.code, context: { reason: providerFailure.reason } });
 
       expect(providerCalls).toBe(providerFailure.calls);
       const markdown = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
       expect(markdown).toContain("**Review failed.");
-      expect(markdown).toContain("Stage 5: llm_call_failed");
+      expect(markdown).toContain(`Stage 5: ${providerFailure.code}`);
       expect(markdown).toContain("**Coverage unavailable:");
       expect(markdown).not.toContain("0/0 hunks");
       expect(markdown).not.toContain("assigned hunks were reviewed");
@@ -11164,7 +11235,7 @@ describe("phase 5 pipeline regressions", () => {
       const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
         outcome: { status: string; errorCode: string | null };
       };
-      expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: "llm_call_failed" });
+      expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: providerFailure.code });
       const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("error.json")), "utf8")) as {
         errorCode: string;
         error: string;
@@ -11172,7 +11243,7 @@ describe("phase 5 pipeline regressions", () => {
       };
       expect(errorJson).toMatchObject({
         stage: 5,
-        errorCode: "llm_call_failed",
+        errorCode: providerFailure.code,
         error: providerFailure.error,
         context: { reason: providerFailure.reason }
       });
@@ -11184,7 +11255,10 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
-  it("writes composer fallback coverage reasons to coverage artifact", async () => {
+  it.each([undefined, "Provider scripted (model scripted-model) returned HTTP 503"])(
+    "writes composer fallback coverage reasons to the coverage artifact (%s)", async outage => {
+    const reason = outage === undefined ? "semantic composition skipped; deterministic fallback used"
+      : `${outage}; deterministic fallback used`;
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
@@ -11229,6 +11303,11 @@ describe("phase 5 pipeline regressions", () => {
             falsePositiveRisk: "low"
           } as T;
         }
+        if (outage !== undefined) {
+          throw new CodegenieError("llm_call_failed", "LLM provider call failed", {
+            recoverable: true, context: { reason: "transient_error", providerUnavailableSummary: outage }
+          });
+        }
         throw composerTransientError();
       }
     };
@@ -11240,14 +11319,14 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as { status: { reasons: string[] } };
-    expect(coverage.status.reasons).toContain("semantic composition skipped; deterministic fallback used");
+    expect(coverage.status.reasons).toContain(reason);
     const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("final-selection.json")), "utf8")) as {
       composition: { mode: string; fallbackReason: string };
       records: Array<{ findingId: string; decision: string }>;
     };
     expect(finalSelection.composition).toEqual({
       mode: "deterministic_fallback",
-      fallbackReason: "semantic composition skipped; deterministic fallback used"
+      fallbackReason: reason
     });
     expect(finalSelection.records).toEqual(
       expect.arrayContaining([expect.objectContaining({ decision: "published" })])
@@ -11257,7 +11336,7 @@ describe("phase 5 pipeline regressions", () => {
     };
     expect(telemetry.finalSelection).toMatchObject({
       compositionMode: "deterministic_fallback",
-      fallbackReason: "semantic composition skipped; deterministic fallback used"
+      fallbackReason: reason
     });
   });
 

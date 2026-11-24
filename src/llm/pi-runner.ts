@@ -1482,6 +1482,7 @@ async function completeWithCache(input: CompleteWithCacheInput): Promise<Provide
 }
 
 function recordDeadline(input: CompleteWithCacheInput, source: string): void {
+  if (providerOutageCancellation(input.opts.runSignal) !== undefined) return;
   input.opts.telemetry.event({
     stage: input.request.stage, level: "warn", message: "model_task_deadline_reached",
     data: { source, kind: input.kind, ...input.request.telemetryContext }
@@ -1666,10 +1667,17 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const failureLocation = { callId, workerId: request.telemetryContext?.workerId };
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
+    const providerObservation: ProviderFailureObservation = {};
+    let providerStarted = false;
     let admission: ReturnType<typeof captureTransportAdmission> | undefined;
     let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
     let terminalUsageSent = false;
     let usageReported: boolean | undefined;
+    // Hold the last retry's provider slot until its accounting and outage
+    // decision finish, so the queue can't start another call in between.
+    let releaseProviderSlot: (() => void) | undefined;
+    const terminalSlot = attempt === MAX_PROVIDER_ATTEMPTS && request.stage >= 5 && request.stage <= 9
+      ? new Promise<void>(resolve => { releaseProviderSlot = resolve; }) : undefined;
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1697,7 +1705,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         message: "model_call_queued",
         toolNames: tools.map((tool) => tool.name)
       });
-      const rawMessage = await awaitProviderCall(() => providerLimit(() => {
+      const invoke = () => {
         throwIfTaskAborted(taskSignal, taskTimedOut);
         recordModelCallEvent(opts, request, model, {
           callId,
@@ -1709,6 +1717,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           message: "model_call_started",
           toolNames: tools.map((tool) => tool.name)
         });
+        providerStarted = true;
         const callStartedAt = Date.now();
         const progress = createStreamProgress((streamProgress) => {
           if (taskSignal.aborted) return;
@@ -1758,6 +1767,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                 };
               })() : {}),
               onProviderStreamEvent: async (chunk: unknown) => {
+                const outage = streamOutageReason(chunk);
+                if (outage !== undefined) providerObservation.streamOutage = outage;
                 // Responses can include argument bytes in output_item.added without
                 // emitting a Pi delta. Keep only whether that prefix was empty.
                 if (chunk && typeof chunk === "object") {
@@ -1827,6 +1838,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
               onResponse: (response: { status: number; headers: Record<string, string> }) => {
                 responseCapture.ttfbMs = Date.now() - callStartedAt;
                 responseCapture.providerHttpStatus = response.status;
+                providerObservation.httpStatus = response.status;
                 const rateLimit: Record<string, string> = {};
                 for (const [key, value] of Object.entries(response.headers)) {
                   const name = key.toLowerCase();
@@ -1846,7 +1858,14 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           streamSignal,
           taskTimedOut
         );
-      }), taskSignal, taskTimedOut);
+      };
+      const rawMessage = await awaitProviderCall(() => terminalSlot === undefined ? providerLimit(invoke)
+        : new Promise<PiAssistantMessage>((resolve, reject) => {
+          void providerLimit(async () => {
+            try { resolve(await invoke()); } catch (cause) { reject(cause); }
+            await terminalSlot;
+          }).catch(reject);
+        }), taskSignal, taskTimedOut);
       const denied = admission?.denial();
       if (denied !== undefined) throw denied;
       if (onTransportUsage !== undefined && (rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" || rawMessage.stopReason === "stop" || rawMessage.stopReason === "length" || rawMessage.stopReason === "toolUse" || rawMessage.stopReason === "deferred")) {
@@ -1866,11 +1885,11 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const normalizedUsage = normalizeUsage(message.usage);
       // Pi sends a zero-filled initializer when no stream usage was received.
       const usage = usageReported === false && !hasNonzeroUsage(normalizedUsage) ? undefined : normalizedUsage;
-      const providerFailure = providerFailureFromMessage(message, taskTimedOut());
+      const providerFailure = providerFailureFromMessage(message, taskTimedOut(), providerObservation);
       if (providerFailure) {
         const retry = taskTimedOut()
           ? { retryable: false, reason: "task_deadline_exhausted" }
-          : classifyProviderRetry(providerFailure.cause, attempt);
+          : classifyProviderRetry(providerFailure.cause, attempt, providerObservation);
         if (retry.reason === "usage_limit" && onTransportUsage !== undefined) {
           await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true });
         }
@@ -1898,7 +1917,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         reportAttemptUsage(opts, request.stage, usage);
         lastError = providerFailure.cause;
         if (providerFailure.status === "transient_error" && retry.retryable && attempt < maxAttempts) {
-          const delayMs = retryDelayMs(providerFailure.cause, attempt);
+          const delayMs = retryDelayMs(providerFailure.cause, attempt, responseCapture.rateLimit?.["retry-after"]);
           recordProviderRetryEvent(opts, request, {
             callId,
             attempt,
@@ -1917,7 +1936,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             reason: retry.reason
           });
         }
-        throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut(), failureLocation));
+        throw markRecordedProviderFailure(finishedProviderFailure(
+          input, model, providerFailure.cause, providerFailure.status, attempt, retry, providerObservation, failureLocation
+        ));
       }
       const { valid: schemaValid, error: schemaError } = schemaValidityForResponse(adapter, request, tools, kind, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
@@ -1968,7 +1989,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         } catch { /* The call-local carrier preserves the fatal accounting error. */ }
         denial = admission?.denial();
       }
-      if (denial === undefined && onTransportUsage !== undefined && !taskTimedOut() && classifyProviderRetry(cause, attempt).reason === "usage_limit") {
+      if (denial === undefined && onTransportUsage !== undefined && !taskTimedOut() && classifyProviderRetry(cause, attempt, providerObservation).reason === "usage_limit") {
         try { await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true }); }
         catch { /* The call-local carrier preserves the fatal accounting error. */ }
         denial = admission?.denial();
@@ -1990,6 +2011,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         throw cause;
       }
       releaseReservation();
+      const outageCancellation = providerOutageCancellation(opts.runSignal);
+      if (outageCancellation !== undefined && !providerStarted) throw outageCancellation;
       const argumentLimit = cause instanceof ToolArgumentStreamLimitError ? cause : undefined;
       const retryLimitLocally = argumentLimit !== undefined && !taskSignal.aborted && attempt < maxAttempts;
       const retryLimitInComposition = argumentLimit !== undefined && !taskSignal.aborted &&
@@ -2000,12 +2023,15 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const attemptUsage = observedUsage === undefined ? undefined : tokensFromPartialUsage(observedUsage);
       reportAttemptUsage(opts, request.stage, attemptUsage);
       lastError = cause;
-      const status = argumentLimit !== undefined ? "aborted" : taskTimedOut() ? "timeout" : errorStatus(cause);
-      const retry = argumentLimit !== undefined
-        ? { retryable: retryLimitLocally || retryLimitInComposition, reason: TOOL_ARGUMENT_LIMIT_REASON }
-        : taskTimedOut()
-          ? { retryable: false, reason: "task_deadline_exhausted" }
-          : classifyProviderRetry(cause, attempt);
+      const status = outageCancellation !== undefined || argumentLimit !== undefined
+        ? "aborted" : taskTimedOut() ? "timeout" : errorStatus(cause, providerObservation);
+      const retry = outageCancellation !== undefined
+        ? { retryable: false, reason: "provider_outage_cancelled" }
+        : argumentLimit !== undefined
+          ? { retryable: retryLimitLocally || retryLimitInComposition, reason: TOOL_ARGUMENT_LIMIT_REASON }
+          : taskTimedOut()
+            ? { retryable: false, reason: "task_deadline_exhausted" }
+            : classifyProviderRetry(cause, attempt, providerObservation);
       const streamProgress = recordErroredModelCall(opts, request, model, {
         callId,
         protocol,
@@ -2020,13 +2046,15 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         durationMs: Date.now() - startedAt,
         usage: attemptUsage,
         status,
-        errorCode: "llm_call_failed",
-        errorMessage: cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
+        errorCode: outageCancellation?.code ?? "llm_call_failed",
+        errorMessage: outageCancellation !== undefined ? "Cancelled after provider outage"
+          : cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
         retryReason: retry.reason,
         maxAttempts,
         retryExhausted: argumentLimit !== undefined ? !retry.retryable : retry.retryable && attempt >= maxAttempts
       });
+      if (outageCancellation !== undefined) throw outageCancellation;
       if (argumentLimit !== undefined) {
         opts.telemetry.event({
           stage: request.stage, level: "warn", message: "model_tool_argument_stream_limit",
@@ -2042,7 +2070,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         continue;
       }
       if (status === "transient_error" && retry.retryable && attempt < maxAttempts) {
-        const delayMs = retryDelayMs(cause, attempt);
+        const delayMs = retryDelayMs(cause, attempt, responseCapture.rateLimit?.["retry-after"]);
         recordProviderRetryEvent(opts, request, {
           callId,
           attempt,
@@ -2061,7 +2089,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           reason: retry.reason
         });
       }
-      throw toLlmError(cause, status, taskTimedOut(), failureLocation);
+      throw finishedProviderFailure(input, model, cause, status, attempt, retry, providerObservation, failureLocation);
+    } finally {
+      releaseProviderSlot?.();
     }
   }
 
@@ -4018,12 +4048,14 @@ type ProviderFailure = {
   message: string;
 };
 
-function providerFailureFromMessage(message: PiAssistantMessage, timedOut: boolean): ProviderFailure | undefined {
+function providerFailureFromMessage(
+  message: PiAssistantMessage, timedOut: boolean, observation?: ProviderFailureObservation
+): ProviderFailure | undefined {
   if (message.stopReason !== "error" && message.stopReason !== "aborted") {
     return undefined;
   }
   const cause = providerMessageError(message);
-  const status = message.stopReason === "aborted" ? timedOut ? "timeout" : "aborted" : errorStatus(cause);
+  const status = message.stopReason === "aborted" ? timedOut ? "timeout" : "aborted" : errorStatus(cause, observation);
   return {
     status,
     cause,
@@ -4056,15 +4088,16 @@ function stopReason(message: PiAssistantMessage): "submit" | "tool_calls" | "tex
   return "text";
 }
 
-function errorStatus(cause: unknown): "transient_error" | "auth_error" | "aborted" {
-  if (isAbortError(cause)) {
+function errorStatus(cause: unknown, observation?: ProviderFailureObservation): "transient_error" | "auth_error" | "aborted" {
+  const status = providerFailureHttpStatus(cause, observation);
+  if (status === undefined && observation?.streamOutage === undefined && isAbortError(cause)) {
     return "aborted";
   }
-  const status = errorHttpStatus(cause);
   if (status === 401 || status === 403) {
     return "auth_error";
   }
-  if (errorMessageMatches(cause, /\b(auth|authentication|unauthorized|forbidden|api key|permission denied)\b/i)) {
+  if (status === undefined && observation?.streamOutage === undefined &&
+      errorMessageMatches(cause, /\b(auth|authentication|unauthorized|forbidden|api key|permission denied)\b/i)) {
     return "auth_error";
   }
   return "transient_error";
@@ -4075,19 +4108,22 @@ type ProviderRetryClassification = {
   reason: string;
 };
 
-function classifyProviderRetry(cause: unknown, attempt: number): ProviderRetryClassification {
-  if (isAbortError(cause)) {
+function classifyProviderRetry(cause: unknown, attempt: number, observation?: ProviderFailureObservation): ProviderRetryClassification {
+  const status = providerFailureHttpStatus(cause, observation);
+  if (status === undefined && observation?.streamOutage !== undefined) {
+    return { retryable: true, reason: observation.streamOutage };
+  }
+  if (status === undefined && isAbortError(cause)) {
     return { retryable: false, reason: "aborted" };
   }
   // Ahead of the auth check: a 403 spend-cap rejection is a billing problem,
   // not a credential problem, and the operator fix differs.
-  if (isUsageLimitError(cause)) {
+  if (isUsageLimitError(cause, status)) {
     return { retryable: false, reason: "usage_limit" };
   }
-  if (errorStatus(cause) === "auth_error") {
+  if (errorStatus(cause, observation) === "auth_error") {
     return { retryable: false, reason: "auth_error" };
   }
-  const status = errorHttpStatus(cause);
   if (status !== undefined) {
     if (status === 429) {
       return { retryable: true, reason: "rate_limited" };
@@ -4113,16 +4149,20 @@ function toLlmError(
   cause: unknown,
   status: "transient_error" | "auth_error" | "timeout" | "aborted",
   timedOut: boolean,
-  location?: { callId: string; workerId: string | undefined }
+  location?: { callId: string; workerId: string | undefined },
+  observation?: ProviderFailureObservation,
+  providerUnavailableSummary?: string
 ): CodegenieError {
+  const httpStatus = providerFailureHttpStatus(cause, observation);
   const raw = providerErrorText(cause).trim();
   const body = providerErrorBody(raw);
   const details = {
     ...location,
-    providerMessage: providerFailureSummary(raw, errorHttpStatus(cause), body),
+    providerMessage: providerFailureSummary(raw, httpStatus, body),
+    providerUnavailableSummary,
     providerErrorCode: nestedProviderErrorCode(body)
   };
-  if (!timedOut && status !== "aborted" && isUsageLimitError(cause)) {
+  if (!timedOut && status !== "aborted" && isUsageLimitError(cause, httpStatus)) {
     return new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
       recoverable: false,
       context: definedRecord({ reason: "usage_limit", ...details }),
@@ -4136,8 +4176,8 @@ function toLlmError(
       cause
     });
   }
-  const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
-  const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS) : undefined;
+  const reason = timedOut ? "timeout" : requestErrorReason(httpStatus, status);
+  const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS, observation) : undefined;
   const headline = timedOut
     ? "LLM provider call timed out"
     : status === "aborted"
@@ -4150,8 +4190,70 @@ function toLlmError(
   });
 }
 
-function requestErrorReason(cause: unknown, status: "transient_error" | "auth_error" | "timeout" | "aborted"): string {
-  const httpStatus = errorHttpStatus(cause);
+type StreamOutageReason = "temporarily_unavailable" | "provider_overloaded" | "server_error";
+type ProviderFailureObservation = { httpStatus?: number; streamOutage?: StreamOutageReason };
+
+function providerOutageCancellation(signal: AbortSignal): CodegenieError | undefined {
+  const reason: unknown = signal.reason;
+  return reason instanceof CodegenieError && reason.code === "provider_unavailable" ? reason : undefined;
+}
+
+function providerFailureHttpStatus(cause: unknown, observation?: ProviderFailureObservation): number | undefined {
+  const status = observation?.httpStatus;
+  if (status !== undefined && status >= 400) return status;
+  return observation?.streamOutage === undefined ? errorHttpStatus(cause) : undefined;
+}
+
+function streamOutageReason(chunk: unknown): StreamOutageReason | undefined {
+  if (!isRecord(chunk) ||
+      (chunk.type !== "error" && chunk.type !== "response.failed" && !(chunk.type === undefined && isRecord(chunk.error)))) return undefined;
+  const failure = isRecord(chunk.response) && isRecord(chunk.response.error) ? chunk.response.error
+    : isRecord(chunk.error) ? chunk.error : chunk;
+  switch (failure.code ?? failure.type) {
+    case "temporarily_unavailable": return "temporarily_unavailable";
+    case "overloaded":
+    case "overloaded_error": return "provider_overloaded";
+    case "server_error":
+    case "internal_server_error": return "server_error";
+  }
+  return undefined;
+}
+
+function finishedProviderFailure(
+  { opts, request, taskTimedOut }: CompleteWithCacheInput, model: PiModelRef, cause: unknown,
+  status: ProviderFailure["status"], attempt: number, retry: ProviderRetryClassification,
+  observation: ProviderFailureObservation, location: { callId: string; workerId: string | undefined }
+): CodegenieError {
+  const cancelled = providerOutageCancellation(opts.runSignal);
+  if (cancelled !== undefined) return cancelled;
+  const httpStatus = providerFailureHttpStatus(cause, observation);
+  const outage = observation.httpStatus === 200 || httpStatus === undefined ? observation.streamOutage
+    : httpStatus >= 500 ? "server_error" : undefined;
+  if (outage === undefined || status !== "transient_error" || !retry.retryable) {
+    return toLlmError(cause, status, taskTimedOut(), location, observation);
+  }
+  const streamLabels = { temporarily_unavailable: "temporarily unavailable", provider_overloaded: "overloaded", server_error: "server error" };
+  const label = observation.httpStatus !== 200 && httpStatus !== undefined && httpStatus >= 500
+    ? `HTTP ${httpStatus}` : streamLabels[outage];
+  const safeLabel = (value: string) => redactThenTruncate(value, 100, "…", true).replace(/[\s\p{Cc}]+/gu, " ").trim();
+  const provider = safeLabel(model.provider);
+  const modelId = safeLabel(model.id);
+  const summary = `Provider ${provider} (model ${modelId}) returned ${label}`;
+  if (attempt === MAX_PROVIDER_ATTEMPTS && request.stage >= 5 && request.stage <= 9 &&
+      !opts.runSignal.aborted && !taskTimedOut()) {
+    const raw = providerErrorText(cause).trim();
+    const error = new CodegenieError("provider_unavailable", `Review failed: ${summary} after ${attempt} attempts`, {
+      context: definedRecord({ ...location, provider, model: modelId, reason: outage,
+        providerHttpStatus: observation.httpStatus ?? httpStatus,
+        providerMessage: providerFailureSummary(raw, undefined, providerErrorBody(raw)) })
+    });
+    opts.hooks.onProviderUnavailable?.(error);
+    return error;
+  }
+  return toLlmError(cause, status, taskTimedOut(), location, observation, request.stage === 10 ? summary : undefined);
+}
+
+function requestErrorReason(httpStatus: number | undefined, status: "transient_error" | "auth_error" | "timeout" | "aborted"): string {
   if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429) {
     return "request_error";
   }
@@ -4260,8 +4362,7 @@ const USAGE_LIMIT_PATTERN =
 
 const USAGE_LIMIT_STATUSES: ReadonlySet<number> = new Set([400, 402, 403, 429]);
 
-function isUsageLimitError(cause: unknown): boolean {
-  const status = errorHttpStatus(cause);
+function isUsageLimitError(cause: unknown, status = errorHttpStatus(cause)): boolean {
   if (status === 402) {
     return true;
   }
@@ -4416,7 +4517,8 @@ async function sleep(ms: number, signal: AbortSignal, timedOut: () => boolean = 
 
 async function awaitProviderCall<T>(call: () => Promise<T>, signal: AbortSignal, timedOut: () => boolean): Promise<T> {
   const abortError = (): CodegenieError =>
-    signal.reason instanceof ToolArgumentStreamLimitError ? signal.reason : taskAbortError(timedOut());
+    signal.reason instanceof ToolArgumentStreamLimitError ? signal.reason
+      : providerOutageCancellation(signal) ?? taskAbortError(timedOut());
   if (signal.aborted) {
     throw abortError();
   }
@@ -4433,15 +4535,14 @@ async function awaitProviderCall<T>(call: () => Promise<T>, signal: AbortSignal,
   }
 }
 
-function retryDelayMs(cause: unknown, attempt: number): number {
+function retryDelayMs(cause: unknown, attempt: number, observedRetryAfter?: string): number {
   const jitterCap = Math.min(BASE_RETRY_DELAY_MS * 2 ** attempt, MAX_RETRY_DELAY_MS);
   const jitterDelay = Math.floor(Math.random() * jitterCap);
-  const retryAfterDelay = retryAfterMs(cause);
+  const retryAfterDelay = retryAfterMs(observedRetryAfter ?? retryAfterHeader(cause));
   return retryAfterDelay !== undefined && retryAfterDelay > jitterDelay ? retryAfterDelay : jitterDelay;
 }
 
-function retryAfterMs(cause: unknown): number | undefined {
-  const value = retryAfterHeader(cause);
+function retryAfterMs(value: string | undefined): number | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -4477,7 +4578,7 @@ function headerValue(headers: unknown): string | undefined {
 
 function throwIfTaskAborted(signal: AbortSignal, timedOut: () => boolean): void {
   if (signal.aborted) {
-    throw taskAbortError(timedOut());
+    throw providerOutageCancellation(signal) ?? taskAbortError(timedOut());
   }
 }
 

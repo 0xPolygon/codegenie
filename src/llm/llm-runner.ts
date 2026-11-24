@@ -263,6 +263,7 @@ export type CreateRunnerHooks = {
   reserve?(stage: ReviewStage, estimatedTokens: number, estimatedModelCalls?: number): "ok" | "exhausted";
   releaseReservation?(stage: ReviewStage, estimatedTokens: number, estimatedModelCalls?: number): void;
   onUsage(usage: LlmCallUsage): void;
+  onProviderUnavailable?(error: import("../util/errors.js").CodegenieError): void;
 };
 
 export type CreateRunnerOptions = {
