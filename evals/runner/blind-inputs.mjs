@@ -10,6 +10,15 @@ const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(valu
 const neutral = (value) => typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !/^[a-z]:/iu.test(value) && !value.includes('\\') &&
   !value.split('/').includes('..') && !/(?:assigned.?effects|openrouter|openai|\b(?:control|treatment)\b|\barm[-_ ]|\bdraw[-_ ]|attempt[-_ ]|\bp7\.)/iu.test(value);
 const caseIdValid = (value) => typeof value === 'string' && value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
+// Evaluate real paths so a symlinked parent cannot hide private evidence in a
+// repository that the review worker can read.
+export function assertOutsideSources(value, roots) {
+  const resolved = realpathSync(value);
+  for (const root of roots) {
+    const relative = path.relative(root, resolved);
+    if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) throw new Error('blind private input overlaps source checkout');
+  }
+}
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 // The hashed configuration and oracle manifest bind every resource needed to
@@ -29,6 +38,15 @@ export function validateBlindInputs(binding, slots) {
       locatorIds.length !== required.length || oracleIds.length !== required.length ||
       [...locatorIds].sort().some((id, index) => id !== required[index]) || [...oracleIds].sort().some((id, index) => id !== required[index]) ||
       new Set(locators.cases.map((item) => item.label)).size !== locators.cases.length) throw new Error('blind case membership mismatch');
+  const roots = locators.cases.map((location) => {
+    if (typeof location.sourceRoot !== 'string' || !path.isAbsolute(location.sourceRoot)) throw new Error('blind source or oracle changed');
+    return realpathSync(location.sourceRoot);
+  });
+  for (const privatePath of [binding.locatorManifestPath, binding.oracleManifestPath, ...locators.cases.map((location) => location.oraclePath),
+    ...slots.map((slot) => slot.workerConfig?.integrity?.suiteDir).filter((value) => value !== undefined)]) {
+    if (typeof privatePath !== 'string' || !path.isAbsolute(privatePath)) throw new Error('blind source or oracle changed');
+    assertOutsideSources(privatePath, roots);
+  }
   for (const location of locators.cases) {
     const oracle = oracles.cases.find((item) => item.caseId === location.caseId);
     if (!neutral(location.label) || !neutral(location.sourceLocator) || !neutral(location.oracleLocator) || !hash(location.oracleSHA256) ||

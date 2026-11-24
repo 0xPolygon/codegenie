@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -103,6 +103,35 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
     Object.assign(collisionConfig.blind, { locatorManifestPath: locatorCollisionPath, locatorManifestSHA256: sha(locatorCollisionBytes), oracleManifestPath: oracleCollisionPath, oracleManifestSHA256: sha(oracleCollisionBytes) });
     const collisionBytes = Buffer.from(JSON.stringify(collisionConfig)), collisionPath = path.join(dir, 'collision-config.json'); writeFileSync(collisionPath, collisionBytes);
     await expect(openCampaign(collisionPath, sha(collisionBytes), dependencies)).rejects.toThrow('blind case membership');
+    // A clean reviewed repository must never contain oracle or suite inputs,
+    // even if a locator reaches the repository through an aliased parent.
+    const ignored = path.join(sourceRoot, 'private-testing'); mkdirSync(ignored);
+    writeFileSync(path.join(sourceRoot, '.git/info/exclude'), 'private-testing/\n');
+    const sourceAlias = path.join(dir, 'source-alias'); symlinkSync(sourceRoot, sourceAlias, 'dir');
+    for (const kind of ['oracle', 'oracle-alias', 'locator-manifest', 'oracle-manifest', 'suite']) {
+      const privateConfig = JSON.parse(config.toString('utf8')); delete privateConfig.qualification405;
+      if (kind === 'oracle' || kind === 'oracle-alias') {
+        const leakedLocators = JSON.parse(locatorBytes.toString('utf8')), leakedOracles = JSON.parse(oracleBytes.toString('utf8'));
+        leakedLocators.cases[0].oraclePath = path.join(kind === 'oracle' ? sourceRoot : sourceAlias, 'source.txt');
+        leakedLocators.cases[0].oracleSHA256 = sha(readFileSync(path.join(sourceRoot, 'source.txt')));
+        leakedOracles.cases[0].sha256 = leakedLocators.cases[0].oracleSHA256;
+        const locBytes = Buffer.from(JSON.stringify(leakedLocators)), oraBytes = Buffer.from(JSON.stringify(leakedOracles));
+        const locPath = path.join(dir, `leaked-${kind}-locators.json`), oraPath = path.join(dir, `leaked-${kind}-oracles.json`);
+        writeFileSync(locPath, locBytes); writeFileSync(oraPath, oraBytes);
+        Object.assign(privateConfig.blind, { locatorManifestPath: locPath, locatorManifestSHA256: sha(locBytes), oracleManifestPath: oraPath, oracleManifestSHA256: sha(oraBytes) });
+      } else if (kind === 'locator-manifest' || kind === 'oracle-manifest') {
+        const bytes = kind === 'locator-manifest' ? locatorBytes : oracleBytes, file = path.join(ignored, `${kind}.json`); writeFileSync(file, bytes);
+        if (kind === 'locator-manifest') privateConfig.blind.locatorManifestPath = file;
+        else privateConfig.blind.oracleManifestPath = file;
+      } else {
+        const privateSchedule = JSON.parse(schedule.toString('utf8')); privateSchedule.slots[0].workerConfig.integrity.suiteDir = ignored;
+        const scheduleBytes = Buffer.from(JSON.stringify(privateSchedule)), file = path.join(dir, 'private-suite-schedule.json'); writeFileSync(file, scheduleBytes);
+        privateConfig.schedulePath = file; privateConfig.scheduleSHA256 = sha(scheduleBytes);
+      }
+      const privateBytes = Buffer.from(JSON.stringify(privateConfig)), privateFile = path.join(dir, `private-${kind}.json`); writeFileSync(privateFile, privateBytes);
+      await expect(openCampaign(privateFile, sha(privateBytes), dependencies)).rejects.toThrow('private input overlaps source checkout');
+    }
+    expect(execFileSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
     const incompleteConfig = JSON.parse(config.toString('utf8')); delete incompleteConfig.blind.locatorManifestPath;
     const badConfig = Buffer.from(JSON.stringify(incompleteConfig)), badFile = path.join(dir, 'bad-campaign.json'); writeFileSync(badFile, badConfig);
     await expect(openCampaign(badFile, sha(badConfig), dependencies)).rejects.toThrow('blind manifest');
