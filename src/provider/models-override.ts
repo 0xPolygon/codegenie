@@ -6,12 +6,20 @@ import {
 
 const DEEPSEEK_UPSTREAMS = ["deepseek", "fireworks", "together"];
 
+function usesOpenAIResponses(model: Model<Api>): boolean {
+  return (model.provider === "openai" && model.api === "openai-responses") ||
+    (model.provider === "openai-codex" && model.api === "openai-codex-responses");
+}
+
 // Apply request compatibility overrides without mutating Pi's catalog.
 export function applyModelOverrides(model: Model<Api>): Model<Api> {
-  if (model.provider === "openai-codex" && model.api === "openai-codex-responses") {
-    // Codex Luna can skip reasoning when tools are declared in input (#375).
-    // Request-level effort also avoids in-band effort updates
+  if (usesOpenAIResponses(model)) {
+    // Luna can skip reasoning when Codex declares tools in input (#375).
+    // Direct OpenAI also echoes medium when effort is sent as an update (#431).
+    // Request-level effort avoids in-band effort updates
     // (earendil-works/pi#12361 and openai/codex#47843).
+    // Remove the direct OpenAI workaround once Pi pins effort on openai-responses
+    // (earendil-works/pi#12464, tracked in #432).
     return {
       ...model,
       compat: {
@@ -45,15 +53,15 @@ export function applyModelOverrides(model: Model<Api>): Model<Api> {
   };
 }
 
-export type CodexWireProtocol = {
+type ResponsesWireProtocol = {
   wireEffort?: string;
   toolPlacement: "top_level" | "none";
   configurationUpdate: false;
 };
 
-export function codexWireProtocol(raw: unknown, effort: string, toolCount: number): CodexWireProtocol | undefined {
+export function responsesWireProtocol(raw: unknown, effort: string, toolCount: number): ResponsesWireProtocol | undefined {
   const model = raw as Model<Api>;
-  if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") return undefined;
+  if (!usesOpenAIResponses(model)) return undefined;
   const compat = model.compat as OpenAIResponsesCompat | undefined;
   if (compat?.supportsAdditionalTools !== false || compat.supportsToolSearch !== false
     || compat.supportsMidConvoEffort !== false) return undefined;

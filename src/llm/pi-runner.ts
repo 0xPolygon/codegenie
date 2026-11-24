@@ -8,7 +8,7 @@ import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
-import { applyModelOverrides, codexWireProtocol, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
+import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice, responsesWireProtocol } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
 import { createToolArgumentStreamGuard, type ToolArgumentStreamLimit } from "./tool-argument-stream-limit.js";
 import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
@@ -1493,13 +1493,13 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
-  const codexProtocol = codexWireProtocol(model.raw, reasoning, tools.length);
+  const responsesProtocol = responsesWireProtocol(model.raw, reasoning, tools.length);
   const protocol = { ...describeProviderProtocol(
     model,
     toolChoice,
     forcedSubmitThinkingOff ? undefined : reasoning,
     forceSubmit
-  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy, ...codexProtocol };
+  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy, ...responsesProtocol };
   if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
     input.protocolFlags.downgradeWarned = true;
     opts.telemetry.event({
@@ -1526,7 +1526,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     // disabled (plan 86 step 3), which is a different request than the same
     // messages at the configured reasoning level.
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
-    ...codexProtocol,
+    ...responsesProtocol,
     stage: request.stage,
     ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
@@ -3274,7 +3274,7 @@ function writeModelCallRequestDebug(
       reasoning,
       reasoningPolicy,
       reasoningConfigured,
-      ...codexWireProtocol(model.raw, reasoning, meta.tools.length)
+      ...responsesWireProtocol(model.raw, reasoning, meta.tools.length)
     },
     cache: definedRecord({
       enabled: Boolean(opts.cache),
