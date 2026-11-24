@@ -1,5 +1,6 @@
 import type { CommitInfo, SearchResult } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { redactThenTruncate } from "../telemetry/redaction.js";
 import {
   assertSafeGlob,
   assertSafeLogRange,
@@ -165,7 +166,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         assertSafeGlob(grepOpts.glob);
       }
       if (!grepOpts.fixedString && hasUnsupportedEreSyntax(pattern)) {
-        throw new CodegenieError("invalid_args", "query uses unsupported regex syntax. Use POSIX ERE (e.g. name|other, [0-9], [[:space:]]); lookarounds and Perl digit classes are unsupported.");
+        throw new CodegenieError("invalid_args", "query uses unsupported regex syntax. Use POSIX ERE (e.g. name|other, [0-9], [[:space:]]); lookarounds and Perl digit classes are unsupported.", { context: { reason: "invalid_search_regex" } });
       }
       const maxResults = grepOpts.maxResults ?? 50;
       const startAt = grepOpts.startAt;
@@ -223,7 +224,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         } catch (error) {
           const stderr = error instanceof CodegenieError ? String(error.context?.stderr ?? "") : "";
           if (/^fatal: (?:command line, |-e option, )/u.test(stderr)) {
-            throw new CodegenieError("invalid_args", invalidEreMessage(stderr.slice(0, 300)), { cause: error });
+            throw new CodegenieError("invalid_args", invalidEreMessage(redactThenTruncate(stderr, 300)), { cause: error, context: { reason: "invalid_search_regex" } });
           }
           throw error;
         }

@@ -1,4 +1,4 @@
-import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
+import { assertRepositoryToolArguments, buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import { RepositoryToolsFacade } from "../src/repo/repository-index.js";
 import { nullTelemetry } from "./helpers/git.js";
 import { describe, it, expect, vi } from "vitest";
@@ -10,6 +10,8 @@ import { createGitClient } from "../src/git/git-client.js";
 import { packSearchToolResult } from "../src/llm/search-result-packing.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
+import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
+import { CodegenieError } from "../src/util/errors.js";
 
 async function fixture() {
   const repo = initRepo();
@@ -126,6 +128,83 @@ describe("reliable search", () => {
       const literal = await search.execute({ query: "func (", mode: "literal", pathGlob: "*.go" }, signal);
       expect(literal.searchResults).toEqual([expect.objectContaining({ path: "decoder.go", line: 1 })]);
     }
+  });
+
+  it.each(["current", "six"] as const)("suggests a schema-valid literal interpretation for invalid regex on %s", async toolSurface => {
+    const { resolver, repo } = await fixture();
+    const literal = String.raw`literal\^$.*+?()[]{}|(`;
+    writeRepoFile(repo, "literal.txt", `${literal}\nfunc(?=x)\n\\d\nbaseOnly(\n`);
+    resolver.binding.baseCommit = commitAll(repo, "base literal patterns");
+    writeRepoFile(repo, "literal.txt", `${literal}\nfunc(?=x)\n\\d\n`);
+    resolver.binding.headCommit = commitAll(repo, "literal patterns");
+    const tools = new RepositoryToolsFacade({ resolver, diff: { files: [] }, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: nullTelemetry() });
+    const search = buildRepositoryToolDefinitions(tools, { toolSurface }).find(tool => tool.name === "search_files")!;
+    const signal = new AbortController().signal;
+    for (const query of [literal, "[", "func(?=x)", String.raw`\d`]) {
+      const args = { query, pathGlob: "literal.txt", source: { kind: "head" }, contextMode: "lines", ...(toolSurface === "six" ? { mode: "regex" } : { maxResults: 5, caseSensitive: false }) };
+      const invalid = await search.execute(args, signal);
+      expect(invalid).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(invalid.text).toContain("To search for this exact text");
+      const match = /Corrected call arguments: (\{[^\n]+\})/u.exec(invalid.text);
+      expect(match).not.toBeNull();
+      const corrected = JSON.parse(match![1]!);
+      expect(corrected).toEqual({ ...args, query: query.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&") });
+      expect(() => assertRepositoryToolArguments(search, corrected)).not.toThrow();
+      const result = await search.execute(corrected, signal);
+      expect(result.isError).not.toBe(true);
+      if (query !== "[") expect(result.searchResults).toEqual([expect.objectContaining({ path: "literal.txt" })]);
+    }
+    const baseArgs = { query: "baseOnly(", pathGlob: "literal.txt", source: { kind: "base" }, contextMode: "none" };
+    const baseError = await search.execute(baseArgs, signal);
+    const baseMatch = /Corrected call arguments: (\{[^\n]+\})/u.exec(baseError.text);
+    const correctedBase = JSON.parse(baseMatch![1]!);
+    expect(correctedBase).toEqual({ ...baseArgs, query: "baseOnly\\(" });
+    expect((await search.execute(correctedBase, signal)).searchResults).toEqual([expect.objectContaining({ path: "literal.txt" })]);
+    expect((await search.execute({ ...correctedBase, source: { kind: "head" } }, signal)).searchResults).toEqual([]);
+    const valid = await search.execute({ query: "Statuses|func List" }, signal);
+    expect(valid.isError).not.toBe(true);
+    expect(valid.searchResults).toHaveLength(2);
+  });
+
+  it.each(["current", "six"] as const)("bounds and redacts suggestions and does not reuse a cursor on %s", async toolSurface => {
+    const { resolver } = await fixture();
+    const tools = new RepositoryToolsFacade({ resolver, diff: { files: [] }, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: nullTelemetry() });
+    const search = buildRepositoryToolDefinitions(tools, { toolSurface }).find(tool => tool.name === "search_files")!;
+    const signal = new AbortController().signal, secret = "credential.foo+bar987654";
+    registerSecret(secret);
+    try {
+      for (const query of [`${secret}(`, `${secret}[`]) {
+        const result = await search.execute({ query }, signal);
+        expect(result.text).not.toContain(secret);
+        expect(result.text).not.toContain("Corrected call arguments:");
+      }
+      for (const query of ["(".repeat(260), "line\n("]) {
+        const result = await search.execute({ query }, signal);
+        expect(result).toMatchObject({ isError: true, errorCode: "invalid_args" });
+        expect(result.text).not.toContain("Corrected call arguments:");
+      }
+      const longScope = await search.execute({ query: "(", pathGlob: "a".repeat(1100) }, signal);
+      expect(longScope).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(longScope.text).not.toContain("Corrected call arguments:");
+      const redactedScope = await search.execute({ query: "(", pathGlob: `src/${secret}` }, signal);
+      expect(redactedScope.text).not.toContain(secret);
+      expect(redactedScope.text).not.toContain("Corrected call arguments:");
+      const tooLong = await search.execute({ query: "😀".repeat(245) + "(".repeat(7) }, signal);
+      expect(tooLong).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(tooLong.text).not.toContain("Corrected call arguments:");
+      const atLimit = await search.execute({ query: "😀".repeat(245) + "(".repeat(5) }, signal);
+      const match = /Corrected call arguments: (\{[^\n]+\})/u.exec(atLimit.text);
+      expect(match).not.toBeNull();
+      const corrected = JSON.parse(match![1]!);
+      expect(corrected.query.length).toBe(500);
+      expect((await search.execute(corrected, signal)).isError).not.toBe(true);
+      vi.spyOn(tools, "searchFilesPage").mockRejectedValueOnce(new CodegenieError("invalid_args", "synthetic regex failure", { context: { reason: "invalid_search_regex" } }));
+      const cursor = await search.execute({ query: "(", cursor: "existing-cursor" }, signal);
+      expect(cursor.text).not.toContain("Corrected call arguments:");
+      vi.mocked(tools.searchFilesPage).mockRejectedValueOnce(new CodegenieError("invalid_args", "unrelated invalid option"));
+      const other = await search.execute({ query: "(" }, signal);
+      expect(other.text).not.toContain("Corrected call arguments:");
+    } finally { clearRegisteredSecretsForTests(); }
   });
 
   it("chunks literal scopes with a single global allowance", async () => {
