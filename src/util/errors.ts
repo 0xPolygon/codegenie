@@ -15,6 +15,7 @@ export type CodegenieErrorCode =
   | "skill_invalid"
   | "path_outside_repo"
   | "review_failed"
+  | "provider_unavailable"
   | "llm_call_failed"
   | "llm_schema_invalid"
   | "github_post_failed"

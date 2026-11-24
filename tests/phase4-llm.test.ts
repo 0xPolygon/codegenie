@@ -1,3 +1,4 @@
+import { renderCodegenieError } from "../src/cli/render-error.js";
 import { buildAttentionReconciliation, attentionResolutionErrors, createAttentionResolutionRepair } from "../src/pipeline/attention-reconciliation.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { defaultConfig } from "../src/config/schema.js";
@@ -8079,7 +8080,152 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   );
 
-  it("treats persistent retryable provider errors as recoverable task failures", async () => {
+  it("settles the final retry before releasing the queued provider slot", async () => {
+    const telemetry = fakeTelemetry();
+    const abort = new AbortController();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let attempts = 0;
+    let heldTokens = 0;
+    let usageReports = 0;
+    let markFinalStarted: () => void = () => undefined;
+    const finalStarted = new Promise<void>(resolve => { markFinalStarted = resolve; });
+    let failFinal: () => void = () => undefined;
+    const finalReleased = new Promise<void>(resolve => { failFinal = resolve; });
+    const adapter = scriptedAdapter([]);
+    adapter.complete = async () => {
+      attempts += 1;
+      if (attempts === 4) {
+        markFinalStarted();
+        await finalReleased;
+      }
+      throw Object.assign(new Error("Backend restarting"), { status: 503 });
+    };
+    try {
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: abort.signal, adapter,
+        hooks: {
+          checkpoint: () => "ok",
+          reserve: (_stage, count) => { heldTokens += count; return "ok"; },
+          releaseReservation: (_stage, count) => { heldTokens -= count; },
+          onUsage: () => { usageReports += 1; },
+          onProviderUnavailable: error => abort.abort(error)
+        }
+      });
+      const failing = runner.runStructured({ ...submitReviewRequest("failing"), timeoutMs: 10_000 });
+      const failed = expect(failing).rejects.toMatchObject({ code: "provider_unavailable" });
+      await finalStarted;
+      const queued = runner.runStructured({ ...submitReviewRequest("queued"), timeoutMs: 10_000 });
+      const cancelled = expect(queued).rejects.toMatchObject({ code: "provider_unavailable" });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(telemetry.events.filter(event => event.message === "model_call_queued")).toHaveLength(5);
+      failFinal();
+      await Promise.all([failed, cancelled]);
+      expect(attempts).toBe(4);
+      expect(usageReports).toBe(4);
+      expect(heldTokens).toBe(0);
+      expect(telemetry.modelCalls).toHaveLength(4);
+    } finally {
+      failFinal();
+      random.mockRestore();
+    }
+  });
+
+  it.each(["http_exhausted", "stream_exhausted", "http_recovered", "composition_stream_outage"] as const)(
+    "uses native Codex outage evidence for %s",
+    async mode => {
+      const random = vi.spyOn(Math, "random").mockReturnValue(0);
+      const secret = "sk-proj-TESTOUTAGE1234567890TESTOUTAGE1234567890";
+      const access = "fixture." + Buffer.from(JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "fixture" }
+      })).toString("base64url") + ".fixture";
+      const models = getCodegeniePiModels({
+        read: async provider => provider === "openai-codex"
+          ? { type: "oauth", access, expires: 4_000_000_000_000, refresh: "" } : undefined,
+        list: async () => [],
+        modify: async () => { throw new Error("unexpected auth refresh"); },
+        delete: async () => undefined
+      });
+      const real = createRealPiAiAdapter({ models });
+      const provider = "openai-codex", id = "gpt-6-luna";
+      const model = await real.resolveModel({ provider, model: id });
+      if (!model) throw new Error("missing Codex model fixture");
+      const telemetry = fakeTelemetry();
+      const onProviderUnavailable = vi.fn();
+      const runner = createPiRunner({
+        llmConfig: { provider, model: id, maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        adapter: { ...real, resolveModel: () => model,
+          complete: (selected, context, options) => real.complete(selected, context, { ...options, transport: "sse" }) },
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn(), onProviderUnavailable }
+      });
+      const sse = (events: unknown[]) => new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""),
+        { headers: { "content-type": "text/event-stream" } });
+      let physical = 0;
+      const streamOutage = mode === "stream_exhausted" || mode === "composition_stream_outage";
+      // Pi flattens the message and Codegenie can parse a status from it. The
+      // typed stream event on HTTP 200 is the authoritative failure instead.
+      const providerMessage = `${streamOutage ? "HTTP 402: " : ""}Fixture backend asleep. x-api-key: ${secret}`;
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        physical += 1;
+        if (streamOutage) {
+          return sse([{ type: "response.failed", response: { status: "failed",
+            error: { code: "temporarily_unavailable", message: providerMessage } } }]);
+        }
+        if (mode === "http_recovered" && physical === 4) {
+          const args = JSON.stringify(validSubmitReviewCall("submit").arguments);
+          const item = { type: "function_call", id: "fc_fixture", call_id: "call_fixture", name: "submit_review" };
+          return sse([
+            { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
+            { type: "response.function_call_arguments.delta", output_index: 0, delta: args },
+            { type: "response.output_item.done", output_index: 0, item: { ...item, arguments: args } },
+            { type: "response.completed", response: { status: "completed" } }
+          ]);
+        }
+        return Response.json({ error: { message: providerMessage } }, { status: 503 });
+      }));
+      try {
+        const pending = runner.runStructured(mode === "composition_stream_outage"
+          ? { stage: 10, prompt: "compose", schema: SubmitCompositionSchema, templateVersion: "test", timeoutMs: 10_000 }
+          : { ...submitReviewRequest("provider-outage"), timeoutMs: 10_000 });
+        if (mode === "composition_stream_outage") {
+          await expect(pending).rejects.toMatchObject({
+            code: "llm_call_failed", recoverable: true,
+            context: {
+              reason: "transient_error", retryReason: "temporarily_unavailable",
+              providerUnavailableSummary: "Provider openai-codex (model gpt-6-luna) returned temporarily unavailable"
+            }
+          });
+          expect(onProviderUnavailable).not.toHaveBeenCalled();
+        } else if (mode === "http_recovered") {
+          await expect(pending).resolves.toMatchObject({ findings: [] });
+          expect(onProviderUnavailable).not.toHaveBeenCalled();
+        } else {
+          const error: CodegenieError = await pending.catch(error => error) as CodegenieError;
+          const label = mode === "stream_exhausted" ? "temporarily unavailable" : "HTTP 503";
+          expect(error).toMatchObject({ code: "provider_unavailable", recoverable: false,
+            context: { provider, model: id, providerMessage: expect.stringContaining("Fixture backend asleep.") } });
+          const stderr = renderCodegenieError(error);
+          expect(stderr).toContain(`Provider ${provider} (model ${id}) returned ${label} after 4 attempts`);
+          expect(stderr).toContain("Fixture backend asleep.");
+          expect(stderr).not.toContain(secret);
+          expect(onProviderUnavailable).toHaveBeenCalledExactlyOnceWith(error);
+        }
+        const attempts = mode === "composition_stream_outage" ? 2 : 4;
+        expect(physical).toBe(attempts);
+        expect(telemetry.modelCalls).toHaveLength(attempts);
+        const classified = streamOutage ? "temporarily_unavailable" : "server_error";
+        for (const row of telemetry.modelCalls.slice(0, -1)) {
+          expect(row).toMatchObject({ retryable: true, retryReason: classified, providerHttpStatus: streamOutage ? 200 : 503 });
+        }
+      } finally {
+        vi.unstubAllGlobals();
+        random.mockRestore();
+      }
+    }
+  );
+
+  it("labels exhausted HTTP 5xx as a fatal provider outage", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
     const adapter: PiAiAdapter = {
@@ -8102,9 +8248,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       });
 
       await expect(runner.runStructured(submitReviewRequest("packet-provider-down"))).rejects.toMatchObject({
-        code: "llm_call_failed",
-        recoverable: true,
-        context: { reason: "transient_error" }
+        code: "provider_unavailable",
+        recoverable: false,
+        context: { reason: "server_error", providerHttpStatus: 503 }
       });
       expect(adapter.complete).toHaveBeenCalledTimes(4);
       expect(telemetry.modelCalls.at(-1)).toMatchObject({

@@ -6,6 +6,7 @@ import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { isCodegenieError } from "../util/errors.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js";
 import type {
@@ -149,7 +150,7 @@ export async function dedupeRankAndComposeReview(
     }
     fallbackUsed = true;
     fallbackMode = isSchemaInvalidError(error) ? "schema_repair_fallback" : "deterministic_fallback";
-    fallbackReason = composerFallbackCoverageReason(fallbackMode);
+    fallbackReason = composerFallbackCoverageReason(fallbackMode, error);
     telemetry.event({
       stage: 10,
       level: "warn",
@@ -920,7 +921,10 @@ function withholdRepresentativeAnchor(candidate: CandidateFinding, telemetry: Te
   return { ...withoutAnchor, changedLine: false };
 }
 
-function composerFallbackCoverageReason(mode: CompositionMode): string {
+function composerFallbackCoverageReason(mode: CompositionMode, error: unknown): string {
+  if (isCodegenieError(error) && typeof error.context?.providerUnavailableSummary === "string") {
+    return `${error.context.providerUnavailableSummary}; deterministic fallback used`;
+  }
   return mode === "schema_repair_fallback"
     ? "semantic composition schema repair failed; deterministic fallback used"
     : "semantic composition skipped; deterministic fallback used";

@@ -474,19 +474,20 @@ function providerMessageFromError(error: unknown): string | undefined {
     return undefined;
   }
   const value = error.context?.providerMessage;
+  if (error.code === "provider_unavailable") {
+    return boundedPublishedText(typeof value === "string" ? `${error.message}: ${value}` : error.message, 600);
+  }
   return typeof value === "string" ? boundedPublishedText(value) : undefined;
 }
 
 // Scrubbed against the Actions secrets, collapsed to one line, and capped for
 // world-readable surfaces (comment, step summary, artifacts, log).
-function boundedPublishedText(value: string): string | undefined {
+function boundedPublishedText(value: string, maxChars = PROVIDER_MESSAGE_MAX_CHARS): string | undefined {
   const collapsed = scrubGitHubSecrets(value).replace(/\s+/gu, " ").trim();
   if (collapsed.length === 0) {
     return undefined;
   }
-  return collapsed.length <= PROVIDER_MESSAGE_MAX_CHARS
-    ? collapsed
-    : `${collapsed.slice(0, PROVIDER_MESSAGE_MAX_CHARS - 1).trimEnd()}…`;
+  return collapsed.length <= maxChars ? collapsed : `${collapsed.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
 // Model-resolution errors carry codegenie-authored text (with workflow- or
