@@ -219,7 +219,8 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       attemptPrefix: `health/${slot.id}/${purpose}-${healthOrdinal}`,
       purpose, ...(failed && !auth ? { retryFor: attemptPrefix(slot.id, failed.attempt_no), failureReceiptSHA256: failed.receipt_sha256 } : {}),
       llmConfig: config.health.llmConfig, expected: config.health.expected, fetchImpl, beforeProbe: () => { assertCase(slot); return true; }, ...(models ? { models } : {}) });
-    if (ledger.totals().stopped) return { action: 'stop', reason: ledger.totals().stopped };
+    const diagnostic = admission.diagnosticSHA256 === undefined ? {} : { diagnostic: admission.diagnostic, diagnosticSHA256: admission.diagnosticSHA256 };
+    if (ledger.totals().stopped) return { action: 'stop', reason: ledger.totals().stopped, ...diagnostic };
     try { assertCase(slot); }
     catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch' }; }
     if (failed && !auth && admission.status === 'clean') {
@@ -227,7 +228,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       supervisor.authorizeRetry(slot.id, failed.attempt_no, proof, { ledger, retryProbeId: admission.physicalId, verifyReceipt, verifyFailure, verifyRetry });
       return { action: 'retry_authorized', slot: slot.id };
     }
-    if (admission.action !== 'admit') return admission.status ? { action: 'health', status: admission.status } : admission;
+    if (admission.action !== 'admit') return admission.status ? { action: 'health', status: admission.status, ...diagnostic } : admission;
     const started = supervisor.begin(slot.id, { ledger, evidenceFiles: files(), verifyReceipt, verifyRetry });
     if (started.action !== 'started') return started;
     const worker = Buffer.from(JSON.stringify({ ...slot.workerConfig, attemptPrefix: started.attemptPrefix }));
