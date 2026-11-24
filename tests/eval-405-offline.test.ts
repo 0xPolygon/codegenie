@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -132,6 +132,29 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       await expect(openCampaign(privateFile, sha(privateBytes), dependencies)).rejects.toThrow('private input overlaps source checkout');
     }
     expect(execFileSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
+    // Reader and model roots can differ: fixture copies make files beneath
+    // either base/ or feature/ available to repository tools in the child.
+    const otherCaseIndex = caseIds.findIndex((caseId) => caseId !== slots[0].caseId);
+    const modelSuite = path.join(dir, 'model-suite'); cpSync(suiteDir, modelSuite, { recursive: true });
+    const modelCaseBytes = Buffer.from(JSON.stringify({ caseDir: modelSuite, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
+    const modelCaseFile = path.join(dir, 'model-case.json'); writeFileSync(modelCaseFile, modelCaseBytes);
+    for (const tree of ['base', 'feature']) {
+      const marker = path.join(modelSuite, 'repos/core', tree, 'private-marker.txt'); mkdirSync(path.dirname(marker), { recursive: true }); writeFileSync(marker, 'oracle must not reach model');
+      const leakedLocators = JSON.parse(locatorBytes.toString('utf8')), leakedOracles = JSON.parse(oracleBytes.toString('utf8'));
+      leakedLocators.cases[otherCaseIndex].oraclePath = marker; leakedLocators.cases[otherCaseIndex].oracleSHA256 = sha(readFileSync(marker));
+      leakedOracles.cases[otherCaseIndex].sha256 = leakedLocators.cases[otherCaseIndex].oracleSHA256;
+      const locBytes = Buffer.from(JSON.stringify(leakedLocators)), oraBytes = Buffer.from(JSON.stringify(leakedOracles));
+      const locPath = path.join(dir, `model-${tree}-locators.json`), oraPath = path.join(dir, `model-${tree}-oracles.json`);
+      writeFileSync(locPath, locBytes); writeFileSync(oraPath, oraBytes);
+      const modelSchedule = JSON.parse(schedule.toString('utf8'));
+      Object.assign(modelSchedule.slots[0].workerConfig, { caseConfig: modelCaseFile, caseConfigSHA256: sha(modelCaseBytes), integrity: { ...integrity, suiteDir: modelSuite, suiteSHA256: treeDigest(modelSuite) } });
+      const scheduleBytes = Buffer.from(JSON.stringify(modelSchedule)), scheduleFile = path.join(dir, `model-${tree}-schedule.json`); writeFileSync(scheduleFile, scheduleBytes);
+      const modelConfig = JSON.parse(config.toString('utf8')); delete modelConfig.qualification405;
+      Object.assign(modelConfig, { schedulePath: scheduleFile, scheduleSHA256: sha(scheduleBytes) });
+      Object.assign(modelConfig.blind, { locatorManifestPath: locPath, locatorManifestSHA256: sha(locBytes), oracleManifestPath: oraPath, oracleManifestSHA256: sha(oraBytes) });
+      const modelBytes = Buffer.from(JSON.stringify(modelConfig)), modelFile = path.join(dir, `model-${tree}-config.json`); writeFileSync(modelFile, modelBytes);
+      await expect(openCampaign(modelFile, sha(modelBytes), dependencies)).rejects.toThrow('private input overlaps source checkout');
+    }
     const incompleteConfig = JSON.parse(config.toString('utf8')); delete incompleteConfig.blind.locatorManifestPath;
     const badConfig = Buffer.from(JSON.stringify(incompleteConfig)), badFile = path.join(dir, 'bad-campaign.json'); writeFileSync(badFile, badConfig);
     await expect(openCampaign(badFile, sha(badConfig), dependencies)).rejects.toThrow('blind manifest');
@@ -139,6 +162,34 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
     execFileSync('git', ['-C', sourceRoot, 'checkout', '--quiet', '--detach', 'HEAD^']);
     await expect(openCampaign(configFile, sha(config), dependencies)).rejects.toThrow('source or oracle changed');
     execFileSync('git', ['-C', sourceRoot, 'checkout', '--quiet', sourceBranch]);
+    const modelRepo = path.join(dir, 'existing-model-repo'); cpSync(sourceRoot, modelRepo, { recursive: true });
+    const originalYaml = readFileSync(path.join(modelSuite, 'core.yml'), 'utf8');
+    for (const kind of ['git-fixture', 'external-target', 'locator-manifest', 'oracle-manifest']) {
+      const isRepo = kind === 'git-fixture' || kind === 'external-target';
+      const yaml = isRepo ? originalYaml.replace('fixture: repos/core', `${kind === 'git-fixture' ? 'fixture' : 'external'}: ${modelRepo}`) : originalYaml;
+      writeFileSync(path.join(modelSuite, 'core.yml'), yaml);
+      const repoCaseBytes = Buffer.from(JSON.stringify({ caseDir: modelSuite, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output'), ...(kind === 'external-target' ? { targetDir: modelRepo } : {}) }));
+      const repoCaseFile = path.join(dir, `case-${kind}.json`); writeFileSync(repoCaseFile, repoCaseBytes);
+      const privateConfig = JSON.parse(config.toString('utf8')); delete privateConfig.qualification405;
+      if (isRepo) {
+        const leakedLocators = JSON.parse(locatorBytes.toString('utf8')), leakedOracles = JSON.parse(oracleBytes.toString('utf8'));
+        leakedLocators.cases[otherCaseIndex].oraclePath = path.join(modelRepo, 'source.txt'); leakedLocators.cases[otherCaseIndex].oracleSHA256 = sha(readFileSync(path.join(modelRepo, 'source.txt')));
+        leakedOracles.cases[otherCaseIndex].sha256 = leakedLocators.cases[otherCaseIndex].oracleSHA256;
+        const locBytes = Buffer.from(JSON.stringify(leakedLocators)), oraBytes = Buffer.from(JSON.stringify(leakedOracles));
+        const locPath = path.join(dir, `repo-${kind}-locators.json`), oraPath = path.join(dir, `repo-${kind}-oracles.json`); writeFileSync(locPath, locBytes); writeFileSync(oraPath, oraBytes);
+        Object.assign(privateConfig.blind, { locatorManifestPath: locPath, locatorManifestSHA256: sha(locBytes), oracleManifestPath: oraPath, oracleManifestSHA256: sha(oraBytes) });
+      } else {
+        const file = path.join(modelSuite, 'repos/core/feature', `${kind}.json`), bytes = kind === 'locator-manifest' ? locatorBytes : oracleBytes; writeFileSync(file, bytes);
+        if (kind === 'locator-manifest') privateConfig.blind.locatorManifestPath = file;
+        else privateConfig.blind.oracleManifestPath = file;
+      }
+      const changed = JSON.parse(schedule.toString('utf8'));
+      Object.assign(changed.slots[0].workerConfig, { caseConfig: repoCaseFile, caseConfigSHA256: sha(repoCaseBytes), integrity: { ...integrity, suiteDir: modelSuite, suiteSHA256: treeDigest(modelSuite) } });
+      const scheduleBytes = Buffer.from(JSON.stringify(changed)), changedPath = path.join(dir, `repo-${kind}-schedule.json`); writeFileSync(changedPath, scheduleBytes);
+      Object.assign(privateConfig, { schedulePath: changedPath, scheduleSHA256: sha(scheduleBytes) });
+      const configBytes = Buffer.from(JSON.stringify(privateConfig)), changedConfig = path.join(dir, `repo-${kind}-config.json`); writeFileSync(changedConfig, configBytes);
+      await expect(openCampaign(changedConfig, sha(configBytes), dependencies)).rejects.toThrow('private input overlaps source checkout');
+    }
     expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
     expect(() => readFileSync(base.supervisorPath)).toThrow(); expect(() => readFileSync(base.ledgerPath)).toThrow();
     let campaign = await openCampaign(configFile, sha(config), dependencies), paused: any;

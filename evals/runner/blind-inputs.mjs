@@ -21,6 +21,14 @@ export function assertOutsideSources(value, roots) {
 }
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
+export function assertBlindPrivateInputs(binding, slots, locators, roots) {
+  for (const privatePath of [binding.locatorManifestPath, binding.oracleManifestPath, ...locators.cases.map((location) => location.oraclePath),
+    ...slots.map((slot) => slot.workerConfig?.integrity?.suiteDir).filter((value) => value !== undefined)]) {
+    if (typeof privatePath !== 'string' || !path.isAbsolute(privatePath)) throw new Error('blind source or oracle changed');
+    assertOutsideSources(privatePath, roots);
+  }
+}
+
 // The hashed configuration and oracle manifest bind every resource needed to
 // grade; run this before admitting the first probe as well as before export.
 export function validateBlindInputs(binding, slots) {
@@ -42,11 +50,7 @@ export function validateBlindInputs(binding, slots) {
     if (typeof location.sourceRoot !== 'string' || !path.isAbsolute(location.sourceRoot)) throw new Error('blind source or oracle changed');
     return realpathSync(location.sourceRoot);
   });
-  for (const privatePath of [binding.locatorManifestPath, binding.oracleManifestPath, ...locators.cases.map((location) => location.oraclePath),
-    ...slots.map((slot) => slot.workerConfig?.integrity?.suiteDir).filter((value) => value !== undefined)]) {
-    if (typeof privatePath !== 'string' || !path.isAbsolute(privatePath)) throw new Error('blind source or oracle changed');
-    assertOutsideSources(privatePath, roots);
-  }
+  assertBlindPrivateInputs(binding, slots, locators, roots);
   for (const location of locators.cases) {
     const oracle = oracles.cases.find((item) => item.caseId === location.caseId);
     if (!neutral(location.label) || !neutral(location.sourceLocator) || !neutral(location.oracleLocator) || !hash(location.oracleSHA256) ||

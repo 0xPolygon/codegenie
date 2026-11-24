@@ -11,7 +11,7 @@ import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { verifyAllEvidence } from './boundary.mjs';
 import { exportFirstLock, exportMechanism, revealPairing } from './blind-export.mjs';
-import { validateBlindInputs } from './blind-inputs.mjs';
+import { assertBlindPrivateInputs, validateBlindInputs } from './blind-inputs.mjs';
 import { ASSIGNED_EFFECTS_PLAN_SHA256, ASSIGNED_EFFECTS_SEED, generate405Order, validate405Schedule } from './qualification-405.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -109,7 +109,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     registered405 = order;
   }
 
-  const roots = new Map();
+  const roots = new Map(), reviewInputRoots = [];
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
     if (registered405) {
@@ -140,7 +140,9 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1));
     if (slot.blind !== undefined && bounds.toolSurface !== 'current') throw new Error('campaign arm surface mismatch');
     roots.set(slot.id, path.dirname(bounds.outputDir));
+    reviewInputRoots.push(...bounds.reviewInputRoots);
   }
+  if (blindInputs) assertBlindPrivateInputs(config.blind, schedule.slots, blindInputs.locators, reviewInputRoots);
   const protectedPaths = [config.supervisorPath, config.ledgerPath, config.receiptDirectory, config.evidenceDirectory, config.workDirectory];
   if (config.blind && protectedPaths.some((item) => config.blind.mappingFile === item || config.blind.mappingFile.startsWith(`${item}${path.sep}`) || item.startsWith(`${config.blind.mappingFile}${path.sep}`))) throw new Error('blind mapping overlaps campaign custody');
   for (const root of roots.values()) for (const protectedPath of [...protectedPaths, ...(config.blind ? [config.blind.mappingFile] : [])]) {
