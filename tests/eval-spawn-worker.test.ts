@@ -93,7 +93,7 @@ describe('campaign worker spawn', () => {
       expect(result).toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
       const receiptOptions = { directory: path.join(dir, 'receipts'), binding: 'b', runRootFor: (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${String(attempt).padStart(2, '0')}`) };
       const receipts = createReceiptStore({ ...receiptOptions, create: true });
-      const receiptHash = receipts.seal('one', 1, result);
+      const receiptHash = receipts.seal('one', 1, { ...result, caseId: 'fixture', recoveredResets: 0 });
       expect(supervisor.workerExited('one', 1)).toBe(true);
       // Simulate a crash after the child exited but before the parent persisted close.
       supervisor.db.prepare("UPDATE worker_claim SET spawn_state='started' WHERE slot_id='one'").run(); supervisor.close();

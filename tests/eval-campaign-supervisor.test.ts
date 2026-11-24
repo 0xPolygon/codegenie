@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,11 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { CampaignSupervisor, processStart } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+function makeWritable(dir: string) {
+  const stat = lstatSync(dir); if (stat.isSymbolicLink()) return;
+  chmodSync(dir, stat.isDirectory() ? 0o700 : 0o600);
+  if (stat.isDirectory()) for (const name of readdirSync(dir)) makeWritable(path.join(dir, name));
+}
 const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare("INSERT INTO worker_claim(slot_id,attempt_no,config_sha256,token_sha256,activated,spawn_state) VALUES(?,?,?,?,?,'exited')").run(slot, number, 'a'.repeat(64), 'b'.repeat(64), 1);
 function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void }) {
   ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 50 });
@@ -25,18 +30,30 @@ describe('campaign admission custody', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-resets-'));
     const runs: string[] = [];
     try {
-      const scheduleBytes = Buffer.from(JSON.stringify({ slots: ['one', 'two', 'three'].map((id) => ({ id, caseId: 'case', boundaryId: id, provider: 'openrouter' })) }));
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: ['one', 'two', 'three'].map((id) => ({ id, caseId: 'case', expectedPacketIds: ['packet'], boundaryId: id, provider: 'openrouter' })) }));
       const root = (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${attempt}`);
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: root };
       const db = path.join(dir, 'supervisor.db');
       let supervisor = new CampaignSupervisor(db, binding);
-      const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
+      const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 5_000_000 });
+      ledger.keyDecision = () => ({ action: 'admit' }); ledger.healthDecision = () => ({ action: 'admit' });
       for (const [index, slot] of ['one', 'two', 'three'].entries()) {
         supervisor.begin(slot, { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify }); claim(supervisor, slot, 1);
-        const runDir = path.join(root(slot, 1), 'run'); mkdirSync(runDir, { recursive: true }); runs.push(runDir); writeFileSync(path.join(runDir, 'run.json'), '{}');
+        const runDir = path.join(root(slot, 1), 'run'), telemetry = path.join(runDir, 'telemetry'); mkdirSync(path.join(telemetry, 'stages/06-packets/packets'), { recursive: true }); runs.push(runDir);
+        const prefix = `${slot}/attempt-01`, runId = `run-${slot}`;
+        writeFileSync(path.join(telemetry, 'run.json'), JSON.stringify({ runId, outcome: { status: 'completed_full' } }));
+        writeFileSync(path.join(telemetry, 'stages/06-packets/packets/packet.json'), JSON.stringify({ id: 'packet' }));
+        writeFileSync(path.join(telemetry, 'telemetry.json'), JSON.stringify({ runId, events: 1, packets: { generated: 1 }, modelCalls: { totalRecords: 2 }, toolCalls: { totalCalls: 0 } }));
+        writeFileSync(path.join(telemetry, 'events.jsonl'), JSON.stringify({ runId, eventId: 'ev', stage: 7, message: 'structured_submission_accepted', data: { packetId: 'packet' } }) + '\n');
+        const common = { runId, stage: 7, kind: 'initial', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request', cacheStatus: 'disabled' };
+        writeFileSync(path.join(telemetry, 'model-calls.jsonl'), [JSON.stringify({ ...common, callId: 'failed', attempt: 1, status: 'transient_error' }), JSON.stringify({ ...common, callId: 'success', attempt: 2, status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 })].join('\n') + '\n');
+        for (const [call, success] of [['failed', false], ['success', true]] as const) {
+          const id = `${prefix}/${call}/physical-1`; ledger.reservePhysical({ id, logicalId: `${prefix}/${call}`, kind: 'initial', provider: 'openrouter' });
+          ledger.settlePhysical(success ? { id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } } : { id, httpStatus: 200 });
+        }
         const hash = supervisor.receipts.seal(slot, 1, { caseName: 'case', caseId: 'case', recoveredResets: 1, status: 'pass', runDir });
-        expect(supervisor.recordCaseResets(slot, 1, hash)).toEqual({ total: index + 1, stop: index === 2 });
-        expect(supervisor.recordCaseResets(slot, 1, hash)).toEqual({ total: index + 1, stop: index === 2 });
+        expect(supervisor.recordCaseResets(slot, 1, hash, ledger)).toEqual({ total: index + 1, stop: index === 2 });
+        expect(supervisor.recordCaseResets(slot, 1, hash, ledger)).toEqual({ total: index + 1, stop: index === 2 });
         if (index < 2) supervisor.seal(slot, 1, hash, supervisor.receipts.verify);
         else expect(() => supervisor.seal(slot, 1, hash, supervisor.receipts.verify)).toThrow('case reset accounting requires stop');
         supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
@@ -44,7 +61,11 @@ describe('campaign admission custody', () => {
       }
       expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM outcome").get()).toEqual({ total: 2 });
       supervisor.close();
-    } finally { for (const run of runs) chmodSync(run, 0o700); rmSync(dir, { recursive: true, force: true }); }
+      expect(() => new CampaignSupervisor(db, { binding: binding.binding, scheduleBytes, scheduleSHA256: binding.scheduleSHA256 })).toThrow('binding mismatch');
+      supervisor = new CampaignSupervisor(db, binding);
+      expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM outcome").get()).toEqual({ total: 2 }); supervisor.close();
+      ledger.close();
+    } finally { for (const run of runs) makeWritable(run); rmSync(dir, { recursive: true, force: true }); }
   });
   it('creates the receipt store only on first binding and refuses its loss on restart', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-store-'));

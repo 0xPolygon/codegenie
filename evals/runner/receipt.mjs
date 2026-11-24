@@ -109,7 +109,7 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
     const allowed = checkedPath(runRootFor(slot, attempt)), runDir = checkedPath(result.runDir);
     if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) throw new Error('receipt outside attempt root');
     if (result.status === 'error' && !errors.has(result.error)) throw new Error('invalid receipt error');
-    const caseId = result.caseId ?? result.caseName, recoveredResets = result.recoveredResets ?? 0;
+    const { caseId, recoveredResets } = result;
     if (typeof caseId !== 'string' || !caseId || !Number.isSafeInteger(recoveredResets) || recoveredResets < 0) throw new Error('invalid receipt case evidence');
     assertStore();
     const record = { version: 1, binding, slot, attempt, caseName: result.caseName, caseId, recoveredResets, status: result.status,

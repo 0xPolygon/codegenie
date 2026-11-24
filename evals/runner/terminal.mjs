@@ -4,6 +4,9 @@ import { outsideCheckout } from './case.mjs';
 
 const guided = new Set(['invalid_args', 'budget_exhausted', 'file_missing', 'path_outside_repo', 'not_found', 'unavailable']);
 const count = (x) => Number.isSafeInteger(x) && x >= 0;
+export class RecoveredResetLimitError extends Error {
+  constructor(recoveredResets) { super('too many recovered stream resets'); this.recoveredResets = recoveredResets; }
+}
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 function jsonl(file, expected) {
   let text;
@@ -76,7 +79,7 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
       }
     }
   }
-  if (priorRecoveredResets + recoveredResets >= 3) throw new Error('too many recovered stream resets');
+  if (priorRecoveredResets + recoveredResets >= 3) throw new RecoveredResetLimitError(recoveredResets);
   const stopped = ledger.totals().stopped;
   if (stopped) throw new Error('campaign stop is latched');
   return { status: run.outcome.status, packets: packetIds.length, modelCalls: models.length, physicalStarts: physical.length, recoveredResets };

@@ -19,7 +19,8 @@ describe('campaign receipt custody', () => {
       const store = createReceiptStore({ ...options, create: true });
       writeFileSync(path.join(options.directory, '.tmp-interrupted'), 'partial');
       expect(store.find('one', 1)).toBeNull();
-      const result = { caseName: 'case', status: 'pass', runDir };
+      expect(() => store.seal('one', 1, { caseName: 'case', caseId: 'case', status: 'pass', runDir })).toThrow('case evidence');
+      const result = { caseName: 'case', caseId: 'case', recoveredResets: 0, status: 'pass', runDir };
       const hash = store.seal('one', 1, result);
       expect(store.seal('one', 1, result)).toBe(hash);
       expect(statSync(runDir).mode & 0o222).toBe(0);

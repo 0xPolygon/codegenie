@@ -3,9 +3,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { hostname } from 'node:os';
 import { readFileSync, readlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { boundaryDecision } from './boundary.mjs';
 import { createReceiptStore } from './receipt.mjs';
+import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const isHash = (value) => /^[a-f0-9]{64}$/u.test(value ?? '');
@@ -35,6 +37,8 @@ export class CampaignSupervisor {
     if (typeof binding !== 'string' || !binding || !Buffer.isBuffer(scheduleBytes) || !isHash(scheduleSHA256) || sha(scheduleBytes) !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
     if ((receiptDirectory === undefined) !== (runRootFor === undefined) || (receiptDirectory !== undefined && (typeof receiptDirectory !== 'string' || typeof runRootFor !== 'function'))) throw new Error('invalid receipt store binding');
     if (configSHA256 !== null && !isHash(configSHA256)) throw new Error('invalid campaign config digest');
+    const boundReceiptDirectory = receiptDirectory === undefined ? null : path.resolve(receiptDirectory);
+    if (boundReceiptDirectory !== null && outsideCheckout(boundReceiptDirectory) !== boundReceiptDirectory) throw new Error('invalid receipt store binding');
     const parsed = JSON.parse(scheduleBytes.toString('utf8'));
     if (!Array.isArray(parsed.slots) || parsed.slots.length === 0 || parsed.slots.some((s) =>
       typeof s.id !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(s.id) || ['.', '..'].includes(s.id) || typeof s.boundaryId !== 'string' || !s.boundaryId || typeof s.provider !== 'string' || !s.provider) ||
@@ -46,7 +50,7 @@ export class CampaignSupervisor {
     this.dbPath = outsideCheckout(file);
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL, config_sha256 TEXT);
+      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL, config_sha256 TEXT, receipt_directory TEXT);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, spawn_state TEXT NOT NULL DEFAULT 'claimed', pid INTEGER, host TEXT, process_start TEXT, pid_namespace TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
@@ -57,8 +61,8 @@ export class CampaignSupervisor {
     try {
       this.transaction(() => {
         const old = this.db.prepare('SELECT * FROM campaign').get();
-        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?)').run(binding, scheduleSHA256, configSHA256);
-        else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256) throw new Error('campaign schedule binding mismatch');
+        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
+        else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256 || old.receipt_directory !== boundReceiptDirectory) throw new Error('campaign schedule binding mismatch');
         if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
     } catch (error) { this.db.close(); throw error; }
@@ -118,7 +122,7 @@ export class CampaignSupervisor {
     if (typeof caseId !== 'string' || !caseId) throw new Error('invalid case identity');
     return this.db.prepare('SELECT COALESCE(SUM(resets),0) AS total FROM case_reset_event WHERE case_id=?').get(caseId).total;
   }
-  recordCaseResets(slotId, attemptNo, receiptSHA256) {
+  recordCaseResets(slotId, attemptNo, receiptSHA256, ledger) {
     if (!this.receipts || !isHash(receiptSHA256)) throw new Error('receipt store required');
     return this.transaction(() => {
       const slot = this.slots.find((item) => item.id === slotId);
@@ -127,6 +131,11 @@ export class CampaignSupervisor {
       const found = this.receipts.find(slotId, attemptNo);
       if (!slot || typeof slot.caseId !== 'string' || !slot.caseId || !attempt || attempt.state !== 'started' || !claim || !found || found.hash !== receiptSHA256 || found.receipt.caseId !== slot.caseId) throw new Error('case reset evidence mismatch');
       const existing = this.db.prepare('SELECT case_id,receipt_sha256,resets FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+      const priorRecoveredResets = this.caseResetCount(slot.caseId) - (existing?.resets ?? 0);
+      let observed;
+      try { observed = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(slotId, attemptNo), ledger, expectedPacketIds: slot.expectedPacketIds, priorRecoveredResets }).recoveredResets; }
+      catch (error) { if (error instanceof RecoveredResetLimitError) observed = error.recoveredResets; else throw error; }
+      if (observed !== found.receipt.recoveredResets) throw new Error('case reset count mismatch');
       if (existing) {
         if (existing.case_id !== slot.caseId || existing.receipt_sha256 !== receiptSHA256 || existing.resets !== found.receipt.recoveredResets) throw new Error('case reset evidence changed');
       } else this.db.prepare('INSERT INTO case_reset_event VALUES(?,?,?,?,?)').run(slotId, attemptNo, slot.caseId, receiptSHA256, found.receipt.recoveredResets);
