@@ -8,8 +8,12 @@ const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const urls = { goinfer: 'https://github.com/townsendmerino/goinfer.git', pi: 'https://github.com/earendil-works/pi.git', codegenie: 'https://github.com/0xPolygon/codegenie.git' };
 const sha = /^[0-9a-f]{40}$/u;
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
+export class CampaignConfigurationError extends Error {
+  constructor(reason, message) { super(message); this.name = 'CampaignConfigurationError'; this.code = 'config_error'; this.context = { reason }; }
+}
+const rejectJudge = () => { throw new CampaignConfigurationError('unsupported_case_config', 'recommendationJudge is not supported in a budgeted campaign'); };
 
-function outsideCheckout(dir) {
+export function outsideCheckout(dir) {
   const target = path.resolve(dir);
   let ancestor = target;
   while (!existsSync(ancestor)) {
@@ -63,17 +67,37 @@ export function prepareTarget(target, url, base, head, pullRequest) {
   }
 }
 
-export async function runCase(configFile) {
+export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
+  if (typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._-]+\/attempt-\d{2,}$/u.test(attemptPrefix) || ['.', '..'].includes(attemptPrefix.split('/')[0])) throw new Error('invalid attempt prefix');
+  const file = path.resolve(configFile), config = JSON.parse(caseConfigBytes.toString('utf8'));
+  if (!config || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
+  const suiteDir = path.resolve(path.dirname(file), config.caseDir);
+  const { loadEvalSuite } = await import('../../dist/evals/eval-runner.js');
+  const { loadConfig } = await import('../../dist/config/config-loader.js');
+  const suite = await loadEvalSuite(suiteDir), found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
+  if (found.length !== 1) throw new Error('campaign caseName must match one case');
+  // The optional eval judge uses a separate adapter and cannot be metered by
+  // the campaign transport. Ordinary single-case evals are unaffected.
+  if (found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
+  const base = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false }).config;
+  const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs + 300_000 > 2_147_483_647) throw new CampaignConfigurationError('unsupported_case_config', 'review timeout exceeds the campaign worker watchdog limit');
+  const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
+  return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
+}
+
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false } = {}) {
   const file = path.resolve(configFile);
-  const config = JSON.parse(readFileSync(file, 'utf8'));
+  const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
   const suiteDir = path.resolve(path.dirname(file), config.caseDir);
-  const output = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
+  const output = outsideCheckout(outputOverride ?? (config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName)));
   const { loadEvalSuite, runEvalCase } = await import('../../dist/evals/eval-runner.js');
   const { loadConfig } = await import('../../dist/config/config-loader.js');
   const suite = await loadEvalSuite(suiteDir);
   const found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
   if (found.length !== 1) throw new Error('campaign caseName must match one case');
+  if (budgeted && found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
   const original = found[0];
   const selected = { ...original, evalCase: { ...original.evalCase, repeat: 1, logs: { dir: output } } };
   if (selected.evalCase.artifacts) throw new Error('artifact replay is not supported by this entry point');
@@ -87,5 +111,8 @@ export async function runCase(configFile) {
     selected.evalCase.repo = { external: prepareTarget(target, url, selected.evalCase.command?.base, selected.evalCase.command?.head, match ? Number(match[1]) : undefined) };
   }
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
-  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false });
+  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
+    ...(onFailure !== undefined ? { onFailure } : {}),
+    ...(plannerReplay !== undefined ? { plannerReplay } : {}),
+    ...(fetchForCall !== undefined ? { fetchForCall } : {}) });
 }

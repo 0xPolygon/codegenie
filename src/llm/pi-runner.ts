@@ -29,6 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
+import { captureTransportAdmission, projectProviderUsage, TransportAdmissionError } from "./transport-admission.js";
 import { credentialSafeCut, redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
@@ -1664,6 +1665,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const failureLocation = { callId, workerId: request.telemetryContext?.workerId };
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
+    let admission: ReturnType<typeof captureTransportAdmission> | undefined;
+    let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
+    let terminalUsageSent = false;
     let usageReported: boolean | undefined;
     writeModelCallRequestDebug(opts, request, model, {
       callId,
@@ -1724,6 +1728,32 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             { messages, tools: tools.map(providerToolSpec) },
             {
               signal: streamSignal,
+              ...(opts.fetchForCall !== undefined ? (() => {
+                const transport = opts.fetchForCall!({
+                  callId, stage: request.stage, kind, provider: model.provider, modelId: model.id,
+                  reasoningSelected: reasoning, templateVersion: request.templateVersion,
+                  ...(request.purpose !== undefined ? { purpose: request.purpose } : {}),
+                  ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
+                  ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
+                });
+                admission = captureTransportAdmission(transport.fetch);
+                onTransportUsage = transport.onUsage === undefined ? undefined : async (observation) => {
+                  try { await transport.onUsage!(observation); }
+                  catch (error) {
+                    const physicalId = error instanceof TransportAdmissionError ? error.physicalId : undefined;
+                    const failure = new TransportAdmissionError("accounting_failed", physicalId);
+                    admission?.deny(failure);
+                    throw failure;
+                  }
+                };
+                return {
+                  fetch: admission.fetch,
+                  ...(onTransportUsage !== undefined ? { onProviderStreamEvent: async (chunk: unknown) => {
+                    const observation = projectProviderUsage(chunk);
+                    if (observation !== undefined) await onTransportUsage?.(observation);
+                  } } : {})
+                };
+              })() : {}),
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
                 if (streamSignal.aborted) return;
                 progress.observe(event);
@@ -1784,6 +1814,17 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           taskTimedOut
         );
       }), taskSignal, taskTimedOut);
+      const denied = admission?.denial();
+      if (denied !== undefined) throw denied;
+      if (onTransportUsage !== undefined && (rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" || rawMessage.stopReason === "stop" || rawMessage.stopReason === "length" || rawMessage.stopReason === "toolUse" || rawMessage.stopReason === "deferred")) {
+        const usage = rawMessage.usage;
+        const cost = usage?.cost as { total?: number; totalFromProvider?: boolean } | undefined;
+        terminalUsageSent = true;
+        await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: cost?.totalFromProvider === true,
+          reasoningTokensPresent: false, terminal: rawMessage.stopReason === "aborted" ? "aborted" : rawMessage.stopReason === "error" ? "error" : "done",
+          costFromProvider: cost?.totalFromProvider === true,
+          ...(cost?.totalFromProvider === true && typeof cost.total === "number" && Number.isFinite(cost.total) && cost.total >= 0 ? { providerCost: cost.total } : {}) });
+      }
       const message = removeProvenanceLessSubmitArguments(
         redactAssistantForReplay(rawMessage),
         submitToolNameForStage(request.stage)
@@ -1797,6 +1838,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         const retry = taskTimedOut()
           ? { retryable: false, reason: "task_deadline_exhausted" }
           : classifyProviderRetry(providerFailure.cause, attempt);
+        if (retry.reason === "usage_limit" && onTransportUsage !== undefined) {
+          await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true });
+        }
         recordModelCall(opts, request, model, message, {
           callId,
           protocol,
@@ -1881,6 +1925,34 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       });
       return { source: "provider", message, callId };
     } catch (cause) {
+      let denial = admission?.denial() ?? (cause instanceof TransportAdmissionError ? cause : undefined);
+      if (denial === undefined && onTransportUsage !== undefined && !terminalUsageSent) {
+        terminalUsageSent = true;
+        try {
+          await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false,
+            reasoningTokensPresent: false, terminal: cause instanceof ToolArgumentStreamLimitError || taskSignal.aborted || taskTimedOut() ? "aborted" : "error",
+            costFromProvider: false });
+        } catch { /* The call-local carrier preserves the fatal accounting error. */ }
+        denial = admission?.denial();
+      }
+      if (denial === undefined && onTransportUsage !== undefined && !taskTimedOut() && classifyProviderRetry(cause, attempt).reason === "usage_limit") {
+        try { await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true }); }
+        catch { /* The call-local carrier preserves the fatal accounting error. */ }
+        denial = admission?.denial();
+      }
+      if (denial !== undefined) {
+        releaseReservation();
+        recordErroredModelCall(opts, request, model, {
+          callId, protocol, kind, finalizeMode, finalizeTarget, attempt,
+          cacheStatus: opts.cache ? "miss" : "disabled", promptText,
+          durationMs: Date.now() - startedAt, status: "aborted",
+          errorCode: denial.code, errorMessage: denial.message,
+          retryable: false, retryReason: denial.reason, maxAttempts, retryExhausted: false
+        });
+        opts.telemetry.event({ stage: request.stage, level: "warn", message: denial.reason === "accounting_failed" ? "transport_accounting_failed" : denial.reason === "provider_denied" && denial.physicalId !== undefined ? "transport_provider_denied" : "transport_admission_denied",
+          data: { callId, reason: denial.reason, ...(denial.physicalId !== undefined ? { physicalId: denial.physicalId } : {}) } });
+        throw denial;
+      }
       if (isRecordedProviderFailure(cause)) {
         throw cause;
       }

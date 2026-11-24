@@ -3,16 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const checkout = process.cwd();
 const runner = path.join(checkout, "evals/runner/main.mjs");
 const caseModule = pathToFileURL(path.join(checkout, "evals/runner/case.mjs")).href;
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-beforeAll(() => {
-  execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" });
-}, 60_000);
 
 describe("development eval entry point", () => {
   it("runs one bundled fixture through the built eval runner with external artifacts", () => {

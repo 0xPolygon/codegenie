@@ -274,6 +274,22 @@ export type CreateRunnerOptions = {
   toolResultCache?: ToolResultCache;
   runSignal: AbortSignal;
   adapter?: PiAiAdapter;
+  /** Internal transport seam; called only for a non-cached logical provider call. */
+  fetchForCall?: (call: {
+    callId: string;
+    provider: string;
+    modelId: string;
+    reasoningSelected: string;
+    templateVersion: string;
+    stage: ReviewStage;
+    kind: "initial" | "tool-continuation" | "repair" | "finalize";
+    purpose?: string;
+    packetId?: string;
+    candidateId?: string;
+  }) => {
+    fetch: typeof globalThis.fetch;
+    onUsage?: (observation: import("./transport-admission.js").ProviderUsageObservation) => void | Promise<void>;
+  };
   hooks: CreateRunnerHooks;
 };
 

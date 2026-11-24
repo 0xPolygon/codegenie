@@ -14,7 +14,7 @@ import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import { assertRepositoryToolSurfaceAvailable } from "../llm/tool-definitions.js";
-import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
+import type { CreateRunnerOptions, LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
 import { createToolResultCache } from "../llm/tool-result-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
@@ -53,6 +53,8 @@ import type {
 } from "../types.js";
 import { CodegenieError, ReviewTargetUsageError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
+import { replayPlanner, type PlannerReplay } from "./planner-replay.js";
+import { TransportAdmissionError } from "../llm/transport-admission.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
@@ -80,6 +82,8 @@ type RunReviewOverrides = {
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
+  fetchForCall?: CreateRunnerOptions["fetchForCall"];
+  plannerReplay?: PlannerReplay;
   github?: GitHubClient;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onInventory?: (inventory: { filesChanged: number; keptFiles: number }) => void;
@@ -187,6 +191,7 @@ export async function runReview(
     });
     overrides.onInventory?.({ filesChanged: diff.files.length, keptFiles: kept.length });
     if (isZeroWork(diff.files, kept)) {
+      if (overrides.plannerReplay !== undefined) throw new TransportAdmissionError("binding_mismatch");
       await validateExplicitCliLensesForZeroWork(config, repoRoot, run);
     }
     const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
@@ -226,12 +231,14 @@ export async function runReview(
       lenses: services.lenses,
       allFiles: diff.files
     });
-    const plannerResult = await runPlanner(dossier, config, run.telemetry, {
-      runner: services.runner,
-      promptBuilder: services.promptBuilder,
-      lenses: services.lenses,
-      skills: services.skills
-    });
+    const plannerResult = overrides.plannerReplay !== undefined
+      ? await replayPlanner(overrides.plannerReplay, dossier, resolved.rawDiff, run.telemetry)
+      : await runPlanner(dossier, config, run.telemetry, {
+          runner: services.runner,
+          promptBuilder: services.promptBuilder,
+          lenses: services.lenses,
+          skills: services.skills
+        });
     throwIfHardAborted(run);
     const packets = applyCoverageEscalations(
       await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
@@ -415,7 +422,8 @@ export async function runReview(
     });
     try {
       await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
-      if (usageError === undefined) {
+      const replayRefusal = overrides.plannerReplay !== undefined && error instanceof TransportAdmissionError && error.reason === "binding_mismatch" && failureStage <= 5;
+      if (usageError === undefined && !replayRefusal) {
         const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
           coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
           verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
@@ -911,7 +919,7 @@ function createRunner(
   config: CodegenieConfig,
   run: RunContext,
   cache: ModelCallCache | undefined,
-  { piAdapter, codegenieHome }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome">
+  { piAdapter, codegenieHome, fetchForCall }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome" | "fetchForCall">
 ): LlmRunner | Promise<LlmRunner> {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
@@ -927,6 +935,7 @@ function createRunner(
     toolResultCache,
     runSignal: run.abort.signal,
     ...(piAdapter !== undefined ? { adapter: piAdapter } : {}),
+    ...(fetchForCall !== undefined ? { fetchForCall } : {}),
     ...(codegenieHome !== undefined ? { codegenieHome } : {}),
     hooks: {
       checkpoint: (stage) => run.budget.checkpoint(stage),

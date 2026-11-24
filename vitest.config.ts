@@ -5,6 +5,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    globalSetup: ["tests/vitest-global-setup.ts"],
     globals: true,
     env: { CODEGENIE_HOME: mkdtempSync(path.join(tmpdir(), "codegenie-vitest-home-")) },
     include: ["tests/**/*.test.ts", "evals/synthetics/**/*.test.ts"],

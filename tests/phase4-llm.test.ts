@@ -17,6 +17,13 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { textRepository } from "./helpers/text-repository.js";
+import { TransportAdmissionError } from "../src/llm/transport-admission.js";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { CampaignLedger } from "../evals/runner/ledger.mjs";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { makePhysicalTransport } from "../evals/runner/physical-fetch.mjs";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { operationalError } from "../evals/runner/worker.mjs";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
@@ -548,6 +555,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
   it("routes stage models with explicit compose reasoning and per-model protocol records", async () => {
     const telemetry = fakeTelemetry();
+    const hookCalls: Array<{ provider: string; modelId: string; reasoningSelected: string; templateVersion: string }> = [];
     const seen: Array<{ model: string; reasoning: unknown }> = [];
     const adapter: PiAiAdapter = {
       resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux", reasoning: true } }),
@@ -559,12 +567,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     };
     const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
       stages: { review: { model: "two/special", reasoning: "low" }, compose: { model: "two/special", reasoning: "medium" } } },
-      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      fetchForCall: (call) => { hookCalls.push(call); return { fetch: globalThis.fetch }; }, hooks: { checkpoint: () => "ok", onUsage() {} } });
     await runner.runStructured(submitReviewRequest("stage-review"));
     await runner.runStructured({ ...submitReviewRequest("stage-plan"), stage: 5 });
     await runner.runStructured({ ...submitReviewRequest("stage-compose"), stage: 10, compositionReasoningStepDown: true });
     expect(seen).toEqual([{ model: "two/special", reasoning: "low" }, { model: "one/base", reasoning: "high" }, { model: "two/special", reasoning: "medium" }]);
     expect(telemetry.modelCalls.map(call => [call.provider, call.model])).toEqual([["two", "special"], ["one", "base"], ["two", "special"]]);
+    expect(hookCalls.map(({ provider, modelId, reasoningSelected, templateVersion }) => ({ provider, modelId, reasoningSelected, templateVersion }))).toEqual([
+      { provider: "two", modelId: "special", reasoningSelected: "low", templateVersion: "test-template" },
+      { provider: "one", modelId: "base", reasoningSelected: "high", templateVersion: "test-template" },
+      { provider: "two", modelId: "special", reasoningSelected: "medium", templateVersion: "test-template" }
+    ]);
     expect(telemetry.events.filter(event => event.message === "provider_protocol")).toHaveLength(2);
   });
 
@@ -683,6 +697,183 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(() => build("xhigh", { id: "fake-model" })).not.toThrow();
   });
 
+  it("binds fetch to a physical call and makes no SDK retry when maxRetries is zero", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const fallback = vi.fn(async () => { throw new Error("unexpected global fetch"); });
+    vi.stubGlobal("fetch", fallback);
+    const metadata: Array<{ callId: string; stage: number; kind: string; purpose?: string; packetId?: string }> = [];
+    let physicalStarts = 0;
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => {
+          metadata.push(call);
+          return { fetch: async () => { physicalStarts++; return new Response("synthetic error", { status: 500, headers: { "retry-after": "0" } }); } };
+        },
+        hooks: { checkpoint: () => "ok", onUsage() {} }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("fixture"), purpose: "location_clarification", telemetryContext: { packetId: "packet-1" } })).rejects.toThrow();
+      expect(metadata).toEqual([{ callId: "mc-000001", stage: 7, kind: "initial", purpose: "location_clarification", packetId: "packet-1", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoningSelected: "low", templateVersion: "test-template" }]);
+      expect(physicalStarts).toBe(1);
+      expect(fallback).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it.each([["campaign_budget", "budget_exhausted"], ["binding_mismatch", "config_error"]] as const)(
+    "keeps %s as a non-retryable local admission refusal", async (reason, code) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+      const telemetry = fakeTelemetry();
+      let denials = 0;
+      const globalFetch = vi.fn(async () => { throw new Error("unexpected network"); });
+      vi.stubGlobal("fetch", globalFetch);
+      try {
+        const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+          telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+          fetchForCall: () => ({ fetch: async () => { denials++; throw new TransportAdmissionError(reason); } }),
+          hooks: { checkpoint: () => "ok", onUsage() {} } });
+        await expect(runner.runStructured(submitReviewRequest("local-denial"))).rejects.toMatchObject({ code, recoverable: false, context: { reason } });
+        expect(denials).toBe(1);
+        expect(globalFetch).not.toHaveBeenCalled();
+        expect(telemetry.modelCalls).toHaveLength(1);
+        expect(telemetry.modelCalls[0]).toMatchObject({ errorCode: code, retryable: false, retryReason: reason });
+        expect(telemetry.events.filter((event) => event.message === "transport_admission_denied")).toHaveLength(1);
+      } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+    }
+  );
+
+  it("stops on terminal accounting failure without accepting the assistant response", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    let starts = 0;
+    const globalFetch = vi.fn(async () => { throw new Error("unexpected network"); });
+    vi.stubGlobal("fetch", globalFetch);
+    try {
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({
+          fetch: async () => {
+            starts++;
+            const chunks = [
+              { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }] },
+              { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0, is_byok: false } }
+            ];
+            return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+          },
+          onUsage: (event) => { if (event.source === "terminal") throw new TransportAdmissionError("accounting_failed", "mc-000001/physical-1"); }
+        }), hooks: { checkpoint: () => "ok", onUsage() {} } });
+      await expect(runner.runStructured(submitReviewRequest("accounting"))).rejects.toMatchObject({ code: "config_error", recoverable: false, context: { reason: "accounting_failed", physicalId: "mc-000001/physical-1" } });
+      expect(starts).toBe(1);
+      expect(globalFetch).not.toHaveBeenCalled();
+      expect(telemetry.modelCalls).toHaveLength(1);
+      expect(telemetry.modelCalls[0]).toMatchObject({ errorCode: "config_error", retryable: false, retryReason: "accounting_failed" });
+      expect(telemetry.events.filter((event) => event.message === "transport_accounting_failed")).toMatchObject([{ data: { callId: "mc-000001", physicalId: "mc-000001/physical-1" } }]);
+      expect(telemetry.events.filter((event) => event.message === "transport_admission_denied")).toHaveLength(0);
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it("settles an HTTP-200 stream failure as an unknown physical hold", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-stream-ledger-"));
+    const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+    try {
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
+          expected: { ...call, api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "low" },
+          fetchImpl: async () => new Response(new ReadableStream({ start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }] })}\n\n`));
+            setTimeout(() => controller.error(new Error("synthetic stream failure")), 1);
+          } }), { status: 200, headers: { "content-type": "text/event-stream" } }), AdmissionError: TransportAdmissionError }),
+        hooks: { checkpoint: () => "ok", onUsage() {} } });
+      await expect(runner.runStructured({ ...submitReviewRequest("stream-error"), purpose: "location_clarification" })).rejects.toThrow();
+      expect(ledger.db.prepare("SELECT state,charge,http_status FROM physical").all()).toEqual([{ state: "unknown", charge: 400_000, http_status: 200 }]);
+      ledger.assertRestartSafe();
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); }
+  });
+
+  it("does not attribute a completed 200 stream followed by a local telemetry error to the provider", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-local-after-done-"));
+    const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+    const globalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", globalFetch);
+    try {
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: "boundary", usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+      const telemetry = fakeTelemetry(); let throws = 0;
+      const original = telemetry.recorder.recordModelCall;
+      telemetry.recorder.recordModelCall = (record) => { if (throws++ === 0) throw new Error("synthetic local write failure"); original(record); };
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
+          expected: { ...call, api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "low" },
+          fetchImpl: async () => {
+            const chunk = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }] };
+            return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+          }, AdmissionError: TransportAdmissionError }), hooks: { checkpoint: () => "ok", onUsage() {} } });
+      let failure: unknown;
+      try { await runner.runStructured({ ...submitReviewRequest("local-after-done"), purpose: "location_clarification" }); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: "llm_call_failed", context: { callId: "mc-000001" } });
+      const typed = failure as { code: string; context: { reason?: string; callId?: string } };
+      expect(ledger.db.prepare('SELECT state,http_status,charge FROM physical').get()).toEqual({ state: 'unknown', http_status: 200, charge: 400_000 });
+      expect(operationalError(ledger, 'slot/attempt-01', { code: typed.code, reason: typed.context.reason, callId: typed.context.callId })).toBe('unclassified');
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it("keeps overlapping logical calls bound to their own fetch closures", async () => {
+    const delivered: Array<{ callId: string; packetId: string | undefined }> = [];
+    const metadata: Array<{ callId: string; packetId: string | undefined }> = [];
+    let releaseFirst: (() => void) | undefined;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "faux" } }),
+      complete: async (_model, _context, options) => {
+        await (options.fetch as typeof globalThis.fetch)("https://synthetic.invalid");
+        return assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+      },
+      validateToolCall
+    };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 }, telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      fetchForCall: (call) => {
+        const identity = { callId: call.callId, packetId: call.packetId };
+        metadata.push(identity);
+        return { fetch: async () => {
+          if (identity.packetId === "first") await first;
+          else releaseFirst?.();
+          delivered.push(identity);
+          return new Response("fixture");
+        } };
+      }, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await Promise.all([
+      runner.runStructured({ ...submitReviewRequest("first"), telemetryContext: { packetId: "first" } }),
+      runner.runStructured({ ...submitReviewRequest("second"), telemetryContext: { packetId: "second" } })
+    ]);
+    expect(metadata).toEqual([{ callId: "mc-000001", packetId: "first" }, { callId: "mc-000002", packetId: "second" }]);
+    expect(delivered).toEqual([metadata[1], metadata[0]]);
+  });
+
+  it("does not invoke fetchForCall for a response-cache hit", async () => {
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({ dir: path.join(repoRoot, ".codegenie", "cache"), repoRoot,
+      runFingerprint: "fetch-hook", logger: fakeLogger(), telemetry: telemetry.recorder });
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }])]);
+    const hook = vi.fn(() => ({ fetch: globalThis.fetch }));
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, fetchForCall: hook,
+      hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await runner.runStructured(submitReviewRequest("same"));
+    await runner.runStructured(submitReviewRequest("same"));
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
+  });
+
   it("runs a tool round, fences tool output, validates submit payload, and records telemetry", async () => {
     const telemetry = fakeTelemetry();
     const usage: LlmCallUsage[] = [];
@@ -737,6 +928,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       followUpHints: [],
       uncertainties: []
     });
+    expect(adapter.options[0]).not.toHaveProperty("fetch");
     expect(adapter.contexts[1]).toContain("untrusted-data label=tool-result-read_range");
     expect(telemetry.modelCalls.map((call) => call.stopReason)).toEqual(["tool_calls", "submit"]);
     expect(telemetry.modelCalls[1]?.schemaValid).toBe(true);
