@@ -1,11 +1,11 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { prepareAdmission } from '../evals/runner/admission.mjs';
+import { listEvidenceFiles, prepareAdmission } from '../evals/runner/admission.mjs';
 
 const expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', templateVersion: 'campaign-health.1', wireEffort: 'high' };
 function response() {
@@ -129,6 +129,10 @@ describe('campaign boundary preparation', () => {
       expect(await prepareAdmission(args)).toMatchObject({ action: 'admit' });
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 }); expect(globalFetch).not.toHaveBeenCalled();
       for (const file of readdirSync(args.receiptDirectory)) expect(readFileSync(path.join(args.receiptDirectory, file), 'utf8')).not.toContain('synthetic-key');
+      expect(Object.keys(listEvidenceFiles(args.receiptDirectory)).length).toBeGreaterThan(0);
+      symlinkSync(path.join(dir, 'missing'), path.join(args.receiptDirectory, 'f'.repeat(64)));
+      expect(() => listEvidenceFiles(args.receiptDirectory)).toThrow('invalid evidence');
+      rmSync(path.join(args.receiptDirectory, 'f'.repeat(64)));
       expect(await prepareAdmission({ ...args, boundaryId: 'two', attemptPrefix: 'health/two' })).toMatchObject({ status: 'clean' });
       expect({ gets, posts }).toEqual({ gets: 3, posts: 2 }); ledger.close();
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }

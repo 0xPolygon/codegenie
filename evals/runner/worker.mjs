@@ -6,6 +6,7 @@ import { CampaignLedger } from './ledger.mjs';
 import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from './boundary.mjs';
 import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase, workerBounds } from './case.mjs';
+import { listEvidenceFiles } from './admission.mjs';
 const bindingError = () => Object.assign(new Error('binding mismatch'), { context: { reason: 'binding_mismatch' } });
 function readWorkerToken() {
   const bytes = Buffer.alloc(65); let length = 0;
@@ -51,7 +52,7 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, plannerReplayBinding } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
@@ -87,7 +88,9 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
         try {
           if (!authenticated) reason = 'binding_mismatch';
           else {
-            const decision = boundaryDecision({ ledger, boundaryId, provider: call.provider, evidenceFiles });
+            if (evidenceDirectory !== undefined && evidenceFiles !== undefined) throw new BoundaryBindingError('ambiguous evidence binding');
+            const files = evidenceDirectory === undefined ? evidenceFiles : listEvidenceFiles(evidenceDirectory);
+            const decision = boundaryDecision({ ledger, boundaryId, provider: call.provider, evidenceFiles: files });
             if (decision.action !== 'admit') reason = decision.reason ?? `${decision.source}_${decision.action}`;
           }
         } catch (error) { reason = error instanceof BoundaryBindingError ? 'binding_mismatch' : 'accounting_failed'; }

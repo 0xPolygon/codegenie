@@ -1,15 +1,26 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { boundaryDecision } from './boundary.mjs';
 import { applyKeyObservation, readConfiguredKeyUsage } from './key-meter.mjs';
 import { runHealthProbe } from './health.mjs';
 
+export function listEvidenceFiles(directory) {
+  const original = path.resolve(directory), root = outsideCheckout(original);
+  if (root !== original || realpathSync(original) !== original || !lstatSync(original).isDirectory()) throw new Error('invalid evidence directory');
+  return Object.fromEntries(readdirSync(root).filter((name) => /^[a-f0-9]{64}$/u.test(name)).map((name) => {
+    const file = path.join(root, name), stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('invalid evidence file');
+    return [name, file];
+  }));
+}
+
 function receiptStore(directory) {
-  const root = outsideCheckout(directory);
+  const root = path.resolve(directory);
+  if (outsideCheckout(root) !== root) throw new Error('invalid evidence directory');
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const files = () => Object.fromEntries(readdirSync(root).filter((name) => /^[a-f0-9]{64}$/u.test(name)).map((name) => [name, path.join(root, name)]));
+  const files = () => listEvidenceFiles(root);
   const seal = (bytes, hash) => {
     if (!Buffer.isBuffer(bytes) || !/^[a-f0-9]{64}$/u.test(hash) || createHash('sha256').update(bytes).digest('hex') !== hash) return false;
     const file = path.join(root, hash);
