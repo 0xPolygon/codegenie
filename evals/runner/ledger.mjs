@@ -13,7 +13,7 @@ export class CampaignLedger {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT, schema_version INTEGER NOT NULL DEFAULT 1);
-      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, retry_for TEXT, retry_failure_sha256 TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
+      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, retry_for TEXT, retry_failure_sha256 TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER, stream_terminal TEXT);
       CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, key_fingerprint TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL, boundary_id TEXT NOT NULL, physical_starts INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS health_receipt(physical_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
@@ -23,7 +23,8 @@ export class CampaignLedger {
     try {
       const campaignColumns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
       const snapshotColumns = this.db.prepare('PRAGMA table_info(key_snapshot)').all().map((column) => column.name);
-      if (!campaignColumns.includes('schema_version') || !snapshotColumns.includes('physical_starts')) throw new Error('unsupported campaign ledger schema');
+      const physicalColumns = this.db.prepare('PRAGMA table_info(physical)').all().map((column) => column.name);
+      if (!campaignColumns.includes('schema_version') || !snapshotColumns.includes('physical_starts') || !physicalColumns.includes('stream_terminal')) throw new Error('unsupported campaign ledger schema');
       this.transaction(() => {
         const row = this.db.prepare('SELECT * FROM campaign').get();
         if (!row && !initialize) throw new Error('campaign ledger custody requires reconciliation');
@@ -132,6 +133,14 @@ export class CampaignLedger {
       return true;
     });
     if (!settled) throw new Error('confirmed cost contradicts a prior lower bound');
+  }
+  recordStreamTerminal(id, terminal) {
+    if (typeof id !== 'string' || !id || !['done', 'provider_error_event', 'body_reset', 'local_cancel', 'unknown'].includes(terminal)) throw new TypeError('invalid stream terminal');
+    this.transaction(() => {
+      const row = this.db.prepare('SELECT stream_terminal FROM physical WHERE id=?').get(id);
+      if (!row || (row.stream_terminal !== null && row.stream_terminal !== terminal)) throw new Error('stream terminal requires reconciliation');
+      if (row.stream_terminal === null) this.db.prepare('UPDATE physical SET stream_terminal=? WHERE id=?').run(terminal, id);
+    });
   }
   bindKeyBaseline({ usageMicros, usageNanos = usageMicros * 1000, evidenceSHA256, keyFingerprint }) {
     if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.floor(usageNanos / 1000) !== usageMicros || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '') || !/^[a-f0-9]{64}$/u.test(keyFingerprint ?? '')) throw new TypeError('invalid key baseline');
@@ -264,7 +273,8 @@ export class CampaignLedger {
     this.transaction(() => this.db.prepare('UPDATE campaign SET stopped=COALESCE(stopped, ?)').run(reason));
   }
   assertAccounting() {
-    for (const row of this.db.prepare('SELECT state,charge,lower_bound,provider_cost_nanos,started_at_ms,settled_at_ms,http_status,evidence_json FROM physical').all()) {
+    for (const row of this.db.prepare('SELECT state,charge,lower_bound,provider_cost_nanos,started_at_ms,settled_at_ms,http_status,evidence_json,stream_terminal FROM physical').all()) {
+      if (row.stream_terminal !== null && !['done', 'provider_error_event', 'body_reset', 'local_cancel', 'unknown'].includes(row.stream_terminal)) throw new Error('physical accounting requires reconciliation');
       if (!Number.isSafeInteger(row.charge) || row.charge < 0 || !Number.isSafeInteger(row.lower_bound) || row.lower_bound < 0 ||
           !Number.isSafeInteger(row.started_at_ms) || row.started_at_ms < 0 ||
           (row.http_status !== null && (!Number.isInteger(row.http_status) || row.http_status < 100 || row.http_status > 599))) throw new Error('physical accounting requires reconciliation');

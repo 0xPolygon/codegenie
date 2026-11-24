@@ -180,6 +180,7 @@ describe('campaign admission custody', () => {
         for (const [call, success] of [['failed', false], ['success', true]] as const) {
           const id = `${prefix}/${call}/physical-1`; ledger.reservePhysical({ id, logicalId: `${prefix}/${call}`, kind: 'initial', provider: 'openrouter' });
           ledger.settlePhysical(success ? { id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } } : { id, httpStatus: 200 });
+          if (!success) ledger.recordStreamTerminal(id, 'body_reset');
         }
         const hash = supervisor.receipts.seal(slot, 1, { caseName: 'case', caseId: 'case', recoveredResets: 1, status: 'pass', runDir });
         expect(supervisor.recordCaseResets(slot, 1, hash, ledger)).toEqual({ total: index + 1, stop: index === 2 });

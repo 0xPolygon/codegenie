@@ -45,7 +45,7 @@ function checkExisting(config, configSHA256) {
     }, (row) => row.schema_version === 1 && row.binding === config.binding && row.schedule_sha256 === config.scheduleSHA256 && row.config_sha256 === configSHA256 && row.receipt_directory === config.receiptDirectory);
     check(config.ledgerPath, {
       campaign: ['binding', 'limit_micros', 'reserve_micros', 'error_hold_micros', 'salt', 'meter_stale', 'stopped', 'schema_version'],
-      physical: ['id', 'logical_id', 'kind', 'provider', 'health_boundary', 'health_purpose', 'retry_for', 'retry_failure_sha256', 'started_at_ms', 'settled_at_ms', 'state', 'charge', 'http_status', 'evidence_json', 'lower_bound', 'provider_cost_nanos'],
+      physical: ['id', 'logical_id', 'kind', 'provider', 'health_boundary', 'health_purpose', 'retry_for', 'retry_failure_sha256', 'started_at_ms', 'settled_at_ms', 'state', 'charge', 'http_status', 'evidence_json', 'lower_bound', 'provider_cost_nanos', 'stream_terminal'],
       key_baseline: ['usage_micros', 'usage_nanos', 'evidence_sha256', 'key_fingerprint'],
       key_snapshot: ['usage_micros', 'usage_nanos', 'priced_floor_micros', 'priced_floor_nanos', 'observed_ms', 'evidence_sha256', 'fresh', 'boundary_id', 'physical_starts'],
       health_receipt: ['physical_id', 'outcome', 'observed_ms', 'evidence_sha256'], meter_poll: ['boundary_id', 'attempts', 'stale_count', 'next_ms', 'pending'],

@@ -67,6 +67,22 @@ describe('campaign terminal evidence', () => {
       f.events[1]!.data = { callId: 'other' }; f.save(); expect(() => f.check()).toThrow('model usage');
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
   });
+  it('requires matching failed-stream evidence for HTTP-200 infrastructure retry', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-provider-evidence-'));
+    const f = fixture(dir);
+    try {
+      writeFileSync(path.join(dir, 'telemetry/run.json'), JSON.stringify({ runId: 'run-1', outcome: { status: 'failed' } }));
+      Object.assign(f.models[0]!, { status: 'transient_error', errorCode: 'llm_call_failed' }); f.save();
+      const check = () => validateTerminal({ runDir: dir, attemptPrefix: f.prefix, ledger: f.ledger, expectedPacketIds: ['packet'], failureCallId: 'mc-1' });
+      expect(() => check()).toThrow('transient failure evidence missing');
+      for (const terminal of ['body_reset', 'provider_error_event']) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=?').run(terminal); expect(check()).toMatchObject({ status: 'failed' });
+      }
+      for (const terminal of ['done', 'local_cancel', 'unknown', null]) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=?').run(terminal); expect(() => check()).toThrow('transient failure evidence missing');
+      }
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('accepts a recovered held stream reset, but stops on failed retry or three resets', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-reset-'));
     const f = fixture(dir);
@@ -81,9 +97,15 @@ describe('campaign terminal evidence', () => {
           const id = `${f.prefix}/${call}/physical-1`;
           f.ledger.reservePhysical({ id, logicalId: `${f.prefix}/${call}`, kind: 'initial', provider: 'openrouter' });
           f.ledger.settlePhysical(success ? { id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } } : { id, httpStatus: 200 });
+          if (!success) f.ledger.recordStreamTerminal(id, 'body_reset');
         }
       };
       addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
+      for (const terminal of ['provider_error_event', 'unknown', 'local_cancel', 'done', null]) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=? WHERE logical_id=?').run(terminal, `${f.prefix}/reset-1`);
+        expect(() => f.check()).toThrow('model usage missing');
+      }
+      f.ledger.db.prepare("UPDATE physical SET stream_terminal='body_reset' WHERE logical_id=?").run(`${f.prefix}/reset-1`);
       expect(() => f.check(2)).toThrow('too many recovered');
       f.models.splice(1, 0, { runId: 'run-1', stage: 7, kind: 'repair', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request-1', attempt: 1, callId: 'intervening', cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
       const intervening = `${f.prefix}/intervening/physical-1`;
