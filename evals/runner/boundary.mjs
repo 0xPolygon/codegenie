@@ -13,11 +13,8 @@ export function boundaryRefusalReason(reason) {
   return 'campaign_stopped';
 }
 
-// Both the supervisor and the attempt worker must verify the same evidence.
-// Receipt contents stay outside the repository; SQLite holds only their hashes.
-export function boundaryDecision({ ledger, boundaryId, provider, evidenceFiles, nowMs = Date.now() }) {
-  if (typeof boundaryId !== 'string' || !boundaryId || typeof provider !== 'string' || !provider) throw new BoundaryBindingError('invalid admission boundary');
-  const verifyEvidence = (identity, hash, values) => {
+function evidenceVerifier(evidenceFiles, boundaryId, provider) {
+  return (identity, hash, values) => {
     const file = evidenceFiles?.[hash];
     if (typeof file !== 'string') throw new BoundaryBindingError('evidence path missing');
     let safePath;
@@ -32,6 +29,35 @@ export function boundaryDecision({ ledger, boundaryId, provider, evidenceFiles, 
     if (!valid || Object.entries(values).some(([key, value]) => receipt[key] !== value)) throw new BoundaryBindingError('evidence identity mismatch');
     return true;
   };
+}
+
+// Verify all previously used evidence before another admission or release.
+export function verifyAllEvidence(ledger, evidenceFiles) {
+  const baseline = ledger.db.prepare('SELECT * FROM key_baseline').get();
+  if (!baseline) {
+    if (ledger.db.prepare('SELECT 1 FROM key_snapshot UNION ALL SELECT 1 FROM physical LIMIT 1').get()) throw new BoundaryBindingError('baseline missing');
+    return true;
+  }
+  evidenceVerifier(evidenceFiles)('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos, fingerprint: baseline.key_fingerprint });
+  for (const row of ledger.db.prepare('SELECT * FROM key_snapshot').all()) {
+    evidenceVerifier(evidenceFiles)('snapshot', row.evidence_sha256, { kind: 'key_snapshot', usageNanos: row.usage_nanos, fingerprint: baseline.key_fingerprint,
+      observedMs: row.observed_ms, boundaryId: row.boundary_id, physicalStarts: row.physical_starts });
+  }
+  const rows = ledger.db.prepare("SELECT p.id,p.provider,p.health_boundary,p.health_purpose,p.retry_for,p.retry_failure_sha256,p.state,h.outcome,h.observed_ms,h.evidence_sha256 FROM physical p LEFT JOIN health_receipt h ON h.physical_id=p.id WHERE p.kind='health'").all();
+  for (const row of rows) {
+    if (!row.evidence_sha256 || !row.outcome || row.state === 'open') throw new BoundaryBindingError('health evidence incomplete');
+    evidenceVerifier(evidenceFiles, row.health_boundary, row.provider)(row.id, row.evidence_sha256, { kind: 'health', physicalId: row.id,
+      boundaryId: row.health_boundary, provider: row.provider, purpose: row.health_purpose, outcome: row.outcome, observedMs: row.observed_ms,
+      ...(row.health_purpose === 'retry' ? { retryFor: row.retry_for, failureReceiptSHA256: row.retry_failure_sha256 } : {}) });
+  }
+  return true;
+}
+
+// Both the supervisor and the attempt worker must verify the same evidence.
+// Receipt contents stay outside the repository; SQLite holds only their hashes.
+export function boundaryDecision({ ledger, boundaryId, provider, evidenceFiles, nowMs = Date.now() }) {
+  if (typeof boundaryId !== 'string' || !boundaryId || typeof provider !== 'string' || !provider) throw new BoundaryBindingError('invalid admission boundary');
+  const verifyEvidence = evidenceVerifier(evidenceFiles, boundaryId, provider);
   const key = ledger.keyDecision({ verifyEvidence, boundaryId });
   if (key.action !== 'admit') return { source: 'key', ...key };
   const health = ledger.healthDecision({ boundaryId, provider, nowMs, verifyEvidence });

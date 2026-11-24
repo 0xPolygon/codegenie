@@ -9,6 +9,7 @@ import { listEvidenceFiles, prepareAdmission } from './admission.mjs';
 import { spawnAttempt } from './spawn-worker.mjs';
 import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
+import { verifyAllEvidence } from './boundary.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -65,7 +66,7 @@ function publishConfig(directory, name, bytes) {
 
 // This entry is internal to the development-only runner. The caller must pin
 // the complete campaign file hash; no model request is made during open.
-export async function openCampaign(configFile, expectedSHA256, { fetchImpl = globalThis.fetch, models } = {}) {
+export async function openCampaign(configFile, expectedSHA256, { fetchImpl = globalThis.fetch, models, resumeOnly = false } = {}) {
   const bytes = readBytes(configFile);
   if (!hash(expectedSHA256) || sha(bytes) !== expectedSHA256) throw new Error('campaign config digest mismatch');
   const config = JSON.parse(bytes.toString('utf8'));
@@ -102,6 +103,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     return path.join(roots.get(slot), `attempt-${String(attempt).padStart(2, '0')}`);
   };
   const existing = existsSync(config.supervisorPath), ledgerExists = existsSync(config.ledgerPath);
+  if (resumeOnly && !existing) throw new Error('campaign does not exist');
   if (existing !== ledgerExists) throw new Error('campaign ledger custody requires reconciliation');
   if (!existing && [config.receiptDirectory, config.evidenceDirectory, config.workDirectory, `${config.supervisorPath}-wal`, `${config.supervisorPath}-shm`, `${config.ledgerPath}-wal`, `${config.ledgerPath}-shm`, ...roots.values()].some((file) => existsSync(file))) throw new Error('campaign namespace requires reconciliation');
   if (existing && (!existsSync(config.receiptDirectory) || !existsSync(config.evidenceDirectory) || !existsSync(config.workDirectory))) throw new Error('campaign directory custody requires reconciliation');
@@ -136,11 +138,16 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     const found = supervisor.receipts.find(slot, attempt);
     return found?.hash === receiptHash && found.receipt.status === 'error' && found.receipt.error === 'provider_failure' && typeof found.receipt.failureCallId === 'string';
   };
+  const outcomeSummary = () => supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger).map((row) => ({ receiptSHA256: row.receipt_sha256, outcome: row.state,
+    status: supervisor.receipts.find(row.slot_id, row.attempt_no).receipt.status,
+    ...(row.state === 'excluded' ? { firstReceiptSHA256: supervisor.db.prepare('SELECT first_sha256 FROM exclusion WHERE slot_id=?').get(row.slot_id).first_sha256 } : {}) }));
   const finish = (slot, attempt, result, receiptHash) => {
     const recorded = supervisor.recordCaseResets(slot.id, attempt, receiptHash, ledger);
     if (recorded.stop) { ledger.stop('case_reset_limit'); return { action: 'stop', reason: 'case_reset_limit', receiptSHA256: receiptHash, recoveredResets: recorded.total }; }
     if (result.status === 'error') {
       supervisor.sealFailure(slot.id, attempt, receiptHash, { ledger, verifyReceipt, verifyFailure, verifyRetry });
+      const excluded = supervisor.db.prepare('SELECT first_sha256,second_sha256 FROM exclusion WHERE slot_id=?').get(slot.id);
+      if (excluded) return { action: 'excluded', slot: slot.id, firstReceiptSHA256: excluded.first_sha256, receiptSHA256: excluded.second_sha256 };
       return { action: 'infrastructure_failure', slot: slot.id, receiptSHA256: receiptHash };
     }
     supervisor.seal(slot.id, attempt, receiptHash, verifyReceipt, verifyRetry, ledger);
@@ -164,13 +171,22 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       if (ledger.db.prepare('SELECT 1 FROM physical WHERE substr(id,1,?)=? LIMIT 1').get(prefix.length, prefix)) return { action: 'reconcile', reason: 'interrupted_physical_call', slot: next.slot_id };
       return { action: 'recovered', ...supervisor.reconcile(next.slot_id, next.attempt_no, { ledger, verifyWorkerExited: () => supervisor.workerExited(next.slot_id, next.attempt_no), findTerminalReceipt: () => supervisor.receipts.find(next.slot_id, next.attempt_no) }) };
     }
+    ledger.assertRestartSafe();
+    verifyAllEvidence(ledger, files());
     if (next.action === 'completed') {
       for (const slot of supervisor.slots) assertCase(slot);
       const final = await prepareAdmission({ ledger, boundaryId: `final-${sha(config.binding)}`, receiptDirectory: config.evidenceDirectory,
         attemptPrefix: 'health/final', purpose: 'admission', keyOnly: true, llmConfig: config.health.llmConfig,
         expected: config.health.expected, fetchImpl, ...(models ? { models } : {}) });
       if (ledger.totals().stopped) return { action: 'stop', reason: ledger.totals().stopped };
-      return final.action === 'admit' ? { action: 'completed', physicalStarts: ledger.physicalPrefix() } : final;
+      return final.action === 'admit' ? { action: 'completed', physicalStarts: ledger.physicalPrefix(), receipts: outcomeSummary(), ledger: ledger.totals() } : final;
+    }
+    if (next.action === 'paused') {
+      const outcomes = supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
+      const receipts = outcomeSummary();
+      const held = ledger.db.prepare("SELECT COALESCE(SUM(charge),0) AS total FROM physical WHERE state='unknown'").get().total;
+      const resets = supervisor.db.prepare('SELECT COALESCE(SUM(resets),0) AS total FROM case_reset_event').get().total;
+      return { action: 'paused', prefixSHA256: supervisor.checkpointHash(outcomes), receipts, ledger: { ...ledger.totals(), unknownHeldMicros: held }, recoveredResets: resets };
     }
     if (next.action !== 'next') return next;
     const slot = next.slot;
@@ -229,6 +245,16 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       return { action: 'stop', reason: localStop };
     }
   };
-  return { step, supervisor, ledger, releaseCheckpoint() { return supervisor.releaseCheckpoint(verifyReceipt, verifyRetry, ledger); },
+  const progressFingerprint = () => sha(JSON.stringify({ totals: ledger.totals(),
+    attempts: supervisor.db.prepare('SELECT slot_id,attempt_no,state FROM attempt ORDER BY slot_id,attempt_no').all(),
+    outcomes: supervisor.db.prepare('SELECT slot_id,state,receipt_sha256 FROM outcome ORDER BY slot_id').all(),
+    polls: ledger.db.prepare('SELECT boundary_id,attempts,pending FROM meter_poll ORDER BY boundary_id').all(),
+    snapshots: ledger.db.prepare('SELECT COUNT(*) AS count FROM key_snapshot').get().count }));
+  return { step, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, releaseCheckpoint() {
+    supervisor.assertDriver();
+    if (ledger.totals().stopped) throw new Error('campaign stopped');
+    ledger.assertRestartSafe(); verifyAllEvidence(ledger, files());
+    return supervisor.releaseCheckpoint(verifyReceipt, verifyRetry, ledger);
+  },
     close() { supervisor.releaseDriver(token); ledger.close(); supervisor.close(); } };
 }

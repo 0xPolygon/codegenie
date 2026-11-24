@@ -84,6 +84,12 @@ describe('campaign terminal evidence', () => {
       };
       addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
       expect(() => f.check(2)).toThrow('too many recovered');
+      f.models.splice(1, 0, { runId: 'run-1', stage: 7, kind: 'repair', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request-1', attempt: 1, callId: 'intervening', cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+      const intervening = `${f.prefix}/intervening/physical-1`;
+      f.ledger.reservePhysical({ id: intervening, logicalId: `${f.prefix}/intervening`, kind: 'repair', provider: 'openrouter' });
+      f.ledger.settlePhysical({ id: intervening, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } });
+      f.save(); expect(() => f.check()).toThrow('model usage missing');
+      f.models.splice(1, 1); f.ledger.db.prepare('DELETE FROM physical WHERE id=?').run(intervening); f.save();
       const successRow = f.ledger.db.prepare('SELECT * FROM physical WHERE logical_id=?').get(`${f.prefix}/success-1`);
       f.ledger.db.prepare("UPDATE physical SET http_status=503,state='unknown',charge=400000,evidence_json=NULL WHERE logical_id=?").run(`${f.prefix}/success-1`);
       expect(() => f.check()).toThrow('model usage missing');

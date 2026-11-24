@@ -65,14 +65,14 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
         ['packetId', 'structuredRequestId'].every((key) => row[key] === undefined || event.data?.[key] === row[key]) &&
         ['trigger', 'limitChars', 'observedChars', 'toolArgumentChars', 'contentIndex'].every((key) => event.data?.[key] === limit[key]));
     const noUsage = [row.inputTokens, row.outputTokens, row.totalTokens].every((value) => value === undefined || value === null);
-    const sameRequest = (next) => next.stage === row.stage && next.kind === row.kind && next.workerId === row.workerId && next.packetId === row.packetId && next.structuredRequestId === row.structuredRequestId;
+    const sameRequest = (next) => next.stage === row.stage && next.workerId === row.workerId && next.packetId === row.packetId && next.structuredRequestId === row.structuredRequestId;
     const next = models.slice(index + 1).find(sameRequest);
     const nextStart = next && physical.filter((item) => item.logical_id === `${attemptPrefix}/${next.callId}`).at(-1);
     const nextUsage = nextStart?.evidence_json ? JSON.parse(nextStart.evidence_json) : null;
     const reset = row.status === 'transient_error' && noUsage && typeof row.structuredRequestId === 'string' && row.structuredRequestId &&
       typeof row.packetId === 'string' && accepted.has(row.packetId) && Number.isSafeInteger(row.attempt) && row.attempt > 0 &&
       starts.length === 1 && starts[0].http_status === 200 && starts[0].state === 'unknown' && starts[0].charge >= ledger.reserve &&
-      next?.attempt === row.attempt + 1 && next.status === 'ok' && [next.inputTokens, next.outputTokens, next.totalTokens].every(count) &&
+      next?.kind === row.kind && next.attempt === row.attempt + 1 && next.status === 'ok' && [next.inputTokens, next.outputTokens, next.totalTokens].every(count) &&
       nextStart && nextStart.http_status >= 200 && nextStart.http_status < 300 && nextUsage?.usagePresent === true &&
       ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => count(nextUsage[key]) && nextUsage[key] === next[key]);
     if (reset) recoveredResets++;

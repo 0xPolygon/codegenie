@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, copyFileSync, cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { createGitClient } from '../src/git/git-client.js';
@@ -163,6 +164,11 @@ describe('campaign driver', () => {
       const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
       const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: base.supervisorPath, ledgerPath: base.ledgerPath, evidenceDirectory: base.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: base.limitMicros, reserveMicros: base.reserveMicros, errorHoldMicros: base.errorHoldMicros, build, health: { expected: { ...expected, templateVersion: 'campaign-health.1' }, llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 } } }));
       const file = path.join(dir, 'campaign.json'); writeFileSync(file, config);
+      if (scenario === 'checkpoint') {
+        const release = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'release', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+        expect(release.status).toBe(1);
+        for (const item of [base.supervisorPath, base.ledgerPath, base.evidenceDirectory, path.join(dir, 'receipts'), path.join(dir, 'work')]) expect(existsSync(item)).toBe(false);
+      }
       let gets = 0, healthPosts = 0;
       const fetchImpl = vi.fn(async (input: string) => {
         if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : (gets - 1) / 10}}}`); }
@@ -197,7 +203,17 @@ describe('campaign driver', () => {
           expect(scenario).toBe('checkpoint'); expect(selectedCount).toBe(8);
           expect(campaign.ledger.totals().starts).toBeGreaterThanOrEqual(25);
           expect(campaign.ledger.db.prepare("SELECT COUNT(*) AS n FROM physical WHERE kind='health' AND health_boundary='case3'").get()).toEqual({ n: 0 });
-          campaign.releaseCheckpoint(); paused = true;
+          expect(outcome.receipts).toHaveLength(8); expect(outcome.ledger.starts).toBe(campaign.ledger.totals().starts);
+          const evidenceHash = campaign.ledger.db.prepare('SELECT evidence_sha256 FROM key_baseline').get().evidence_sha256;
+          const evidenceFile = path.join(base.evidenceDirectory, evidenceHash), originalEvidence = readFileSync(evidenceFile);
+          campaign.close();
+          appendFileSync(evidenceFile, 'drift');
+          const denied = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'release', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+          expect(denied.status).toBe(1); writeFileSync(evidenceFile, originalEvidence);
+          const release = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'release', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+          expect(release.status).toBe(0);
+          expect(JSON.parse(release.stdout)).toEqual({ action: 'released', prefixSHA256: outcome.prefixSHA256 });
+          campaign = await openCampaign(file, sha(config), { fetchImpl, models }); paused = true;
         } else if (outcome.action === 'completed') break;
         else expect(outcome).toMatchObject({ action: 'health', status: 'clean' });
       }
