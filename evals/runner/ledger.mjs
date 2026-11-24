@@ -143,10 +143,10 @@ export class CampaignLedger {
     const stopped = this.db.prepare('SELECT stopped FROM campaign').get().stopped;
     if (stopped) return { action: 'stop', reason: stopped };
     const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256 FROM key_baseline').get();
-    if (!baseline || !verifyEvidence('baseline', baseline.evidence_sha256)) throw new Error('key baseline evidence missing or changed');
-    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
+    if (!baseline || verifyEvidence('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos }) !== true) throw new Error('key baseline evidence missing or changed');
+    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,observed_ms,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
     if (!snapshot) return { action: 'snapshot' };
-    if (!verifyEvidence('snapshot', snapshot.evidence_sha256)) throw new Error('key snapshot evidence changed');
+    if (verifyEvidence('snapshot', snapshot.evidence_sha256, { kind: 'key_snapshot', usageNanos: snapshot.usage_nanos, observedMs: snapshot.observed_ms }) !== true) throw new Error('key snapshot evidence changed');
     const priced = this.db.prepare("SELECT COALESCE(SUM(provider_cost_nanos),0) AS total FROM physical WHERE state='priced'").get().total;
     return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced && priced <= snapshot.priced_floor_nanos ? 'admit' : 'wait' };
   }
@@ -174,7 +174,7 @@ export class CampaignLedger {
     if (rows.some((row) => row.state === 'open' || row.outcome === null)) return { action: 'reconcile' };
     let recovery = false, clean = 0, last = 0;
     for (const row of rows) {
-      if (!verifyEvidence(row.id, row.evidence_sha256)) throw new Error('health evidence mismatch');
+      if (verifyEvidence(row.id, row.evidence_sha256, { kind: 'health', outcome: row.outcome, observedMs: row.observed_ms }) !== true) throw new Error('health evidence mismatch');
       if (row.observed_ms > nowMs) throw new Error('health receipt is in the future');
       if (row.outcome === 'capacity') { recovery = true; clean = 0; } else clean++;
       last = row.observed_ms;

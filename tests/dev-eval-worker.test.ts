@@ -12,6 +12,10 @@ import { runWorker } from "../evals/runner/worker.mjs";
 import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from "../evals/runner/boundary.mjs";
 
 const checkout = process.cwd();
+function evidence(dir: string, receipt: object) {
+  const text = JSON.stringify(receipt), hash = createHash("sha256").update(text).digest("hex"), file = path.join(dir, hash);
+  writeFileSync(file, text); return { hash, file };
+}
 beforeAll(() => { execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" }); }, 60_000);
 
 describe("development eval worker", () => {
@@ -24,22 +28,30 @@ describe("development eval worker", () => {
   it("does not admit a boundary with missing or changed meter and health evidence", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-boundary-"));
     try {
-      const evidence = path.join(dir, "receipt"), digest = createHash("sha256").update("sealed").digest("hex");
-      writeFileSync(evidence, "sealed");
+      const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
+      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
+      const health = evidence(dir, { kind: "health", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: digest });
-      const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [digest]: evidence }, nowMs: 2 };
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baseline.hash });
+      const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file }, nowMs: 2 };
       expect(boundaryDecision(args)).toMatchObject({ source: "key", action: "snapshot" });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: digest });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshot.hash });
       expect(boundaryDecision(args)).toMatchObject({ source: "health", action: "probe" });
       ledger.reservePhysical({ id: "health", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "one" });
       ledger.settlePhysical({ id: "health", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
-      ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: digest });
+      ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash });
       expect(boundaryDecision(args)).toMatchObject({ action: "admit" });
       expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "probe" });
-      expect(() => boundaryDecision({ ...args, evidenceFiles: { [digest]: path.join(checkout, "package.json") } })).toThrow(BoundaryBindingError);
-      expect(() => boundaryDecision({ ...args, evidenceFiles: { [digest]: path.join(dir, "missing") } })).toThrowError(expect.objectContaining({ code: "ENOENT" }));
-      writeFileSync(evidence, "changed");
+      const wrongHealth = evidence(dir, { kind: "health", physicalId: "other", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
+      ledger.db.prepare('UPDATE health_receipt SET evidence_sha256=?').run(wrongHealth.hash);
+      expect(() => boundaryDecision({ ...args, evidenceFiles: { ...args.evidenceFiles, [wrongHealth.hash]: wrongHealth.file } })).toThrow(BoundaryBindingError);
+      ledger.db.prepare('UPDATE health_receipt SET evidence_sha256=?').run(health.hash);
+      ledger.db.prepare('UPDATE key_baseline SET evidence_sha256=?').run(snapshot.hash);
+      expect(() => boundaryDecision(args)).toThrow(BoundaryBindingError);
+      ledger.db.prepare('UPDATE key_baseline SET evidence_sha256=?').run(baseline.hash);
+      expect(() => boundaryDecision({ ...args, evidenceFiles: { [baseline.hash]: path.join(checkout, "package.json") } })).toThrow(BoundaryBindingError);
+      expect(() => boundaryDecision({ ...args, evidenceFiles: { [baseline.hash]: path.join(dir, "missing") } })).toThrowError(expect.objectContaining({ code: "ENOENT" }));
+      writeFileSync(baseline.file, "changed");
       expect(() => boundaryDecision(args)).toThrow(BoundaryBindingError); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -78,33 +90,36 @@ describe("development eval worker", () => {
 
   it("runs a real adapter against an injected transport only after bound health and key evidence", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-guard-"));
-    const evidenceText = "synthetic sealed evidence", digest = createHash("sha256").update(evidenceText).digest("hex");
-    const evidenceFile = path.join(dir, "evidence.txt"), db = path.join(dir, "ledger.sqlite"), suite = path.join(dir, "suite");
+    const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
+    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
+    const health = evidence(dir, { kind: "health", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
+    const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
+    const db = path.join(dir, "ledger.sqlite"), suite = path.join(dir, "suite");
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));
     const originalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", originalFetch);
     try {
       mkdirSync(path.join(suite, "repos"), { recursive: true });
       cpSync(path.join(checkout, "evals/fixtures/repos/core"), path.join(suite, "repos/core"), { recursive: true });
       const source = readFileSync(path.join(checkout, "evals/fixtures/core.yml"), "utf8").replace("provider: fake", "provider: openrouter").replace("model: fake-model", "model: openai/gpt-6-luna");
-      writeFileSync(path.join(suite, "core.yml"), source); writeFileSync(evidenceFile, evidenceText);
+      writeFileSync(path.join(suite, "core.yml"), source);
       const caseFile = path.join(dir, "case.json"); writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
       const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: digest }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: digest });
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baseline.hash }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshot.hash });
       ledger.reservePhysical({ id: "health-1", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "boundary-1" });
       ledger.settlePhysical({ id: "health-1", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
-      ledger.recordHealth({ physicalId: "health-1", outcome: "clean", observedMs: 1, evidenceSHA256: digest }); ledger.close();
+      ledger.recordHealth({ physicalId: "health-1", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash }); ledger.close();
       const expected = { stage: 5, kind: "initial", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoningSelected: "high", templateVersion: "p5.9", api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "high" };
       const fetchImpl = vi.fn(async () => new Response("synthetic failure", { status: 400 }));
       const rejectedCase = path.join(dir, "rejected-case.json");
       writeFileSync(rejectedCase, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "rejected-output") }));
       const rejected = await runWorker({ caseConfig: rejectedCase, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
-        attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles: { [digest]: evidenceFile } }, { fetchImpl });
+        attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles }, { fetchImpl });
       expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
       const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
       expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "health_probe" }); afterRejection.close();
       const result = await runWorker({ caseConfig: caseFile, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
-        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles: { [digest]: evidenceFile } }, { fetchImpl });
+        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl });
       expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
       const reopened = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(reopened.totals()).toMatchObject({ starts: 2, unknown: 1, chargedMicros: 300_000 }); reopened.close();

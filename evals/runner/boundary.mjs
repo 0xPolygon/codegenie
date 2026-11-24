@@ -17,13 +17,19 @@ export function boundaryRefusalReason(reason) {
 // Receipt contents stay outside the repository; SQLite holds only their hashes.
 export function boundaryDecision({ ledger, boundaryId, provider, evidenceFiles, nowMs = Date.now() }) {
   if (typeof boundaryId !== 'string' || !boundaryId || typeof provider !== 'string' || !provider) throw new BoundaryBindingError('invalid admission boundary');
-  const verifyEvidence = (_identity, hash) => {
+  const verifyEvidence = (identity, hash, values) => {
     const file = evidenceFiles?.[hash];
     if (typeof file !== 'string') throw new BoundaryBindingError('evidence path missing');
     let safePath;
     try { safePath = outsideCheckout(file); }
     catch { throw new BoundaryBindingError('evidence path outside permitted root'); }
-    if (createHash('sha256').update(readFileSync(safePath)).digest('hex') !== hash) throw new BoundaryBindingError('evidence digest mismatch');
+    const bytes = readFileSync(safePath);
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) throw new BoundaryBindingError('evidence digest mismatch');
+    let receipt;
+    try { receipt = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new BoundaryBindingError('invalid evidence receipt'); }
+    const valid = values.kind !== 'health' || (receipt?.physicalId === identity && receipt.boundaryId === boundaryId && receipt.provider === provider);
+    if (!valid || Object.entries(values).some(([key, value]) => receipt[key] !== value)) throw new BoundaryBindingError('evidence identity mismatch');
     return true;
   };
   const key = ledger.keyDecision({ verifyEvidence });
