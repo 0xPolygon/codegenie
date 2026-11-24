@@ -30,17 +30,23 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
-  it.each(['judge', 'timeout', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
+  it.each(['judge', 'timeout', 'artifacts', 'suite-overlap', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     const preload = path.join(dir, 'block.mjs'); writeFileSync(preload, 'globalThis.fetch = async () => { throw new Error("network blocked"); };\n');
     vi.stubEnv('NODE_OPTIONS', `--import=${preload}`); vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
     try {
-      const suiteDir = ['judge', 'timeout'].includes(scenario) ? path.join(dir, 'suite') : path.join(process.cwd(), 'evals/fixtures');
-      if (['judge', 'timeout'].includes(scenario)) {
+      const suiteDir = scenario === 'suite-overlap' ? path.join(dir, 'model-repo', 'evaluation') : ['judge', 'timeout', 'artifacts'].includes(scenario) ? path.join(dir, 'suite') : path.join(process.cwd(), 'evals/fixtures');
+      if (['judge', 'timeout', 'artifacts', 'suite-overlap'].includes(scenario)) {
         cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
         if (scenario === 'timeout') appendFileSync(path.join(suiteDir, 'core.yml'), '\n');
         if (scenario === 'timeout') { const yaml = path.join(suiteDir, 'core.yml'); writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('review:\n', 'review:\n  maxTimeMinutes: 35787\n')); }
+        if (scenario === 'suite-overlap') {
+          const modelRoot = path.join(dir, 'model-repo');
+          expect(spawnSync('git', ['-C', modelRoot, 'init', '-q']).status).toBe(0);
+          const yaml = path.join(suiteDir, 'core.yml'); writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('fixture: repos/core', `fixture: ${modelRoot}`));
+        }
+        if (scenario === 'artifacts') writeFileSync(path.join(suiteDir, 'core.yml'), 'name: fixture-core-lens\nartifacts:\n  path: /tmp/synthetic-artifacts\n');
         if (scenario === 'judge') appendFileSync(path.join(suiteDir, 'core.yml'), '\nrecommendationJudge:\n  provider: openrouter\n  model: openai/gpt-6-luna\n  reasoning: high\n  checks:\n    - id: safety\n      rubric: Test rubric.\n');
       }
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
@@ -68,6 +74,16 @@ describe('campaign driver', () => {
         await expect(runCase(caseFile, { budgeted: true })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'unsupported_case_config' } });
         const cli = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'run', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
         expect(cli.status).toBe(1); expect(cli.stderr).toContain('recommendationJudge is not supported');
+        expect({ gets, posts }).toEqual({ gets: 0, posts: 0 });
+        expect(existsSync(base.supervisorPath)).toBe(false); expect(existsSync(base.ledgerPath)).toBe(false); return;
+      }
+      if (scenario === 'suite-overlap') {
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toThrow('private input overlaps source checkout');
+        expect({ gets, posts }).toEqual({ gets: 0, posts: 0 });
+        expect(existsSync(base.supervisorPath)).toBe(false); expect(existsSync(base.ledgerPath)).toBe(false); return;
+      }
+      if (scenario === 'artifacts') {
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'unsupported_case_config' } });
         expect({ gets, posts }).toEqual({ gets: 0, posts: 0 });
         expect(existsSync(base.supervisorPath)).toBe(false); expect(existsSync(base.ledgerPath)).toBe(false); return;
       }

@@ -106,12 +106,13 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
   const outputDir = outsideCheckout(path.join(outputRoot, attemptPrefix));
   const repo = found[0].evalCase.repo;
+  if (!repo || (repo.external === undefined && repo.fixture === undefined)) throw new CampaignConfigurationError('unsupported_case_config', 'campaign requires a repository-backed case');
   // Without an explicit targetDir each attempt gets a different target.
   // Protect the slot output root so retries cannot move the review tree under
   // a private input after this preflight.
   const reviewInputRoots = repo?.external !== undefined
     ? [canonicalPotential(config.targetDir ? path.resolve(path.dirname(file), config.targetDir) : path.dirname(outputDir))]
-    : repo?.fixture !== undefined ? fixtureReviewRoots(suiteDir, repo.fixture) : [];
+    : fixtureReviewRoots(suiteDir, repo.fixture);
   return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots };
 
 }

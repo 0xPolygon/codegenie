@@ -11,7 +11,7 @@ import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { verifyAllEvidence } from './boundary.mjs';
 import { exportFirstLock, exportMechanism, revealPairing } from './blind-export.mjs';
-import { assertBlindPrivateInputs, validateBlindInputs } from './blind-inputs.mjs';
+import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
 import { ASSIGNED_EFFECTS_PLAN_SHA256, ASSIGNED_EFFECTS_SEED, generate405Order, validate405Schedule } from './qualification-405.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -142,6 +142,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     roots.set(slot.id, path.dirname(bounds.outputDir));
     reviewInputRoots.push(...bounds.reviewInputRoots);
   }
+  for (const slot of schedule.slots) assertOutsideSources(slot.workerConfig.integrity.suiteDir, reviewInputRoots);
   if (blindInputs) assertBlindPrivateInputs(config.blind, schedule.slots, blindInputs.locators, reviewInputRoots);
   const protectedPaths = [config.supervisorPath, config.ledgerPath, config.receiptDirectory, config.evidenceDirectory, config.workDirectory];
   if (config.blind && protectedPaths.some((item) => config.blind.mappingFile === item || config.blind.mappingFile.startsWith(`${item}${path.sep}`) || item.startsWith(`${config.blind.mappingFile}${path.sep}`))) throw new Error('blind mapping overlaps campaign custody');
