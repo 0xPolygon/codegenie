@@ -52,6 +52,7 @@ export type EvalSuite = {
 export type EvalRunOptions = {
   /** Internal observer for an unmodified failure before eval scoring sanitizes it. */
   onFailure?: (error: unknown) => void;
+  plannerReplay?: import("../pipeline/planner-replay.js").PlannerReplay;
   judgeReplay?: boolean;
   fetchForCall?: import("../llm/llm-runner.js").CreateRunnerOptions["fetchForCall"];
   cacheOverride?: boolean;
@@ -492,6 +493,7 @@ async function runLiveCase(
       repoRoot: actualRepoRoot,
       ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
       ...(options.fetchForCall !== undefined ? { fetchForCall: options.fetchForCall } : {}),
+      ...(options.plannerReplay !== undefined ? { plannerReplay: options.plannerReplay } : {}),
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
@@ -585,6 +587,7 @@ async function runRepeatedLiveCase(
           repoRoot: actualRepoRoot,
           ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
           ...(options.fetchForCall !== undefined ? { fetchForCall: options.fetchForCall } : {}),
+          ...(options.plannerReplay !== undefined ? { plannerReplay: options.plannerReplay } : {}),
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,

@@ -51,7 +51,7 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, plannerReplayBinding } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
@@ -62,6 +62,14 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
     ledger.assertRestartSafe();
     const caseConfigBytes = readFileSync(outsideCheckout(caseConfig));
     if (!/^[a-f0-9]{64}$/u.test(caseConfigSHA256 ?? '') || createHash('sha256').update(caseConfigBytes).digest('hex') !== caseConfigSHA256) throw bindingError();
+    let plannerReplay;
+    if (plannerReplayBinding !== undefined) {
+      if (!plannerReplayBinding || typeof plannerReplayBinding !== 'object' || typeof plannerReplayBinding.capturePath !== 'string') throw bindingError();
+      const { capturePath, ...binding } = plannerReplayBinding;
+      const bytes = readFileSync(outsideCheckout(capturePath)), capture = bytes.toString('utf8');
+      if (!/^[a-f0-9]{64}$/u.test(binding.captureSHA256 ?? '') || createHash('sha256').update(bytes).digest('hex') !== binding.captureSHA256 || !Buffer.from(capture, 'utf8').equals(bytes)) throw bindingError();
+      plannerReplay = { ...binding, capture };
+    }
     const bounds = await workerBounds(caseConfig, caseConfigBytes, attemptPrefix);
     let failure;
     const authenticated = workerToken !== undefined || supervisorPath !== undefined
@@ -95,7 +103,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    const result = await runCase(caseConfig, { fetchForCall, caseConfigBytes, outputOverride: bounds.outputDir, onFailure(error) {
+    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, onFailure(error) {
       if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
     } });
     return result.status === 'error' ? { ...result, operationalError: operationalError(ledger, attemptPrefix, failure) } : result;

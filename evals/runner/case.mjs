@@ -79,7 +79,7 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
 }
 
-export async function runCase(configFile, { fetchForCall, onFailure, caseConfigBytes, outputOverride } = {}) {
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -105,5 +105,6 @@ export async function runCase(configFile, { fetchForCall, onFailure, caseConfigB
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
   return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
     ...(onFailure !== undefined ? { onFailure } : {}),
+    ...(plannerReplay !== undefined ? { plannerReplay } : {}),
     ...(fetchForCall !== undefined ? { fetchForCall } : {}) });
 }

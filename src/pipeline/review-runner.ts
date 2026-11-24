@@ -53,6 +53,7 @@ import type {
 } from "../types.js";
 import { CodegenieError, ReviewTargetUsageError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
+import { replayPlanner, type PlannerReplay } from "./planner-replay.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
@@ -81,6 +82,7 @@ type RunReviewOverrides = {
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
   fetchForCall?: CreateRunnerOptions["fetchForCall"];
+  plannerReplay?: PlannerReplay;
   github?: GitHubClient;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onInventory?: (inventory: { filesChanged: number; keptFiles: number }) => void;
@@ -227,12 +229,14 @@ export async function runReview(
       lenses: services.lenses,
       allFiles: diff.files
     });
-    const plannerResult = await runPlanner(dossier, config, run.telemetry, {
-      runner: services.runner,
-      promptBuilder: services.promptBuilder,
-      lenses: services.lenses,
-      skills: services.skills
-    });
+    const plannerResult = overrides.plannerReplay !== undefined
+      ? await replayPlanner(overrides.plannerReplay, dossier, resolved.rawDiff, run.telemetry)
+      : await runPlanner(dossier, config, run.telemetry, {
+          runner: services.runner,
+          promptBuilder: services.promptBuilder,
+          lenses: services.lenses,
+          skills: services.skills
+        });
     throwIfHardAborted(run);
     const packets = applyCoverageEscalations(
       await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
