@@ -89,6 +89,8 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
 };
 
 const SIX_STAGE7_PROMPT_VERSION = "p7.16-six.1";
+const SHORTENED_PATCH_PROMPT_VERSION = "p7.17";
+const SIX_SHORTENED_PATCH_PROMPT_VERSION = "p7.17-six.1";
 
 export const TEST_COVERAGE_GUIDANCE = "A missing test for a new branch alone is not a finding. Establish a material behavioral requirement from callers, boundary tests or an explicit contract, identify a concrete violating regression, and show why inspected relevant tests would accept it. A currently correct production guard may still need an important rejection test; no existing production bug or executed mutation is required. Inspect likely sister tests and transport validation where relevant. Scope absence claims to inspected evidence: a bounded or unsuccessful search cannot prove repository-wide absence. Neither neighboring test style, a commit title, nor an unsupported client-visible label establishes material consequence. Omit optional extra coverage rather than turning it into human-attention noise. A proposed regression test must exercise a reachable boundary, reject weakened requirements, and accept valid remedies.";
 
@@ -130,6 +132,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
   7: [
     SHARED_SUBMIT_KEY_CHECK,
     SHARED_FOCUSED_REPAIR,
+    { surface: "shortened packet patch notice", reason: "Makes omitted or partial assigned rows visible and names recovery tools for pinned coordinates.", evidence: "#262 stored over-cap hunks and the partial golden JSON row" },
     { surface: "cross-packet placement", reason: "Discovery assignment does not constrain valid PR-diff coordinates; unknown placement must not be fabricated.", evidence: "Run 81 test packet discovered valid hyperlane.go:220 anchor" },
     { surface: "six-tool source navigation", reason: "Names the active tools and points reporters to both sides of a change, callers, and tests using pinned selectors.", evidence: "#283 cg-01 sibling deletion and cg-10 enclosing-function replay" },
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
@@ -290,6 +293,15 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
     },
     buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
+      const shortenedPatch = packet.hunks.some(hunk => hunk.truncated);
+      const missingChangedRows = packet.hunks.some(hunk => (hunk.omittedChangedLineCount ?? 0) > 0);
+      const patchNotice = shortenedPatch ? [
+        "Context loss: some patch text was omitted to fit the packet. omittedChangedRanges lists old and new changed rows that are absent or partial. partialChangedLine identifies a clipped row."
+          + (missingChangedRows && packetHasRepositoryTools(packet)
+            ? " Recover missing changed rows with " + (six ? "read_change using hunkId" : "read_diff_blocks using packetId")
+              + ", or read_range with source kind base for old rows and head for new rows."
+            : "")
+      ] : [];
       const blocks = [
         fenceUntrusted(packet.prSummary, "pr-summary"),
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
@@ -336,10 +348,14 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         ]),
         "Skill guidance:\n" + projection.text,
         ...(changeDirectory ? [fenceUntrusted(changeDirectory, "change-directory")] : []),
+        ...patchNotice,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
+      if (shortenedPatch) {
+        return { ...built, templateVersion: six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION };
+      }
       return six ? { ...built, templateVersion: SIX_STAGE7_PROMPT_VERSION } : built;
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {

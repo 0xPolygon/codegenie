@@ -1,6 +1,7 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
+import { MAX_PATCH_CHARS, packPacketPatch } from "./packet-patch.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
 import type {
@@ -124,7 +125,6 @@ type AttentionNoteSelection = {
 
 const MAX_HUNKS_PER_PACKET = 5;
 const MAX_LENSES_PER_PACKET = 6;
-const MAX_PATCH_CHARS = 12_000;
 const MAX_CONTEXT_CHARS = 8_000;
 const DEFAULT_SYMBOL_CONTEXT_CHARS = 3_000;
 const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
@@ -373,6 +373,7 @@ async function buildPacket(
   }
   const strongRelatedContext = hasStrongRelatedChangedContext(planned, relatedChangedContext);
   const hasRelatedChangedContext = relatedChangedContext.length > 0;
+  const hasOmittedChangedLines = packetHunks.some(hunk => (hunk.omittedChangedLineCount ?? 0) > 0);
   const baseReviewProfile = packetReviewProfile({
     coverage,
     reviewPriority,
@@ -380,6 +381,7 @@ async function buildPacket(
     attentionNotes: plannerAttentionNotes,
     hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0),
     hasRelatedChangedContext,
+    hasOmittedChangedLines,
     strongRelatedContext: false
   });
   const reviewProfile = packetReviewProfile({
@@ -389,6 +391,7 @@ async function buildPacket(
     attentionNotes: plannerAttentionNotes,
     hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0),
     hasRelatedChangedContext,
+    hasOmittedChangedLines,
     strongRelatedContext
   });
   if (strongRelatedContext && baseReviewProfile !== "investigate" && reviewProfile === "investigate") {
@@ -1392,7 +1395,7 @@ function renderPacketHunk(
   const lines = hunk.lines.map(packetLine);
   const changedNewLineNumbers = lines.flatMap((line) => (line.kind === "add" && line.newLine !== undefined ? [line.newLine] : []));
   const changedOldLineNumbers = lines.flatMap((line) => (line.kind === "delete" && line.oldLine !== undefined ? [line.oldLine] : []));
-  const window = patchWindow(lines);
+  const window = packPacketPatch(lines);
   const packetSignals = staticSignals.slice(0, MAX_STATIC_SIGNALS_PER_PACKET_HUNK);
   const omittedSignalCount = Math.max(0, staticSignals.length - packetSignals.length);
   if (window.truncated) {
@@ -1401,7 +1404,10 @@ function renderPacketHunk(
       level: "debug",
       message: "packet_hunk_truncated",
       file: hunk.path,
-      data: { hunkId: hunk.id, omittedLineCount: window.omittedLineCount, maxPatchChars: MAX_PATCH_CHARS }
+      data: { hunkId: hunk.id, omittedLineCount: window.omittedLineCount, omittedChangedLineCount: window.omittedChangedLineCount,
+        ...(window.omittedChangedRanges ? { omittedChangedRanges: window.omittedChangedRanges } : {}),
+        ...(window.partialChangedLine ? { partialChangedLine: window.partialChangedLine } : {}),
+        maxPatchChars: MAX_PATCH_CHARS }
     });
   }
   return {
@@ -1411,101 +1417,21 @@ function renderPacketHunk(
     newStart: hunk.newStart,
     newLines: hunk.newLines,
     header: hunk.header,
-    lines: window.lines,
-    contentWithLineNumbers: window.contentWithLineNumbers,
+    ...window,
     changedNewLineNumbers,
     changedOldLineNumbers,
     ...(packetSignals.length > 0 ? { staticSignals: packetSignals } : {}),
     ...(omittedSignalCount > 0 ? { omittedSignalCount } : {}),
-    ...(plannerFallback !== undefined ? { plannerFallbackReason: plannerFallback } : {}),
-    ...(window.truncated ? { truncated: true, omittedLineCount: window.omittedLineCount } : {})
+    ...(plannerFallback !== undefined ? { plannerFallbackReason: plannerFallback } : {})
   };
 }
 
 function truncationReasons(hunks: PacketHunk[]): string[] {
   return hunks.flatMap((hunk) =>
     hunk.truncated
-      ? [`patch truncated: ${hunk.omittedLineCount ?? 0} line(s) omitted from ${hunk.hunkId}`]
+      ? [`patch truncated: ${hunk.omittedLineCount ?? 0} rows omitted from ${hunk.hunkId}. ${hunk.omittedChangedLineCount ?? 0} changed rows missing or partial.`]
       : []
   );
-}
-
-function patchWindow(lines: PacketLine[]): { lines: PacketLine[]; contentWithLineNumbers: string; truncated: boolean; omittedLineCount: number } {
-  const full = renderLines(lines);
-  if (full.length <= MAX_PATCH_CHARS) {
-    return { lines, contentWithLineNumbers: full, truncated: false, omittedLineCount: 0 };
-  }
-
-  const changedIndices = lines
-    .map((line, index) => (line.kind === "context" ? -1 : index))
-    .filter((index) => index >= 0);
-  const center = changedIndices[Math.floor(changedIndices.length / 2)] ?? Math.floor(lines.length / 2);
-  let start = center;
-  let end = center;
-  let windowLines = fitWindow(lines, start, end);
-  let expanded = true;
-
-  while (expanded) {
-    expanded = false;
-    const before = start > 0 ? fitWindow(lines, start - 1, end) : undefined;
-    if (before && before.contentWithLineNumbers.length <= MAX_PATCH_CHARS) {
-      start -= 1;
-      windowLines = before;
-      expanded = true;
-    }
-    const after = end < lines.length - 1 ? fitWindow(lines, start, end + 1) : undefined;
-    if (after && after.contentWithLineNumbers.length <= MAX_PATCH_CHARS) {
-      end += 1;
-      windowLines = after;
-      expanded = true;
-    }
-  }
-
-  return {
-    lines: windowLines.lines,
-    contentWithLineNumbers: windowLines.contentWithLineNumbers,
-    truncated: true,
-    omittedLineCount: lines.length - windowLines.lines.length
-  };
-}
-
-function fitWindow(lines: PacketLine[], start: number, end: number): { lines: PacketLine[]; contentWithLineNumbers: string } {
-  const selected = lines.slice(start, end + 1);
-  const contentWithLineNumbers = renderWindow(selected, start, end, lines.length);
-  if (contentWithLineNumbers.length <= MAX_PATCH_CHARS || selected.length !== 1) {
-    return { lines: selected, contentWithLineNumbers };
-  }
-
-  const line = selected[0];
-  if (!line) {
-    return { lines: [], contentWithLineNumbers: "" };
-  }
-  const originalContent = line.content;
-  let fitted = line;
-  for (let contentLength = Math.max(0, originalContent.length - 1); contentLength >= 0; contentLength -= Math.max(1, Math.ceil(contentLength / 4))) {
-    const truncatedChars: number = originalContent.length - contentLength;
-    const marker = ` [... ${truncatedChars} chars truncated ...]`;
-    const contentBudget = Math.max(0, contentLength - marker.length);
-    fitted = { ...line, content: `${originalContent.slice(0, contentBudget)}${marker}` };
-    const rendered = renderWindow([fitted], start, end, lines.length);
-    if (rendered.length <= MAX_PATCH_CHARS || contentBudget === 0) {
-      return { lines: [fitted], contentWithLineNumbers: rendered };
-    }
-  }
-  return { lines: [fitted], contentWithLineNumbers: renderWindow([fitted], start, end, lines.length) };
-}
-
-function renderWindow(lines: PacketLine[], start: number, end: number, totalLines: number): string {
-  const parts: string[] = [];
-  if (start > 0) {
-    parts.push(`[... ${start} lines omitted above ...]`);
-  }
-  parts.push(renderLines(lines));
-  const omittedBelow = totalLines - end - 1;
-  if (omittedBelow > 0) {
-    parts.push(`[... ${omittedBelow} lines omitted below ...]`);
-  }
-  return parts.filter(Boolean).join("\n");
 }
 
 function renderLines(lines: PacketLine[]): string {
@@ -3044,6 +2970,7 @@ function packetReviewProfile(input: {
   attentionNotes: string[];
   hintCount: number;
   hasRelatedChangedContext: boolean;
+  hasOmittedChangedLines: boolean;
   strongRelatedContext: boolean;
 }): ReviewProfile {
   if (
@@ -3060,7 +2987,7 @@ function packetReviewProfile(input: {
     input.coverage === "light" ||
     isMechanicalPacket(input.planned)
   ) {
-    return input.hasRelatedChangedContext ? "standard" : "simple";
+    return input.hasRelatedChangedContext || input.hasOmittedChangedLines ? "standard" : "simple";
   }
   return "standard";
 }
