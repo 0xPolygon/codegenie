@@ -3538,7 +3538,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("includes bounded enclosing symbol source in packet context and discloses truncation", async () => {
+  it.each([false, true])("includes bounded enclosing symbol source and discloses truncation (credential: %s)", async credentialPresent => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -3547,7 +3547,10 @@ describe("phase 5 pipeline regressions", () => {
       }
     };
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
-    const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
+    const credential = "sk-" + "A1b2".repeat(1_000);
+    const sourcePrefix = "export function changed() {\n  // fixture ";
+    const longSource = credentialPresent ? `${sourcePrefix}${credential}\n}`
+      : `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
     const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
     const tools = {
       ...fakeTools(),
@@ -3604,6 +3607,12 @@ describe("phase 5 pipeline regressions", () => {
     expect(contextText).toContain("export function changed()");
     expect(contextText.indexOf("Primary symbol")).toBeLessThan(contextText.indexOf("Outline for app.ts"));
     expect(contextText).toContain("symbol source sliced around changed lines");
+    if (credentialPresent) {
+      expect(contextText).toContain(sourcePrefix.trimEnd() + "\n[... content truncated to fit packet context budget ...]");
+      expect(contextText).not.toContain(credential.slice(0, 8));
+      expect(events).toContainEqual(expect.objectContaining({ message: "packet_symbol_source_truncated",
+        data: expect.objectContaining({ boundaryRetreatChars: expect.any(Number) }) }));
+    }
     expect(packets[0]?.contextQuality).toBe("sliced");
     expect(packets[0]?.degraded?.reason).toContain("enclosing symbol source truncated");
     expect(events).toContainEqual(expect.objectContaining({
@@ -5034,6 +5043,50 @@ describe("phase 5 pipeline regressions", () => {
       expect(extractPromptJson<ReviewPacket>(built.prompt, "review-packet")?.hunks[0]?.omittedChangedRanges).toEqual({ old: [], new: [[1, 1]] });
       if (toolSurface === "six") expect(built.prompt).not.toContain("read_diff_blocks");
     }
+  });
+
+  it("retreats at capped attention notes and preserves a below-cap credential example in Stage 7", async () => {
+    const credential = "sk-" + "A1b2".repeat(8);
+    const registered = "registeredValue  secondComponent";
+    const marker = "[... content truncated to fit packet context budget ...]";
+    const prefix = "x".repeat(229);
+    const sharedPrefix = prefix + ".";
+    const focusNotes = [`  Compare \t ${credential}   as a whole.  `,
+      `${sharedPrefix} ${credential} ${"y".repeat(320)}`,
+      `${sharedPrefix}  ${registered} ${"z".repeat(320)}`];
+    const plan = fakePlan();
+    registerSecret(registered);
+    try {
+      const [packet] = await buildReviewPackets({ ...plan, coverage: [{ ...plan.coverage[0]!, reason: "", focusNotes }] },
+        [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], fakeRepositoryIndex(),
+        nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+      // Both long notes remain assigned even when their protected prefixes match.
+      const expected = [`Compare ${credential} as a whole.`, `${sharedPrefix} ${marker}`, `${sharedPrefix} ${marker}`];
+      expect(packet!.attentionNotes).toEqual(expected);
+      const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packet!, skills: [] }).prompt;
+      expect(prompt).toContain(expected[0]);
+      expect(prompt).not.toContain("registeredValue");
+      expect(prompt).not.toContain(`${sharedPrefix} ${credential.slice(0, 8)}`);
+    } finally {
+      clearRegisteredSecretsForTests();
+    }
+  });
+
+  it("keeps auxiliary context dropped when a credential retreat would make it fit a whole-file packet", async () => {
+    const fullSource = "whole-file source\n" + "x".repeat(6_500);
+    const credential = "sk-" + "A1b2".repeat(600);
+    const plan = fakePlan();
+    plan.coverage[0]!.surroundingContextHints = [{ kind: "enclosing_symbol", path: "app.ts", lineRange: [1, 1],
+      reason: "Inspect auxiliary source", expectedUse: "packet_context" }];
+    const tools = { ...fakeTools(fullSource), readRange: async (_path: string, _start: number, end: number) => ({
+      text: end === 1 ? "ALTERNATIVE_SOURCE " + credential : fullSource,
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }) };
+    const [packet] = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "whole-file")],
+      fakeRepositoryIndex(tools), nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+    expect(packet).toMatchObject({ kind: "whole-file",
+      contextLoss: expect.arrayContaining(["auxiliary packet context omitted to preserve complete whole-file content"]) });
+    expect(packet!.contextText).toBe(`Whole file content for app.ts:\n${fullSource}`);
   });
 
   it("applies verifier revisedAnchor when no finalFinding is returned", async () => {

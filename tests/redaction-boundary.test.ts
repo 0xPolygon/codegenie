@@ -1,8 +1,48 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearRegisteredSecretsForTests, redactThenTruncate, registerSecret, stripCredentials, stripCredentialsAtSink } from "../src/telemetry/redaction.js";
+import { clearRegisteredSecretsForTests, credentialSafeCut, redactThenTruncate, registerSecret, stripCredentials, stripCredentialsAtSink } from "../src/telemetry/redaction.js";
 import { truncateDiagnostic } from "../src/util/errors.js";
 
 afterEach(clearRegisteredSecretsForTests);
+
+describe("model-facing credential cuts", () => {
+  it.each([
+    "sk-" + "A1b2".repeat(400),
+    "Authorization: Bearer " + "A1b2".repeat(400),
+    "https://" + "A1b2".repeat(400) + "@example.invalid"
+  ])("retreats through a long recognized span and preserves cuts at its endpoints", (credential) => {
+    const prefix = "before ";
+    const text = prefix + credential + "\nafter";
+    const end = prefix.length + (credential.startsWith("https:") ? credential.indexOf("@") + 1 : credential.length);
+    expect(credentialSafeCut(text, prefix.length)).toBe(prefix.length);
+    expect(credentialSafeCut(text, prefix.length + 800)).toBe(prefix.length);
+    expect(credentialSafeCut(text, end)).toBe(end);
+  });
+
+  it("retreats through overlapping registered values and ignores sink-only components", () => {
+    registerSecret("ABCDEF");
+    registerSecret("CDEFGH");
+    registerSecret("header\nstandaloneComponent\nfooter");
+    expect(credentialSafeCut("prefix ABCDEFGH suffix", 14)).toBe(7);
+    expect(credentialSafeCut("prefix standaloneComponent suffix", 13)).toBe(13);
+  });
+
+  it("keeps real regex word boundaries and intact ordinary field names", () => {
+    const looksLikeToken = "xsk-" + "a".repeat(900);
+    expect(credentialSafeCut(looksLikeToken, 700)).toBe(700);
+    const name = "field".repeat(50);
+    expect(credentialSafeCut(name, 200)).toBe(200);
+  });
+
+  it("finds eligible starts inside URL and JWT runs without mistaking a long ordinary run for a credential", () => {
+    const prefix = "123.";
+    const url = "https://synthetic-credential@example.invalid";
+    expect(credentialSafeCut(prefix + url, prefix.length + 13)).toBe(prefix.length);
+    const jwt = "eyJ" + ["a", "b", "c"].map(letter => letter.repeat(20)).join(".");
+    expect(credentialSafeCut("label-" + jwt, 25)).toBe("label-".length);
+    const ordinary = "word.".repeat(100_000) + "eyJ-".repeat(100_000);
+    expect(credentialSafeCut(ordinary, 200)).toBe(200);
+  });
+});
 
 describe("redaction before text caps", () => {
   const secret = "uniqueCredentialABCDEFGHIJKL987654321";

@@ -19,6 +19,15 @@ const CREDENTIAL_RULES: Array<[RegExp, string]> = [
   [AWS_ACCESS_KEY_PATTERN, "[redacted:pattern]"], [JWT_PATTERN, "[redacted:pattern]"],
   [BEARER_VALUE_PATTERN, "$1[redacted:pattern]"]
 ];
+// Retry neither of these unbounded patterns at every separator in a long
+// token. If the earliest eligible start fails, a later start in the same
+// run cannot match. Capture the actual credential without the skipped prefix.
+const BOUNDARY_SCAN_PATTERNS = new Map([
+  [URL_USERINFO_PATTERN, new RegExp(
+    String.raw`(?<![a-z0-9+.-])(?:(?!\b[a-z])[a-z0-9+.-])*(${URL_USERINFO_PATTERN.source})`, "gi")],
+  [JWT_PATTERN, new RegExp(
+    String.raw`(?<![A-Za-z0-9_-])(?:(?!\beyJ)[A-Za-z0-9_-])*(${JWT_PATTERN.source})`, "g")]
+]);
 
 export function registerSecret(value: string | undefined | null): void {
   if (typeof value !== "string") {
@@ -52,6 +61,37 @@ export function clearRegisteredSecretsForTests(): void {
 
 export function stripCredentials<T>(input: T): T {
   return stripValue(input, new WeakSet(), false) as T;
+}
+
+/** Retreat a model-facing cut to the start of any credential it would split. */
+export function credentialSafeCut(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) return index;
+
+  const spans: Array<[start: number, end: number]> = [];
+  for (const secret of registeredSecrets) {
+    for (let start = text.indexOf(secret); start >= 0 && start < index; start = text.indexOf(secret, start + 1)) {
+      spans.push([start, start + secret.length]);
+    }
+  }
+  // Run patterns on the original text to preserve word boundaries and detect
+  // values that extend beyond a fixed lookaround window.
+  for (const [pattern] of CREDENTIAL_RULES) {
+    const scan = BOUNDARY_SCAN_PATTERNS.get(pattern);
+    for (const match of text.matchAll(scan ?? pattern)) {
+      const end = match.index + match[0].length;
+      const start = scan ? end - match[1]!.length : match.index;
+      if (start >= index) break;
+      spans.push([start, end]);
+    }
+  }
+
+  // Moving a cut can enter another overlapping span. Walk backwards so each
+  // earlier span is checked at the new boundary before it is returned.
+  spans.sort(([a], [b]) => b - a);
+  for (const [start, end] of spans) {
+    if (start < index && index < end) index = start;
+  }
+  return index;
 }
 
 /** Include additional component and encoded variants only for persisted output. */
