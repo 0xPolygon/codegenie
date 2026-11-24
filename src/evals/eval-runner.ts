@@ -51,6 +51,7 @@ export type EvalSuite = {
 
 export type EvalRunOptions = {
   judgeReplay?: boolean;
+  fetchForCall?: import("../llm/llm-runner.js").CreateRunnerOptions["fetchForCall"];
   cacheOverride?: boolean;
   config: CodegenieConfig;
   codegenieHome?: string;
@@ -488,6 +489,7 @@ async function runLiveCase(
     await runReview(target, caseConfig.config, {
       repoRoot: actualRepoRoot,
       ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
+      ...(options.fetchForCall !== undefined ? { fetchForCall: options.fetchForCall } : {}),
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
@@ -579,6 +581,7 @@ async function runRepeatedLiveCase(
         await runReview(target, caseConfig.config, {
           repoRoot: actualRepoRoot,
           ...(options.codegenieHome !== undefined ? { codegenieHome: options.codegenieHome } : {}),
+          ...(options.fetchForCall !== undefined ? { fetchForCall: options.fetchForCall } : {}),
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,

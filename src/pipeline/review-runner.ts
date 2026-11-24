@@ -14,7 +14,7 @@ import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import { assertRepositoryToolSurfaceAvailable } from "../llm/tool-definitions.js";
-import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
+import type { CreateRunnerOptions, LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
 import { createToolResultCache } from "../llm/tool-result-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
@@ -80,6 +80,7 @@ type RunReviewOverrides = {
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
+  fetchForCall?: CreateRunnerOptions["fetchForCall"];
   github?: GitHubClient;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onInventory?: (inventory: { filesChanged: number; keptFiles: number }) => void;
@@ -911,7 +912,7 @@ function createRunner(
   config: CodegenieConfig,
   run: RunContext,
   cache: ModelCallCache | undefined,
-  { piAdapter, codegenieHome }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome">
+  { piAdapter, codegenieHome, fetchForCall }: Pick<RunReviewOverrides, "piAdapter" | "codegenieHome" | "fetchForCall">
 ): LlmRunner | Promise<LlmRunner> {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
@@ -927,6 +928,7 @@ function createRunner(
     toolResultCache,
     runSignal: run.abort.signal,
     ...(piAdapter !== undefined ? { adapter: piAdapter } : {}),
+    ...(fetchForCall !== undefined ? { fetchForCall } : {}),
     ...(codegenieHome !== undefined ? { codegenieHome } : {}),
     hooks: {
       checkpoint: (stage) => run.budget.checkpoint(stage),

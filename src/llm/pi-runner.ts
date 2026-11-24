@@ -29,6 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
+import { captureTransportAdmission, TransportAdmissionError } from "./transport-admission.js";
 import { credentialSafeCut, redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
@@ -1641,6 +1642,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const failureLocation = { callId, workerId: request.telemetryContext?.workerId };
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
+    let admission: ReturnType<typeof captureTransportAdmission> | undefined;
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1700,6 +1702,13 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             { messages, tools: tools.map(providerToolSpec) },
             {
               signal: streamSignal,
+              ...(opts.fetchForCall !== undefined ? { fetch: (admission = captureTransportAdmission(opts.fetchForCall({
+                callId, stage: request.stage, kind, provider: model.provider, modelId: model.id,
+                reasoningSelected: reasoning, templateVersion: request.templateVersion,
+                ...(request.purpose !== undefined ? { purpose: request.purpose } : {}),
+                ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
+                ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
+              }))).fetch } : {}),
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
                 if (streamSignal.aborted) return;
                 progress.observe(event);
@@ -1759,6 +1768,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           taskTimedOut
         );
       }), taskSignal, taskTimedOut);
+      const denied = admission?.denial();
+      if (denied !== undefined) throw denied;
       const message = removeProvenanceLessSubmitArguments(
         redactAssistantForReplay(rawMessage),
         submitToolNameForStage(request.stage)
@@ -1851,6 +1862,20 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode; errorMessage?: string });
       return { source: "provider", message, callId };
     } catch (cause) {
+      const denial = admission?.denial() ?? (cause instanceof TransportAdmissionError ? cause : undefined);
+      if (denial !== undefined) {
+        releaseReservation();
+        recordErroredModelCall(opts, request, model, {
+          callId, protocol, kind, finalizeMode, finalizeTarget, attempt,
+          cacheStatus: opts.cache ? "miss" : "disabled", promptText,
+          durationMs: Date.now() - startedAt, status: "aborted",
+          errorCode: denial.code, errorMessage: denial.message,
+          retryable: false, retryReason: denial.reason, maxAttempts, retryExhausted: false
+        });
+        opts.telemetry.event({ stage: request.stage, level: "warn", message: "transport_admission_denied",
+          data: { callId, reason: denial.reason } });
+        throw denial;
+      }
       if (isRecordedProviderFailure(cause)) {
         throw cause;
       }

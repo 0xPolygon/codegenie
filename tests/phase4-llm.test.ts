@@ -17,6 +17,7 @@ import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { textRepository } from "./helpers/text-repository.js";
+import { TransportAdmissionError } from "../src/llm/transport-admission.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
@@ -548,6 +549,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
   it("routes stage models with explicit compose reasoning and per-model protocol records", async () => {
     const telemetry = fakeTelemetry();
+    const hookCalls: Array<{ provider: string; modelId: string; reasoningSelected: string; templateVersion: string }> = [];
     const seen: Array<{ model: string; reasoning: unknown }> = [];
     const adapter: PiAiAdapter = {
       resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux", reasoning: true } }),
@@ -559,12 +561,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     };
     const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
       stages: { review: { model: "two/special", reasoning: "low" }, compose: { model: "two/special", reasoning: "medium" } } },
-      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      fetchForCall: (call) => { hookCalls.push(call); return globalThis.fetch; }, hooks: { checkpoint: () => "ok", onUsage() {} } });
     await runner.runStructured(submitReviewRequest("stage-review"));
     await runner.runStructured({ ...submitReviewRequest("stage-plan"), stage: 5 });
     await runner.runStructured({ ...submitReviewRequest("stage-compose"), stage: 10, compositionReasoningStepDown: true });
     expect(seen).toEqual([{ model: "two/special", reasoning: "low" }, { model: "one/base", reasoning: "high" }, { model: "two/special", reasoning: "medium" }]);
     expect(telemetry.modelCalls.map(call => [call.provider, call.model])).toEqual([["two", "special"], ["one", "base"], ["two", "special"]]);
+    expect(hookCalls.map(({ provider, modelId, reasoningSelected, templateVersion }) => ({ provider, modelId, reasoningSelected, templateVersion }))).toEqual([
+      { provider: "two", modelId: "special", reasoningSelected: "low", templateVersion: "test-template" },
+      { provider: "one", modelId: "base", reasoningSelected: "high", templateVersion: "test-template" },
+      { provider: "two", modelId: "special", reasoningSelected: "medium", templateVersion: "test-template" }
+    ]);
     expect(telemetry.events.filter(event => event.message === "provider_protocol")).toHaveLength(2);
   });
 
@@ -683,6 +691,100 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(() => build("xhigh", { id: "fake-model" })).not.toThrow();
   });
 
+  it("binds fetch to a physical call and makes no SDK retry when maxRetries is zero", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const fallback = vi.fn(async () => { throw new Error("unexpected global fetch"); });
+    vi.stubGlobal("fetch", fallback);
+    const metadata: Array<{ callId: string; stage: number; kind: string; purpose?: string; packetId?: string }> = [];
+    let physicalStarts = 0;
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => {
+          metadata.push(call);
+          return async () => { physicalStarts++; return new Response("synthetic error", { status: 500, headers: { "retry-after": "0" } }); };
+        },
+        hooks: { checkpoint: () => "ok", onUsage() {} }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("fixture"), purpose: "location_clarification", telemetryContext: { packetId: "packet-1" } })).rejects.toThrow();
+      expect(metadata).toEqual([{ callId: "mc-000001", stage: 7, kind: "initial", purpose: "location_clarification", packetId: "packet-1", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoningSelected: "low", templateVersion: "test-template" }]);
+      expect(physicalStarts).toBe(1);
+      expect(fallback).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it.each([["campaign_budget", "budget_exhausted"], ["binding_mismatch", "config_error"]] as const)(
+    "keeps %s as a non-retryable local admission refusal", async (reason, code) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+      const telemetry = fakeTelemetry();
+      let denials = 0;
+      const globalFetch = vi.fn(async () => { throw new Error("unexpected network"); });
+      vi.stubGlobal("fetch", globalFetch);
+      try {
+        const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+          telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+          fetchForCall: () => async () => { denials++; throw new TransportAdmissionError(reason); },
+          hooks: { checkpoint: () => "ok", onUsage() {} } });
+        await expect(runner.runStructured(submitReviewRequest("local-denial"))).rejects.toMatchObject({ code, recoverable: false, context: { reason } });
+        expect(denials).toBe(1);
+        expect(globalFetch).not.toHaveBeenCalled();
+        expect(telemetry.modelCalls).toHaveLength(1);
+        expect(telemetry.modelCalls[0]).toMatchObject({ errorCode: code, retryable: false, retryReason: reason });
+        expect(telemetry.events.filter((event) => event.message === "transport_admission_denied")).toHaveLength(1);
+      } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+    }
+  );
+
+  it("keeps overlapping logical calls bound to their own fetch closures", async () => {
+    const delivered: Array<{ callId: string; packetId: string | undefined }> = [];
+    const metadata: Array<{ callId: string; packetId: string | undefined }> = [];
+    let releaseFirst: (() => void) | undefined;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "faux" } }),
+      complete: async (_model, _context, options) => {
+        await (options.fetch as typeof globalThis.fetch)("https://synthetic.invalid");
+        return assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
+      },
+      validateToolCall
+    };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 }, telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      fetchForCall: (call) => {
+        const identity = { callId: call.callId, packetId: call.packetId };
+        metadata.push(identity);
+        return async () => {
+          if (identity.packetId === "first") await first;
+          else releaseFirst?.();
+          delivered.push(identity);
+          return new Response("fixture");
+        };
+      }, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await Promise.all([
+      runner.runStructured({ ...submitReviewRequest("first"), telemetryContext: { packetId: "first" } }),
+      runner.runStructured({ ...submitReviewRequest("second"), telemetryContext: { packetId: "second" } })
+    ]);
+    expect(metadata).toEqual([{ callId: "mc-000001", packetId: "first" }, { callId: "mc-000002", packetId: "second" }]);
+    expect(delivered).toEqual([metadata[1], metadata[0]]);
+  });
+
+  it("does not invoke fetchForCall for a response-cache hit", async () => {
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({ dir: path.join(repoRoot, ".codegenie", "cache"), repoRoot,
+      runFingerprint: "fetch-hook", logger: fakeLogger(), telemetry: telemetry.recorder });
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "submit", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }])]);
+    const hook = vi.fn(() => globalThis.fetch);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, fetchForCall: hook,
+      hooks: { checkpoint: () => "ok", onUsage() {} } });
+    await runner.runStructured(submitReviewRequest("same"));
+    await runner.runStructured(submitReviewRequest("same"));
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
+  });
+
   it("runs a tool round, fences tool output, validates submit payload, and records telemetry", async () => {
     const telemetry = fakeTelemetry();
     const usage: LlmCallUsage[] = [];
@@ -737,6 +839,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       followUpHints: [],
       uncertainties: []
     });
+    expect(adapter.options[0]).not.toHaveProperty("fetch");
     expect(adapter.contexts[1]).toContain("untrusted-data label=tool-result-read_range");
     expect(telemetry.modelCalls.map((call) => call.stopReason)).toEqual(["tool_calls", "submit"]);
     expect(telemetry.modelCalls[1]?.schemaValid).toBe(true);
