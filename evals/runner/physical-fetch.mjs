@@ -1,9 +1,9 @@
 // Decimal conversion rounds upward without floating-point over-rounding.
-function costMicros(value) {
+function costUnits(value, precision) {
   const [mantissa, expText = '0'] = value.toString().toLowerCase().split('e');
   const [whole, fraction = ''] = mantissa.split('.');
   const digits = BigInt(whole + fraction);
-  const scale = 6 + Number(expText) - fraction.length;
+  const scale = precision + Number(expText) - fraction.length;
   const amount = scale >= 0 ? digits * 10n ** BigInt(scale) : (digits + 10n ** BigInt(-scale) - 1n) / 10n ** BigInt(-scale);
   const n = Number(amount);
   if (!Number.isSafeInteger(n)) throw new RangeError('provider cost exceeds safe integer range');
@@ -12,7 +12,7 @@ function costMicros(value) {
 
 // One closure per logical call; attemptPrefix uniquely binds campaign slot and
 // review attempt. The caller supplies the normal fetch and typed error class.
-export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError, healthCase }) {
+export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError, healthBoundary }) {
   if (typeof fetchImpl !== 'function' || typeof AdmissionError !== 'function' || typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(attemptPrefix)) throw new TypeError('transport dependencies and attempt identity required');
   let ordinal = 0;
   let current;
@@ -44,6 +44,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
     const options = { id: current.id, httpStatus: current.httpStatus, usageEvidence: current.evidence ?? null };
     if (current.confirmedMicros !== undefined) {
       options.providerCostMicros = current.confirmedMicros;
+      options.providerCostNanos = current.confirmedNanos;
       options.costConfirmed = true;
     } else if (current.lowerBoundMicros !== undefined) {
       options.unconfirmedCostLowerBoundMicros = current.lowerBoundMicros;
@@ -62,7 +63,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
           ledger.recordRefusal({ id, logicalId, reason: 'binding_mismatch' });
           throw new AdmissionError('binding_mismatch');
         }
-        const admission = ledger.reservePhysical({ id, logicalId, kind: healthCase === undefined ? call.kind : 'health', provider: call.provider, ...(healthCase !== undefined ? { healthCase } : {}) });
+        const admission = ledger.reservePhysical({ id, logicalId, kind: healthBoundary === undefined ? call.kind : 'health', provider: call.provider, ...(healthBoundary !== undefined ? { healthBoundary } : {}) });
         if (!admission.admitted) {
           const reason = admission.reason;
           const mapped = reason.startsWith('provider_') ? 'provider_denied'
@@ -108,14 +109,15 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
             ...(observation.isByok !== undefined ? { isByok: observation.isByok } : {}) };
           if (typeof observation.providerCost === 'number') current.evidence.providerReportedCostUSD = observation.providerCost;
           if (typeof observation.providerCostLowerBound === 'number') {
-            current.lowerBoundMicros = Math.max(current.lowerBoundMicros ?? 0, costMicros(observation.providerCostLowerBound));
+            current.lowerBoundMicros = Math.max(current.lowerBoundMicros ?? 0, costUnits(observation.providerCostLowerBound, 6));
             ledger.raiseLowerBound(current.id, current.lowerBoundMicros);
             current.evidence.knownBilledLowerBoundMicros = current.lowerBoundMicros;
           }
           if (typeof observation.providerBilledCost === 'number') {
-            const amount = costMicros(observation.providerBilledCost);
+            const amount = costUnits(observation.providerBilledCost, 6);
             if (current.confirmedMicros !== undefined && current.confirmedMicros !== amount) return settleContradiction();
             current.confirmedMicros = amount;
+            current.confirmedNanos = costUnits(observation.providerBilledCost, 9);
             current.evidence.providerCostComplete = true;
             current.evidence.providerBilledCostUSD = observation.providerBilledCost;
           }
@@ -123,9 +125,10 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
         }
         if (observation.source !== 'terminal') return;
         if (observation.costFromProvider === true && typeof observation.providerCost === 'number' && Number.isFinite(observation.providerCost) && observation.providerCost >= 0) {
-          const amount = costMicros(observation.providerCost);
+          const amount = costUnits(observation.providerCost, 6);
           if (current.confirmedMicros !== undefined && current.confirmedMicros !== amount) return settleContradiction();
           current.confirmedMicros = amount;
+          current.confirmedNanos = costUnits(observation.providerCost, 9);
         }
         settleCurrent(observation.terminal);
       } catch { stopAccounting(); }

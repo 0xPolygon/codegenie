@@ -71,6 +71,36 @@ describe("development campaign physical ledger", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("uses whole-key headroom in the atomic reservation after a fresh snapshot", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 1_000_000 }, evidence = "a".repeat(64);
+      let ledger = new CampaignLedger(file, config);
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 950_000, observedMs: 1, evidenceSHA256: evidence });
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" });
+      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
+      expect(ledger.totals().starts).toBe(0); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("uses finer provider precision for freshness while preserving rounded admission charges", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "fixture", limitMicros: 1_000_000 }), evidence = "a".repeat(64);
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, evidenceSHA256: evidence });
+      for (let n = 0; n < 10; n++) {
+        const id = `p${n}`; expect(ledger.reservePhysical({ id, logicalId: id, kind: "review" })).toEqual({ admitted: true });
+        ledger.settlePhysical({ id, httpStatus: 200, providerCostMicros: 1, providerCostNanos: 400, costConfirmed: true });
+      }
+      expect(ledger.totals().chargedMicros).toBe(10);
+      expect(ledger.recordKeySnapshot({ usageMicros: 4, usageNanos: 4000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("keeps stale snapshots separate from charged unknown holds and stops on actual cap", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
@@ -79,6 +109,7 @@ describe("development campaign physical ledger", () => {
       ledger.bindKeyBaseline({ usageMicros: 10_000_000, evidenceSHA256: evidence });
       const decide = () => ledger.keyDecision({ verifyEvidence: (_kind: string, hash: string) => hash === evidence });
       expect(decide()).toEqual({ action: "snapshot" });
+      ledger.recordKeySnapshot({ usageMicros: 10_000_000, observedMs: 0, evidenceSHA256: evidence });
       ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" }); ledger.settlePhysical({ id: "p1", httpStatus: 200, providerCostMicros: 100_000, costConfirmed: true });
       ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" }); ledger.settlePhysical({ id: "p2", httpStatus: 500 });
       expect(ledger.recordKeySnapshot({ usageMicros: 10_050_000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(false);
@@ -110,8 +141,8 @@ describe("development campaign physical ledger", () => {
     try {
       const file = path.join(dir, "calls.sqlite"), config = { binding: "fixture", limitMicros: 2_000_000 };
       let ledger = new CampaignLedger(file, config); const evidence = "a".repeat(64);
-      const decide = (nowMs: number) => ledger.healthDecision({ caseId: "case-1", provider: "openrouter", nowMs, verifyEvidence: (_id: string, hash: string) => hash === evidence });
-      const reserve = (id: string) => ledger.reservePhysical({ id, logicalId: id, kind: "health", provider: "openrouter", healthCase: "case-1" });
+      const decide = (nowMs: number) => ledger.healthDecision({ boundaryId: "boundary-1", provider: "openrouter", nowMs, verifyEvidence: (_id: string, hash: string) => hash === evidence });
+      const reserve = (id: string) => ledger.reservePhysical({ id, logicalId: id, kind: "health", provider: "openrouter", healthBoundary: "boundary-1" });
       expect(decide(0)).toEqual({ action: "probe" }); expect(reserve("p1")).toEqual({ admitted: true });
       expect(decide(0)).toEqual({ action: "reconcile" });
       ledger.settlePhysical({ id: "p1", httpStatus: 500, providerCostMicros: 0, costConfirmed: true });
@@ -124,7 +155,8 @@ describe("development campaign physical ledger", () => {
         if (id === "p2") expect(decide(900_000)).toEqual({ action: "probe" });
       }
       expect(decide(900_000)).toEqual({ action: "admit" });
-      expect(() => ledger.healthDecision({ caseId: "case-1", provider: "openrouter", nowMs: 900_000, verifyEvidence: () => false })).toThrow("evidence mismatch");
+      expect(ledger.healthDecision({ boundaryId: "boundary-2", provider: "openrouter", nowMs: 900_000, verifyEvidence: () => true })).toEqual({ action: "probe" });
+      expect(() => ledger.healthDecision({ boundaryId: "boundary-1", provider: "openrouter", nowMs: 900_000, verifyEvidence: () => false })).toThrow("evidence mismatch");
       expect(ledger.totals().starts).toBe(3); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
