@@ -286,7 +286,10 @@ export type CreateRunnerOptions = {
     purpose?: string;
     packetId?: string;
     candidateId?: string;
-  }) => typeof globalThis.fetch;
+  }) => {
+    fetch: typeof globalThis.fetch;
+    onUsage?: (observation: import("./transport-admission.js").ProviderUsageObservation) => void | Promise<void>;
+  };
   hooks: CreateRunnerHooks;
 };
 

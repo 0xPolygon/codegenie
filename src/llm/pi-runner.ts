@@ -29,7 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
-import { captureTransportAdmission, TransportAdmissionError } from "./transport-admission.js";
+import { captureTransportAdmission, projectProviderUsage, TransportAdmissionError } from "./transport-admission.js";
 import { credentialSafeCut, redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
@@ -1643,6 +1643,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
     let admission: ReturnType<typeof captureTransportAdmission> | undefined;
+    let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1702,13 +1703,32 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             { messages, tools: tools.map(providerToolSpec) },
             {
               signal: streamSignal,
-              ...(opts.fetchForCall !== undefined ? { fetch: (admission = captureTransportAdmission(opts.fetchForCall({
-                callId, stage: request.stage, kind, provider: model.provider, modelId: model.id,
-                reasoningSelected: reasoning, templateVersion: request.templateVersion,
-                ...(request.purpose !== undefined ? { purpose: request.purpose } : {}),
-                ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
-                ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
-              }))).fetch } : {}),
+              ...(opts.fetchForCall !== undefined ? (() => {
+                const transport = opts.fetchForCall!({
+                  callId, stage: request.stage, kind, provider: model.provider, modelId: model.id,
+                  reasoningSelected: reasoning, templateVersion: request.templateVersion,
+                  ...(request.purpose !== undefined ? { purpose: request.purpose } : {}),
+                  ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
+                  ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
+                });
+                admission = captureTransportAdmission(transport.fetch);
+                onTransportUsage = transport.onUsage === undefined ? undefined : async (observation) => {
+                  try { await transport.onUsage!(observation); }
+                  catch (error) {
+                    const physicalId = error instanceof TransportAdmissionError ? error.physicalId : undefined;
+                    const failure = new TransportAdmissionError("accounting_failed", physicalId);
+                    admission?.deny(failure);
+                    throw failure;
+                  }
+                };
+                return {
+                  fetch: admission.fetch,
+                  ...(onTransportUsage !== undefined ? { onProviderStreamEvent: async (chunk: unknown) => {
+                    const observation = projectProviderUsage(chunk);
+                    if (observation !== undefined) await onTransportUsage?.(observation);
+                  } } : {})
+                };
+              })() : {}),
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
                 if (streamSignal.aborted) return;
                 progress.observe(event);
@@ -1770,6 +1790,14 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       }), taskSignal, taskTimedOut);
       const denied = admission?.denial();
       if (denied !== undefined) throw denied;
+      if (onTransportUsage !== undefined && (rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" || rawMessage.stopReason === "stop" || rawMessage.stopReason === "length" || rawMessage.stopReason === "toolUse" || rawMessage.stopReason === "deferred")) {
+        const usage = rawMessage.usage;
+        const cost = usage?.cost as { total?: number; totalFromProvider?: boolean } | undefined;
+        await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: cost?.totalFromProvider === true,
+          reasoningTokensPresent: false, terminal: rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" ? "error" : "done",
+          costFromProvider: cost?.totalFromProvider === true,
+          ...(cost?.totalFromProvider === true && typeof cost.total === "number" && Number.isFinite(cost.total) && cost.total >= 0 ? { providerCost: cost.total } : {}) });
+      }
       const message = removeProvenanceLessSubmitArguments(
         redactAssistantForReplay(rawMessage),
         submitToolNameForStage(request.stage)
@@ -1872,8 +1900,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           errorCode: denial.code, errorMessage: denial.message,
           retryable: false, retryReason: denial.reason, maxAttempts, retryExhausted: false
         });
-        opts.telemetry.event({ stage: request.stage, level: "warn", message: "transport_admission_denied",
-          data: { callId, reason: denial.reason } });
+        opts.telemetry.event({ stage: request.stage, level: "warn", message: denial.reason === "accounting_failed" ? "transport_accounting_failed" : denial.reason === "provider_denied" ? "transport_provider_denied" : "transport_admission_denied",
+          data: { callId, reason: denial.reason, ...(denial.physicalId !== undefined ? { physicalId: denial.physicalId } : {}) } });
         throw denial;
       }
       if (isRecordedProviderFailure(cause)) {
