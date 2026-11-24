@@ -229,5 +229,6 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       return { action: 'stop', reason: localStop };
     }
   };
-  return { step, supervisor, ledger, close() { supervisor.releaseDriver(token); ledger.close(); supervisor.close(); } };
+  return { step, supervisor, ledger, releaseCheckpoint() { return supervisor.releaseCheckpoint(verifyReceipt, verifyRetry, ledger); },
+    close() { supervisor.releaseDriver(token); ledger.close(); supervisor.close(); } };
 }
