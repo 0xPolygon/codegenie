@@ -48,6 +48,22 @@ describe('campaign admission custody', () => {
       first.close(); second.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it('refuses transitions from another supervisor object or a stale driver token', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-owner-'));
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'out') };
+      const db = path.join(dir, 'supervisor.db'), first = new CampaignSupervisor(db, binding), second = new CampaignSupervisor(db, binding);
+      const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
+      const token = first.claimDriver(), args = { ledger, evidenceFiles: {}, verifyReceipt: first.receipts.verify };
+      expect(() => second.begin('one', args)).toThrow('driver claim required');
+      expect(first.db.prepare('SELECT COUNT(*) AS total FROM attempt').get()).toEqual({ total: 0 });
+      first.releaseDriver(token); const next = second.claimDriver();
+      expect(() => first.begin('one', args)).toThrow('driver claim required');
+      expect(first.db.prepare('SELECT COUNT(*) AS total FROM attempt').get()).toEqual({ total: 0 });
+      second.releaseDriver(next); first.close(); second.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('retains a receipt-backed 503, authorizes one fresh retry and excludes a second failure', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-bound-retry-')), runs: string[] = [];
     try {
@@ -55,6 +71,7 @@ describe('campaign admission custody', () => {
       const root = (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${attempt}`);
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: root };
       const db = path.join(dir, 'supervisor.db'); let supervisor = new CampaignSupervisor(db, binding);
+      let driver = supervisor.claimDriver();
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 5_000_000 });
       ledger.keyDecision = () => ({ action: 'admit' }); ledger.healthDecision = () => ({ action: 'admit' });
       const yes = () => true;
@@ -84,13 +101,13 @@ describe('campaign admission custody', () => {
       ledger.settlePhysical({ id: probe, httpStatus: 200, providerCostMicros: 0, costConfirmed: true, settledAtMs: 151 });
       ledger.recordHealth({ physicalId: probe, outcome: 'clean', observedMs: 151, evidenceSHA256: digest('health') });
       supervisor.authorizeRetry('one', 1, digest('proof'), { ledger, retryProbeId: probe, verifyReceipt: supervisor.receipts.verify, verifyFailure: yes, verifyRetry: yes });
-      supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+      supervisor.releaseDriver(driver); supervisor.close(); supervisor = new CampaignSupervisor(db, binding); driver = supervisor.claimDriver();
       supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify, verifyRetry: yes }); claim(supervisor, 'one', 2);
       const second = fail(2);
       expect(supervisor.db.prepare('SELECT state,receipt_sha256 FROM outcome').get()).toEqual({ state: 'excluded', receipt_sha256: second });
-      supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+      supervisor.releaseDriver(driver); supervisor.close(); supervisor = new CampaignSupervisor(db, binding); driver = supervisor.claimDriver();
       expect(supervisor.checkedOutcomes(supervisor.receipts.verify, yes, ledger)).toHaveLength(1);
-      expect(ledger.totals().starts).toBe(3); supervisor.close(); ledger.close();
+      expect(ledger.totals().starts).toBe(3); supervisor.releaseDriver(driver); supervisor.close(); ledger.close();
     } finally { for (const run of runs) makeWritable(run); rmSync(dir, { recursive: true, force: true }); }
   });
   it('rejects an obsolete supervisor schema with a clear error', () => {
@@ -111,6 +128,7 @@ describe('campaign admission custody', () => {
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: root };
       const db = path.join(dir, 'supervisor.db');
       let supervisor = new CampaignSupervisor(db, binding);
+      let driver = supervisor.claimDriver();
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 5_000_000 });
       ledger.keyDecision = () => ({ action: 'admit' }); ledger.healthDecision = () => ({ action: 'admit' });
       for (const [index, slot] of ['one', 'two', 'three'].entries()) {
@@ -132,11 +150,11 @@ describe('campaign admission custody', () => {
         expect(supervisor.recordCaseResets(slot, 1, hash, ledger)).toEqual({ total: index + 1, stop: index === 2 });
         if (index < 2) supervisor.seal(slot, 1, hash, supervisor.receipts.verify);
         else expect(() => supervisor.seal(slot, 1, hash, supervisor.receipts.verify)).toThrow('case reset accounting requires stop');
-        supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+        supervisor.releaseDriver(driver); supervisor.close(); supervisor = new CampaignSupervisor(db, binding); driver = supervisor.claimDriver();
         expect(supervisor.caseResetCount('case')).toBe(index + 1);
       }
       expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM outcome").get()).toEqual({ total: 2 });
-      supervisor.close();
+      supervisor.releaseDriver(driver); supervisor.close();
       expect(() => new CampaignSupervisor(db, { binding: binding.binding, scheduleBytes, scheduleSHA256: binding.scheduleSHA256 })).toThrow('binding mismatch');
       supervisor = new CampaignSupervisor(db, binding);
       expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM outcome").get()).toEqual({ total: 2 }); supervisor.close();

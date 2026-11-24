@@ -92,6 +92,7 @@ export class CampaignSupervisor {
   }
   claimWorker(slotId, attemptNo, configBytes, configSHA256) {
     return this.transaction(() => {
+      this.assertDriver();
       this.verifyWorkerBinding(slotId, attemptNo, configBytes, configSHA256);
       const token = randomBytes(32).toString('hex');
       this.db.prepare('INSERT INTO worker_claim(slot_id,attempt_no,config_sha256,token_sha256) VALUES(?,?,?,?)').run(slotId, attemptNo, configSHA256, sha(token));
@@ -101,12 +102,14 @@ export class CampaignSupervisor {
   recordWorkerStart(slotId, attemptNo, pid) {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new TypeError('invalid worker process identity');
     this.transaction(() => {
+      this.assertDriver();
       const result = this.db.prepare("UPDATE worker_claim SET spawn_state='started',pid=?,host=?,process_start=?,pid_namespace=? WHERE slot_id=? AND attempt_no=? AND spawn_state='claimed'").run(pid, hostname(), processStart(pid), processNamespace(), slotId, attemptNo);
       if (result.changes !== 1) throw new Error('worker start custody mismatch');
     });
   }
   recordWorkerExit(slotId, attemptNo, spawnFailed = false) {
     this.transaction(() => {
+      this.assertDriver();
       const result = this.db.prepare('UPDATE worker_claim SET spawn_state=? WHERE slot_id=? AND attempt_no=? AND spawn_state=?').run(spawnFailed ? 'failed' : 'exited', slotId, attemptNo, spawnFailed ? 'claimed' : 'started');
       if (result.changes !== 1) {
         const row = this.db.prepare('SELECT spawn_state FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
@@ -129,14 +132,24 @@ export class CampaignSupervisor {
       }
       const token = randomBytes(32).toString('hex');
       this.db.prepare('INSERT INTO driver_claim VALUES(1,?,?,?,?,?)').run(process.pid, hostname(), processStart(process.pid), processNamespace(), sha(token));
+      this.driverToken = token;
       return token;
     });
   }
   releaseDriver(token) {
     if (typeof token !== 'string' || !/^[a-f0-9]{64}$/u.test(token)) throw new Error('invalid campaign driver claim');
+    if (this.driverToken !== token) throw new Error('campaign driver claim mismatch');
     this.transaction(() => {
       if (this.db.prepare('DELETE FROM driver_claim WHERE id=1 AND token_sha256=?').run(sha(token)).changes !== 1) throw new Error('campaign driver claim mismatch');
+      this.driverToken = undefined;
     });
+  }
+  assertDriver() {
+    if (!this.receipts) return;
+    const row = this.db.prepare('SELECT * FROM driver_claim WHERE id=1').get();
+    const start = processStart(process.pid), namespace = processNamespace();
+    if (!row || !this.driverToken || row.token_sha256 !== sha(this.driverToken) || row.pid !== process.pid || row.host !== hostname() || !start || row.process_start !== start ||
+        (process.platform === 'linux' && (!namespace || row.pid_namespace !== namespace))) throw new Error('campaign driver claim required');
   }
   noStartCount(slotId) {
     if (!this.slots.some((slot) => slot.id === slotId)) throw new Error('unregistered slot');
@@ -149,6 +162,7 @@ export class CampaignSupervisor {
   recordCaseResets(slotId, attemptNo, receiptSHA256, ledger) {
     if (!this.receipts || !isHash(receiptSHA256)) throw new Error('receipt store required');
     return this.transaction(() => {
+      this.assertDriver();
       const slot = this.slots.find((item) => item.id === slotId);
       const attempt = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
       const claim = this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo);
@@ -233,6 +247,7 @@ export class CampaignSupervisor {
   releaseCheckpoint(verifyReceipt, verifyRetry, ledger) {
     if (typeof verifyReceipt !== 'function' || this.pauseAfterSlot === undefined) throw new Error('checkpoint not configured');
     return this.transaction(() => {
+      this.assertDriver();
       const rows = this.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
       const count = this.slots.findIndex((s) => s.id === this.pauseAfterSlot) + 1;
       if (rows.length !== count) throw new Error('checkpoint prefix incomplete');
@@ -246,6 +261,7 @@ export class CampaignSupervisor {
   begin(slotId, { ledger, evidenceFiles, verifyReceipt, verifyRetry, nowMs = Date.now() }) {
     if (typeof verifyReceipt !== 'function') throw new TypeError('receipt verifier required');
     return this.transaction(() => {
+      this.assertDriver();
       const outcomes = this.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
       const next = this.slots[outcomes.length];
       if (!next || next.id !== slotId) throw new Error('slot is not the next unadmitted boundary');
@@ -283,6 +299,7 @@ export class CampaignSupervisor {
     if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || typeof verifyWorkerExited !== 'function' || verifyWorkerExited(slotId, attemptNo) !== true) throw new Error('worker exit not verified');
     if (typeof findTerminalReceipt !== 'function' || findTerminalReceipt(slotId, attemptNo) !== null) throw new Error('terminal receipt requires sealing before reconciliation');
     return this.transaction(() => {
+      this.assertDriver();
       const row = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
       if (!row || row.state !== 'started') throw new Error('attempt is not awaiting reconciliation');
       this.db.prepare("UPDATE worker_claim SET spawn_state='exited' WHERE slot_id=? AND attempt_no=? AND spawn_state='started'").run(slotId, attemptNo);
@@ -317,6 +334,7 @@ export class CampaignSupervisor {
   authorizeRetry(slotId, attemptNo, proofSHA256, { ledger, retryProbeId, verifyReceipt, verifyFailure, verifyRetry }) {
     if (!isHash(proofSHA256) || typeof retryProbeId !== 'string' || !retryProbeId || typeof verifyReceipt !== 'function' || typeof verifyFailure !== 'function' || typeof verifyRetry !== 'function') throw new Error('invalid retry authorization');
     this.transaction(() => {
+      this.assertDriver();
       const attempt = this.db.prepare('SELECT state,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
       const failures = this.db.prepare("SELECT attempt_no FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure')").all(slotId);
       if (!attempt || failures.length !== 1 || failures[0].attempt_no !== attemptNo || this.db.prepare('SELECT 1 FROM outcome WHERE slot_id=?').get(slotId) ||
@@ -331,6 +349,7 @@ export class CampaignSupervisor {
     if (!isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || typeof verifyFailure !== 'function' ||
         verifyReceipt(slotId, attemptNo, receiptSHA256) !== true || verifyFailure(slotId, attemptNo, receiptSHA256) !== true) throw new Error('failure evidence missing or changed');
     this.transaction(() => {
+      this.assertDriver();
       if (!this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       if (this.receipts) {
         const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
@@ -359,6 +378,7 @@ export class CampaignSupervisor {
   seal(slotId, attemptNo, receiptSHA256, verifyReceipt, verifyRetry, ledger) {
     if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || !isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || verifyReceipt(slotId, attemptNo, receiptSHA256) !== true) throw new Error('attempt receipt missing or changed');
     this.transaction(() => {
+      this.assertDriver();
       if (!this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       if (this.receipts) {
         const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
