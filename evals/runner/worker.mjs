@@ -8,15 +8,43 @@ import { outsideCheckout, runCase } from './case.mjs';
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) {
-  const { caseConfig, ledgerPath, ledgerBinding, limitMicros, attemptPrefix, expectedCalls } = options;
+  const { caseConfig, ledgerPath, ledgerBinding, limitMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const { TransportAdmissionError } = await import('../../dist/llm/transport-admission.js');
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros });
   try {
+    let boundaryVerified = false;
     const fetchForCall = (call) => {
       const matching = expectedCalls.filter((item) => item.stage === call.stage && item.kind === call.kind && (item.purpose ?? null) === (call.purpose ?? null));
       const expected = matching.length === 1 ? matching[0] : {};
-      return makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError });
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError });
+      const preflight = () => {
+        if (boundaryVerified) return;
+        const id = `${attemptPrefix}/${call.callId}/preflight`;
+        const verifyEvidence = (_kind, hash) => {
+          const file = evidenceFiles?.[hash];
+          if (typeof file !== 'string') return false;
+          try { return createHash('sha256').update(readFileSync(file)).digest('hex') === hash; }
+          catch { return false; }
+        };
+        let reason;
+        try {
+          if (typeof boundaryId !== 'string' || !boundaryId) reason = 'binding_mismatch';
+          else {
+            const key = ledger.keyDecision({ verifyEvidence });
+            const health = ledger.healthDecision({ boundaryId, provider: call.provider, nowMs: Date.now(), verifyEvidence });
+            if (key.action !== 'admit') reason = key.reason ?? `key_${key.action}`;
+            else if (health.action !== 'admit') reason = health.reason ?? `health_${health.action}`;
+          }
+        } catch { reason = 'binding_mismatch'; }
+        if (reason !== undefined) {
+          try { ledger.recordRefusal({ id, logicalId: `${attemptPrefix}/${call.callId}`, reason }); }
+          catch { try { ledger.stop('accounting_failed'); } catch {} throw new TransportAdmissionError('accounting_failed'); }
+          throw new TransportAdmissionError(reason === 'binding_mismatch' ? 'binding_mismatch' : reason === 'budget_limit' ? 'campaign_budget' : 'campaign_stopped');
+        }
+        boundaryVerified = true;
+      };
+      return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
     return await runCase(caseConfig, { fetchForCall });
   } finally { ledger.close(); }
