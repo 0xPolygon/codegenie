@@ -118,6 +118,10 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
           current.evidence = { ...current.evidence, usagePresent: true,
             costPresent: current.evidence?.costPresent === true || observation.costPresent === true,
             ...(observation.isByok !== undefined ? { isByok: observation.isByok } : {}) };
+          for (const field of ['inputTokens', 'outputTokens', 'totalTokens']) {
+            delete current.evidence[field];
+            if (Number.isSafeInteger(observation[field]) && observation[field] >= 0) current.evidence[field] = observation[field];
+          }
           if (typeof observation.providerCost === 'number') current.evidence.providerReportedCostUSD = observation.providerCost;
           if (typeof observation.providerCostLowerBound === 'number') {
             current.lowerBoundMicros = Math.max(current.lowerBoundMicros ?? 0, costUnits(observation.providerCostLowerBound, 6));

@@ -16,7 +16,12 @@ export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefi
   const prefix = `${attemptPrefix}/`;
   const physicalRows = () => ledger.db.prepare('SELECT id,state,http_status,evidence_json FROM physical WHERE substr(id,1,?)=? ORDER BY id').all(prefix.length, prefix);
   const sealHealth = (row, outcome) => {
-    const receipt = { kind: 'health', physicalId: row.id, boundaryId, provider: 'openrouter', purpose, outcome, observedMs: Date.now() };
+    const model = modelCalls.find((call) => typeof call.callId === 'string' && row.id.includes(`/${call.callId}/`));
+    const usage = row.evidence_json === null ? null : JSON.parse(row.evidence_json);
+    const tokenCounts = usage && ['inputTokens', 'outputTokens', 'totalTokens'].every((field) => Number.isSafeInteger(usage[field]) && usage[field] >= 0)
+      ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens } : undefined;
+    const receipt = { kind: 'health', physicalId: row.id, boundaryId, provider: 'openrouter', purpose, outcome, observedMs: Date.now(),
+      ...(model ? { modelCallId: model.callId } : {}), ...(tokenCounts ? { usage: tokenCounts } : {}) };
     const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`), digest = createHash('sha256').update(bytes).digest('hex');
     if (sealReceipt(bytes, digest) !== true) throw new Error('health receipt not sealed');
     ledger.recordHealth({ physicalId: row.id, outcome, observedMs: receipt.observedMs, evidenceSHA256: digest });
@@ -31,7 +36,11 @@ export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefi
       fetchForCall(call) {
         const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError, healthBoundary: boundaryId, healthPurpose: purpose });
         return { ...transport, fetch: (input, init) => {
-          if (++starts > 1) throw new TransportAdmissionError('campaign_stopped');
+          if (++starts > 1) {
+            try { ledger.recordRefusal({ id: `${attemptPrefix}/${call.callId}/health-refusal-${starts}`, logicalId: `${attemptPrefix}/${call.callId}`, reason: 'health_single_start' }); }
+            catch { try { ledger.stop('accounting_failed'); } catch {} throw new TransportAdmissionError('accounting_failed'); }
+            throw new TransportAdmissionError('campaign_stopped');
+          }
           return transport.fetch(input, init);
         } };
       } });
@@ -42,15 +51,18 @@ export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefi
     if (result?.ok !== true || starts !== 1 || rows.length !== 1 || rows[0].state === 'open' || rows[0].http_status !== 200 ||
         modelCalls.length !== 1 || modelCalls[0].status !== 'ok') throw new Error('health result incomplete');
     const usage = rows[0].evidence_json === null ? null : JSON.parse(rows[0].evidence_json);
-    if (usage?.usagePresent !== true) throw new Error('health usage missing');
+    if (usage?.usagePresent !== true || ['inputTokens', 'outputTokens', 'totalTokens'].some((field) => !Number.isSafeInteger(usage[field]) || usage[field] < 0)) throw new Error('health usage missing');
     return sealHealth(rows[0], 'clean');
   } catch {
     // Provider errors and accounting denials are already in the physical ledger.
     // Never retain the exception or response body in the health receipt.
     try {
       const rows = physicalRows();
-      if (!terminal && rows.length === 1 && rows[0].state !== 'open' && [500, 502, 503, 504].includes(rows[0].http_status)) return sealHealth(rows[0], 'capacity');
-      if (terminal) ledger.stop('accounting_failed');
+      const peakLoad = rows.length === 1 && rows[0].http_status === 200 && modelCalls.some((row) => row.status === 'transient_error' &&
+        typeof row.callId === 'string' && rows[0].id.includes(`/${row.callId}/`) && typeof row.errorMessage === 'string' &&
+        /maximum usage size allowed during peak load/iu.test(row.errorMessage));
+      if (!terminal && rows.length === 1 && rows[0].state !== 'open' && (peakLoad || [500, 502, 503, 504].includes(rows[0].http_status))) return sealHealth(rows[0], 'capacity');
+      ledger.stop(terminal ? 'accounting_failed' : 'health_failed');
     } catch { try { ledger.stop('accounting_failed'); } catch { /* retain any open hold */ } }
     return { status: 'failed' };
   }
