@@ -6109,20 +6109,38 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     } finally { fixture.dispose(); }
   });
 
-  it.each(["CreateGitClientOptions", "runGit", "CreateSystemDefaultDevice"])("gives one corrective source-object error for %s without executing the rejected tool", async symbolName => {
-    const execute = vi.fn(async () => ({ text: "unexpected source" }));
-    const tool: ToolDefinition = { name: "find_definition", description: "find", parameters: Type.Object({
-      symbolName: Type.String(), source: Type.Optional(Type.Object({ kind: Type.Union([Type.Literal("head"), Type.Literal("base"), Type.Literal("auto")]) })) }), execute };
-    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "wrong-source", name: tool.name,
-      arguments: { symbolName, source: "head" } }]), assistant([validSubmitReviewCall("done")])]);
+  it.each([
+    { surface: "current", name: "find_definition", input: { symbolName: "runGit", pathGlob: "src/**", source: "auto" },
+      corrected: { symbolName: "runGit", pathGlob: "src/**", source: { kind: "auto" } } },
+    { surface: "current", name: "find_likely_tests", input: { path: "src/git.ts", source: "base" },
+      corrected: { path: "src/git.ts", source: { kind: "base" } } },
+    { surface: "six", name: "find_usages", input: { name: "runGit", source: { kind: "head", scope: "tests", pathGlob: "src/**" } },
+      corrected: { name: "runGit", source: { kind: "head" }, scope: "tests", pathGlob: "src/**" } },
+    { surface: "six", name: "search_files", input: { query: "runGit(", source: { kind: "base", pathGlob: "src/**", mode: "literal", contextMode: "lines" } },
+      corrected: { query: "runGit(", source: { kind: "base" }, pathGlob: "src/**", mode: "literal", contextMode: "lines" } }
+  ] as const)("echoes a valid corrected $surface $name call and rejects the original before execution", async ({ surface, name, input, corrected }) => {
+    const execute = vi.fn(async () => ({ text: "source result" }));
+    const definition = buildRepositoryToolDefinitions(fakeRepositoryTools(), { toolSurface: surface }).find(tool => tool.name === name)!;
+    const tool = { ...definition, execute };
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "wrong-source", name, arguments: input }]),
+      assistant([{ type: "toolCall", id: "retry-source", name, arguments: corrected }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const telemetry = fakeTelemetry();
     const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
     await runner.runStructured({ ...submitReviewRequest("wrong-source"), tools: [tool],
-      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 2_000 } });
-    expect(execute).not.toHaveBeenCalled();
-    expect(adapter.contexts[1]).toContain('source must be an object: {\\"kind\\":\\"head\\"}');
-    expect(adapter.contexts[1]).not.toContain("Invalid arguments for find_definition: Invalid arguments for");
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 4_000 } });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(corrected, expect.any(AbortSignal));
+    expect(telemetry.toolCalls.map(call => call.errorCode)).toEqual(["invalid_args", undefined]);
+    const results = JSON.parse(adapter.contexts[1]!).filter((message: { role: string }) => message.role === "toolResult");
+    const text = results[0].content[0].text;
+    expect(text).toContain(`tool error: invalid_args: Invalid arguments for ${name}:`);
+    const echoed = /Corrected call arguments: (\{[^\n]+\})\. Correct the arguments and retry; no source was read\./u.exec(text);
+    expect(echoed).not.toBeNull();
+    expect(JSON.parse(echoed![1]!)).toEqual(corrected);
   });
 
   it("records bounded redacted raw invalid arguments without changing tool feedback or successful calls", async () => {
