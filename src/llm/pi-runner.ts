@@ -2613,6 +2613,7 @@ function recordToolCall(
     candidateId: request.telemetryContext?.candidateId,
     modelCallId,
     tool: toolCall.name,
+    ...(outcome.errorCode === "invalid_args" ? rawToolArgumentsForRecord(toolCall) : {}),
     args: toolArgsForRecord(meta.definitionScope ? { ...outcome.args, glob: meta.definitionScope.glob } : outcome.args),
     backend: preExecutionBudgetRefusal ? undefined : meta.backend,
     precision: preExecutionBudgetRefusal ? undefined : meta.precision,
@@ -4378,6 +4379,20 @@ function jsonSchemaDraft202012(schema: unknown): unknown {
     delete output.items;
   }
   return output;
+}
+
+function rawToolArgumentsForRecord(toolCall: PiToolCall): Pick<ToolCallRecord, "rawArguments" | "rawArgumentsTruncated" | "rawArgumentsSource"> {
+  const delimiter = "\n\nReceived arguments:\n";
+  const parseError = toolCall.argumentsError;
+  const source = parseError === undefined ? "tool_call" : "parse_error";
+  const delimiterIndex = parseError?.indexOf(delimiter) ?? -1;
+  const raw = parseError === undefined ? JSON.stringify(toolCall.arguments)
+    : delimiterIndex < 0 ? undefined : parseError.slice(delimiterIndex + delimiter.length);
+  if (raw === undefined) return { rawArgumentsSource: source };
+  const redacted = stripCredentialsAtSink(raw);
+  const limit = 4_000;
+  return { rawArguments: redactThenTruncate(redacted, limit, "…[truncated]"),
+    rawArgumentsTruncated: redacted.length > limit, rawArgumentsSource: source };
 }
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {

@@ -280,6 +280,8 @@ export type PiToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Pi's parser includes the raw argument text here when JSON parsing fails. */
+  argumentsError?: string;
   /** Present only on stage submit calls finalized by Codegenie's stream boundary. */
   argumentParse?: PiTrustedArgumentParse;
 };
