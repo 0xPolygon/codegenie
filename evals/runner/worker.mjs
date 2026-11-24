@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, readSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { CampaignLedger } from './ledger.mjs';
 import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from './boundary.mjs';
@@ -53,7 +54,7 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity, assignedEffects } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, initialize: false });
@@ -79,7 +80,9 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       ? activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerConfigSHA256, workerToken }) : false;
     if ((workerToken !== undefined || supervisorPath !== undefined) && !authenticated) throw bindingError();
     let boundaryVerified = false;
+    const packetTemplates = new Set();
     const fetchForCall = (call) => {
+      if (assignedEffects !== undefined && call.stage === 7 && call.purpose !== 'location_clarification') packetTemplates.add(call.templateVersion);
       const matching = expectedCalls.filter((item) => item.stage === call.stage && item.kind === call.kind && (item.purpose ?? null) === (call.purpose ?? null));
       const expected = matching.length === 1 ? matching[0] : {};
       const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError });
@@ -116,9 +119,13 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, budgeted: true, onFailure(error) {
+    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, budgeted: true, ...(assignedEffects !== undefined ? { assignedEffects } : {}), onFailure(error) {
       if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
     } });
+    if (assignedEffects !== undefined) {
+      if (typeof assignedEffects !== 'boolean') throw bindingError();
+      writeFileSync(path.join(result.runDir, 'arm-binding.json'), JSON.stringify({ declaredArm: assignedEffects ? 'treatment' : 'control', assignedEffects, packetTemplates: [...packetTemplates].sort() }) + '\n', { mode: 0o600 });
+    }
     if (result.status !== 'error') return result;
     const operational = operationalError(ledger, attemptPrefix, failure);
     return { ...result, operationalError: operational,

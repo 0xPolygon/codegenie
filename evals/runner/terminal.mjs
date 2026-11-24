@@ -20,7 +20,7 @@ function jsonl(file, expected) {
 
 // Check terminal evidence before a receipt becomes selectable. No error text,
 // model prose, or tool arguments are used to classify a row.
-export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId }) {
+export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false }) {
   if (typeof attemptPrefix !== 'string' || !attemptPrefix || !ledger?.db || !Array.isArray(expectedPacketIds) || expectedPacketIds.some((id) => typeof id !== 'string' || !id) || new Set(expectedPacketIds).size !== expectedPacketIds.length || !count(priorRecoveredResets)) throw new Error('invalid terminal binding');
   const root = path.join(outsideCheckout(runDir), 'telemetry'), run = json(path.join(root, 'run.json')), summary = json(path.join(root, 'telemetry.json'));
   const failureMode = typeof failureCallId === 'string' && /^[A-Za-z0-9._-]+$/u.test(failureCallId);
@@ -89,6 +89,6 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
   }
   if (priorRecoveredResets + recoveredResets >= 3) throw new RecoveredResetLimitError(recoveredResets);
   const stopped = ledger.totals().stopped;
-  if (stopped) throw new Error('campaign stop is latched');
+  if (stopped && !historical) throw new Error('campaign stop is latched');
   return { status: run.outcome.status, packets: packetIds.length, modelCalls: models.length, physicalStarts: physical.length, recoveredResets };
 }

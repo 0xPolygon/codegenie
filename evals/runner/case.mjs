@@ -67,6 +67,27 @@ export function prepareTarget(target, url, base, head, pullRequest) {
   }
 }
 
+// Resolve paths before a fetch or fixture copy, including paths which will be
+// created by prepareTarget. This matches the inputs runCase will expose.
+function canonicalPotential(value) {
+  const target = path.resolve(value);
+  let ancestor = target;
+  while (!existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) throw new Error('unable to resolve review input');
+    ancestor = parent;
+  }
+  return path.resolve(realpathSync(ancestor), path.relative(ancestor, target));
+}
+function fixtureReviewRoots(suiteDir, fixture) {
+  const expanded = fixture === '~' ? homedir() : fixture.startsWith('~/') ? path.join(homedir(), fixture.slice(2)) : fixture;
+  const target = path.resolve(suiteDir, expanded);
+  try {
+    if (path.resolve(git(target, 'rev-parse', '--show-toplevel')) === target) return [canonicalPotential(target)];
+  } catch { /* Materializable fixture, not a Git worktree root. */ }
+  return [canonicalPotential(path.join(target, 'base')), canonicalPotential(path.join(target, 'feature'))];
+}
+
 export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   if (typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._-]+\/attempt-\d{2,}$/u.test(attemptPrefix) || ['.', '..'].includes(attemptPrefix.split('/')[0])) throw new Error('invalid attempt prefix');
   const file = path.resolve(configFile), config = JSON.parse(caseConfigBytes.toString('utf8'));
@@ -83,10 +104,20 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs + 300_000 > 2_147_483_647) throw new CampaignConfigurationError('unsupported_case_config', 'review timeout exceeds the campaign worker watchdog limit');
   const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
-  return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
+  const outputDir = outsideCheckout(path.join(outputRoot, attemptPrefix));
+  const repo = found[0].evalCase.repo;
+  if (!repo || (repo.external === undefined && repo.fixture === undefined)) throw new CampaignConfigurationError('unsupported_case_config', 'campaign requires a repository-backed case');
+  // Without an explicit targetDir each attempt gets a different target.
+  // Protect the slot output root so retries cannot move the review tree under
+  // a private input after this preflight.
+  const reviewInputRoots = repo?.external !== undefined
+    ? [canonicalPotential(config.targetDir ? path.resolve(path.dirname(file), config.targetDir) : path.dirname(outputDir))]
+    : fixtureReviewRoots(suiteDir, repo.fixture);
+  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots };
+
 }
 
-export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false } = {}) {
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false, assignedEffects } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -111,7 +142,9 @@ export async function runCase(configFile, { fetchForCall, onFailure, plannerRepl
     selected.evalCase.repo = { external: prepareTarget(target, url, selected.evalCase.command?.base, selected.evalCase.command?.head, match ? Number(match[1]) : undefined) };
   }
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
-  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
+  if (assignedEffects !== undefined && (!budgeted || typeof assignedEffects !== 'boolean')) throw new Error('invalid campaign arm override');
+  const configForRun = assignedEffects === undefined ? loaded.config : { ...loaded.config, review: { ...loaded.config.review, assignedEffects } };
+  return runEvalCase(suite, selected, { config: configForRun, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
     ...(onFailure !== undefined ? { onFailure } : {}),
     ...(plannerReplay !== undefined ? { plannerReplay } : {}),
     ...(fetchForCall !== undefined ? { fetchForCall } : {}) });

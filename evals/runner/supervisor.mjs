@@ -67,19 +67,58 @@ export class CampaignSupervisor {
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS case_reset_event(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, case_id TEXT NOT NULL, receipt_sha256 TEXT NOT NULL, resets INTEGER NOT NULL, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS driver_claim(id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, host TEXT NOT NULL, process_start TEXT, pid_namespace TEXT, token_sha256 TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS blind_export(id INTEGER PRIMARY KEY CHECK(id=1), mapping_sha256 TEXT, manifest_sha256 TEXT, mechanism_sha256 TEXT, coding_sha256 TEXT);`);
     try {
       const columns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
       if (!['binding', 'schedule_sha256', 'config_sha256', 'receipt_directory', 'schema_version'].every((name) => columns.includes(name))) throw new Error('unsupported campaign supervisor schema');
       this.transaction(() => {
         const old = this.db.prepare('SELECT * FROM campaign').get();
         if (!old && !initialize) throw new Error('campaign supervisor custody requires reconciliation');
-        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?,1)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
+        if (!old) {
+          this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?,1)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
+          this.db.prepare('INSERT INTO blind_export VALUES(1,NULL,NULL,NULL,NULL)').run();
+        }
         else if (old.schema_version !== 1) throw new Error('unsupported campaign supervisor schema');
         else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256 || old.receipt_directory !== boundReceiptDirectory) throw new Error('campaign schedule binding mismatch');
+        const blind = this.db.prepare('SELECT mapping_sha256,manifest_sha256,mechanism_sha256,coding_sha256 FROM blind_export WHERE id=1').get();
+        if (!blind || ((blind.mapping_sha256 === null) !== (blind.manifest_sha256 === null)) || (blind.mapping_sha256 !== null && (!isHash(blind.mapping_sha256) || !isHash(blind.manifest_sha256))) || (blind.mechanism_sha256 !== null && (!isHash(blind.mechanism_sha256) || blind.mapping_sha256 === null)) || (blind.coding_sha256 !== null && (!isHash(blind.coding_sha256) || blind.mechanism_sha256 === null))) throw new Error('blind export custody requires reconciliation');
         if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
     } catch (error) { this.db.close(); throw error; }
+  }
+  bindBlindExport(mappingSHA256, manifestSHA256) {
+    if (!isHash(mappingSHA256) || !isHash(manifestSHA256)) throw new Error('invalid blind export binding');
+    return this.transaction(() => {
+      this.assertDriver();
+      const existing = this.db.prepare('SELECT mapping_sha256,manifest_sha256 FROM blind_export WHERE id=1').get();
+      if (!existing) throw new Error('blind export custody requires reconciliation');
+      if (existing.mapping_sha256 !== null && (existing.mapping_sha256 !== mappingSHA256 || existing.manifest_sha256 !== manifestSHA256)) throw new Error('blind export binding changed');
+      if (existing.mapping_sha256 === null) this.db.prepare('UPDATE blind_export SET mapping_sha256=?,manifest_sha256=? WHERE id=1').run(mappingSHA256, manifestSHA256);
+      return { mapping_sha256: mappingSHA256, manifest_sha256: manifestSHA256 };
+    });
+  }
+  bindMechanismExport(mechanismSHA256) {
+    if (!isHash(mechanismSHA256)) throw new Error('invalid mechanism export binding');
+    return this.transaction(() => {
+      this.assertDriver();
+      const existing = this.db.prepare('SELECT mapping_sha256,manifest_sha256,mechanism_sha256 FROM blind_export WHERE id=1').get();
+      if (!existing || !isHash(existing.mapping_sha256) || !isHash(existing.manifest_sha256)) throw new Error('blind export not bound');
+      if (existing.mechanism_sha256 !== null && existing.mechanism_sha256 !== mechanismSHA256) throw new Error('mechanism export binding changed');
+      if (existing.mechanism_sha256 === null) this.db.prepare('UPDATE blind_export SET mechanism_sha256=? WHERE id=1').run(mechanismSHA256);
+      return true;
+    });
+  }
+  bindCodingFreeze(codingSHA256) {
+    if (!isHash(codingSHA256)) throw new Error('invalid coding freeze');
+    return this.transaction(() => {
+      this.assertDriver();
+      const existing = this.db.prepare('SELECT mechanism_sha256,coding_sha256 FROM blind_export WHERE id=1').get();
+      if (!existing || !isHash(existing.mechanism_sha256)) throw new Error('mechanism export not bound');
+      if (existing.coding_sha256 !== null && existing.coding_sha256 !== codingSHA256) throw new Error('coding freeze changed');
+      if (existing.coding_sha256 === null) this.db.prepare('UPDATE blind_export SET coding_sha256=? WHERE id=1').run(codingSHA256);
+      return true;
+    });
   }
   verifyWorkerBinding(slotId, attemptNo, configBytes, configSHA256) {
     if (!Buffer.isBuffer(configBytes) || !isHash(configSHA256) || sha(configBytes) !== configSHA256) throw new Error('worker config digest mismatch');
@@ -199,7 +238,7 @@ export class CampaignSupervisor {
         probe.health_purpose !== 'retry' || probe.retry_for !== prefixFor(slotId, attemptNo) || probe.retry_failure_sha256 !== failureSHA256 || probe.state === 'open' || probe.http_status < 200 || probe.http_status >= 300 || probe.outcome !== 'clean' ||
         probe.started_at_ms <= failed.last || probe.settled_at_ms === null || probe.observed_ms < probe.settled_at_ms) throw new Error('retry probe is not a fresh clean ledger result');
   }
-  checkedOutcomes(verifyReceipt, verifyRetry, ledger) {
+  checkedOutcomes(verifyReceipt, verifyRetry, ledger, { historical = false } = {}) {
     if (this.receipts) {
       const supplied = verifyReceipt;
       verifyReceipt = (...args) => supplied(...args) === true && this.receipts.verify(...args) === true;
@@ -209,7 +248,7 @@ export class CampaignSupervisor {
         const found = this.receipts.find(event.slot_id, event.attempt_no);
         if (!slot || slot.caseId !== event.case_id || !attempt || !found || found.hash !== event.receipt_sha256 || found.receipt.caseId !== event.case_id || found.receipt.recoveredResets !== event.resets) throw new Error('case reset evidence missing or changed');
         const terminal = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(event.slot_id, event.attempt_no), ledger,
-          expectedPacketIds: slot.expectedPacketIds, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) });
+          expectedPacketIds: slot.expectedPacketIds, historical, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) });
         if (terminal.recoveredResets !== event.resets || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset evidence missing or changed');
       }
     }
