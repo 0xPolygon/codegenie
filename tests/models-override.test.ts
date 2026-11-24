@@ -248,7 +248,9 @@ describe("Anthropic request-level effort", () => {
         native.output_config.effort = reasoning;
         expect(fixed).toEqual(native);
         expect(effortWireProtocol(catalog, reasoning, 2)).toBeUndefined();
-        expect(effortWireProtocol(adjusted.raw, reasoning, 2)).toEqual({ wireEffort: reasoning, configurationUpdate: false });
+        expect(effortWireProtocol(adjusted.raw, reasoning, 2)).toEqual({
+          wireEffort: fixed.output_config.effort, configurationUpdate: false
+        });
       }
       expect(captured).toHaveLength(8);
       expect(catalog).toEqual(original);
