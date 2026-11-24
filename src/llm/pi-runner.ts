@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
 import { applyModelOverrides, effortWireProtocol, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
+import { observeOpenRouterResponse } from "./openrouter-response-observer.js";
 import { createToolArgumentStreamGuard, type ToolArgumentStreamLimit } from "./tool-argument-stream-limit.js";
 import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
 import {
@@ -1668,6 +1669,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
     const providerObservation: ProviderFailureObservation = {};
+    let upstreamFailureObserved = false;
+    let responseGeneration = 0;
     let providerStarted = false;
     let admission: ReturnType<typeof captureTransportAdmission> | undefined;
     let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
@@ -1744,16 +1747,16 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             { messages, tools: tools.map(providerToolSpec) },
             {
               signal: streamSignal,
-              ...(opts.fetchForCall !== undefined ? (() => {
-                const transport = opts.fetchForCall!({
+              ...(opts.fetchForCall !== undefined || model.provider === "openrouter" ? (() => {
+                const transport = opts.fetchForCall?.({
                   callId, stage: request.stage, kind, provider: model.provider, modelId: model.id,
                   reasoningSelected: reasoning, templateVersion: request.templateVersion,
                   ...(request.purpose !== undefined ? { purpose: request.purpose } : {}),
                   ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
                   ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
                 });
-                admission = captureTransportAdmission(transport.fetch);
-                onTransportUsage = transport.onUsage === undefined ? undefined : async (observation) => {
+                admission = transport === undefined ? undefined : captureTransportAdmission(transport.fetch);
+                onTransportUsage = transport?.onUsage === undefined ? undefined : async (observation) => {
                   try { await transport.onUsage!(observation); }
                   catch (error) {
                     const physicalId = error instanceof TransportAdmissionError ? error.physicalId : undefined;
@@ -1762,13 +1765,44 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                     throw failure;
                   }
                 };
-                return {
-                  fetch: admission.fetch
+                const underlying = admission?.fetch ?? globalThis.fetch;
+                const fetch: typeof globalThis.fetch = model.provider !== "openrouter" ? underlying : async (input, init) => {
+                  // Each physical response has its own upstream; never carry it
+                  // into a later native retry whose provider may be different.
+                  delete responseCapture.upstreamProvider;
+                  upstreamFailureObserved = false;
+                  delete providerObservation.policyMessage;
+                  delete providerObservation.physicalHttpStatus;
+                  delete providerObservation.httpStatus;
+                  delete providerObservation.streamOutage;
+                  const generation = ++responseGeneration;
+                  const response = await underlying(input, init);
+                  if (generation === responseGeneration) providerObservation.physicalHttpStatus = response.status;
+                  return observeOpenRouterResponse(response, (chunk, failure) => {
+                    if (generation !== responseGeneration) return;
+                    if (!failure) {
+                      if (!upstreamFailureObserved && isRecord(chunk)) observeUpstreamProvider(responseCapture, chunk.provider);
+                      return;
+                    }
+                    delete responseCapture.upstreamProvider;
+                    upstreamFailureObserved = true;
+                    if (isRecord(chunk)) {
+                      const error = isRecord(chunk.error) ? chunk.error : chunk;
+                      const metadata = isRecord(error.metadata) ? error.metadata : undefined;
+                      const name = metadata?.provider_name;
+                      observeUpstreamProvider(responseCapture, typeof name === "string" && name.trim() ? name : chunk.provider);
+                    }
+                    const policyMessage = providerPolicyBlockMessage(isRecord(chunk) && chunk.error ? chunk.error : chunk);
+                    if (policyMessage !== undefined) providerObservation.policyMessage = policyMessage;
+                  });
                 };
+                return { fetch };
               })() : {}),
               onProviderStreamEvent: async (chunk: unknown) => {
                 const outage = streamOutageReason(chunk);
                 if (outage !== undefined) providerObservation.streamOutage = outage;
+                const policyMessage = model.provider === "openrouter" ? undefined : streamPolicyBlockMessage(chunk);
+                if (policyMessage !== undefined) providerObservation.policyMessage = policyMessage;
                 // Responses can include argument bytes in output_item.added without
                 // emitting a Pi delta. Keep only whether that prefix was empty.
                 if (chunk && typeof chunk === "object") {
@@ -1887,6 +1921,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const usage = usageReported === false && !hasNonzeroUsage(normalizedUsage) ? undefined : normalizedUsage;
       const providerFailure = providerFailureFromMessage(message, taskTimedOut(), providerObservation);
       if (providerFailure) {
+        if (model.provider === "openrouter" && !upstreamFailureObserved) delete responseCapture.upstreamProvider;
         const retry = taskTimedOut()
           ? { retryable: false, reason: "task_deadline_exhausted" }
           : classifyProviderRetry(providerFailure.cause, attempt, providerObservation);
@@ -1906,7 +1941,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           durationMs,
           usage,
           status: providerFailure.status,
-          errorCode: "llm_call_failed",
+          errorCode: retry.reason === "provider_policy_block" ? "provider_policy_block" : "llm_call_failed",
           errorMessage: providerFailure.message,
           retryable: retry.retryable,
           retryReason: retry.reason,
@@ -1979,6 +2014,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       });
       return { source: "provider", message, callId };
     } catch (cause) {
+      if (model.provider === "openrouter" && !upstreamFailureObserved) delete responseCapture.upstreamProvider;
       let denial = admission?.denial() ?? (cause instanceof TransportAdmissionError ? cause : undefined);
       if (denial === undefined && onTransportUsage !== undefined && !terminalUsageSent) {
         terminalUsageSent = true;
@@ -1997,7 +2033,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       if (denial !== undefined) {
         releaseReservation();
         recordErroredModelCall(opts, request, model, {
-          callId, protocol, kind, finalizeMode, finalizeTarget, attempt,
+          callId, protocol, providerResponse: responseCapture, kind, finalizeMode, finalizeTarget, attempt,
           cacheStatus: opts.cache ? "miss" : "disabled", promptText,
           durationMs: Date.now() - startedAt, status: "aborted",
           errorCode: denial.code, errorMessage: denial.message,
@@ -2046,7 +2082,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         durationMs: Date.now() - startedAt,
         usage: attemptUsage,
         status,
-        errorCode: outageCancellation?.code ?? "llm_call_failed",
+        errorCode: outageCancellation?.code ?? (retry.reason === "provider_policy_block" ? "provider_policy_block" : "llm_call_failed"),
         errorMessage: outageCancellation !== undefined ? "Cancelled after provider outage"
           : cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
@@ -2325,6 +2361,7 @@ type ProviderResponseCapture = {
   ttfbMs?: number;
   providerHttpStatus?: number;
   providerRequestId?: string;
+  upstreamProvider?: string;
   rateLimit?: Record<string, string>;
 };
 
@@ -2334,6 +2371,15 @@ function providerResponseForRecord(response: ProviderResponseCapture | undefined
     snapshot.streamProgress = { ...snapshot.streamProgress, partial: true };
   }
   return snapshot;
+}
+
+function observeUpstreamProvider(capture: ProviderResponseCapture, value: unknown): void {
+  if (typeof value !== "string" || value.trim().length === 0) return;
+  const provider = value.trim();
+  const safe = provider.length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(provider) && stripCredentialsAtSink(provider) === provider
+    ? provider : "indeterminate";
+  if (capture.upstreamProvider === undefined) capture.upstreamProvider = safe;
+  else if (capture.upstreamProvider !== safe) capture.upstreamProvider = "indeterminate";
 }
 
 type ProviderProtocolFields = {
@@ -4110,6 +4156,11 @@ type ProviderRetryClassification = {
 
 function classifyProviderRetry(cause: unknown, attempt: number, observation?: ProviderFailureObservation): ProviderRetryClassification {
   const status = providerFailureHttpStatus(cause, observation);
+  const responseStatus = observation?.physicalHttpStatus ?? observation?.httpStatus;
+  if ((responseStatus === 200 || (responseStatus !== undefined && responseStatus >= 500)) &&
+      (observation?.policyMessage !== undefined || providerPolicyBlockMessage(cause) !== undefined)) {
+    return { retryable: false, reason: "provider_policy_block" };
+  }
   if (status === undefined && observation?.streamOutage !== undefined) {
     return { retryable: true, reason: observation.streamOutage };
   }
@@ -4192,7 +4243,7 @@ function toLlmError(
 }
 
 type StreamOutageReason = "temporarily_unavailable" | "provider_overloaded" | "server_error";
-type ProviderFailureObservation = { httpStatus?: number; streamOutage?: StreamOutageReason };
+type ProviderFailureObservation = { httpStatus?: number; physicalHttpStatus?: number; streamOutage?: StreamOutageReason; policyMessage?: string };
 
 function providerOutageCancellation(signal: AbortSignal): CodegenieError | undefined {
   const reason: unknown = signal.reason;
@@ -4228,6 +4279,15 @@ function finishedProviderFailure(
   const cancelled = providerOutageCancellation(opts.runSignal);
   if (cancelled !== undefined) return cancelled;
   const httpStatus = providerFailureHttpStatus(cause, observation);
+  if (retry.reason === "provider_policy_block") {
+    const provider = redactThenTruncate(model.provider, 100, "…", true).replace(/[\s\p{Cc}]+/gu, " ").trim();
+    const modelId = redactThenTruncate(model.id, 100, "…", true).replace(/[\s\p{Cc}]+/gu, " ").trim();
+    return new CodegenieError("provider_policy_block", `Provider ${provider} (model ${modelId}) blocked the request by content policy`, {
+      recoverable: false,
+      context: definedRecord({ ...location, provider, model: modelId, reason: "provider_policy_block",
+        providerHttpStatus: observation.httpStatus ?? httpStatus, providerMessage: observation.policyMessage ?? providerPolicyBlockMessage(cause) })
+    });
+  }
   const outage = observation.httpStatus === 200 || httpStatus === undefined ? observation.streamOutage
     : httpStatus >= 500 ? "server_error" : undefined;
   if (outage === undefined || status !== "transient_error" || !retry.retryable) {
@@ -4374,6 +4434,32 @@ function isUsageLimitError(cause: unknown, status: number | undefined): boolean 
 }
 
 const PROVIDER_MESSAGE_MAX_CHARS = 300;
+
+// Inspect provider error messages only, never model output or request text.
+// OpenRouter can wrap the upstream explanation in metadata.raw JSON.
+function providerPolicyBlockMessage(cause: unknown): string | undefined {
+  const raw = redactThenTruncate(providerErrorText(cause), 65_536);
+  const direct = isRecord(cause) ? (isRecord(cause.error) ? cause.error : cause) : undefined;
+  const body = providerErrorBody(raw) ?? direct;
+  const metadata = isRecord(body?.metadata) ? body.metadata : undefined;
+  const nested = typeof metadata?.raw === "string" ? providerErrorBody(redactThenTruncate(metadata.raw, 65_536)) : undefined;
+  const candidates = [nested?.message, body?.message, ...(body === undefined ? [raw] : [])];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const message = redactThenTruncate(candidate, 65_536, "…").replace(/\s+/gu, " ").trim();
+    if (/\bcontent[\s_-]+policy\b|\bresource\b.{0,100}\btemporarily blocked\b/iu.test(message)) {
+      return redactThenTruncate(message, PROVIDER_MESSAGE_MAX_CHARS, "…");
+    }
+  }
+  return undefined;
+}
+
+function streamPolicyBlockMessage(chunk: unknown): string | undefined {
+  if (!isRecord(chunk)) return undefined;
+  const failure = chunk.type === "response.failed" && isRecord(chunk.response) ? chunk.response.error
+    : chunk.type === "error" || (chunk.type === undefined && isRecord(chunk.error)) ? chunk.error ?? chunk : undefined;
+  return failure === undefined ? undefined : providerPolicyBlockMessage(failure);
+}
 
 // The provider's own prose is the only thing that explains *why* a call failed.
 // It is buried in the raw body, so lift it out for the log line, the failure

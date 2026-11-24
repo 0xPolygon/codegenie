@@ -12,7 +12,7 @@ export function isRecoverableLlmError(error: unknown): boolean {
 
 function isLlmFailure(error: unknown): boolean {
   return isCodegenieError(error) &&
-    (error.code === "llm_call_failed" || error.code === "llm_schema_invalid" || error.code === "provider_unavailable") &&
+    (error.code === "llm_call_failed" || error.code === "llm_schema_invalid" || error.code === "provider_unavailable" || error.code === "provider_policy_block") &&
     !isBudgetExhaustedError(error);
 }
 

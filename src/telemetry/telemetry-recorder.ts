@@ -21,6 +21,7 @@ export type LlmCallRecord = {
   role: LlmRole;
   model: string;
   provider: string;
+  upstreamProvider?: string;
   workerId?: string;
   packetId?: string;
   candidateId?: string;

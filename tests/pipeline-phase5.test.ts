@@ -11255,7 +11255,7 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
-  it.each([undefined, "Provider scripted (model scripted-model) returned HTTP 503"])(
+  it.each([undefined, "Provider scripted (model scripted-model) returned HTTP 503", "Provider scripted (model scripted-model) blocked the request by content policy"])(
     "writes composer fallback coverage reasons to the coverage artifact (%s)", async outage => {
     const reason = outage === undefined ? "semantic composition skipped; deterministic fallback used"
       : `${outage}; deterministic fallback used`;
@@ -11267,6 +11267,7 @@ describe("phase 5 pipeline regressions", () => {
     commitAll(repo, "feature");
 
     const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run");
+    let composerCalls = 0;
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 5) {
@@ -11303,6 +11304,10 @@ describe("phase 5 pipeline regressions", () => {
             falsePositiveRisk: "low"
           } as T;
         }
+        composerCalls++;
+        if (outage?.includes("content policy")) {
+          throw new CodegenieError("provider_policy_block", outage, { recoverable: false });
+        }
         if (outage !== undefined) {
           throw new CodegenieError("llm_call_failed", "LLM provider call failed", {
             recoverable: true, context: { reason: "transient_error", providerUnavailableSummary: outage }
@@ -11317,6 +11322,7 @@ describe("phase 5 pipeline regressions", () => {
       { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
       { repoRoot: repo, runArtifactDir, runner }
     );
+    expect(composerCalls).toBe(1);
 
     const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as { status: { reasons: string[] } };
     expect(coverage.status.reasons).toContain(reason);
