@@ -1,0 +1,44 @@
+{
+  "name": "codegenie-marketing",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "check": "astro check",
+    "verify": "node scripts/verify.mjs",
+    "verify:full": "node scripts/verify.mjs --full",
+    "test": "pnpm build && pnpm verify:full && pnpm test:browser && pnpm lighthouse",
+    "test:browser": "node scripts/browser-check.mjs",
+    "screenshots": "node scripts/browser-check.mjs --screenshots",
+    "og": "node scripts/make-og.mjs",
+    "lighthouse": "node scripts/lighthouse.mjs"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.4",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.3.3",
+    "tailwindcss": "^4.3.3"
+  },
+  "private": true,
+  "description": "Marketing site for codegenie — the AI code review harness",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "playwright": "^1.63.0",
+    "typescript": "^6.0.3"
+  },
+  "packageManager": "pnpm@10.33.3"
+}

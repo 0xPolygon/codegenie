@@ -1,0 +1,96 @@
+---
+import CodeBlock from "./CodeBlock.astro";
+import { site, stats } from "../data/site";
+import { installCommand, installAltCommand } from "../data/snippets";
+import { withBase } from "../utils/url";
+---
+
+<section class="relative overflow-hidden">
+  {/* Single radial glow — the only decorative flourish on the page. */}
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute -top-40 left-1/2 h-[36rem] w-[64rem] -translate-x-1/2 rounded-full opacity-40 blur-3xl"
+    style="background: radial-gradient(closest-side, #6d28d9 0%, rgba(11,11,16,0) 100%);"
+  >
+  </div>
+
+  <img
+    src={withBase("mark.png")}
+    alt=""
+    width="420"
+    height="490"
+    class="pointer-events-none absolute top-28 right-2 hidden h-96 w-auto select-none xl:block"
+  />
+
+  <div
+    class="relative mx-auto w-full max-w-6xl px-6 pt-16 pb-16 md:pt-24 md:pb-24"
+  >
+    <div class="animate-rise max-w-3xl">
+      <img
+        src={withBase("lockup.png")}
+        alt="codegenie"
+        width="1626"
+        height="620"
+        class="mb-8 h-14 w-auto sm:h-16 md:h-20"
+      />
+      <p
+        class="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-1 font-mono text-xs text-muted"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true"></span>
+        Open source · {site.license} · CLI + GitHub Action
+      </p>
+
+      <h1
+        class="mt-6 text-[clamp(2.5rem,6vw,4.5rem)] leading-[1.05] font-bold tracking-tight"
+      >
+        AI code review that <span class="text-accent-text">prefers no comments</span
+        > over weak comments.
+      </h1>
+
+      <p class="mt-6 max-w-2xl text-lg text-muted">
+        {site.description}
+      </p>
+
+      <div class="mt-8 flex flex-wrap items-center gap-3">
+        <a
+          href="#quick-start"
+          class="rounded-lg bg-accent-dim px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-mid"
+        >
+          Get started
+        </a>
+        <a
+          href={site.repo}
+          class="rounded-lg border border-border px-5 py-3 text-sm font-semibold transition-colors hover:border-border-strong"
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          View on GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="animate-rise mt-12 max-w-2xl" style="animation-delay: 120ms">
+      <CodeBlock code={installCommand} compact />
+      <p class="mt-2 font-mono text-xs text-faint">
+        or run it without installing: <code>{installAltCommand}</code>
+      </p>
+    </div>
+
+    <dl
+      class="mt-14 grid max-w-3xl grid-cols-2 gap-x-6 gap-y-6 border-t border-border pt-8 sm:grid-cols-4"
+    >
+      {
+        stats.map((stat) => (
+          <div>
+            <dt class="font-mono text-2xl font-semibold text-text">
+              {stat.value}
+            </dt>
+            <dd class="mt-1 font-mono text-xs tracking-wide text-muted uppercase">
+              {stat.label}
+            </dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</section>

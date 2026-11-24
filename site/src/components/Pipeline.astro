@@ -1,0 +1,66 @@
+---
+import Section from "./Section.astro";
+import { pipeline } from "../data/pipeline";
+---
+
+<Section
+  id="how-it-works"
+  eyebrow="How it works"
+  title="Eleven stages, each with a telemetry and artifact boundary."
+  lead="Five stages make LLM calls. Everything else is deterministic code — and the deterministic stages own the guarantees."
+>
+  <ol class="flex flex-wrap gap-3">
+    {
+      pipeline.map((stage) => (
+        <li
+          class:list={[
+            "flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors",
+            stage.isLlm
+              ? "border-llm-border bg-llm-bg"
+              : "border-border bg-surface",
+          ]}
+        >
+          <span
+            class:list={[
+              "font-mono text-xs",
+              stage.isLlm ? "text-llm" : "text-faint",
+            ]}
+          >
+            {String(stage.n).padStart(2, "0")}
+          </span>
+          <span
+            class:list={[
+              "text-sm font-medium",
+              stage.isLlm ? "text-text" : "text-muted",
+            ]}
+          >
+            {stage.name}
+          </span>
+        </li>
+      ))
+    }
+  </ol>
+
+  <div
+    class="mt-10 flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-border pt-6"
+  >
+    <p class="font-mono text-xs tracking-[0.2em] text-faint uppercase">
+      Legend
+    </p>
+    <span class="inline-flex items-center gap-2 text-xs text-muted">
+      <span
+        class="h-3 w-3 rounded-sm border border-llm-border bg-llm-bg"
+        aria-hidden="true"></span>
+      LLM judgment
+    </span>
+    <span class="inline-flex items-center gap-2 text-xs text-muted">
+      <span
+        class="h-3 w-3 rounded-sm border border-border bg-surface"
+        aria-hidden="true"></span>
+      Deterministic code
+    </span>
+    <span class="text-xs text-faint">
+      Five of eleven stages call a model.
+    </span>
+  </div>
+</Section>

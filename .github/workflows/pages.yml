@@ -1,0 +1,66 @@
+name: Deploy site
+
+# Builds site/ and publishes the static output with GitHub Pages.
+# Project Pages serves this at https://0xpolygon.github.io/codegenie/
+# because astro.config.mjs sets base to /codegenie.
+#
+# One-time setup: Settings → Pages → Source = GitHub Actions.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.3"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install site dependencies
+        working-directory: site
+        run: pnpm install --ignore-workspace --frozen-lockfile
+
+      - name: Build
+        working-directory: site
+        run: pnpm build
+
+      - name: Verify build output
+        working-directory: site
+        run: pnpm verify:full
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

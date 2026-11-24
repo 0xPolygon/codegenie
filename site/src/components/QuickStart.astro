@@ -1,0 +1,40 @@
+---
+import Section from "./Section.astro";
+import CodeBlock from "./CodeBlock.astro";
+import { quickStartSteps, reviewTargets, quickStartFootnote } from "../data/snippets";
+---
+
+<Section
+  id="quick-start"
+  eyebrow="Quick start"
+  title="Three commands to a review."
+  lead="Install once, connect a provider, point it at a branch, a commit range, or a pull request."
+>
+  <div class="grid gap-8">
+    {
+      quickStartSteps.map((step) => (
+        <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)] md:gap-8">
+          <div>
+            <p class="font-mono text-xs text-accent-text">
+              {String(step.step).padStart(2, "0")}
+            </p>
+            <h3 class="mt-2 text-lg font-semibold">{step.title}</h3>
+            <p class="mt-2 text-sm text-muted">{step.body}</p>
+          </div>
+          <CodeBlock code={step.code} />
+        </div>
+      ))
+    }
+  </div>
+
+  <p class="mt-8 max-w-3xl text-sm text-faint">{quickStartFootnote}</p>
+
+  <div class="mt-10">
+    <h3 class="font-mono text-xs tracking-[0.2em] text-muted uppercase">
+      Review anything
+    </h3>
+    <div class="mt-4">
+      <CodeBlock code={reviewTargets} />
+    </div>
+  </div>
+</Section>
