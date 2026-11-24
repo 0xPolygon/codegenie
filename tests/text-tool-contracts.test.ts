@@ -3,7 +3,8 @@ import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
 import { withMeta } from "../src/llm/repository-tool-guidance.js";
-import { assertRepositoryToolArguments, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
+import { assertRepositoryToolArguments, buildRepositoryToolDefinitions, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
+import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import type { ToolResultMeta } from "../src/types.js";
 import { writeRepoFile } from "./helpers/git.js";
 
@@ -74,6 +75,59 @@ describe("text tools: exact range and model-facing argument contracts", () => {
       try { assertRepositoryToolArguments(tool, { source: "head" }); } catch (error) {
         expect(String(error)).not.toContain(`Invalid arguments for ${tool.name}: Invalid arguments for`);
       }
+    }
+  });
+
+  it.each([
+    ["current", "find_definition", { symbolName: "SharedCall" }, true, ""],
+    ["current", "find_likely_tests", { path: "src/shared.ts" }, false, ""],
+    ["six", "find_usages", { name: "SharedCall" }, false, "scope and pathGlob at the top level beside source"],
+    ["six", "search_files", { query: "SharedCall" }, false, "pathGlob, mode and contextMode at the top level beside source"]
+  ] as const)("describes the accepted source objects for %s %s", (toolSurface, name, args, auto, filters) => {
+    const tool = buildRepositoryToolDefinitions(fixture.tools, { toolSurface }).find(item => item.name === name)!;
+    expect(() => assertRepositoryToolArguments(tool, args)).not.toThrow();
+    for (const kind of ["head", "base", ...(auto ? ["auto"] : [])]) {
+      expect(tool.description).toContain(JSON.stringify({ kind }));
+      expect(() => assertRepositoryToolArguments(tool, { ...args, source: { kind } })).not.toThrow();
+    }
+    if (!auto) {
+      expect(tool.description).not.toContain('{"kind":"auto"}');
+      expect(() => assertRepositoryToolArguments(tool, { ...args, source: { kind: "auto" } })).toThrow("Invalid arguments");
+    }
+    if (filters) expect(tool.description).toContain(filters);
+  });
+
+  it("retains the default source and gives shape-only guidance when nested options conflict", () => {
+    const tool = buildSixSearchTool(fixture.tools);
+    expect(() => assertRepositoryToolArguments(tool, {
+      query: "SharedCall", pathGlob: "src/**", source: { pathGlob: "src/**", mode: "literal" }
+    })).toThrow('Corrected call arguments: {"query":"SharedCall","pathGlob":"src/**","mode":"literal"}');
+    for (const source of [
+      { kind: "base", pathGlob: "pkg/**" },
+      { kind: "auto", mode: "literal" },
+      { kind: "base", caseSensitive: false }
+    ]) {
+      expect(() => assertRepositoryToolArguments(tool, { query: "SharedCall", pathGlob: "src/**", source })).toThrow(
+        /^source must contain only \{"kind":"head"\} or \{"kind":"base"\}\. Pass pathGlob, mode, contextMode as top-level arguments beside source$/u
+      );
+    }
+  });
+
+  it("redacts corrected call arguments and omits echoes that cannot fit as complete JSON", () => {
+    const tool = fixture.definitions.find(item => item.name === "find_definition")!;
+    const secret = "sourceEchoCredentialUnique8392";
+    registerSecret(secret);
+    try {
+      expect(() => assertRepositoryToolArguments(tool, { symbolName: "SharedCall", source: "head", pathGlob: "src/" + secret })).toThrow(
+        'Corrected call arguments: {"symbolName":"SharedCall","source":{"kind":"head"},"pathGlob":"src/[redacted:secret]"}'
+      );
+      for (const pathGlob of ["x".repeat(1_100), "Received arguments: example"]) {
+        expect(() => assertRepositoryToolArguments(tool, { symbolName: "SharedCall", source: "head", pathGlob })).toThrow(
+          /^source must be an object:[^\n]+not a string$/u
+        );
+      }
+    } finally {
+      clearRegisteredSecretsForTests();
     }
   });
 

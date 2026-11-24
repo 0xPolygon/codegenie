@@ -12,6 +12,7 @@ import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 import { buildReadDefinitionTool } from "./definition-tool.js";
 import type { ReadChangeInput } from "../repo/read-change.js";
 import { LineRangeSchema } from "./line-range-schema.js";
+import { stripCredentialsAtSink } from "../telemetry/redaction.js";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -68,19 +69,60 @@ export function normalizeRepositoryToolArguments(tool: ToolDefinition, args: Rec
 /** Reject invalid raw arguments before SDK coercion can change a requested range. */
 export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
   const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties;
-  if (properties?.source && args && typeof args === "object" && "source" in args && typeof args.source === "string") {
+  const input = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : undefined;
+  const source = input?.source;
+  if (properties?.source && input && typeof source === "string") {
     const auto = tool.name === "read_symbol" || tool.name === "find_definition" || tool.name === "read_definition" ? ', or {"kind":"auto"}' : "";
-    throw new CodegenieError("invalid_args", `source must be an object: {"kind":"head"} or {"kind":"base"}${auto}; not a string`);
+    const suggest = tool.name === "find_definition" || (tool.name === "find_likely_tests" && (input.path !== undefined || input.symbol !== undefined));
+    const hint = suggest ? correctedSourceCallHint(tool.parameters, { ...input, source: { kind: source } }) : "";
+    throw new CodegenieError("invalid_args", `source must be an object: {"kind":"head"} or {"kind":"base"}${auto}; not a string${hint}`);
   }
   const issues = submissionIssues(tool.parameters, args);
-  if (issues.length) throw new CodegenieError("invalid_args", `Invalid arguments for ${tool.name}: ${issues.slice(0, 5)
-    .map(issue => `${issue.path || "arguments"}: ${issue.kind}`).join("; ")}`);
+  if (issues.length) {
+    if (properties?.source && input && source && typeof source === "object" && !Array.isArray(source)) {
+      const filters = (tool.name === "find_usages" ? ["scope", "pathGlob"]
+        : tool.name === "search_files" && properties.mode ? ["pathGlob", "mode", "contextMode"] : [])
+        .filter(key => Object.hasOwn(properties, key));
+      if (filters.length && Object.keys(source).some(key => key !== "kind")) {
+        const hint = nestedSourceCallHint(tool.parameters, input, source, filters);
+        throw new CodegenieError("invalid_args",
+          `source must contain only {"kind":"head"} or {"kind":"base"}. Pass ${filters.join(", ")} as top-level arguments beside source${hint}`);
+      }
+    }
+    throw new CodegenieError("invalid_args", `Invalid arguments for ${tool.name}: ${issues.slice(0, 5)
+      .map(issue => `${issue.path || "arguments"}: ${issue.kind}`).join("; ")}`);
+  }
   const range = args as Record<string, unknown>;
   if (tool.name === "read_range" && ("startLine" in range || "endLine" in range)
     && (!Number.isSafeInteger(range.startLine) || !Number.isSafeInteger(range.endLine)
       || (range.startLine as number) < 1 || (range.startLine as number) > (range.endLine as number))) {
     throw new CodegenieError("invalid_args", "read_range requires integer bounds with 1 <= startLine <= endLine");
   }
+}
+
+function nestedSourceCallHint(
+  parameters: ToolDefinition["parameters"], input: Record<string, unknown>, source: object, filters: readonly string[]
+): string {
+  const corrected = { ...input };
+  delete corrected.source;
+  for (const [key, value] of Object.entries(source)) {
+    if (key === "kind") {
+      corrected.source = { kind: value };
+    } else {
+      if (!filters.includes(key) || (Object.hasOwn(input, key) && input[key] !== value)) return "";
+      corrected[key] = value;
+    }
+  }
+  return correctedSourceCallHint(parameters, corrected);
+}
+
+function correctedSourceCallHint(parameters: ToolDefinition["parameters"], corrected: Record<string, unknown>): string {
+  if (submissionIssues(parameters, corrected).length) return "";
+  const redacted = stripCredentialsAtSink(corrected);
+  if (submissionIssues(parameters, redacted).length) return "";
+  const json = JSON.stringify(redacted);
+  // Pass a complete JSON object under the runner's validation message cap.
+  return json.length <= 1_000 && !json.includes("Received arguments:") ? `. Corrected call arguments: ${json}` : "";
 }
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
@@ -159,7 +201,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_definition",
-      description: "Find definition candidates for an exact symbol name, optionally constrained by pathGlob and source. Without syntax support, candidates are text matches, not proven definitions; inspect their source with read_range. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
+      description: 'Find definition candidates for an exact symbol name, optionally constrained by pathGlob. Pass source as {"kind":"head"} (default), {"kind":"base"}, or {"kind":"auto"} (searches head then base for renamed or deleted symbols). Without syntax support, candidates are text matches, not proven definitions; inspect their source with read_range.',
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
@@ -333,7 +375,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_likely_tests",
-      description: "Find likely tests using deterministic test conventions; provide at least one of path or symbol. If results are cut, use read_range at the next returned test path and line.",
+      description: 'Find likely tests using deterministic test conventions; provide at least one of path or symbol. Pass source as {"kind":"head"} (default) or {"kind":"base"}. If results are cut, use read_range at the next returned test path and line.',
       normalizeArguments: args => {
         const symbol = args.symbol;
         if (!symbol || typeof symbol !== "object" || Array.isArray(symbol)) return args;
@@ -618,7 +660,7 @@ function renderSourceFileMap(map: SourceFileMap): ToolExecutionResult {
 export function buildSixSearchTool(tools: RepositoryTools): ToolDefinition {
   return {
     name: "search_files",
-    description: 'Search pinned repository source. Use mode "regex" for POSIX ERE (default, e.g. "track\\(") or mode "literal" for source text (e.g. "track("). To search base, pass source: {"kind":"base"}. Continue with the returned cursor and the same query, mode, source, pathGlob and contextMode.',
+    description: 'Search pinned repository source. Pass source as {"kind":"head"} (default) or {"kind":"base"}. Pass pathGlob, mode and contextMode at the top level beside source. Use mode "regex" for POSIX ERE (default, e.g. "track\\(") or mode "literal" for source text (e.g. "track("). Continue with the returned cursor and the same query, mode, source, pathGlob and contextMode.',
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 500 }),
       mode: Type.Optional(Type.Union([Type.Literal("regex"), Type.Literal("literal")])),
