@@ -9,7 +9,7 @@ const urls = { goinfer: 'https://github.com/townsendmerino/goinfer.git', pi: 'ht
 const sha = /^[0-9a-f]{40}$/u;
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
 
-function outsideCheckout(dir) {
+export function outsideCheckout(dir) {
   const target = path.resolve(dir);
   let ancestor = target;
   while (!existsSync(ancestor)) {
@@ -63,7 +63,7 @@ export function prepareTarget(target, url, base, head, pullRequest) {
   }
 }
 
-export async function runCase(configFile) {
+export async function runCase(configFile, { fetchForCall } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(readFileSync(file, 'utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -87,5 +87,6 @@ export async function runCase(configFile) {
     selected.evalCase.repo = { external: prepareTarget(target, url, selected.evalCase.command?.base, selected.evalCase.command?.head, match ? Number(match[1]) : undefined) };
   }
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
-  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false });
+  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
+    ...(fetchForCall !== undefined ? { fetchForCall } : {}) });
 }
