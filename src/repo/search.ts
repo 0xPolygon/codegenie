@@ -350,13 +350,29 @@ export class SearchService {
       contentSha: content.contentSha
     });
     const tree = parsed.tree as { rootNode?: { descendantForPosition?: (start: { row: number; column: number }) => unknown } } | undefined;
+    type MentionNode = { type?: string; text?: string; isExtra?: boolean; parent?: MentionNode | null;
+      childForFieldName?: (name: string) => MentionNode | null };
     const node = tree?.rootNode?.descendantForPosition?.({ row: result.line - 1, column: Math.max(0, (result.column ?? 1) - 1) }) as
-      | { type?: string; text?: string; isExtra?: boolean }
-      | undefined;
+      | MentionNode | undefined;
     if (!node) {
       return undefined;
     }
     if (node.isExtra === true || /comment|string|template/u.test(node.type ?? "")) {
+      return false;
+    }
+    if (symbolName.includes(".")) {
+      if (!/identifier/u.test(node.type ?? "")) return false;
+      const segments = symbolName.split(".");
+      if (segments.some(segment => !segment)) return false;
+      let parent = node.parent;
+      for (let depth = 0; parent && depth < segments.length; depth++, parent = parent.parent) {
+        if (!["member_expression", "selector_expression", "attribute", "field_expression"].includes(parent.type ?? "")) return false;
+        const field = parent.childForFieldName?.("property") ?? parent.childForFieldName?.("field") ?? parent.childForFieldName?.("attribute");
+        const fieldTypes = parent.type === "attribute" ? ["identifier"] : ["property_identifier", "field_identifier"];
+        const spelling = parent.text?.replace(/\s+/gu, "") ?? "";
+        if (field && fieldTypes.includes(field.type ?? "") && field.text === segments.at(-1) &&
+            (spelling === symbolName || spelling.endsWith(`.${symbolName}`))) return true;
+      }
       return false;
     }
     return node.text === symbolName && /identifier|property_identifier/u.test(node.type ?? "");
