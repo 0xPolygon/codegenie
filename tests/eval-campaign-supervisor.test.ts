@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -21,6 +21,31 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('persists recovered resets across slots and restart for the same case', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-resets-'));
+    const runs: string[] = [];
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: ['one', 'two', 'three'].map((id) => ({ id, caseId: 'case', boundaryId: id, provider: 'openrouter' })) }));
+      const root = (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${attempt}`);
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: root };
+      const db = path.join(dir, 'supervisor.db');
+      let supervisor = new CampaignSupervisor(db, binding);
+      const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
+      for (const [index, slot] of ['one', 'two', 'three'].entries()) {
+        supervisor.begin(slot, { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify }); claim(supervisor, slot, 1);
+        const runDir = path.join(root(slot, 1), 'run'); mkdirSync(runDir, { recursive: true }); runs.push(runDir); writeFileSync(path.join(runDir, 'run.json'), '{}');
+        const hash = supervisor.receipts.seal(slot, 1, { caseName: 'case', caseId: 'case', recoveredResets: 1, status: 'pass', runDir });
+        expect(supervisor.recordCaseResets(slot, 1, hash)).toEqual({ total: index + 1, stop: index === 2 });
+        expect(supervisor.recordCaseResets(slot, 1, hash)).toEqual({ total: index + 1, stop: index === 2 });
+        if (index < 2) supervisor.seal(slot, 1, hash, supervisor.receipts.verify);
+        else expect(() => supervisor.seal(slot, 1, hash, supervisor.receipts.verify)).toThrow('case reset accounting requires stop');
+        supervisor.close(); supervisor = new CampaignSupervisor(db, binding);
+        expect(supervisor.caseResetCount('case')).toBe(index + 1);
+      }
+      expect(supervisor.db.prepare("SELECT COUNT(*) AS total FROM outcome").get()).toEqual({ total: 2 });
+      supervisor.close();
+    } finally { for (const run of runs) chmodSync(run, 0o700); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('creates the receipt store only on first binding and refuses its loss on restart', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-store-'));
     try {

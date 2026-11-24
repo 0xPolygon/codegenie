@@ -52,6 +52,7 @@ export class CampaignSupervisor {
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retry_authorization(slot_id TEXT PRIMARY KEY, attempt_no INTEGER NOT NULL, failure_sha256 TEXT NOT NULL, proof_sha256 TEXT NOT NULL, probe_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS case_reset_event(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, case_id TEXT NOT NULL, receipt_sha256 TEXT NOT NULL, resets INTEGER NOT NULL, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);`);
     try {
       this.transaction(() => {
@@ -113,6 +114,25 @@ export class CampaignSupervisor {
     if (!this.slots.some((slot) => slot.id === slotId)) throw new Error('unregistered slot');
     return this.db.prepare("SELECT COUNT(*) AS total FROM attempt WHERE slot_id=? AND state='no_start'").get(slotId).total;
   }
+  caseResetCount(caseId) {
+    if (typeof caseId !== 'string' || !caseId) throw new Error('invalid case identity');
+    return this.db.prepare('SELECT COALESCE(SUM(resets),0) AS total FROM case_reset_event WHERE case_id=?').get(caseId).total;
+  }
+  recordCaseResets(slotId, attemptNo, receiptSHA256) {
+    if (!this.receipts || !isHash(receiptSHA256)) throw new Error('receipt store required');
+    return this.transaction(() => {
+      const slot = this.slots.find((item) => item.id === slotId);
+      const attempt = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+      const claim = this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo);
+      const found = this.receipts.find(slotId, attemptNo);
+      if (!slot || typeof slot.caseId !== 'string' || !slot.caseId || !attempt || attempt.state !== 'started' || !claim || !found || found.hash !== receiptSHA256 || found.receipt.caseId !== slot.caseId) throw new Error('case reset evidence mismatch');
+      const existing = this.db.prepare('SELECT case_id,receipt_sha256,resets FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+      if (existing) {
+        if (existing.case_id !== slot.caseId || existing.receipt_sha256 !== receiptSHA256 || existing.resets !== found.receipt.recoveredResets) throw new Error('case reset evidence changed');
+      } else this.db.prepare('INSERT INTO case_reset_event VALUES(?,?,?,?,?)').run(slotId, attemptNo, slot.caseId, receiptSHA256, found.receipt.recoveredResets);
+      return { total: this.caseResetCount(slot.caseId), stop: this.caseResetCount(slot.caseId) >= 3 };
+    });
+  }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -130,11 +150,22 @@ export class CampaignSupervisor {
         probe.started_at_ms <= failed.last || probe.settled_at_ms === null || probe.observed_ms < probe.settled_at_ms) throw new Error('retry probe is not a fresh clean ledger result');
   }
   checkedOutcomes(verifyReceipt, verifyRetry, ledger) {
+    if (this.receipts) {
+      const supplied = verifyReceipt;
+      verifyReceipt = (...args) => supplied(...args) === true && this.receipts.verify(...args) === true;
+      for (const event of this.db.prepare('SELECT * FROM case_reset_event').all()) {
+        const slot = this.slots.find((item) => item.id === event.slot_id);
+        const attempt = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(event.slot_id, event.attempt_no);
+        const found = this.receipts.find(event.slot_id, event.attempt_no);
+        if (!slot || slot.caseId !== event.case_id || !attempt || !found || found.hash !== event.receipt_sha256 || found.receipt.caseId !== event.case_id || found.receipt.recoveredResets !== event.resets) throw new Error('case reset evidence missing or changed');
+      }
+    }
     const rows = this.db.prepare('SELECT slot_id,state,attempt_no,receipt_sha256 FROM outcome').all();
     const byId = new Map(rows.map((r) => [r.slot_id, r]));
     if (rows.length > this.slots.length || this.slots.slice(0, rows.length).some((s) => !byId.has(s.id))) throw new Error('non-prefix outcome custody');
     for (const slot of this.slots.slice(0, rows.length)) {
       const row = byId.get(slot.id);
+      if (this.receipts && !this.db.prepare('SELECT 1 FROM case_reset_event WHERE slot_id=? AND attempt_no=? AND receipt_sha256=?').get(row.slot_id, row.attempt_no, row.receipt_sha256)) throw new Error('case reset accounting missing');
       const attempt = this.db.prepare('SELECT state,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no=?').get(row.slot_id, row.attempt_no);
       const claim = this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(row.slot_id, row.attempt_no);
       if (!attempt || !claim || attempt.receipt_sha256 !== row.receipt_sha256 || verifyReceipt(row.slot_id, row.attempt_no, row.receipt_sha256) !== true) throw new Error('attempt receipt missing or changed');
@@ -266,6 +297,10 @@ export class CampaignSupervisor {
         verifyReceipt(slotId, attemptNo, receiptSHA256) !== true || verifyFailure(slotId, attemptNo, receiptSHA256) !== true) throw new Error('failure evidence missing or changed');
     this.transaction(() => {
       if (!this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
+      if (this.receipts) {
+        const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+        if (!event || event.receipt_sha256 !== receiptSHA256 || !this.receipts.verify(slotId, attemptNo, receiptSHA256) || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset accounting requires stop');
+      }
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length > 1) throw new Error('retry limit exhausted');
       if (failures.length === 1) {
@@ -288,6 +323,10 @@ export class CampaignSupervisor {
     if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || !isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || verifyReceipt(slotId, attemptNo, receiptSHA256) !== true) throw new Error('attempt receipt missing or changed');
     this.transaction(() => {
       if (!this.db.prepare("SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1 AND spawn_state='exited'").get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
+      if (this.receipts) {
+        const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+        if (!event || event.receipt_sha256 !== receiptSHA256 || !this.receipts.verify(slotId, attemptNo, receiptSHA256) || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset accounting requires stop');
+      }
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length) {
         const first = failures[0], auth = this.db.prepare('SELECT * FROM retry_authorization WHERE slot_id=?').get(slotId);

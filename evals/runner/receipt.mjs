@@ -92,7 +92,7 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
       if (digest(bytes) !== hash) return false;
       const receipt = JSON.parse(bytes.toString('utf8'));
       if (receipt.version !== 1 || receipt.binding !== binding || receipt.slot !== slot || receipt.attempt !== attempt ||
-          !['pass', 'fail', 'error'].includes(receipt.status) || typeof receipt.caseName !== 'string' || !receipt.caseName || typeof receipt.runDir !== 'string') return false;
+          !['pass', 'fail', 'error'].includes(receipt.status) || typeof receipt.caseName !== 'string' || !receipt.caseName || typeof receipt.caseId !== 'string' || !receipt.caseId || !Number.isSafeInteger(receipt.recoveredResets) || receipt.recoveredResets < 0 || typeof receipt.runDir !== 'string') return false;
       if (receipt.status === 'error' ? !errors.has(receipt.error) : receipt.error !== undefined) return false;
       const allowed = checkedPath(runRootFor(slot, attempt));
       const runDir = checkedPath(receipt.runDir);
@@ -109,8 +109,10 @@ export function createReceiptStore({ directory, binding, runRootFor, create = fa
     const allowed = checkedPath(runRootFor(slot, attempt)), runDir = checkedPath(result.runDir);
     if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) throw new Error('receipt outside attempt root');
     if (result.status === 'error' && !errors.has(result.error)) throw new Error('invalid receipt error');
+    const caseId = result.caseId ?? result.caseName, recoveredResets = result.recoveredResets ?? 0;
+    if (typeof caseId !== 'string' || !caseId || !Number.isSafeInteger(recoveredResets) || recoveredResets < 0) throw new Error('invalid receipt case evidence');
     assertStore();
-    const record = { version: 1, binding, slot, attempt, caseName: result.caseName, status: result.status,
+    const record = { version: 1, binding, slot, attempt, caseName: result.caseName, caseId, recoveredResets, status: result.status,
       ...(result.status === 'error' ? { error: result.error } : {}), runDir, files: inventory(runDir) };
     const bytes = Buffer.from(JSON.stringify(record)), hash = digest(bytes);
     freeze(runDir);
