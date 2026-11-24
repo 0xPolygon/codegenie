@@ -207,6 +207,12 @@ describe('campaign driver', () => {
           const evidenceHash = campaign.ledger.db.prepare('SELECT evidence_sha256 FROM key_baseline').get().evidence_sha256;
           const evidenceFile = path.join(base.evidenceDirectory, evidenceHash), originalEvidence = readFileSync(evidenceFile);
           campaign.close();
+          const pausedRun = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'run', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+          expect(pausedRun.status).toBe(0);
+          const operational = JSON.parse(pausedRun.stdout);
+          expect(operational).toMatchObject({ action: 'paused', prefixSHA256: outcome.prefixSHA256 });
+          expect(operational.receipts.every((row: Record<string, unknown>) => row.outcome === 'selected' && !('status' in row))).toBe(true);
+          expect(pausedRun.stdout).not.toMatch(/"(?:pass|fail)"/);
           appendFileSync(evidenceFile, 'drift');
           const denied = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'release', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
           expect(denied.status).toBe(1); writeFileSync(evidenceFile, originalEvidence);

@@ -66,7 +66,8 @@ function publishConfig(directory, name, bytes) {
 
 // This entry is internal to the development-only runner. The caller must pin
 // the complete campaign file hash; no model request is made during open.
-export async function openCampaign(configFile, expectedSHA256, { fetchImpl = globalThis.fetch, models, resumeOnly = false } = {}) {
+export async function openCampaign(configFile, expectedSHA256, { fetchImpl = globalThis.fetch, models, resumeOnly = false, spawnWorker = spawnAttempt } = {}) {
+  if (typeof spawnWorker !== 'function') throw new TypeError('invalid worker transport');
   const bytes = readBytes(configFile);
   if (!hash(expectedSHA256) || sha(bytes) !== expectedSHA256) throw new Error('campaign config digest mismatch');
   const config = JSON.parse(bytes.toString('utf8'));
@@ -139,7 +140,6 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     return found?.hash === receiptHash && found.receipt.status === 'error' && found.receipt.error === 'provider_failure' && typeof found.receipt.failureCallId === 'string';
   };
   const outcomeSummary = () => supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger).map((row) => ({ receiptSHA256: row.receipt_sha256, outcome: row.state,
-    status: supervisor.receipts.find(row.slot_id, row.attempt_no).receipt.status,
     ...(row.state === 'excluded' ? { firstReceiptSHA256: supervisor.db.prepare('SELECT first_sha256 FROM exclusion WHERE slot_id=?').get(row.slot_id).first_sha256 } : {}) }));
   const finish = (slot, attempt, result, receiptHash) => {
     const recorded = supervisor.recordCaseResets(slot.id, attempt, receiptHash, ledger);
@@ -215,7 +215,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     let result;
     try {
       const file = publishConfig(config.workDirectory, `${slot.id}-${started.attempt}.json`, worker);
-      result = await spawnAttempt({ supervisor, slotId: slot.id, attemptNo: started.attempt, configFile: file, configSHA256: sha(worker) });
+      result = await spawnWorker({ supervisor, slotId: slot.id, attemptNo: started.attempt, configFile: file, configSHA256: sha(worker) });
     } catch {
       try { assertCase(slot); }
       catch { ledger.stop('binding_mismatch'); return { action: 'stop', reason: 'binding_mismatch', slot: slot.id }; }
