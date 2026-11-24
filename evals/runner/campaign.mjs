@@ -369,8 +369,10 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       const read = (file) => JSON.parse(readBytes(path.join(root, file)).toString('utf8'));
       const run = read('run.json'), resolved = read('stages/01-input/resolved-input.json');
       const packetDir = path.join(root, 'stages/06-packets/packets');
+      const hunkIdentifiers = new Set();
       const packetIdentifiers = readdirSync(packetDir).filter((name) => name.endsWith('.json')).flatMap((name) => {
         const packet = JSON.parse(readBytes(path.join(packetDir, name)).toString('utf8'));
+        for (const hunk of packet.hunks ?? []) hunkIdentifiers.add(hunk.hunkId);
         return [packet.id, ...(Array.isArray(packet.hunks) ? packet.hunks.map((hunk) => hunk.hunkId) : [])];
       });
       const armBinding = JSON.parse(readBytes(path.join(found.receipt.runDir, 'arm-binding.json')).toString('utf8'));
@@ -385,7 +387,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
         caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator, causes: oracles.cases.find((item) => item.caseId === slot.caseId).causes,
         anchorMappings: registered405?.cases.find((item) => item.caseId === slot.caseId)?.causes ?? oracles.cases.find((item) => item.caseId === slot.caseId).causes.map(({ id, optional }) => ({ id, optional, hunkIds: [], unmapped: false, unavailable: true })),
-        evidence: { outcome: run.outcome?.status, privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
+        evidence: { outcome: run.outcome?.status, hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
           candidates: read('stages/09-verification/candidate-findings.json'), promotion: read('stages/09-verification/uncertainty-promotion.json'),
           verification: read('stages/09-verification/verification.json'), finalReview: read('final-review.json') } };
     });

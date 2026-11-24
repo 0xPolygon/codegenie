@@ -139,3 +139,46 @@ it('keeps frozen anchor hunk IDs in the private mapping while projecting optiona
     expect(readFileSync(args.mappingFile, 'utf8')).toContain('private-hunk-id');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('aliases registered hunks consistently across projected prose and separately per sheet', async () => {
+  const { createHmac } = await import('node:crypto');
+  // @ts-expect-error Development-only ESM has no emitted types.
+  const { projectBlindSheet } = await import('../evals/runner/blind-sheet.mjs');
+  const key = Buffer.alloc(32, 7), registered = 'abcd1234', punct = 'test.h+01';
+  const text = `(${registered}), ${punct}. feedcafe _${registered} ${registered}-part testXhh01`;
+  const project = (id: string) => projectBlindSheet({ id, key, hunkIdentifiers: [registered, punct], caseId: 'synthetic', outcome: 'completed_full',
+    candidates: [{ id: 'candidate-001', failureMode: text, evidence: { changedCode: text } }],
+    promotion: { decisions: [{ packetId: 'packet-001', question: text }] },
+    verification: [{ candidateId: 'candidate-001', verdict: { reason: text } }],
+    finalReview: { summary: text, findings: [{ id: 'finding-001', finalBody: text }], summaryOnlyFindings: [{ id: 'finding-002', finalBody: text }], needsHumanAttention: [{ question: text }] } });
+  const alias = (id: string, value: string) => 'h-' + createHmac('sha256', key).update(`${id}\0h\0${value}`).digest('hex').slice(0, 16);
+  for (const id of ['a'.repeat(24), 'b'.repeat(24)]) {
+    const p = project(id), expected = `(${alias(id, registered)}), ${alias(id, punct)}. feedcafe _${registered} ${registered}-part testXhh01`;
+    expect([p.discovery.findings[0].failureMode, p.discovery.findings[0].changedCode, p.discovery.questions[0].question,
+      p.verification[0].reason, p.published.summary, p.published.findings[0].visibleBody,
+      p.published.summaryOnly[0].visibleBody, p.published.attentionQuestions[0].question]).toEqual(Array(8).fill(expected));
+    expect(project(id)).toEqual(p);
+  }
+  expect(alias('a'.repeat(24), registered)).not.toEqual(alias('b'.repeat(24), registered));
+});
+
+it('exports registered hunk prose and refuses residual identifiers before publishing', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-hunk-'));
+  try {
+    const hunk = 'abcd1234', evidence = { outcome: 'completed_full', hunkIdentifiers: [hunk], privateIdentifiers: [hunk],
+      candidates: [{ id: 'candidate', failureMode: `This affects (${hunk}).` }], promotion: { decisions: [] }, verification: [], finalReview: {} };
+    const selection = { slotId: 'slot', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'control', draw: 1, caseId: 'case-01', causes: [], sourceLocator: 'source/01', oracleLocator: 'oracle/01', evidence };
+    const args = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0,
+      outputDirectory: path.join(dir, 'good'), mappingFile: path.join(dir, 'private', 'good.json'), selections: [selection] };
+    const first = exportFirstLock(args), sheetFile = readdirSync(args.outputDirectory).find((name) => name !== 'manifest.json')!;
+    const sheet = readFileSync(path.join(args.outputDirectory, sheetFile), 'utf8');
+    expect(sheet).toMatch(/This affects \(h-[a-f0-9]{16}\)/u);
+    expect(sheet).not.toContain(hunk);
+    expect(exportFirstLock(args)).toEqual(first);
+    expect(readFileSync(path.join(args.outputDirectory, sheetFile), 'utf8')).toBe(sheet);
+    const badOutput = path.join(dir, 'bad'), badMapping = path.join(dir, 'private', 'bad.json');
+    const bad = { ...selection, evidence: { ...evidence, candidates: [{ id: 'candidate', failureMode: `prefix${hunk}` }] } };
+    expect(() => exportFirstLock({ ...args, outputDirectory: badOutput, mappingFile: badMapping, selections: [bad] })).toThrow('private identifier');
+    expect(() => readdirSync(badOutput)).toThrow(); expect(() => readFileSync(badMapping)).toThrow();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
