@@ -66,18 +66,28 @@ it('freezes anchor overlap mechanically, keeping unmapped causes distinct', asyn
       { id: 'unmapped', optional: true, anchors: [{ path: 'other', lineRange: [1, 1] }] },
       { id: 'context-only', optional: false, anchors: [{ path: 'a', lineRange: [2, 2] }] },
       { id: 'changed-line', optional: false, anchors: [{ path: 'a', lineRange: [1, 1] }] }
-    ] : index === 1 ? [{ id: 'deleted', optional: false, anchors: [{ path: 'gone', lineRange: [5, 5] }] }] : [] }));
+    ] : index === 1 ? [{ id: 'deleted', optional: false, anchors: [{ path: 'gone', lineRange: [5, 5] }] }] : index === 2 ? [{ id: 'shifted', optional: false, anchors: [{ path: 'shifted', lineRange: [9, 9] }] }, { id: 'old-coordinate', optional: false, anchors: [{ path: 'shifted', lineRange: [4, 4] }] }] : index === 3 ? [{ id: 'zero-context', optional: false, anchors: [{ path: 'zero', lineRange: [10, 10] }] }] : index === 4 ? [{ id: 'next-line', optional: false, anchors: [{ path: 'next', lineRange: [15, 15] }] }] : [] }));
     const oracle = Buffer.from(JSON.stringify({ cases })); writeFileSync(oracleManifestPath, oracle);
     const diff = Buffer.from('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,2 +1,2 @@\n-old\n+new\n context\n'), diffPath = join(dir, 'diff.patch'); writeFileSync(diffPath, diff);
     const deletedPath = join(dir, 'deleted.patch'), deleted = Buffer.from('diff --git a/gone b/gone\ndeleted file mode 100644\n--- a/gone\n+++ /dev/null\n@@ -5 +0,0 @@\n-old\n'); writeFileSync(deletedPath, deleted);
+    const shiftedPath = join(dir, 'shifted.patch'), shifted = Buffer.from('diff --git a/shifted b/shifted\n--- a/shifted\n+++ b/shifted\n@@ -1,0 +1,5 @@\n+one\n+two\n+three\n+four\n+five\n@@ -3,2 +8,1 @@\n context\n-removed\n'); writeFileSync(shiftedPath, shifted);
+    const zeroPath = join(dir, 'zero.patch'), zero = Buffer.from('diff --git a/zero b/zero\n--- a/zero\n+++ b/zero\n@@ -5 +9,0 @@\n-removed\n'); writeFileSync(zeroPath, zero);
+    const nextPath = join(dir, 'next.patch'), next = Buffer.from('diff --git a/next b/next\n--- a/next\n+++ b/next\n@@ -10,2 +15,1 @@\n-removed\n context\n'); writeFileSync(nextPath, next);
     const mapping = await derive405AnchorMappings({ oracleManifestPath, oracleManifestSHA256: createHash('sha256').update(oracle).digest('hex'),
-      diffSources: caseIds.map((caseId, index) => ({ caseId, path: index === 1 ? deletedPath : diffPath, sha256: createHash('sha256').update(index === 1 ? deleted : diff).digest('hex') })) });
+      diffSources: caseIds.map((caseId, index) => ({ caseId, path: [diffPath, deletedPath, shiftedPath, zeroPath, nextPath][index] ?? diffPath, sha256: createHash('sha256').update([diff, deleted, shifted, zero, next][index] ?? diff).digest('hex') })) });
     const first = mapping.find((item: { caseId: string }) => item.caseId === caseIds[0]);
     expect(first.causes[0].unmapped).toBe(false); expect(first.causes[0].hunkIds).toHaveLength(1);
     expect(first.causes[1]).toMatchObject({ unmapped: true, hunkIds: [] });
     expect(first.causes[2]).toMatchObject({ unmapped: true, hunkIds: [] });
     expect(first.causes[3].unmapped).toBe(false); expect(first.causes[3].hunkIds).toHaveLength(1);
     const deletedCase = mapping.find((item: { caseId: string }) => item.caseId === caseIds[1]);
-    expect(deletedCase.causes[0].unmapped).toBe(false); expect(deletedCase.causes[0].hunkIds).toHaveLength(1);
+    expect(deletedCase.causes[0]).toMatchObject({ unmapped: true, hunkIds: [] });
+    const shiftedCase = mapping.find((item: { caseId: string }) => item.caseId === caseIds[2]);
+    expect(shiftedCase.causes[0].unmapped).toBe(false); expect(shiftedCase.causes[0].hunkIds).toHaveLength(1);
+    expect(shiftedCase.causes[1].hunkIds).not.toContain(shiftedCase.causes[0].hunkIds[0]);
+    const zeroCase = mapping.find((item: { caseId: string }) => item.caseId === caseIds[3]);
+    expect(zeroCase.causes[0].unmapped).toBe(false); expect(zeroCase.causes[0].hunkIds).toHaveLength(1);
+    const nextCase = mapping.find((item: { caseId: string }) => item.caseId === caseIds[4]);
+    expect(nextCase.causes[0].unmapped).toBe(false); expect(nextCase.causes[0].hunkIds).toHaveLength(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

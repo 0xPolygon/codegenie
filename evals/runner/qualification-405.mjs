@@ -58,10 +58,19 @@ export async function derive405AnchorMappings({ oracleManifestPath, oracleManife
       for (const anchor of cause.anchors) {
         if (!anchor || typeof anchor.path !== 'string' || !Array.isArray(anchor.lineRange) || anchor.lineRange.length !== 2 || !anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) || anchor.lineRange[0] > anchor.lineRange[1]) throw new Error('invalid 405 oracle anchor');
         for (const file of diff.files) {
+          // Oracle anchors refer to the introducing commit, where a deleted
+          // path has no location. Deletions in surviving paths point at the
+          // insertion gap in head coordinates, never at their base line.
+          if (file.status === 'deleted' || file.path !== anchor.path) continue;
           for (const hunk of file.hunks) {
-            const overlaps = hunk.lines.some((line) => {
-              const number = line.kind === 'add' && file.path === anchor.path ? line.newLineNumber
-                : line.kind === 'delete' && (file.oldPath ?? file.path) === anchor.path ? line.oldLineNumber : undefined;
+            const overlaps = hunk.lines.some((line, index) => {
+              let number;
+              if (line.kind === 'add') number = line.newLineNumber;
+              else if (line.kind === 'delete') {
+                const next = hunk.lines.slice(index + 1).find((item) => item.newLineNumber !== undefined);
+                const previous = hunk.lines.slice(0, index).reverse().find((item) => item.newLineNumber !== undefined);
+                number = next?.newLineNumber ?? (previous ? previous.newLineNumber + 1 : hunk.newStart + (hunk.newLines === 0 ? 1 : 0));
+              }
               return number !== undefined && number >= anchor.lineRange[0] && number <= anchor.lineRange[1];
             });
             if (overlaps) matched.add(hunk.id);
