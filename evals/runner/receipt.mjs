@@ -53,14 +53,15 @@ function freeze(directory) {
 }
 
 // The caller supplies a run directory already validated against workerBounds.
-// Receipts live separately, with exclusive content-addressed publication.
-export function createReceiptStore({ directory, binding, runRootFor }) {
-  if (typeof binding !== 'string' || !binding || typeof runRootFor !== 'function') throw new Error('invalid receipt binding');
+// A single exclusive attempt file is the authoritative receipt.
+export function createReceiptStore({ directory, binding, runRootFor, create = false }) {
+  if (typeof binding !== 'string' || !binding || typeof runRootFor !== 'function' || typeof create !== 'boolean') throw new Error('invalid receipt binding');
   const unresolvedRoot = path.resolve(directory);
   outsideCheckout(unresolvedRoot);
-  mkdirSync(unresolvedRoot, { recursive: true, mode: 0o700 });
+  if (create) mkdirSync(unresolvedRoot, { recursive: true, mode: 0o700 });
   const root = checkedPath(unresolvedRoot);
-  const fileFor = (hash) => path.join(root, hash);
+  const identity = lstatSync(root);
+  if (!identity.isDirectory()) throw new Error('invalid receipt directory');
   const pointerFor = (slot, attempt) => path.join(root, `attempt-${digest(JSON.stringify([binding, slot, attempt]))}`);
   const publish = (file, bytes) => {
     const temporary = path.join(root, `.tmp-${randomBytes(16).toString('hex')}`);
@@ -75,12 +76,19 @@ export function createReceiptStore({ directory, binding, runRootFor }) {
       try { fsyncSync(dirfd); } finally { closeSync(dirfd); }
     } finally { try { unlinkSync(temporary); } catch (error) { if (error?.code !== 'ENOENT') throw error; } }
   };
-  publish(path.join(root, '.campaign'), Buffer.from(binding));
-  const verify = (slot, attempt, hash) => {
+  if (create) publish(path.join(root, '.campaign'), Buffer.from(binding));
+  const assertStore = () => {
+    try {
+      const stat = lstatSync(checkedPath(root));
+      if (!stat.isDirectory() || stat.dev !== identity.dev || stat.ino !== identity.ino || readSafe(path.join(root, '.campaign')).toString('utf8') !== binding) throw new Error('invalid');
+    } catch { throw new Error('receipt store custody failure'); }
+  };
+  assertStore();
+  const readVerified = (slot, attempt, hash) => {
     if (!safeSlot(slot) || !Number.isSafeInteger(attempt) || attempt < 1 || !safeHash(hash)) return false;
     try {
-      if (readSafe(pointerFor(slot, attempt)).toString('utf8') !== hash) return false;
-      const bytes = readSafe(fileFor(hash));
+      assertStore();
+      const bytes = readSafe(pointerFor(slot, attempt));
       if (digest(bytes) !== hash) return false;
       const receipt = JSON.parse(bytes.toString('utf8'));
       if (receipt.version !== 1 || receipt.binding !== binding || receipt.slot !== slot || receipt.attempt !== attempt ||
@@ -89,30 +97,40 @@ export function createReceiptStore({ directory, binding, runRootFor }) {
       const allowed = checkedPath(runRootFor(slot, attempt));
       const runDir = checkedPath(receipt.runDir);
       if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) return false;
-      return JSON.stringify(receipt.files) === JSON.stringify(inventory(runDir));
+      return JSON.stringify(receipt.files) === JSON.stringify(inventory(runDir)) ? receipt : false;
     } catch { return false; }
+  };
+  const verify = (slot, attempt, hash) => {
+    try { return readVerified(slot, attempt, hash) !== false; }
+    catch { return false; }
   };
   const seal = (slot, attempt, result) => {
     if (!safeSlot(slot) || !Number.isSafeInteger(attempt) || attempt < 1 || !result || !['pass', 'fail', 'error'].includes(result.status) || typeof result.caseName !== 'string' || !result.caseName || typeof result.runDir !== 'string') throw new Error('invalid receipt result');
     const allowed = checkedPath(runRootFor(slot, attempt)), runDir = checkedPath(result.runDir);
     if (!runDir.startsWith(allowed + path.sep) || realpathSync(runDir) !== runDir) throw new Error('receipt outside attempt root');
     if (result.status === 'error' && !errors.has(result.error)) throw new Error('invalid receipt error');
+    assertStore();
     const record = { version: 1, binding, slot, attempt, caseName: result.caseName, status: result.status,
       ...(result.status === 'error' ? { error: result.error } : {}), runDir, files: inventory(runDir) };
     const bytes = Buffer.from(JSON.stringify(record)), hash = digest(bytes);
-    publish(fileFor(hash), bytes);
     freeze(runDir);
-    publish(pointerFor(slot, attempt), Buffer.from(hash));
+    publish(pointerFor(slot, attempt), bytes);
     if (!verify(slot, attempt, hash)) throw new Error('receipt verification failed');
     return hash;
   };
   const find = (slot, attempt) => {
     if (!safeSlot(slot) || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error('invalid receipt identity');
-    let hash;
-    try { hash = readSafe(pointerFor(slot, attempt)).toString('utf8'); }
-    catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+    assertStore();
+    let bytes;
+    try { bytes = readSafe(pointerFor(slot, attempt)); }
+    catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      assertStore();
+      return null;
+    }
+    const hash = digest(bytes);
     if (!verify(slot, attempt, hash)) throw new Error('attempt receipt missing or changed');
-    return { hash, receipt: JSON.parse(readSafe(fileFor(hash)).toString('utf8')) };
+    return { hash, receipt: JSON.parse(bytes.toString('utf8')) };
   };
   return { seal, verify, find };
 }

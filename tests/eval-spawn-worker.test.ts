@@ -91,14 +91,17 @@ describe('campaign worker spawn', () => {
       writeFileSync(file, config);
       const result = await spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config) });
       expect(result).toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
-      const receipts = createReceiptStore({ directory: path.join(dir, 'receipts'), binding: 'b', runRootFor: (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${String(attempt).padStart(2, '0')}`) });
+      const receiptOptions = { directory: path.join(dir, 'receipts'), binding: 'b', runRootFor: (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${String(attempt).padStart(2, '0')}`) };
+      const receipts = createReceiptStore({ ...receiptOptions, create: true });
       const receiptHash = receipts.seal('one', 1, result);
       expect(supervisor.workerExited('one', 1)).toBe(true);
       // Simulate a crash after the child exited but before the parent persisted close.
       supervisor.db.prepare("UPDATE worker_claim SET spawn_state='started' WHERE slot_id='one'").run(); supervisor.close();
       supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      const recovered = createReceiptStore(receiptOptions);
+      expect(recovered.find('one', 1)).toMatchObject({ hash: receiptHash });
       expect(supervisor.workerExited('one', 1)).toBe(true);
-      supervisor.recordWorkerExit('one', 1); supervisor.seal('one', 1, receiptHash, receipts.verify); supervisor.close();
+      supervisor.recordWorkerExit('one', 1); supervisor.seal('one', 1, receiptHash, recovered.verify); supervisor.close();
       supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
       supervisor.recordWorkerExit('one', 1);
       expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM outcome').get()).toEqual({ total: 1 });
