@@ -15,6 +15,20 @@ const chunkZero = { source: "provider_chunk", usagePresent: true, costPresent: f
 const terminal = { source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, terminal: "error", costFromProvider: false };
 
 describe("physical fetch settlement", () => {
+  it.each(["Bearer key-b", ""])("rejects an incorrect or absent key before physical start", async (authorization) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-key-binding-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+      const fingerprint = ledger.fingerprint("key-a");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: "a".repeat(64) });
+      const fetchImpl = vi.fn(async () => new Response("ok"));
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl, AdmissionError: TransportAdmissionError });
+      const headers = authorization ? { authorization } : {};
+      await expect(transport.fetch(expected.destination, { ...init, headers })).rejects.toMatchObject({ context: { reason: "binding_mismatch" } });
+      expect(fetchImpl).not.toHaveBeenCalled(); expect(ledger.totals()).toMatchObject({ starts: 0, stopped: "binding_mismatch" });
+      ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it.each([false, true])("stops and preserves the physical charge if settlement fails %s commit", async (afterCommit) => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
     try {

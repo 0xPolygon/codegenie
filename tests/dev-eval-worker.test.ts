@@ -28,14 +28,15 @@ describe("development eval worker", () => {
   it("does not admit a boundary with missing or changed meter and health evidence", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-boundary-"));
     try {
-      const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
-      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
-      const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baseline.hash });
+      const fingerprint = ledger.fingerprint('synthetic-key');
+      const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
+      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint });
+      const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash });
       const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file }, nowMs: 2 };
       expect(boundaryDecision(args)).toMatchObject({ source: "key", action: "snapshot" });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshot.hash });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
       expect(boundaryDecision(args)).toMatchObject({ source: "health", action: "probe" });
       ledger.reservePhysical({ id: "health", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "one" });
       ledger.settlePhysical({ id: "health", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
@@ -90,11 +91,13 @@ describe("development eval worker", () => {
 
   it("runs a real adapter against an injected transport only after bound health and key evidence", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-guard-"));
-    const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0 });
-    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1 });
+    const db = path.join(dir, "ledger.sqlite"), suite = path.join(dir, "suite");
+    const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
+    const fingerprint = ledger.fingerprint('synthetic-key');
+    const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
+    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint });
     const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
-    const db = path.join(dir, "ledger.sqlite"), suite = path.join(dir, "suite");
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));
     const originalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", originalFetch);
     try {
@@ -103,8 +106,7 @@ describe("development eval worker", () => {
       const source = readFileSync(path.join(checkout, "evals/fixtures/core.yml"), "utf8").replace("provider: fake", "provider: openrouter").replace("model: fake-model", "model: openai/gpt-6-luna");
       writeFileSync(path.join(suite, "core.yml"), source);
       const caseFile = path.join(dir, "case.json"); writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
-      const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baseline.hash }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshot.hash });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
       ledger.reservePhysical({ id: "health-1", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "boundary-1" });
       ledger.settlePhysical({ id: "health-1", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
       ledger.recordHealth({ physicalId: "health-1", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash }); ledger.close();

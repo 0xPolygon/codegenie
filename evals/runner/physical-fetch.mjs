@@ -26,6 +26,15 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
       return body.model === expected.modelId && body.reasoning?.effort === expected.wireEffort;
     } catch { return false; }
   }
+  function credentialMatches(input, init) {
+    if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) return true;
+    try {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      const auth = headers.get('authorization');
+      const match = typeof auth === 'string' ? /^Bearer\s+(.+)$/iu.exec(auth) : null;
+      return match !== null && ledger.matchesBaselineKey(match[1]);
+    } catch { return false; }
+  }
   function stopAccounting() {
     try { ledger.stop('accounting_failed'); } catch { /* preserve open hold and require reconciliation */ }
     throw new AdmissionError('accounting_failed', current?.id);
@@ -59,8 +68,10 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
       const id = `${logicalId}/physical-${++ordinal}`;
       try {
         if (current && !current.settled) settleCurrent();
-        if (!valid || !wireMatches(input, init)) {
+        const credentialValid = credentialMatches(input, init);
+        if (!valid || !wireMatches(input, init) || !credentialValid) {
           ledger.recordRefusal({ id, logicalId, reason: 'binding_mismatch' });
+          if (!credentialValid) ledger.stop('binding_mismatch');
           throw new AdmissionError('binding_mismatch');
         }
         const admission = ledger.reservePhysical({ id, logicalId, kind: healthBoundary === undefined ? call.kind : 'health', provider: call.provider, ...(healthBoundary !== undefined ? { healthBoundary, healthPurpose } : {}) });

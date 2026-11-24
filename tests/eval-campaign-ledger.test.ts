@@ -8,6 +8,23 @@ import { describe, expect, it } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it("keeps key fingerprints campaign-specific and stops on snapshot key drift", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-key-"));
+    try {
+      const one = new CampaignLedger(path.join(dir, "one"), { binding: "one", limitMicros: 2_000_000 });
+      const two = new CampaignLedger(path.join(dir, "two"), { binding: "two", limitMicros: 2_000_000 });
+      const fingerprint = one.fingerprint("key-a");
+      expect(fingerprint).not.toBe(two.fingerprint("key-a"));
+      one.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: "a".repeat(64) });
+      expect(one.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: one.fingerprint("key-b"), evidenceSHA256: "b".repeat(64) })).toEqual({ fresh: false, bindingMismatch: true });
+      expect(one.totals().stopped).toBe("binding_mismatch");
+      expect(one.db.prepare('SELECT COUNT(*) AS count FROM key_snapshot').get()).toEqual({ count: 0 });
+      one.close(); two.close();
+      const reopened = new CampaignLedger(path.join(dir, "one"), { binding: "one", limitMicros: 2_000_000 });
+      expect(reopened.fingerprint("key-a")).toBe(fingerprint);
+      expect(reopened.totals().stopped).toBe("binding_mismatch"); reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("keeps unknown holds across restart and records refused starts separately", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
@@ -76,8 +93,8 @@ describe("development campaign physical ledger", () => {
     try {
       const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 1_000_000 }, evidence = "a".repeat(64);
       let ledger = new CampaignLedger(file, config);
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
-      ledger.recordKeySnapshot({ usageMicros: 950_000, observedMs: 1, evidenceSHA256: evidence });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 950_000, observedMs: 1, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
       ledger.close(); ledger = new CampaignLedger(file, config);
       expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" });
       expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
@@ -90,18 +107,18 @@ describe("development campaign physical ledger", () => {
     try {
       const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 1_000_000 }, evidence = "a".repeat(64);
       let ledger = new CampaignLedger(file, config);
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
-      expect(ledger.recordKeySnapshot({ usageMicros: 550_000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(true);
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
+      expect(ledger.recordKeySnapshot({ usageMicros: 550_000, observedMs: 1, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(true);
       expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: true });
       ledger.settlePhysical({ id: "p1", httpStatus: 200, providerCostMicros: 200_000, costConfirmed: true });
       for (const [usageMicros, observedMs] of [[550_000, 2], [650_000, 3]] as const) {
-        expect(ledger.recordKeySnapshot({ usageMicros, observedMs, evidenceSHA256: evidence }).fresh).toBe(false);
+        expect(ledger.recordKeySnapshot({ usageMicros, observedMs, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(false);
         expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "wait" });
       }
       ledger.close(); ledger = new CampaignLedger(file, config);
       expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 200_000 });
-      expect(ledger.recordKeySnapshot({ usageMicros: 750_000, observedMs: 4, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.recordKeySnapshot({ usageMicros: 750_000, observedMs: 4, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(true);
       expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" });
       expect(ledger.reservePhysical({ id: "p3", logicalId: "mc3", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
       expect(ledger.totals().starts).toBe(1); ledger.close();
@@ -112,14 +129,14 @@ describe("development campaign physical ledger", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
       const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "fixture", limitMicros: 1_000_000 }), evidence = "a".repeat(64);
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, evidenceSHA256: evidence });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
       for (let n = 0; n < 10; n++) {
         const id = `p${n}`; expect(ledger.reservePhysical({ id, logicalId: id, kind: "review" })).toEqual({ admitted: true });
         ledger.settlePhysical({ id, httpStatus: 200, providerCostMicros: 1, providerCostNanos: 400, costConfirmed: true });
       }
       expect(ledger.totals().chargedMicros).toBe(10);
-      expect(ledger.recordKeySnapshot({ usageMicros: 4, usageNanos: 4000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.recordKeySnapshot({ usageMicros: 4, usageNanos: 4000, observedMs: 1, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(true);
       expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" }); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -129,19 +146,19 @@ describe("development campaign physical ledger", () => {
     try {
       const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 1_000_000 }, evidence = "a".repeat(64);
       let ledger = new CampaignLedger(file, config);
-      ledger.bindKeyBaseline({ usageMicros: 10_000_000, evidenceSHA256: evidence });
+      ledger.bindKeyBaseline({ usageMicros: 10_000_000, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
       const decide = () => ledger.keyDecision({ verifyEvidence: (_kind: string, hash: string) => hash === evidence });
       expect(decide()).toEqual({ action: "snapshot" });
-      ledger.recordKeySnapshot({ usageMicros: 10_000_000, observedMs: 0, evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 10_000_000, observedMs: 0, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
       ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" }); ledger.settlePhysical({ id: "p1", httpStatus: 200, providerCostMicros: 100_000, costConfirmed: true });
       ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" }); ledger.settlePhysical({ id: "p2", httpStatus: 500 });
-      expect(ledger.recordKeySnapshot({ usageMicros: 10_050_000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(false);
+      expect(ledger.recordKeySnapshot({ usageMicros: 10_050_000, observedMs: 1, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(false);
       expect(decide()).toEqual({ action: "wait" }); ledger.close(); ledger = new CampaignLedger(file, config);
       expect(decide()).toEqual({ action: "wait" });
-      expect(ledger.recordKeySnapshot({ usageMicros: 10_100_000, observedMs: 2, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.recordKeySnapshot({ usageMicros: 10_100_000, observedMs: 2, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence }).fresh).toBe(true);
       expect(decide()).toEqual({ action: "admit" });
       expect(ledger.totals()).toMatchObject({ chargedMicros: 500_000, unknown: 1 });
-      ledger.recordKeySnapshot({ usageMicros: 11_000_000, observedMs: 3, evidenceSHA256: evidence });
+      ledger.recordKeySnapshot({ usageMicros: 11_000_000, observedMs: 3, keyFingerprint: ledger.fingerprint('synthetic-key'), evidenceSHA256: evidence });
       expect(decide()).toEqual({ action: "stop", reason: "budget_limit" }); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

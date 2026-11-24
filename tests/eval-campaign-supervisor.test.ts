@@ -118,11 +118,12 @@ describe('campaign admission custody', () => {
       const file = path.join(dir, 'supervisor.db');
       const evidenceFiles: Record<string, string> = {};
       const evidence = (value: object) => { const text = JSON.stringify(value), hash = digest(text), name = path.join(dir, hash); writeFileSync(name, text); evidenceFiles[hash] = name; return hash; };
-      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0 }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1 });
-      const healthHash = evidence({ kind: 'health', purpose: 'admission', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
-      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: baselineHash });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: snapshotHash });
+      const fingerprint = ledger.fingerprint('synthetic-key');
+      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0, fingerprint }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1, fingerprint });
+      const healthHash = evidence({ kind: 'health', purpose: 'admission', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baselineHash });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshotHash });
       const scheduleBytes = Buffer.from(JSON.stringify({ pauseAfterSlot: 'one', slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }, { id: 'two', boundaryId: 'two', provider: 'openrouter' }] }));
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) };
       let supervisor = new CampaignSupervisor(file, binding);

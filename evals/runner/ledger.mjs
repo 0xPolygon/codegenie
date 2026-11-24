@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createHmac, randomBytes } from 'node:crypto';
 
 // Values are integer microdollars; no native estimate is treated as a bill.
 export class CampaignLedger {
@@ -11,18 +12,26 @@ export class CampaignLedger {
     this.errorHold = errorHoldMicros;
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, stopped TEXT);
+      CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT);
       CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
-      CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, key_fingerprint TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS health_receipt(physical_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
     this.transaction(() => {
       const row = this.db.prepare('SELECT * FROM campaign').get();
-      if (!row) this.db.prepare('INSERT INTO campaign(binding,limit_micros,reserve_micros,error_hold_micros) VALUES(?,?,?,?)').run(binding, limitMicros, reserveMicros, errorHoldMicros);
+      if (!row) this.db.prepare('INSERT INTO campaign(binding,limit_micros,reserve_micros,error_hold_micros,salt) VALUES(?,?,?,?,?)').run(binding, limitMicros, reserveMicros, errorHoldMicros, randomBytes(32));
       else if (row.binding !== binding || row.limit_micros !== limitMicros || row.reserve_micros !== reserveMicros || row.error_hold_micros !== errorHoldMicros) throw new Error('ledger binding mismatch');
     });
+  }
+  fingerprint(key) {
+    if (typeof key !== 'string' || !key) throw new TypeError('key required');
+    return createHmac('sha256', this.db.prepare('SELECT salt FROM campaign').get().salt).update(key).digest('hex');
+  }
+  matchesBaselineKey(key) {
+    const baseline = this.db.prepare('SELECT key_fingerprint FROM key_baseline').get();
+    return baseline !== undefined && typeof key === 'string' && key.length > 0 && this.fingerprint(key) === baseline.key_fingerprint;
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -36,20 +45,20 @@ export class CampaignLedger {
     return this.transaction(() => {
       if (this.db.prepare('SELECT 1 FROM physical WHERE id=? UNION ALL SELECT 1 FROM local_refusal WHERE id=?').get(id, id)) throw new Error('duplicate attempt identity');
       if (this.db.prepare("SELECT 1 FROM logical WHERE id=? AND status='cache_hit'").get(logicalId)) throw new Error('cache hit cannot start a physical call');
-      const campaign = this.db.prepare('SELECT stopped FROM campaign').get();
+      const campaign = this.db.prepare('SELECT stopped,meter_stale FROM campaign').get();
       const total = this.db.prepare('SELECT COALESCE(SUM(charge),0) AS total FROM physical').get().total;
       const baseline = this.db.prepare('SELECT usage_micros FROM key_baseline').get();
       let keyGuard = 0, freshnessReason;
       if (baseline) {
         const snapshot = this.db.prepare('SELECT usage_micros,priced_floor_micros,fresh FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get();
         if (!snapshot) freshnessReason = 'key_usage_unavailable';
-        else if (snapshot.fresh !== 1) freshnessReason = 'key_usage_stale';
         else {
+          if (campaign.meter_stale || snapshot.fresh !== 1) freshnessReason = 'key_usage_stale';
           const sums = this.db.prepare("SELECT COALESCE(SUM(CASE WHEN state='priced' THEN charge ELSE 0 END),0) AS priced, COALESCE(SUM(CASE WHEN state<>'priced' THEN charge ELSE 0 END),0) AS held FROM physical").get();
           keyGuard = Math.max(0, snapshot.usage_micros - baseline.usage_micros, snapshot.priced_floor_micros) + Math.max(0, sums.priced - snapshot.priced_floor_micros) + sums.held;
         }
       }
-      const reason = campaign.stopped ?? freshnessReason ?? (Math.max(total, keyGuard) + this.reserve > this.limit ? 'campaign_budget' : undefined);
+      const reason = campaign.stopped ?? (Math.max(total, keyGuard) + this.reserve > this.limit ? 'campaign_budget' : freshnessReason);
       if (reason !== undefined) {
         this.db.prepare('INSERT INTO local_refusal(id,logical_id,reason) VALUES(?,?,?)').run(id, logicalId, reason);
         return { admitted: false, reason };
@@ -112,20 +121,21 @@ export class CampaignLedger {
     });
     if (!settled) throw new Error('confirmed cost contradicts a prior lower bound');
   }
-  bindKeyBaseline({ usageMicros, usageNanos = usageMicros * 1000, evidenceSHA256 }) {
-    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.floor(usageNanos / 1000) !== usageMicros || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '')) throw new TypeError('invalid key baseline');
+  bindKeyBaseline({ usageMicros, usageNanos = usageMicros * 1000, evidenceSHA256, keyFingerprint }) {
+    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.floor(usageNanos / 1000) !== usageMicros || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '') || !/^[a-f0-9]{64}$/u.test(keyFingerprint ?? '')) throw new TypeError('invalid key baseline');
     this.transaction(() => {
-      const previous = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256 FROM key_baseline').get();
+      const previous = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256,key_fingerprint FROM key_baseline').get();
       if (previous) {
-        if (previous.usage_micros !== usageMicros || previous.usage_nanos !== usageNanos || previous.evidence_sha256 !== evidenceSHA256) throw new Error('key baseline drift');
-      } else this.db.prepare('INSERT INTO key_baseline VALUES(?,?,?)').run(usageMicros, usageNanos, evidenceSHA256);
+        if (previous.usage_micros !== usageMicros || previous.usage_nanos !== usageNanos || previous.evidence_sha256 !== evidenceSHA256 || previous.key_fingerprint !== keyFingerprint) throw new Error('key baseline drift');
+      } else this.db.prepare('INSERT INTO key_baseline VALUES(?,?,?,?)').run(usageMicros, usageNanos, evidenceSHA256, keyFingerprint);
     });
   }
-  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256 }) {
+  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256, keyFingerprint }) {
     if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.ceil(usageNanos / 1000) !== usageMicros || !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '')) throw new TypeError('invalid key snapshot');
     return this.transaction(() => {
-      const baseline = this.db.prepare('SELECT usage_micros,usage_nanos FROM key_baseline').get();
+      const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,key_fingerprint FROM key_baseline').get();
       if (!baseline) throw new Error('key baseline missing');
+      if (keyFingerprint !== baseline.key_fingerprint) { this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'binding_mismatch')").run(); return { fresh: false, bindingMismatch: true }; }
       const last = this.db.prepare('SELECT usage_micros,observed_ms FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
       const lastFresh = this.db.prepare('SELECT usage_nanos,priced_floor_nanos FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get();
       if (last && observedMs < last.observed_ms) throw new Error('key snapshot time reversed');
@@ -135,22 +145,25 @@ export class CampaignLedger {
       if (!Number.isSafeInteger(expectedNanos)) throw new RangeError('key watermark exceeds safe precision');
       const fresh = usageNanos >= expectedNanos;
       this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, priced.nanos, observedMs, evidenceSHA256, fresh ? 1 : 0);
+      this.db.prepare('UPDATE campaign SET meter_stale=?').run(fresh ? 0 : 1);
       if (usageMicros - baseline.usage_micros >= this.limit) this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'budget_limit')").run();
       return { fresh, actualMicros: Math.max(0, usageMicros - baseline.usage_micros) };
     });
   }
   keyDecision({ verifyEvidence }) {
     if (typeof verifyEvidence !== 'function') throw new TypeError('snapshot evidence verifier required');
-    const stopped = this.db.prepare('SELECT stopped FROM campaign').get().stopped;
-    if (stopped) return { action: 'stop', reason: stopped };
-    const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256 FROM key_baseline').get();
-    if (!baseline || verifyEvidence('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos }) !== true) throw new Error('key baseline evidence missing or changed');
+    const state = this.db.prepare('SELECT stopped,meter_stale FROM campaign').get();
+    if (state.stopped) return { action: 'stop', reason: state.stopped };
+    const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256,key_fingerprint FROM key_baseline').get();
+    if (!baseline || verifyEvidence('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos, fingerprint: baseline.key_fingerprint }) !== true) throw new Error('key baseline evidence missing or changed');
     const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,observed_ms,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
     if (!snapshot) return { action: 'snapshot' };
-    if (verifyEvidence('snapshot', snapshot.evidence_sha256, { kind: 'key_snapshot', usageNanos: snapshot.usage_nanos, observedMs: snapshot.observed_ms }) !== true) throw new Error('key snapshot evidence changed');
+    if (verifyEvidence('snapshot', snapshot.evidence_sha256, { kind: 'key_snapshot', usageNanos: snapshot.usage_nanos, observedMs: snapshot.observed_ms, fingerprint: baseline.key_fingerprint }) !== true) throw new Error('key snapshot evidence changed');
+    if (state.meter_stale) return { action: 'wait' };
     const priced = this.db.prepare("SELECT COALESCE(SUM(provider_cost_nanos),0) AS total FROM physical WHERE state='priced'").get().total;
     return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced && priced <= snapshot.priced_floor_nanos ? 'admit' : 'wait' };
   }
+  markKeyStale() { this.transaction(() => this.db.prepare('UPDATE campaign SET meter_stale=1').run()); }
   recordHealth({ physicalId, outcome, observedMs, evidenceSHA256 }) {
     if (typeof physicalId !== 'string' || !physicalId || !['clean', 'capacity'].includes(outcome) ||
         !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '')) throw new TypeError('invalid health receipt');
