@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { CampaignLedger } from './ledger.mjs';
@@ -7,6 +7,17 @@ import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from '.
 import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase, workerBounds } from './case.mjs';
 const bindingError = () => Object.assign(new Error('binding mismatch'), { context: { reason: 'binding_mismatch' } });
+function readWorkerToken() {
+  const bytes = Buffer.alloc(65); let length = 0;
+  while (length < bytes.length) {
+    const count = readSync(0, bytes, length, bytes.length - length, null);
+    if (count === 0) break;
+    length += count;
+    if (bytes[length - 1] === 10) break;
+  }
+  const value = bytes.subarray(0, length).toString('utf8').trim();
+  return value === '' ? undefined : value;
+}
 
 function activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerConfigSHA256, workerToken }) {
   const match = typeof attemptPrefix === 'string' ? /^([A-Za-z0-9._-]+)\/attempt-(\d{2,})$/u.exec(attemptPrefix) : null;
@@ -21,6 +32,16 @@ function activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerCo
       db.exec('COMMIT'); return result.changes === 1;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   } finally { db.close(); }
+}
+
+export function operationalError(ledger, attemptPrefix) {
+  const stopped = ledger.totals().stopped;
+  if (stopped) return boundaryRefusalReason(stopped);
+  const prefix = `${attemptPrefix}/`;
+  const refusal = ledger.db.prepare('SELECT reason FROM local_refusal WHERE substr(logical_id,1,?)=? ORDER BY rowid DESC LIMIT 1').get(prefix.length, prefix);
+  if (refusal) return boundaryRefusalReason(refusal.reason);
+  const physical = ledger.db.prepare('SELECT http_status FROM physical WHERE substr(id,1,?)=? ORDER BY rowid DESC LIMIT 1').get(prefix.length, prefix);
+  return physical && Number.isInteger(physical.http_status) && physical.http_status >= 400 ? 'provider_failure' : 'harness_exception';
 }
 
 // This internal worker receives paths and expected metadata only; provider
@@ -69,7 +90,8 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    return await runCase(caseConfig, { fetchForCall, caseConfigBytes, outputOverride: bounds.outputDir });
+    const result = await runCase(caseConfig, { fetchForCall, caseConfigBytes, outputOverride: bounds.outputDir });
+    return result.status === 'error' ? { ...result, operationalError: operationalError(ledger, attemptPrefix) } : result;
   } finally { ledger.close(); }
 }
 
@@ -79,10 +101,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!file || !/^[a-f0-9]{64}$/u.test(expectedDigest ?? '')) throw bindingError();
     const raw = readFileSync(file);
     if (createHash('sha256').update(raw).digest('hex') !== expectedDigest) throw bindingError();
-    const workerToken = process.env.CODEGENIE_CAMPAIGN_WORKER_TOKEN;
-    delete process.env.CODEGENIE_CAMPAIGN_WORKER_TOKEN;
+    const workerToken = readWorkerToken();
     const result = await runWorker(JSON.parse(raw.toString('utf8')), { workerConfigSHA256: expectedDigest, workerToken });
-    console.log(JSON.stringify({ caseName: result.caseName, status: result.status, runDir: result.runDir }));
+    console.log(JSON.stringify({ caseName: result.caseName, status: result.status, runDir: result.runDir,
+      ...(result.status === 'error' ? { error: result.operationalError } : {}) }));
     // A score failure is an observed outcome, not a harness failure.
   } catch (error) {
     const reason = error?.context?.reason;

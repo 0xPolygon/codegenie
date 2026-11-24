@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
-import { runWorker } from "../evals/runner/worker.mjs";
+import { operationalError, runWorker } from "../evals/runner/worker.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from "../evals/runner/boundary.mjs";
 
@@ -19,6 +19,16 @@ function evidence(dir: string, receipt: object) {
 }
 
 describe("development eval worker", () => {
+  it("classifies provider and harness failures without exposing response text", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-error-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "ledger"), { binding: "synthetic", limitMicros: 2_000_000 });
+      expect(operationalError(ledger, 'slot/attempt-01')).toBe('harness_exception');
+      ledger.reservePhysical({ id: 'slot/attempt-01/mc-1/physical-1', logicalId: 'slot/attempt-01/mc-1', kind: 'initial', provider: 'openrouter' });
+      ledger.settlePhysical({ id: 'slot/attempt-01/mc-1/physical-1', httpStatus: 503 });
+      expect(operationalError(ledger, 'slot/attempt-01')).toBe('provider_failure'); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("keeps unadmitted boundaries and accounting failures distinct from a campaign stop", () => {
     for (const reason of ["key_wait", "health_probe", "health_reconcile"]) expect(boundaryRefusalReason(reason)).toBe("boundary_not_admitted");
     expect(boundaryRefusalReason("accounting_failed")).toBe("accounting_failed");
@@ -131,13 +141,13 @@ describe("development eval worker", () => {
       expect(fetchImpl).not.toHaveBeenCalled();
       const rejected = await runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken });
-      expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
+      expect(rejected).toMatchObject({ status: "error", operationalError: "boundary_not_admitted" }); expect(fetchImpl).not.toHaveBeenCalled();
       const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
       expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "key_snapshot" }); afterRejection.close();
       const result = await runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken });
-      expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: "error", operationalError: "binding_mismatch" }); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
       await expect(runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken })).rejects.toMatchObject({ context: { reason: "binding_mismatch" } });
       expect(fetchImpl).toHaveBeenCalledTimes(1);

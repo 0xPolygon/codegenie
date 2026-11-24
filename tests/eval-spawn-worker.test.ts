@@ -12,7 +12,7 @@ import { spawnAttempt } from '../evals/runner/spawn-worker.mjs';
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 
 describe('campaign worker spawn', () => {
-  it.each(['typed-failure', 'foreign-output', 'wrong-case', 'timeout'])('handles %s without accepting foreign artifacts', async (scenario) => {
+  it.each(['typed-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout'])('handles %s without accepting foreign artifacts', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-spawn-failure-'));
     try {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: path.join(process.cwd(), 'evals/fixtures'), caseName: 'fixture-core-lens', outputDir: path.join(dir, 'out') }));
@@ -26,11 +26,12 @@ describe('campaign worker spawn', () => {
       const kill = vi.fn();
       let notifySpawn = () => {}; const spawned = new Promise<void>((resolve) => { notifySpawn = resolve; });
       const spawnImpl = () => {
-        const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; kill(): void };
-        child.stdout = new PassThrough(); child.kill = kill;
+        const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill(): void };
+        child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = kill;
         notifySpawn();
         if (scenario !== 'timeout') process.nextTick(() => {
-          child.stdout.write(JSON.stringify(scenario === 'typed-failure' ? { error: 'binding_mismatch' } : scenario === 'wrong-case'
+          child.stdout.write(JSON.stringify(scenario === 'typed-failure' ? { error: 'binding_mismatch' } : scenario === 'operational-error'
+            ? { caseName: 'fixture-core-lens', status: 'error', error: 'provider_failure', runDir: path.join(dir, 'out/one/attempt-01/1') } : scenario === 'wrong-case'
             ? { caseName: 'different', status: 'pass', runDir: path.join(dir, 'out/one/attempt-01/1') }
             : { caseName: 'fixture-core-lens', status: 'pass', runDir: path.join(dir, 'other') }));
           child.stdout.end(); child.emit('close', scenario === 'typed-failure' ? 1 : 0);
@@ -40,6 +41,7 @@ describe('campaign worker spawn', () => {
       if (scenario === 'timeout') vi.useFakeTimers();
       const pending = spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config), spawnImpl });
       if (scenario === 'typed-failure') await expect(pending).resolves.toEqual({ status: 'worker_failed', error: 'binding_mismatch' });
+      else if (scenario === 'operational-error') await expect(pending).resolves.toMatchObject({ status: 'error', error: 'provider_failure' });
       else if (scenario === 'foreign-output' || scenario === 'wrong-case') await expect(pending).rejects.toThrow('invalid worker result');
       else {
         const assertion = expect(pending).rejects.toThrow('timeout requires reconciliation');
@@ -80,8 +82,8 @@ describe('campaign worker spawn', () => {
       const file = path.join(dir, 'worker.json'), wrong = Buffer.from(JSON.stringify({ ...base, attemptPrefix: 'one/attempt-02' }));
       writeFileSync(file, wrong);
       const spawnImpl = vi.fn(() => {
-        const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; kill(): void };
-        child.stdout = new PassThrough(); child.kill = () => {};
+        const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill(): void };
+        child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = () => {};
         process.nextTick(() => { child.stdout.write(JSON.stringify({ caseName: 'fixture-core-lens', status: 'fail', runDir: path.join(dir, 'out/one/attempt-01/1') })); child.stdout.end(); child.emit('close', 0); });
         return child;
       });
