@@ -30,7 +30,7 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
-  it.each(['judge', 'timeout', 'artifacts', 'suite-overlap', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
+  it.each(['judge', 'timeout', 'artifacts', 'suite-overlap', 'case-before', 'case-during', 'case-after', 'health-error', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     const preload = path.join(dir, 'block.mjs'); writeFileSync(preload, 'globalThis.fetch = async () => { throw new Error("network blocked"); };\n');
@@ -65,7 +65,12 @@ describe('campaign driver', () => {
       let gets = 0, posts = 0;
       const fetchImpl = vi.fn(async (input: string) => {
         if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; if (scenario === 'case-during') appendFileSync(caseFile, ' '); return new Response(`{"data":{"usage":${gets === 1 ? 0 : 0.0001}}}`); }
-        posts++; return healthResponse();
+        posts++;
+        if (scenario === 'health-error') {
+          const event = JSON.stringify({ error: { code: 500, message: 'Resource temporarily blocked for synthetic-key' } });
+          return new Response(`data: ${event}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+        }
+        return healthResponse();
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       await expect(openCampaign(file, '0'.repeat(64), { fetchImpl, models })).rejects.toThrow('config digest');
@@ -106,6 +111,17 @@ describe('campaign driver', () => {
       if (scenario === 'case-during') {
         expect(await campaign.step()).toMatchObject({ action: 'stop', reason: 'binding_mismatch' });
         expect({ gets, posts }).toEqual({ gets: 1, posts: 0 }); campaign.close(); return;
+      }
+      if (scenario === 'health-error') {
+        const result = await campaign.step();
+        const diagnostic = { source: 'error.message', message: 'Resource temporarily blocked for [redacted:secret]' };
+        expect(result).toMatchObject({ action: 'stop', reason: 'health_failed', diagnostic, diagnosticSHA256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+        const bytes = readFileSync(path.join(base.evidenceDirectory, result.diagnosticSHA256));
+        expect(sha(bytes)).toBe(result.diagnosticSHA256);
+        expect(JSON.parse(bytes.toString())).toMatchObject({ kind: 'health_diagnostic', httpStatus: 200, streamTerminal: 'provider_error_event', ...diagnostic });
+        expect(campaign.ledger.db.prepare('SELECT COUNT(*) AS n FROM health_receipt').get()).toEqual({ n: 0 });
+        expect(await campaign.step()).toEqual({ action: 'stop', reason: 'health_failed' });
+        expect({ gets, posts }).toEqual({ gets: 1, posts: 1 }); campaign.close(); return;
       }
       expect(await campaign.step()).toMatchObject({ action: 'health', status: 'clean' });
       if (scenario === 'case-after') {
