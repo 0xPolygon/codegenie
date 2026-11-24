@@ -21,6 +21,19 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('creates the receipt store only on first binding and refuses its loss on restart', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-store-'));
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'out') };
+      const db = path.join(dir, 'supervisor.db');
+      const supervisor = new CampaignSupervisor(db, binding);
+      expect(supervisor.receipts.find('one', 1)).toBeNull(); supervisor.close();
+      rmSync(binding.receiptDirectory, { recursive: true });
+      expect(() => new CampaignSupervisor(db, binding)).toThrow();
+      expect(() => new CampaignSupervisor(db, binding)).toThrow();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('pins macOS process-start formatting across parent time-zone changes', () => {
     const run = vi.fn((_file: string, _args: string[], options: { env: Record<string, string> }) => `${options.env.TZ}/${options.env.LC_ALL}`);
     try {

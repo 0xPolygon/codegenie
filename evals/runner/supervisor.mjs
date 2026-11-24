@@ -5,6 +5,7 @@ import { readFileSync, readlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { outsideCheckout } from './case.mjs';
 import { boundaryDecision } from './boundary.mjs';
+import { createReceiptStore } from './receipt.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const isHash = (value) => /^[a-f0-9]{64}$/u.test(value ?? '');
@@ -30,8 +31,9 @@ function processNamespace() {
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
 export class CampaignSupervisor {
-  constructor(file, { binding, scheduleBytes, scheduleSHA256 }) {
+  constructor(file, { binding, scheduleBytes, scheduleSHA256, receiptDirectory, runRootFor }) {
     if (typeof binding !== 'string' || !binding || !Buffer.isBuffer(scheduleBytes) || !isHash(scheduleSHA256) || sha(scheduleBytes) !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
+    if ((receiptDirectory === undefined) !== (runRootFor === undefined) || (receiptDirectory !== undefined && (typeof receiptDirectory !== 'string' || typeof runRootFor !== 'function'))) throw new Error('invalid receipt store binding');
     const parsed = JSON.parse(scheduleBytes.toString('utf8'));
     if (!Array.isArray(parsed.slots) || parsed.slots.length === 0 || parsed.slots.some((s) =>
       typeof s.id !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(s.id) || ['.', '..'].includes(s.id) || typeof s.boundaryId !== 'string' || !s.boundaryId || typeof s.provider !== 'string' || !s.provider) ||
@@ -55,6 +57,7 @@ export class CampaignSupervisor {
         const old = this.db.prepare('SELECT * FROM campaign').get();
         if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?)').run(binding, scheduleSHA256);
         else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
+        if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
     } catch (error) { this.db.close(); throw error; }
   }
