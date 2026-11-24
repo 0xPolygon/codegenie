@@ -1772,8 +1772,12 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                   delete responseCapture.upstreamProvider;
                   upstreamFailureObserved = false;
                   delete providerObservation.policyMessage;
+                  delete providerObservation.physicalHttpStatus;
+                  delete providerObservation.httpStatus;
+                  delete providerObservation.streamOutage;
                   const generation = ++responseGeneration;
                   const response = await underlying(input, init);
+                  if (generation === responseGeneration) providerObservation.physicalHttpStatus = response.status;
                   return observeOpenRouterResponse(response, (chunk, failure) => {
                     if (generation !== responseGeneration) return;
                     if (!failure) {
@@ -4152,7 +4156,9 @@ type ProviderRetryClassification = {
 
 function classifyProviderRetry(cause: unknown, attempt: number, observation?: ProviderFailureObservation): ProviderRetryClassification {
   const status = providerFailureHttpStatus(cause, observation);
-  if (observation?.policyMessage !== undefined || providerPolicyBlockMessage(cause) !== undefined) {
+  const responseStatus = observation?.physicalHttpStatus ?? observation?.httpStatus;
+  if ((responseStatus === 200 || (responseStatus !== undefined && responseStatus >= 500)) &&
+      (observation?.policyMessage !== undefined || providerPolicyBlockMessage(cause) !== undefined)) {
     return { retryable: false, reason: "provider_policy_block" };
   }
   if (status === undefined && observation?.streamOutage !== undefined) {
@@ -4237,7 +4243,7 @@ function toLlmError(
 }
 
 type StreamOutageReason = "temporarily_unavailable" | "provider_overloaded" | "server_error";
-type ProviderFailureObservation = { httpStatus?: number; streamOutage?: StreamOutageReason; policyMessage?: string };
+type ProviderFailureObservation = { httpStatus?: number; physicalHttpStatus?: number; streamOutage?: StreamOutageReason; policyMessage?: string };
 
 function providerOutageCancellation(signal: AbortSignal): CodegenieError | undefined {
   const reason: unknown = signal.reason;

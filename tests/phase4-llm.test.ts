@@ -8231,7 +8231,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const onProviderUnavailable = vi.fn();
     let starts = 0;
     const explanation = "Resource temporarily blocked by content policy";
-    const body = { provider: "Other", error: { message: "Provider returned error", metadata: { provider_name: "Azure", raw: JSON.stringify({ error: { message: explanation } }) } } };
+    const body = { provider: "Other", error: { code: 403, message: "Provider returned error", metadata: { provider_name: "Azure", raw: JSON.stringify({ error: { message: explanation } }) } } };
     try {
       const runner = await createPiRunner({
         llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
@@ -8256,6 +8256,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(telemetry.modelCalls[0]).toMatchObject({ errorCode: "provider_policy_block", retryable: false, retryReason: "provider_policy_block", upstreamProvider: "Azure" });
     } finally { vi.unstubAllEnvs(); }
   });
+
+  it.each([[401, "auth_error"], [400, "request_error"], [429, "rate_limited"]] as const)(
+    "preserves HTTP %i classification when the body mentions content policy", async (status, reason) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+      const telemetry = fakeTelemetry();
+      let starts = 0;
+      try {
+        const runner = await createPiRunner({
+          llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+          telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+          fetchForCall: () => ({ fetch: async () => { starts++; return Response.json({ error: { message: "content policy restriction" } }, { status }); } }),
+          hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+        });
+        await expect(runner.runStructured({ ...submitReviewRequest("status-policy"), purpose: "location_clarification", timeoutMs: 10_000 })).rejects.toMatchObject({ code: "llm_call_failed" });
+        expect(starts).toBe(1);
+        expect(telemetry.modelCalls[0]).toMatchObject({ retryReason: reason });
+      } finally { vi.unstubAllEnvs(); }
+    }
+  );
 
   it.each([
     { values: ["Azure"], expected: "Azure" },
