@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 
 // Project only grading evidence; neither operational records nor sidecars enter.
 const marker = /\b(?:read_change|read_range|read_definition|find_usages|search_files|list_files|find_definition|find_symbol_mentions|read_symbol|read_diff_blocks|read_file_outline|find_likely_tests|six[-_ ]tool|nine[-_ ]tool|packet-first|arm\s+[abce]|draw[-_ ]+\d+|review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|toolSurface|stage7Prompt|p[579]\.[\w.-]+|openrouter|openai-codex|gpt-6-luna)\b/giu;
-const treatment = /(?:review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|stage7Prompt|p7\.[\w.-]+)/giu;
+const treatment = /(?:review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|stage7Prompt|p7\.[\w.-]+|\b(?:control|treatment)[\s_-]+arm\b|\barm[\s:=_-]*(?:control|treatment|[ae])\b|\bblind\.arm\b|\\?["']arm\\?["'])/giu;
 export class TreatmentLeakError extends Error {
   constructor(hits, affectedSheets = 1) { super('first-lock treatment markers require disposition'); this.hits = hits; this.affectedSheets = affectedSheets; }
 }

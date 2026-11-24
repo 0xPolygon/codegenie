@@ -32,6 +32,12 @@ describe('blind export lock gate', () => {
       expect(() => verifyPrimaryLocks({ ...args, locks: [a, header] })).toThrow('coverage');
       const controlWithFinding = [{ ...sheets[0], published: { findings: [{ id: 'f-1', severity: 'medium' }], summaryOnly: [], attentionQuestions: [] } }];
       expect(() => verifyPrimaryLocks({ ...args, sheets: controlWithFinding })).toThrow('other-claim');
+      for (const severity of ['toString', 'constructor']) {
+        const surviving = [{ ...sheets[0], verification: [{ candidateId: 'f-candidate', verdict: 'keep', finalSeverity: severity }] }];
+        expect(() => verifyPrimaryLocks({ ...args, sheets: surviving })).toThrow('invalid graded item evidence');
+        const published = [{ ...sheets[0], published: { findings: [{ id: 'f-1', severity }], summaryOnly: [], attentionQuestions: [] } }];
+        expect(() => verifyPrimaryLocks({ ...args, sheets: published })).toThrow('invalid graded item evidence');
+      }
       const coding = file('coding', { frozen: true, mechanismManifestSHA256, reviews: [{ id, noApplicableCauses: true, causes: [] }] });
       const binding = { mechanismManifestSHA256, manifest, mapping: { selections: [{ id, arm: 'treatment' }] }, mechanismReviews: [{ id, passes: [], diagnostics: [] }] };
       expect(() => verifyMechanismFreeze(binding)).toThrow();

@@ -82,6 +82,31 @@ it('refuses treatment markers with aggregate counts before writing any export', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('refuses explicit arm labels but preserves ordinary review prose', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-labels-'));
+  try {
+    const evidence = { outcome: 'completed_full', candidates: [], promotion: { decisions: [] }, verification: [], finalReview: { findings: [{ id: 'finding', finalBody: 'Access control changes the control flow.' }] } };
+    const selection = { slotId: 'slot', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'control', draw: 1, caseId: 'case-01', causes: [], sourceLocator: 'source/01', oracleLocator: 'oracle/01', evidence };
+    const options = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0,
+      outputDirectory: path.join(dir, 'good'), mappingFile: path.join(dir, 'private', 'good.json'), selections: [selection] };
+    expect(exportFirstLock(options).sheetCount).toBe(1);
+    const sheet = readdirSync(options.outputDirectory).find((file) => file !== 'manifest.json')!;
+    expect(readFileSync(path.join(options.outputDirectory, sheet), 'utf8')).toContain('Access control changes the control flow.');
+    const publishedOutput = path.join(dir, 'bad-published'), publishedMapping = path.join(dir, 'private', 'bad-published.json');
+    const publishedLeak = { ...selection, evidence: { ...evidence, finalReview: { findings: [{ id: 'finding', finalBody: 'The treatment arm changed.' }] } } };
+    try { exportFirstLock({ ...options, outputDirectory: publishedOutput, mappingFile: publishedMapping, selections: [publishedLeak] }); throw new Error('expected refusal'); }
+    catch (error) { expect(error).toMatchObject({ hits: 1, affectedSheets: 1 }); }
+    expect(() => readdirSync(publishedOutput)).toThrow(); expect(() => readFileSync(publishedMapping)).toThrow();
+    for (const [index, label] of ['control arm', 'treatment arm', 'arm-a', 'arm_e', 'arm: treatment', 'blind.arm', '"arm"'].entries()) {
+      const outputDirectory = path.join(dir, `bad-${index}`), mappingFile = path.join(dir, 'private', `bad-${index}.json`);
+      const bad = { ...selection, evidence: { ...evidence, candidates: [{ id: 'candidate', title: label }] } };
+      try { exportFirstLock({ ...options, outputDirectory, mappingFile, selections: [bad] }); throw new Error('expected refusal'); }
+      catch (error) { expect(error).toMatchObject({ hits: 1, affectedSheets: 1 }); }
+      expect(() => readdirSync(outputDirectory)).toThrow(); expect(() => readFileSync(mappingFile)).toThrow();
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('refuses unrelated destination files before publishing anything', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-dirty-'));
   try {

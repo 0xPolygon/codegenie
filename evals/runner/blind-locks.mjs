@@ -5,6 +5,7 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const isHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 const classes = new Set(['introduced_real_defect', 'policy_or_reachability', 'pre_existing', 'wholly_false']);
 const severityRank = { low: 0, medium: 1, high: 2, critical: 3 };
+const validSeverity = (value) => typeof value === 'string' && Object.hasOwn(severityRank, value);
 function checkedJson(file, expected) {
   if (typeof file !== 'string' || !isHash(expected)) throw new Error('missing lock evidence');
   const bytes = readCheckedFile(file);
@@ -24,8 +25,8 @@ function verifyGrades(grades, manifest, sheets) {
         (entry.causes.length === 0 && grade.noApplicableCauses !== true) || (entry.causes.length > 0 && grade.noApplicableCauses === true) ||
         !Array.isArray(grade.otherClaims?.survivingMediumPlus) || !Array.isArray(grade.otherClaims?.published)) throw new Error('grade cause coverage mismatch');
     const inline = sheet.published?.findings ?? [], summary = sheet.published?.summaryOnly ?? [], questions = sheet.published?.attentionQuestions ?? [];
-    if ([...inline, ...summary].some((item) => typeof item.id !== 'string' || severityRank[item.severity] === undefined) ||
-        (sheet.verification ?? []).some((row) => ['keep', 'revise'].includes(row.verdict) && (typeof row.candidateId !== 'string' || severityRank[row.finalSeverity ?? row.severity] === undefined))) throw new Error('invalid graded item evidence');
+    if ([...inline, ...summary].some((item) => typeof item.id !== 'string' || !validSeverity(item.severity)) ||
+        (sheet.verification ?? []).some((row) => ['keep', 'revise'].includes(row.verdict) && (typeof row.candidateId !== 'string' || !validSeverity(row.finalSeverity ?? row.severity)))) throw new Error('invalid graded item evidence');
     const referenced = new Set(), linkedCandidates = new Set();
     for (const cause of grade.causes) {
       if (!['finding', 'question', 'none'].includes(cause.raised) || !['promoted', 'dropped', 'n/a'].includes(cause.promotion) ||
