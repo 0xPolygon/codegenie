@@ -17,6 +17,9 @@ describe("physical transport seam", () => {
       const model = (await adapter.resolveModel({ provider: "openrouter", model: "openai/gpt-6-luna" }))!;
       const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-retry-"));
       const ledger = new CampaignLedger(path.join(dir, "calls.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
       const calls: Array<{ body: string; usage: number | null }> = [];
       const observed: unknown[] = [];
       const fetchFixture: typeof globalThis.fetch = async (_input, init) => {

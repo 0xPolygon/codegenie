@@ -775,6 +775,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-stream-ledger-"));
     const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
     try {
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
       const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
         telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
         fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",

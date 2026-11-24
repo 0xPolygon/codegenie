@@ -27,7 +27,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
     } catch { return false; }
   }
   function credentialMatches(input, init) {
-    if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) return true;
+    if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) return false;
     try {
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
       const auth = headers.get('authorization');
