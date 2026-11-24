@@ -7753,6 +7753,140 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it.each(["openai-codex", "openrouter"] as const)(
+    "records unreported %s stream usage as unknown and preserves reported zero",
+    async provider => {
+      const codex = provider === "openai-codex";
+      const id = codex ? "gpt-6-luna" : "openai/gpt-6-luna";
+      const access = "fixture." + Buffer.from(JSON.stringify({
+        "https://api.openai.com/auth": { chatgpt_account_id: "fixture" }
+      })).toString("base64url") + ".fixture";
+      const models = getCodegeniePiModels({
+        read: async providerId => providerId !== provider ? undefined : codex
+          ? { type: "oauth", access, expires: 4_000_000_000_000, refresh: "" }
+          : { type: "api_key", key: "fixture-only-key" },
+        list: async () => [],
+        modify: async () => { throw new Error("unexpected auth refresh"); },
+        delete: async () => undefined
+      });
+      const real = createRealPiAiAdapter({ models });
+      const model = await real.resolveModel({ provider, model: id });
+      if (!model) throw new Error("missing model fixture");
+      const repoRoot = tempGitRepo();
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(repoRoot);
+      const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+      const cache = await createModelCallCache({
+        dir: cacheDir, repoRoot, runFingerprint: "usage-presence", logger: fakeLogger(), telemetry: run.recorder
+      });
+      const onUsage = vi.fn<(usage: LlmCallUsage) => void>();
+      const liveMessages: PiAssistantMessage[] = [];
+      const runner = createPiRunner({
+        llmConfig: { provider, model: id, maxConcurrentCalls: 1 },
+        telemetry: run.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        cache,
+        adapter: {
+          ...real,
+          resolveModel: () => model,
+          complete: async (selected, context, options) => {
+            const message = await real.complete(selected, context, { ...options, transport: "sse" });
+            liveMessages.push(message);
+            return message;
+          }
+        },
+        hooks: { checkpoint: () => "ok", onUsage }
+      });
+
+      const args = JSON.stringify(validSubmitReviewCall("submit").arguments);
+      const encode = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+      const headers = { "content-type": "text/event-stream" };
+      const reset = new Response(new ReadableStream({
+        pull(controller) {
+          controller.error(new Error("read ECONNRESET"));
+        }
+      }), { status: 200, headers });
+      const complete = (usage?: { input: number; output: number }) => {
+        const outputItem = { type: "function_call", id: "fc_fixture", call_id: "call_fixture", name: "submit_review", arguments: args };
+        const events = codex ? [
+          { type: "response.output_item.added", output_index: 0, item: { ...outputItem, arguments: "" } },
+          { type: "response.function_call_arguments.delta", output_index: 0, delta: args },
+          { type: "response.output_item.done", output_index: 0, item: outputItem },
+          { type: "response.completed", response: { status: "completed", ...(usage && { usage: {
+            input_tokens: usage.input, output_tokens: usage.output, total_tokens: usage.input + usage.output
+          } }) } }
+        ] : [
+          { id: "chat-fixture", choices: [{ index: 0, finish_reason: "tool_calls", delta: {
+            tool_calls: [{ index: 0, id: "call_fixture", type: "function", function: { name: "submit_review", arguments: args } }]
+          } }] },
+          ...(usage ? [{ id: "chat-fixture", choices: [], usage: {
+            prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.input + usage.output
+          } }] : [])
+        ];
+        return new Response(events.map(encode).join("") + (codex ? "" : "data: [DONE]\n\n"), { headers });
+      };
+      const fetch = vi.fn().mockResolvedValueOnce(reset)
+        .mockResolvedValueOnce(complete({ input: 29, output: 7 }))
+        .mockResolvedValueOnce(complete({ input: 0, output: 0 }))
+        .mockResolvedValueOnce(complete());
+      vi.stubGlobal("fetch", fetch);
+      vi.useFakeTimers();
+      try {
+        const result = runner.runStructured({ ...submitReviewRequest("packet-usage-retry"), timeoutMs: 10_000 });
+        void result.catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(3_000);
+        await expect(result).resolves.toMatchObject({ findings: [] });
+        await expect(runner.runStructured(submitReviewRequest("packet-usage-zero"))).resolves.toMatchObject({ findings: [] });
+        const withoutUsage = submitReviewRequest("packet-usage-unreported");
+        await expect(runner.runStructured(withoutUsage)).resolves.toMatchObject({ findings: [] });
+        await expect(runner.runStructured(withoutUsage)).resolves.toMatchObject({ findings: [] });
+        await run.finalize({ status: "completed_full", exitCode: 0 });
+
+        expect(fetch).toHaveBeenCalledTimes(4);
+        const [failed, retried, zero, unreported, cached] = readFileSync(path.join(attached.runDir, "model-calls.jsonl"), "utf8")
+          .trimEnd().split("\n").map(line => JSON.parse(line));
+        expect(failed).toMatchObject({ providerHttpStatus: 200, status: "transient_error", attempt: 1, retryReason: "network_error" });
+        for (const field of ["inputTokens", "outputTokens", "reasoningTokens", "totalTokens", "costUSD"]) {
+          expect(failed).not.toHaveProperty(field);
+        }
+        expect(retried).toMatchObject({ status: "ok", attempt: 2, inputTokens: 29, outputTokens: 7, totalTokens: 36 });
+        expect(retried?.costUSD).toBeGreaterThan(0);
+        expect(zero).toMatchObject({ status: "ok", attempt: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 });
+        expect(unreported).toMatchObject({ status: "ok", cacheStatus: "write" });
+        expect(cached).toMatchObject({ status: "ok", cacheStatus: "hit" });
+        expect(unreported).not.toHaveProperty("totalTokens");
+        expect(cached).not.toHaveProperty("totalTokens");
+        expect(liveMessages.at(-1)?.usage).toMatchObject({ totalTokens: 0 });
+        for (const row of [unreported, cached]) {
+          const debug = JSON.parse(readFileSync(path.join(attached.runDir, "debug", "llm-calls", `${row.callId}.response.json`), "utf8"));
+          expect(debug.response).not.toHaveProperty("usage");
+          expect(debug.usage).not.toHaveProperty("usageRaw");
+          expect(debug.usage).not.toHaveProperty("usageNormalized");
+        }
+        const entries = readdirSync(cacheDir, { recursive: true, encoding: "utf8" })
+          .filter(file => file.endsWith(".json"))
+          .map(file => JSON.parse(readFileSync(path.join(cacheDir, file), "utf8")) as StoredProviderResponse);
+        expect(entries).toHaveLength(3);
+        const missing = entries.find(entry => entry.usage.totalTokens === undefined);
+        expect(missing?.usage).toEqual({});
+        expect(missing?.message).not.toHaveProperty("usage");
+        const summary = JSON.parse(readFileSync(path.join(attached.runDir, "telemetry.json"), "utf8"));
+        expect(summary.totals).toMatchObject({ providerCalls: 4, totalTokens: 36, usageUnknownCalls: 2 });
+        expect(summary.modelCalls.byStage["7"]).toMatchObject({ providerCalls: 4, totalTokens: 36, usageUnknownCalls: 2 });
+        expect(onUsage).toHaveBeenCalledTimes(4);
+        expect(onUsage).toHaveBeenNthCalledWith(1, { stage: 7, providerCalls: 1 });
+        expect(onUsage).toHaveBeenNthCalledWith(2, expect.objectContaining({ stage: 7, providerCalls: 1, totalTokens: 36 }));
+        expect(onUsage).toHaveBeenNthCalledWith(3, expect.objectContaining({ stage: 7, providerCalls: 1, totalTokens: 0 }));
+        expect(onUsage).toHaveBeenNthCalledWith(4, { stage: 7, providerCalls: 1 });
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+        rmSync(repoRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("treats persistent retryable provider errors as recoverable task failures", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
