@@ -162,6 +162,7 @@ describe("package build scaffold", () => {
         encoding: "utf8"
       })) as Array<{ filename: string; files: Array<{ path: string }> }>;
       const artifact = packed[0];
+      expect(artifact?.files.filter((file) => /^(?:evals\/runner\/|dist\/evals\/runner\/)/u.test(file.path))).toEqual([]);
       expect(artifact?.files.map((file) => file.path)).toEqual(expect.arrayContaining([
         "dist/cli/skill.js",
         "bundled-skills/core/code-review.md",
