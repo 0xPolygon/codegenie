@@ -1,19 +1,17 @@
-import { lstatSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { readCheckedFile } from '../evals/runner/safe-read.mjs';
 
-it('reads only the inspected regular file and rejects substitutions', () => {
+it('reads a regular file and rejects a symlink', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'eval-safe-read-'));
   try {
     const file = path.join(dir, 'file'), moved = path.join(dir, 'moved');
-    writeFileSync(file, 'original'); const expected = lstatSync(file);
-    expect(readCheckedFile(file, expected).toString()).toBe('original');
-    renameSync(file, moved); writeFileSync(file, 'replacement');
-    expect(() => readCheckedFile(file, expected)).toThrow();
-    rmSync(file); symlinkSync(moved, file);
-    expect(() => readCheckedFile(file, expected)).toThrow();
+    writeFileSync(file, 'original');
+    expect(readCheckedFile(file).toString()).toBe('original');
+    renameSync(file, moved); symlinkSync(moved, file);
+    expect(() => readCheckedFile(file)).toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

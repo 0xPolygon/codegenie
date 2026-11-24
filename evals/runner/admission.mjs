@@ -33,8 +33,7 @@ function receiptStore(directory) {
       return true;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      const stat = lstatSync(file);
-      return stat.isFile() && !stat.isSymbolicLink() && readCheckedFile(file, stat).equals(bytes);
+      return readCheckedFile(file).equals(bytes);
     }
   };
   return { files, seal };

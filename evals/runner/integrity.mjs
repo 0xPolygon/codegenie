@@ -13,11 +13,11 @@ export function treeDigest(directory) {
   if (realpathSync(root) !== root || !lstatSync(root).isDirectory()) throw new Error('invalid integrity root');
   const entries = [];
   const visit = (dir, prefix = '') => {
-    for (const name of readdirSync(dir).sort()) {
-      const relative = prefix ? `${prefix}/${name}` : name, file = path.join(dir, name), stat = lstatSync(file);
+    for (const stat of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const name = stat.name, relative = prefix ? `${prefix}/${name}` : name, file = path.join(dir, name);
       if (stat.isSymbolicLink()) throw new Error('symlink in integrity tree');
       if (stat.isDirectory()) visit(file, relative);
-      else if (stat.isFile()) entries.push([relative, stat.size, digest(readCheckedFile(file, stat))]);
+      else if (stat.isFile()) { const bytes = readCheckedFile(file); entries.push([relative, bytes.length, digest(bytes)]); }
       else throw new Error('unsupported integrity entry');
     }
   };

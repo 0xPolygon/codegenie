@@ -25,13 +25,13 @@ function inventory(directory) {
   if (lstatSync(root).isSymbolicLink() || !lstatSync(root).isDirectory() || realpathSync(root) !== root) throw new Error('invalid receipt artifact root');
   const files = [];
   const walk = (dir, prefix = '') => {
-    for (const name of readdirSync(dir).sort()) {
-      const relative = prefix ? `${prefix}/${name}` : name;
-      const file = path.join(dir, name), stat = lstatSync(file);
+    for (const stat of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const name = stat.name, relative = prefix ? `${prefix}/${name}` : name;
+      const file = path.join(dir, name);
       if (stat.isSymbolicLink()) throw new Error('symlink in receipt artifacts');
       if (stat.isDirectory()) walk(file, relative);
       else if (stat.isFile()) {
-        const bytes = readCheckedFile(file, stat);
+        const bytes = readCheckedFile(file);
         files.push({ path: relative, bytes: bytes.length, sha256: digest(bytes) });
       } else throw new Error('invalid receipt artifact');
     }
