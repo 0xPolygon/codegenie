@@ -92,6 +92,17 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       const configBytes = Buffer.from(JSON.stringify(alteredConfig)), alteredConfigPath = path.join(dir, `config-${kind}.json`); writeFileSync(alteredConfigPath, configBytes);
       await expect(openCampaign(alteredConfigPath, sha(configBytes), dependencies)).rejects.toThrow('sibling');
     }
+    // Two requested IDs must never be represented by one NUL-containing ID.
+    const collisionIds = `${caseIds[0]}\0${caseIds[1]}`;
+    const collidingLocator = JSON.parse(locatorBytes.toString('utf8')), collidingOracle = JSON.parse(oracleBytes.toString('utf8'));
+    for (const manifest of [collidingLocator, collidingOracle]) { manifest.cases[0].caseId = collisionIds; manifest.cases.splice(1, 1); }
+    const locatorCollisionBytes = Buffer.from(JSON.stringify(collidingLocator)), oracleCollisionBytes = Buffer.from(JSON.stringify(collidingOracle));
+    const locatorCollisionPath = path.join(dir, 'collision-locators.json'), oracleCollisionPath = path.join(dir, 'collision-oracles.json');
+    writeFileSync(locatorCollisionPath, locatorCollisionBytes); writeFileSync(oracleCollisionPath, oracleCollisionBytes);
+    const collisionConfig = JSON.parse(config.toString('utf8')); delete collisionConfig.qualification405;
+    Object.assign(collisionConfig.blind, { locatorManifestPath: locatorCollisionPath, locatorManifestSHA256: sha(locatorCollisionBytes), oracleManifestPath: oracleCollisionPath, oracleManifestSHA256: sha(oracleCollisionBytes) });
+    const collisionBytes = Buffer.from(JSON.stringify(collisionConfig)), collisionPath = path.join(dir, 'collision-config.json'); writeFileSync(collisionPath, collisionBytes);
+    await expect(openCampaign(collisionPath, sha(collisionBytes), dependencies)).rejects.toThrow('blind case membership');
     const incompleteConfig = JSON.parse(config.toString('utf8')); delete incompleteConfig.blind.locatorManifestPath;
     const badConfig = Buffer.from(JSON.stringify(incompleteConfig)), badFile = path.join(dir, 'bad-campaign.json'); writeFileSync(badFile, badConfig);
     await expect(openCampaign(badFile, sha(badConfig), dependencies)).rejects.toThrow('blind manifest');

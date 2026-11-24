@@ -58,11 +58,13 @@ export async function derive405AnchorMappings({ oracleManifestPath, oracleManife
       for (const anchor of cause.anchors) {
         if (!anchor || typeof anchor.path !== 'string' || !Array.isArray(anchor.lineRange) || anchor.lineRange.length !== 2 || !anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) || anchor.lineRange[0] > anchor.lineRange[1]) throw new Error('invalid 405 oracle anchor');
         for (const file of diff.files) {
-          if (file.path !== anchor.path && file.oldPath !== anchor.path) continue;
           for (const hunk of file.hunks) {
-            const oldSide = file.status === 'deleted' || hunk.newLines === 0;
-            const start = oldSide ? hunk.oldStart : hunk.newStart, count = oldSide ? hunk.oldLines : hunk.newLines;
-            if (count > 0 && start <= anchor.lineRange[1] && start + count - 1 >= anchor.lineRange[0]) matched.add(hunk.id);
+            const overlaps = hunk.lines.some((line) => {
+              const number = line.kind === 'add' && file.path === anchor.path ? line.newLineNumber
+                : line.kind === 'delete' && (file.oldPath ?? file.path) === anchor.path ? line.oldLineNumber : undefined;
+              return number !== undefined && number >= anchor.lineRange[0] && number <= anchor.lineRange[1];
+            });
+            if (overlaps) matched.add(hunk.id);
           }
         }
       }

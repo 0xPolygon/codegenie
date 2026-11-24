@@ -63,16 +63,20 @@ it('freezes anchor overlap mechanically, keeping unmapped causes distinct', asyn
     const caseIds = Array.from({ length: 20 }, (_, index) => `case-${index + 1}`), oracleManifestPath = join(dir, 'oracle.json');
     const cases = caseIds.map((caseId, index) => ({ caseId, causes: index === 0 ? [
       { id: 'mapped', optional: false, anchors: [{ path: 'a', lineRange: [1, 1] }] },
-      { id: 'unmapped', optional: true, anchors: [{ path: 'other', lineRange: [1, 1] }] }
+      { id: 'unmapped', optional: true, anchors: [{ path: 'other', lineRange: [1, 1] }] },
+      { id: 'context-only', optional: false, anchors: [{ path: 'a', lineRange: [2, 2] }] },
+      { id: 'changed-line', optional: false, anchors: [{ path: 'a', lineRange: [1, 1] }] }
     ] : index === 1 ? [{ id: 'deleted', optional: false, anchors: [{ path: 'gone', lineRange: [5, 5] }] }] : [] }));
     const oracle = Buffer.from(JSON.stringify({ cases })); writeFileSync(oracleManifestPath, oracle);
-    const diff = Buffer.from('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n'), diffPath = join(dir, 'diff.patch'); writeFileSync(diffPath, diff);
+    const diff = Buffer.from('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,2 +1,2 @@\n-old\n+new\n context\n'), diffPath = join(dir, 'diff.patch'); writeFileSync(diffPath, diff);
     const deletedPath = join(dir, 'deleted.patch'), deleted = Buffer.from('diff --git a/gone b/gone\ndeleted file mode 100644\n--- a/gone\n+++ /dev/null\n@@ -5 +0,0 @@\n-old\n'); writeFileSync(deletedPath, deleted);
     const mapping = await derive405AnchorMappings({ oracleManifestPath, oracleManifestSHA256: createHash('sha256').update(oracle).digest('hex'),
       diffSources: caseIds.map((caseId, index) => ({ caseId, path: index === 1 ? deletedPath : diffPath, sha256: createHash('sha256').update(index === 1 ? deleted : diff).digest('hex') })) });
     const first = mapping.find((item: { caseId: string }) => item.caseId === caseIds[0]);
     expect(first.causes[0].unmapped).toBe(false); expect(first.causes[0].hunkIds).toHaveLength(1);
     expect(first.causes[1]).toMatchObject({ unmapped: true, hunkIds: [] });
+    expect(first.causes[2]).toMatchObject({ unmapped: true, hunkIds: [] });
+    expect(first.causes[3].unmapped).toBe(false); expect(first.causes[3].hunkIds).toHaveLength(1);
     const deletedCase = mapping.find((item: { caseId: string }) => item.caseId === caseIds[1]);
     expect(deletedCase.causes[0].unmapped).toBe(false); expect(deletedCase.causes[0].hunkIds).toHaveLength(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
