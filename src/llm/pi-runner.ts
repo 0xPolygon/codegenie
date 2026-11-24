@@ -3610,9 +3610,10 @@ function recordModelCall(
     retryExhausted: meta.retryExhausted
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
-  const usageDebug = usageDebugPayload(model, usage === undefined ? undefined : message.usage, usage);
-  writeModelCallResponseDebug(opts, request, meta.callId, record, { response: message, usage: usageDebug });
-  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, { response: message, usage: usageDebug });
+  const response = persistedAssistantMessage(message, usage);
+  const payload = { response, usage: usageDebugPayload(model, response.usage, usage) };
+  writeModelCallResponseDebug(opts, request, meta.callId, record, payload);
+  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, payload);
 }
 
 function finalArgumentTelemetry(
@@ -3802,7 +3803,7 @@ function cacheEntry(stage: ReviewStage, message: PiAssistantMessage, usage: Norm
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
     stage,
-    message,
+    message: persistedAssistantMessage(message, usage),
     finishReason: message.stopReason ?? stopReason(message),
     usage: usage ?? {}
   };
@@ -3810,6 +3811,13 @@ function cacheEntry(stage: ReviewStage, message: PiAssistantMessage, usage: Norm
 
 function hasNonzeroUsage(usage: NormalizedUsage | undefined): boolean {
   return usage !== undefined && Object.values(usage).some(value => value > 0);
+}
+
+function persistedAssistantMessage(message: PiAssistantMessage, usage: NormalizedUsage | undefined): PiAssistantMessage {
+  if (usage !== undefined || message.usage === undefined) return message;
+  // Keep the live transcript intact, but don't persist Pi's placeholder counters.
+  const { usage: _unreportedUsage, ...persisted } = message;
+  return persisted;
 }
 
 function normalizeUsage(input: unknown): NormalizedUsage | undefined {
