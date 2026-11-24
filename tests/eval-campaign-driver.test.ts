@@ -125,7 +125,7 @@ describe('campaign driver', () => {
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
-  it.each(['single', 'treatment', 'stopped', 'arms', 'checkpoint', 'quota'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
+  it.each(['single', 'treatment', 'stopped', 'worker-stop', 'arms', 'checkpoint', 'quota'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-success-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
@@ -157,17 +157,17 @@ describe('campaign driver', () => {
           hunks: dossier.hunkIndex.flatMap((entry: { path: string; hunkIds: string[] }) => entry.hunkIds.map((hunkId) => ({ path: entry.path, hunkId }))) };
         suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${repo}`);
       }
-      if (['single', 'treatment', 'stopped', 'arms'].includes(scenario)) suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${path.join(baseline.runDir, 'fixture-repo')}`);
+      if (['single', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario)) suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${path.join(baseline.runDir, 'fixture-repo')}`);
       writeFileSync(yaml, suiteYaml);
-      if (['single', 'treatment', 'stopped', 'arms'].includes(scenario)) { mkdirSync(path.join(dir, 'home'), { recursive: true }); writeFileSync(path.join(dir, 'home/config.toml'), '[review]\nassignedEffects = true\n'); }
+      if (['single', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario)) { mkdirSync(path.join(dir, 'home'), { recursive: true }); writeFileSync(path.join(dir, 'home/config.toml'), '[review]\nassignedEffects = true\n'); }
       const preload = path.join(dir, 'synthetic.mjs');
       writeFileSync(preload, `globalThis.fetch = async (input, init) => {
         if (String(input) !== 'https://openrouter.ai/api/v1/chat/completions') throw new Error('network blocked');
         const body = JSON.parse(init.body); const names = body.tools.map(x => x.function.name);
         const name = ['submit_plan','submit_review','submit_verdict','submit_composition'].find(x => names.includes(x));
         if (!name) throw new Error('unexpected submit tool');
-        if (name === 'submit_review' && ${['single', 'treatment', 'stopped'].includes(scenario)}) { const schema = JSON.stringify(body.tools.find(x => x.function.name === 'submit_review').function.parameters); if (schema.includes('assignedEffects') !== ${scenario === 'treatment'}) throw new Error('wrong arm schema'); }
-        if (${scenario === 'quota'} && name === 'submit_plan') return new Response(JSON.stringify({error:{message:'quota exceeded',type:'insufficient_quota'}}), {status:400,headers:{'content-type':'application/json'}});
+        if (name === 'submit_review' && ${['single', 'treatment', 'stopped', 'worker-stop'].includes(scenario)}) { const schema = JSON.stringify(body.tools.find(x => x.function.name === 'submit_review').function.parameters); if (schema.includes('assignedEffects') !== ${scenario === 'treatment'}) throw new Error('wrong arm schema'); }
+        if ((${scenario === 'quota'} || (${scenario === 'worker-stop'} && process.argv[2]?.includes('slot-02'))) && name === 'submit_plan') return new Response(JSON.stringify({error:{message:'quota exceeded',type:'insufficient_quota'}}), {status:400,headers:{'content-type':'application/json'}});
         let findings = [], effectRows = [];
         const treatmentCall = name === 'submit_review' && JSON.stringify(body.tools.find(x => x.function.name === 'submit_review').function.parameters).includes('assignedEffects');
         if (name === 'submit_review' && ${scenario === 'checkpoint' || scenario === 'arms'}) {
@@ -189,23 +189,23 @@ describe('campaign driver', () => {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
       writeFileSync(caseFile, caseBytes);
       let blind;
-      if (['single', 'treatment', 'stopped'].includes(scenario)) {
+      if (['single', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) {
         const sourceRoot = path.join(baseline.runDir, 'fixture-repo');
         const revision = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'feature'], { encoding: 'utf8' }).stdout.trim();
         const oraclePath = path.join(dir, 'oracle.txt'); writeFileSync(oraclePath, 'Synthetic oracle.');
-        const oracleManifestPath = path.join(dir, 'oracle-manifest.json'); writeFileSync(oracleManifestPath, JSON.stringify({ cases: [{ caseId: 'case1', sha256: sha(readFileSync(oraclePath)) }] }));
+        const oracleManifestPath = path.join(dir, 'oracle-manifest.json'); writeFileSync(oracleManifestPath, JSON.stringify({ cases: [{ caseId: 'case1', sha256: sha(readFileSync(oraclePath)), causes: [] }] }));
         const locatorManifestPath = path.join(dir, 'locators.json');
         writeFileSync(locatorManifestPath, JSON.stringify({ cases: [{ caseId: 'case1', label: 'case-01', sourceLocator: 'source/case-01', oracleLocator: 'oracle/case-01', sourceRoot, sourceRevision: revision, oraclePath, oracleSHA256: sha(readFileSync(oraclePath)) }] }));
         blind = { locatorManifestPath, locatorManifestSHA256: sha(readFileSync(locatorManifestPath)), oracleManifestPath, oracleManifestSHA256: sha(readFileSync(oracleManifestPath)), mappingFile: path.join(dir, 'sealed', 'mapping.json') };
       }
       const build = buildDigest(), expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', wireEffort: 'high' };
       const calls = [[5, 'p5.9'], [7, scenario === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16'], [9, 'p9.31'], [10, 'p10.25']].map(([stage, templateVersion]) => ({ ...expected, stage, kind: 'initial', templateVersion }));
-      if (['single', 'treatment', 'stopped'].includes(scenario)) calls.push({ ...expected, stage: 7, kind: 'initial', purpose: 'location_clarification', templateVersion: 'location-clarification-v1' } as typeof calls[number]);
+      if (['single', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) calls.push({ ...expected, stage: 7, kind: 'initial', purpose: 'location_clarification', templateVersion: 'location-clarification-v1' } as typeof calls[number]);
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'case1', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 15_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls: calls, ...(plannerReplayBinding ? { plannerReplayBinding } : {}), integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
-      const slots = Array.from({ length: scenario === 'checkpoint' ? 9 : scenario === 'arms' ? 4 : 1 }, (_, index) => {
+      const slots = Array.from({ length: scenario === 'checkpoint' ? 9 : scenario === 'arms' ? 4 : ['stopped', 'worker-stop'].includes(scenario) ? 2 : 1 }, (_, index) => {
         const id = `slot-${String(index + 1).padStart(2, '0')}`, boundaryId = `case${Math.floor(index / 4) + 1}`;
-        const arm = scenario === 'treatment' || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
-        const blinded = ['single', 'treatment', 'stopped', 'arms'].includes(scenario);
+        const arm = scenario === 'treatment' || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
+        const blinded = ['single', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario);
         const expectedCalls = calls.map((call) => call.stage === 7 && !('purpose' in call) ? { ...call, templateVersion: arm === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16' } : call);
         return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { assignedEffects: arm === 'treatment', expectedCalls } : {}) } };
       });
@@ -239,6 +239,7 @@ describe('campaign driver', () => {
       const armPrompts = new Map<string, string[]>();
       while (true) {
         const outcome = await campaign.step();
+        if (scenario === 'worker-stop' && outcome.action === 'stop') { expect(outcome.reason).toBe('provider_quota'); break; }
         if (scenario === 'quota' && outcome.action === 'stop') {
           expect(outcome).toMatchObject({ reason: 'provider_quota', slot: 'slot-01', receiptSHA256: expect.stringMatching(/^[a-f0-9]{64}$/) });
           expect(campaign.supervisor.receipts.find('slot-01', 1).hash).toBe(outcome.receiptSHA256);
@@ -250,6 +251,7 @@ describe('campaign driver', () => {
         }
         if (outcome.action === 'selected') {
           selectedCount++;
+          if (scenario === 'stopped') { campaign.ledger.stop('budget_limit'); break; }
           expect(campaign.supervisor.receipts.find(outcome.slot, 1)).toMatchObject({ receipt: { status: 'fail', recoveredResets: 0 } });
           if (scenario === 'checkpoint' || scenario === 'arms') {
             const receipt = campaign.supervisor.receipts.find(outcome.slot, 1).receipt;
@@ -310,28 +312,41 @@ describe('campaign driver', () => {
         } else if (outcome.action === 'completed') break;
         else expect(outcome).toMatchObject({ action: 'health', status: 'clean' });
       }
-      expect(selectedCount).toBe(slots.length);
+      expect(selectedCount).toBe(['stopped', 'worker-stop'].includes(scenario) ? 1 : slots.length);
       if (scenario === 'checkpoint') expect({ restarted, paused }).toEqual({ restarted: true, paused: true });
       if (scenario === 'checkpoint' || scenario === 'arms') for (const stage of [9, 10]) { const prompts = stagePrompts.get(stage) ?? []; expect(new Set(prompts).size).toBeLessThan(prompts.length); }
       if (scenario === 'arms') for (const stage of [9, 10]) { const control = new Set(armPrompts.get(`${stage}:control`)); expect((armPrompts.get(`${stage}:treatment`) ?? []).some((value) => control.has(value))).toBe(true); }
       const starts = campaign.ledger.totals().starts, reads = gets;
       expect(starts).toBeGreaterThan(1);
-      expect(campaign.ledger.db.prepare('SELECT physical_starts FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get()).toEqual({ physical_starts: starts });
+      if (!['stopped', 'worker-stop'].includes(scenario)) expect(campaign.ledger.db.prepare('SELECT physical_starts FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get()).toEqual({ physical_starts: starts });
       const probes = healthPosts; expect(probes).toBe(scenario === 'checkpoint' ? 3 : 1); campaign.close();
       let reopened = await openCampaign(file, sha(config), { fetchImpl, models });
-      expect(await reopened.step()).toMatchObject({ action: 'completed' });
+      expect(await reopened.step()).toMatchObject(scenario === 'stopped' ? { action: 'stop', reason: 'budget_limit' } : scenario === 'worker-stop' ? { action: 'stop', reason: 'provider_quota' } : { action: 'completed' });
       expect(reopened.ledger.totals().starts).toBe(starts);
       expect({ healthPosts, gets }).toEqual({ healthPosts: probes, gets: reads });
-      if (['single', 'treatment', 'stopped'].includes(scenario)) {
+      if (['single', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) {
         const exportArgs = { outputDirectory: path.join(dir, 'blind-output'), mappingFile: path.join(dir, 'sealed', 'mapping.json') };
-        if (scenario === 'stopped') reopened.ledger.stop('budget_limit');
-        if (scenario !== 'stopped') {
+        if (!['stopped', 'worker-stop'].includes(scenario)) {
           reopened.ledger.db.exec('BEGIN');
           reopened.ledger.db.prepare('DELETE FROM key_snapshot WHERE boundary_id LIKE ?').run('final-%');
           expect(() => reopened.exportBlind(exportArgs)).toThrow('final key snapshot');
           reopened.ledger.db.exec('ROLLBACK');
         }
         expect(existsSync(exportArgs.mappingFile)).toBe(false);
+        if (scenario === 'worker-stop') {
+          const receiptDir = path.join(dir, 'receipts');
+          const receiptName = readdirSync(receiptDir).filter((name) => name.startsWith('attempt-')).find((name) => JSON.parse(readFileSync(path.join(receiptDir, name), 'utf8')).slot === 'slot-02')!;
+          const receiptFile = path.join(receiptDir, receiptName), backup = `${receiptFile}.backup`;
+          renameSync(receiptFile, backup); expect(() => reopened.exportBlind(exportArgs)).toThrow('reconciliation'); renameSync(backup, receiptFile);
+          reopened.supervisor.db.exec('BEGIN');
+          reopened.supervisor.db.prepare("UPDATE worker_claim SET spawn_state='claimed' WHERE slot_id='slot-02'").run();
+          expect(() => reopened.exportBlind(exportArgs)).toThrow('reconciliation'); reopened.supervisor.db.exec('ROLLBACK');
+          expect(existsSync(exportArgs.mappingFile)).toBe(false);
+          reopened.ledger.db.exec('BEGIN');
+          reopened.ledger.db.prepare("UPDATE campaign SET stopped='case_reset_limit'").run();
+          expect(() => reopened.exportBlind(exportArgs)).toThrow('case reset stop requires reconciliation');
+          reopened.ledger.db.exec('ROLLBACK');
+        }
         const result = reopened.exportBlind(exportArgs);
         expect(result).toMatchObject({ sheetCount: 1, excludedCount: 0 });
         expect(reopened.exportBlind(exportArgs)).toEqual(result);
@@ -347,18 +362,31 @@ describe('campaign driver', () => {
         chmodSync(frozen, 0o600); writeFileSync(frozen, '{}');
         expect(() => reopened.exportBlind(exportArgs)).toThrow();
         writeFileSync(frozen, originalFinal); chmodSync(frozen, 0o400);
+        const sourceRoot = path.join(baseline.runDir, 'fixture-repo');
+        expect(spawnSync('git', ['-C', sourceRoot, 'checkout', '--detach', 'HEAD^']).status).toBe(0);
+        expect(() => reopened.exportBlind(exportArgs)).toThrow('source or oracle changed');
+        expect(spawnSync('git', ['-C', sourceRoot, 'checkout', 'feature']).status).toBe(0);
         const originalOracle = readFileSync(path.join(dir, 'oracle.txt')); writeFileSync(path.join(dir, 'oracle.txt'), 'changed');
         expect(() => reopened.exportBlind(exportArgs)).toThrow('source or oracle changed');
         writeFileSync(path.join(dir, 'oracle.txt'), originalOracle);
         const manifest = JSON.parse(readFileSync(path.join(exportArgs.outputDirectory, 'manifest.json'), 'utf8'));
-        expect(manifest).toMatchObject({ campaignState: scenario === 'stopped' ? 'stopped' : 'completed', selectedCount: 1 });
+        expect(manifest).toMatchObject({ campaignState: ['stopped', 'worker-stop'].includes(scenario) ? 'stopped' : 'completed', selectedCount: 1 });
         if (scenario === 'treatment') {
           const receipt = reopened.supervisor.receipts.find('slot-01', 1).receipt;
           expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toMatchObject({ declaredArm: 'treatment', assignedEffects: true, packetTemplates: ['p7.16-assigned-effects.1'] });
+          const telemetry = path.join(receipt.runDir, 'telemetry');
+          const effects = JSON.parse(readFileSync(path.join(telemetry, 'stages/07-review/assigned-effects.json'), 'utf8'));
+          const packetRoot = path.join(telemetry, 'stages/06-packets/packets');
+          for (const record of effects) {
+            const packet = readdirSync(packetRoot).map((name) => JSON.parse(readFileSync(path.join(packetRoot, name), 'utf8'))).find((item) => item.id === record.packetId);
+            expect([...record.assignedHunkIds].sort()).toEqual([...new Set(packet.hunks.map((hunk: { hunkId: string }) => hunk.hunkId))].sort());
+          }
           const lock = (name: string, value: unknown) => { const bytes = Buffer.from(JSON.stringify(value)), dest = path.join(dir, name); writeFileSync(dest, bytes); return { path: dest, sha256: sha(bytes) }; };
-          const a = lock('lock-a.json', { analyst: 'a', manifestSHA256: result.manifestSHA256 });
-          const b = lock('lock-b.json', { analyst: 'b', manifestSHA256: result.manifestSHA256 });
-          const reconciliation = lock('reconciliation.json', { manifestSHA256: result.manifestSHA256, lockSHA256: [a.sha256, b.sha256] });
+          const sheetId = manifest.sheets[0].id;
+          const grades = [{ id: sheetId, noApplicableCauses: true, causes: [], otherClaims: { survivingMediumPlus: [], published: [] } }];
+          const a = lock('lock-a.json', { analyst: 'a', manifestSHA256: result.manifestSHA256, grades });
+          const b = lock('lock-b.json', { analyst: 'b', manifestSHA256: result.manifestSHA256, grades });
+          const reconciliation = lock('reconciliation.json', { manifestSHA256: result.manifestSHA256, lockSHA256: [a.sha256, b.sha256], grades });
           const request = { manifestFile: path.join(exportArgs.outputDirectory, 'manifest.json'), manifestSHA256: result.manifestSHA256, mappingFile: exportArgs.mappingFile, locks: [a, b], reconciliation, outputDirectory: path.join(dir, 'mechanism') };
           await expect(reopened.exportEffects({ ...request, reconciliation: undefined })).rejects.toThrow();
           expect(existsSync(request.outputDirectory)).toBe(false);
@@ -367,7 +395,7 @@ describe('campaign driver', () => {
           const mechanismManifestFile = path.join(request.outputDirectory, 'manifest.json'), revealFile = path.join(dir, 'reveal', 'pairing.json');
           const reveal = { ...request, mechanismManifestFile, mechanismManifestSHA256: mechanism.mechanismManifestSHA256, outputFile: revealFile };
           await expect(reopened.reveal(reveal)).rejects.toThrow(); expect(existsSync(revealFile)).toBe(false);
-          const coding = lock('coding.json', { frozen: true, mechanismManifestSHA256: mechanism.mechanismManifestSHA256 });
+          const coding = lock('coding.json', { frozen: true, mechanismManifestSHA256: mechanism.mechanismManifestSHA256, reviews: [{ id: sheetId, noApplicableCauses: true, causes: [] }] });
           expect((await reopened.reveal({ ...reveal, coding })).reviewCount).toBe(1);
         } else {
           const receipt = reopened.supervisor.receipts.find('slot-01', 1).receipt;

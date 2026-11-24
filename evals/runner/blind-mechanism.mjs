@@ -1,7 +1,7 @@
 // Treatment-only projection. Callers must verify primary locks and reconciliation
 // before invoking it, and must bind the selected receipt and packet inventory.
-export function projectMechanism({ id, records, packets }) {
-  if (!/^[a-f0-9]{24}$/u.test(id ?? '') || !Array.isArray(records) || !Array.isArray(packets)) throw new Error('missing mechanism evidence');
+export function projectMechanism({ id, records, packets, anchorMappings = [] }) {
+  if (!/^[a-f0-9]{24}$/u.test(id ?? '') || !Array.isArray(records) || !Array.isArray(packets) || !Array.isArray(anchorMappings)) throw new Error('missing mechanism evidence');
   const byPacket = new Map();
   for (const packet of packets) {
     if (!packet || typeof packet.id !== 'string' || byPacket.has(packet.id) || !Array.isArray(packet.hunks)) throw new Error('invalid packet inventory');
@@ -25,5 +25,10 @@ export function projectMechanism({ id, records, packets }) {
     return { pass: record.pass, packetId: record.packetId, reviewStatus: record.reviewStatus, assignedHunkIds: [...assigned], uncoveredHunks, effects,
       source: { path: packet.path, hunks: packet.hunks.filter((hunk) => assigned.has(hunk.hunkId)) } };
   });
-  return { id, passes };
+  const diagnostics = anchorMappings.map((mapping) => {
+    if (!mapping || typeof mapping.id !== 'string' || !Array.isArray(mapping.hunkIds) || typeof mapping.unmapped !== 'boolean' || mapping.unmapped !== (mapping.hunkIds.length === 0)) throw new Error('invalid anchor mapping');
+    const uncovered = passes.flatMap((pass) => pass.reviewStatus === 'incomplete' ? pass.uncoveredHunks.filter((hunkId) => mapping.hunkIds.includes(hunkId)).map((hunkId) => ({ packetId: pass.packetId, pass: pass.pass, hunkId })) : []);
+    return { causeId: mapping.id, mapping: mapping.unmapped ? 'unmapped' : 'mapped', uncoveredOnIncomplete: uncovered };
+  });
+  return { id, passes, diagnostics };
 }

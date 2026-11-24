@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { CampaignConfigurationError, outsideCheckout, runCase } from './case.mjs';
 import { readCheckedFile } from './safe-read.mjs';
+import { TreatmentLeakError } from './blind-sheet.mjs';
 import { openCampaign } from './campaign.mjs';
 
 const args = process.argv.slice(2);
@@ -34,7 +35,7 @@ if (args.length === 3 && ['run', 'run-case'].includes(args[0]) && args[1] === '-
     campaign = await openCampaign(args[2], args[4], { resumeOnly: true });
     console.log(JSON.stringify(campaign.exportBlind({ outputDirectory: args[6], mappingFile: args[8] })));
   } catch (error) {
-    console.error(error instanceof CampaignConfigurationError ? `Campaign configuration error: ${error.message}` : 'Blind export requires verified terminal campaign evidence.');
+    console.error(error instanceof TreatmentLeakError ? JSON.stringify({ error: 'treatment_marker', affectedSheets: error.affectedSheets, hits: error.hits }) : error instanceof CampaignConfigurationError ? `Campaign configuration error: ${error.message}` : 'Blind export requires verified terminal campaign evidence.');
     process.exitCode = 1;
   } finally {
     if (campaign) { try { campaign.close(); } catch { console.error('Campaign driver claim requires reconciliation.'); process.exitCode = 1; } }

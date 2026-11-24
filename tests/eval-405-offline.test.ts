@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
@@ -26,22 +27,35 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
   try {
     const caseIds = Array.from({ length: 20 }, (_, index) => `fixture-${String(index + 1).padStart(2, '0')}`);
-    const oraclePath = path.join(dir, 'oracle-manifest.json'), oracleBytes = Buffer.from(JSON.stringify({ cases: caseIds.map((caseId) => ({ caseId, sha256: 'a'.repeat(64) })) })); writeFileSync(oraclePath, oracleBytes);
-    const registrationFile = path.join(dir, 'registration.json'), registrationSHA256 = await seal405Registration({ file: registrationFile, caseIds, oracleManifestSHA256: sha(oracleBytes) });
+    const sourceRoot = path.join(dir, 'source'); mkdirSync(sourceRoot);
+    execFileSync('git', ['-C', sourceRoot, 'init', '-q']); execFileSync('git', ['-C', sourceRoot, 'config', 'user.name', 'Synthetic']); execFileSync('git', ['-C', sourceRoot, 'config', 'user.email', 'synthetic@example.test']);
+    writeFileSync(path.join(sourceRoot, 'source.txt'), 'base'); execFileSync('git', ['-C', sourceRoot, 'add', '.']); execFileSync('git', ['-C', sourceRoot, 'commit', '-qm', 'base']);
+    writeFileSync(path.join(sourceRoot, 'source.txt'), 'source'); execFileSync('git', ['-C', sourceRoot, 'add', '.']); execFileSync('git', ['-C', sourceRoot, 'commit', '-qm', 'synthetic']);
+    const sourceBranch = execFileSync('git', ['-C', sourceRoot, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
+    const sourceRevision = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const caseOracle = path.join(dir, 'oracle.txt'); writeFileSync(caseOracle, 'synthetic oracle');
+    const oraclePath = path.join(dir, 'oracle-manifest.json'), oracleBytes = Buffer.from(JSON.stringify({ cases: caseIds.map((caseId) => ({ caseId, sha256: sha(readFileSync(caseOracle)), causes: [] })) })); writeFileSync(oraclePath, oracleBytes);
+    const locatorPath = path.join(dir, 'locators.json'), locatorBytes = Buffer.from(JSON.stringify({ cases: caseIds.map((caseId) => ({ caseId, label: caseId, sourceLocator: `source/${caseId}`, oracleLocator: `oracle/${caseId}`, sourceRoot, sourceRevision, oraclePath: caseOracle, oracleSHA256: sha(readFileSync(caseOracle)) })) })); writeFileSync(locatorPath, locatorBytes);
+    const diffPath = path.join(dir, 'diff.patch'), diffBytes = Buffer.from('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n'); writeFileSync(diffPath, diffBytes);
+    const diffSources = caseIds.map((caseId) => ({ caseId, path: diffPath, sha256: sha(diffBytes) }));
+    const registrationFile = path.join(dir, 'registration.json'), registrationSHA256 = await seal405Registration({ file: registrationFile, caseIds, oracleManifestPath: oraclePath, oracleManifestSHA256: sha(oracleBytes), diffSources });
     const order = await generate405Order({ registrationFile, registrationSHA256 });
     const suiteDir = path.join(process.cwd(), 'evals/fixtures'), caseFile = path.join(dir, 'case.json');
     const caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') })); writeFileSync(caseFile, caseBytes);
     const build = buildDigest(), integrity = { suiteDir, suiteSHA256: treeDigest(suiteDir), build };
+    const capturePath = path.join(dir, 'planner.json'), plan = { diffUnderstanding: { declaredIntent: 'fixture', inferredBehavior: 'fixture' }, coverage: [] };
+    const captureBytes = Buffer.from(JSON.stringify({ result: { plan, plannerCoverage: { submittedEntries: 0, acceptedEntries: 0, acceptedUniqueHunks: 0, rejectedUnknownHunk: 0 }, degradedPlanning: false, chunked: false }, telemetry: [{ kind: 'artifact', name: 'review-plan.json', data: plan }] })); writeFileSync(capturePath, captureBytes);
+    const plannerReplayBinding = { capturePath, captureSHA256: sha(captureBytes), diffSHA256: sha(diffBytes), expectedDossierSHA256: 'd'.repeat(64), baseSHA: 'a'.repeat(40), headSHA: sourceRevision, hunks: [] };
     const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 15_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), integrity };
     const expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', wireEffort: 'high' };
     const slots = order.slots.map((item: { caseId: string; arm: string; draw: number }, index: number) => {
       const id = `slot-${String(index + 1).padStart(2, '0')}`, assignedEffects = item.arm === 'treatment';
       return { id, caseId: item.caseId, boundaryId: item.caseId, provider: 'openrouter', expectedPacketIds: ['packet'], blind: { arm: item.arm, draw: item.draw },
-        workerConfig: { ...base, boundaryId: item.caseId, assignedEffects, expectedCalls: [{ ...expected, stage: 7, kind: 'initial', templateVersion: assignedEffects ? 'p7.16-assigned-effects.1' : 'p7.16' }] } };
+        workerConfig: { ...base, boundaryId: item.caseId, assignedEffects, plannerReplayBinding, expectedCalls: [{ ...expected, stage: 7, kind: 'initial', templateVersion: assignedEffects ? 'p7.16-assigned-effects.1' : 'p7.16' }] } };
     });
     const schedule = Buffer.from(JSON.stringify({ seed: ASSIGNED_EFFECTS_SEED, verifierConcurrency: 'native', pauseAfterSlot: slots[7].id, slots })), schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
     const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: base.supervisorPath, ledgerPath: base.ledgerPath, evidenceDirectory: base.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: base.limitMicros, reserveMicros: base.reserveMicros, errorHoldMicros: base.errorHoldMicros, build,
-      qualification405: { registrationFile, registrationSHA256, verifierConcurrency: 'native' }, blind: { oracleManifestPath: oraclePath, oracleManifestSHA256: sha(oracleBytes) },
+      qualification405: { registrationFile, registrationSHA256, verifierConcurrency: 'native' }, blind: { oracleManifestPath: oraclePath, oracleManifestSHA256: sha(oracleBytes), locatorManifestPath: locatorPath, locatorManifestSHA256: sha(locatorBytes), mappingFile: path.join(dir, 'sealed', 'mapping.json') },
       health: { expected: { ...expected, templateVersion: 'campaign-health.1' }, llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 } } }));
     const configFile = path.join(dir, 'campaign.json'); writeFileSync(configFile, config);
     let gets = 0, probes = 0, dispatches = 0;
@@ -65,6 +79,15 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       supervisor.recordWorkerExit(slotId, attemptNo); return { caseName: 'fixture-core-lens', status: 'fail', runDir };
     };
     const dependencies = { fetchImpl, models, spawnWorker };
+    const incompleteConfig = JSON.parse(config.toString('utf8')); delete incompleteConfig.blind.locatorManifestPath;
+    const badConfig = Buffer.from(JSON.stringify(incompleteConfig)), badFile = path.join(dir, 'bad-campaign.json'); writeFileSync(badFile, badConfig);
+    await expect(openCampaign(badFile, sha(badConfig), dependencies)).rejects.toThrow('blind manifest');
+    writeFileSync(caseOracle, 'changed'); await expect(openCampaign(configFile, sha(config), dependencies)).rejects.toThrow('oracle changed'); writeFileSync(caseOracle, 'synthetic oracle');
+    execFileSync('git', ['-C', sourceRoot, 'checkout', '--quiet', '--detach', 'HEAD^']);
+    await expect(openCampaign(configFile, sha(config), dependencies)).rejects.toThrow('source or oracle changed');
+    execFileSync('git', ['-C', sourceRoot, 'checkout', '--quiet', sourceBranch]);
+    expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
+    expect(() => readFileSync(base.supervisorPath)).toThrow(); expect(() => readFileSync(base.ledgerPath)).toThrow();
     let campaign = await openCampaign(configFile, sha(config), dependencies), paused: any;
     for (let steps = 0; steps < 30; steps++) { const next = await campaign.step(); if (next.action === 'paused') { paused = next; break; } expect(['health', 'selected']).toContain(next.action); }
     expect(paused?.receipts).toHaveLength(8); expect(dispatches).toBe(8); expect(probes).toBe(2);

@@ -1,9 +1,9 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { readCheckedFile } from './safe-read.mjs';
-import { projectBlindSheet } from './blind-sheet.mjs';
+import { projectBlindSheet, TreatmentLeakError } from './blind-sheet.mjs';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const json = (value) => Buffer.from(`${JSON.stringify(value)}\n`);
@@ -23,11 +23,21 @@ function publish(file, bytes) {
     try { fsyncSync(dir); } finally { closeSync(dir); }
   } finally { try { unlinkSync(temp); } catch (error) { if (error?.code !== 'ENOENT') throw error; } }
 }
+function checkDestination(directory, expected) {
+  if (!existsSync(directory)) return;
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('invalid export directory');
+  for (const name of readdirSync(directory)) {
+    if (/^\.blind-[a-f0-9]{32}$/u.test(name)) throw new Error('unfinished export scratch requires reconciliation');
+    if (!expected.has(name)) throw new Error('unexpected export directory entry');
+    if (!readCheckedFile(path.join(directory, name)).equals(expected.get(name))) throw new Error('export bytes changed');
+  }
+}
 function opaque(key, binding, item) {
   return createHmac('sha256', key).update(JSON.stringify([binding, item.slotId, item.attempt, item.receiptSHA256])).digest('hex').slice(0, 24);
 }
 function neutral(value) {
-  return typeof value === 'string' && value.length > 0 && value.length < 512 && !value.startsWith('/') && !value.includes('\\') &&
+  return typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !value.includes('\\') &&
     !value.split('/').includes('..') && !/(?:assigned.?effects|openrouter|openai|\b(?:control|treatment)\b|\barm[-_ ]|\bdraw[-_ ]|attempt[-_ ]|\bp7\.)/iu.test(value);
 }
 
@@ -38,11 +48,13 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
   if (mapping === output || mapping.startsWith(`${output}${path.sep}`) || output.startsWith(`${mapping}${path.sep}`)) throw new Error('mapping overlaps blind output');
   const descriptors = selections.map((entry) => {
     if (!entry || typeof entry.slotId !== 'string' || !Number.isSafeInteger(entry.attempt) || entry.attempt < 1 || !validHash(entry.receiptSHA256) ||
-        !['control', 'treatment'].includes(entry.arm) || !Number.isSafeInteger(entry.draw) || entry.draw < 1 || !neutral(entry.caseId) || !neutral(entry.sourceLocator) || !neutral(entry.oracleLocator)) throw new Error('invalid selected review');
+        !['control', 'treatment'].includes(entry.arm) || !Number.isSafeInteger(entry.draw) || entry.draw < 1 || !neutral(entry.caseId) || !neutral(entry.sourceLocator) || !neutral(entry.oracleLocator) || !Array.isArray(entry.causes) || new Set(entry.causes.map((cause) => cause.id)).size !== entry.causes.length || entry.causes.some((cause) => !cause || !neutral(cause.id) || typeof cause.optional !== 'boolean')) throw new Error('invalid selected review');
     return { slotId: entry.slotId, attempt: entry.attempt, receiptSHA256: entry.receiptSHA256, arm: entry.arm, draw: entry.draw,
-      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator };
+      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator, causes: entry.causes.map(({ id, optional }) => ({ id, optional })),
+      anchorMappings: entry.anchorMappings ?? [] };
   });
   if (new Set(descriptors.map((entry) => entry.slotId)).size !== descriptors.length) throw new Error('duplicate selected slot');
+  if (descriptors.some((entry) => !Array.isArray(entry.anchorMappings) || entry.anchorMappings.length !== entry.causes.length || entry.causes.some((cause) => !entry.anchorMappings.some((mapping) => mapping.id === cause.id && mapping.optional === cause.optional && Array.isArray(mapping.hunkIds) && typeof mapping.unmapped === 'boolean' && mapping.unmapped === (mapping.hunkIds.length === 0))))) throw new Error('missing anchor diagnostics');
   let key;
   if (existsSync(mapping)) {
     const stat = lstatSync(mapping);
@@ -55,18 +67,26 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
   const mapped = descriptors.map((entry) => ({ ...entry, id: opaque(key, bindingSHA256, entry) }));
   if (new Set(mapped.map((entry) => entry.id)).size !== mapped.length) throw new Error('opaque identifier collision');
   const mappingBytes = json({ version: 1, bindingSHA256, oracleManifestSHA256, excludedCount, campaignState, key: key.toString('hex'), selections: mapped });
-  const sheets = selections.map((entry, index) => {
-    const descriptor = mapped[index], sheet = projectBlindSheet({ ...entry.evidence, key, id: descriptor.id, caseId: descriptor.caseId });
-    const bytes = json({ ...sheet, sourceLocator: descriptor.sourceLocator, oracleLocator: descriptor.oracleLocator });
+  const sheets = []; let affectedSheets = 0, hits = 0;
+  for (const [index, entry] of selections.entries()) {
+    const descriptor = mapped[index]; let sheet;
+    try { sheet = projectBlindSheet({ ...entry.evidence, key, id: descriptor.id, caseId: descriptor.caseId }); }
+    catch (error) { if (!(error instanceof TreatmentLeakError)) throw error; affectedSheets++; hits += error.hits; continue; }
+    const bytes = json({ ...sheet, causes: descriptor.causes, sourceLocator: descriptor.sourceLocator, oracleLocator: descriptor.oracleLocator });
     const visible = bytes.toString('utf8');
     const privateValues = [entry.slotId, entry.receiptSHA256, ...(entry.evidence.privateIdentifiers ?? [])].filter((value) => typeof value === 'string' && value.length >= 8);
     if (privateValues.some((value) => visible.includes(value)) || /(?:^|[\s"'])\/(?:home|tmp|private|Users)\//u.test(visible)) throw new Error('private identifier in first-lock sheet');
-    return { case: descriptor.caseId, id: descriptor.id, terminal: entry.evidence.outcome, bytes, sha256: digest(bytes) };
-  }).sort((a, b) => a.case < b.case ? -1 : a.case > b.case ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    sheets.push({ case: descriptor.caseId, id: descriptor.id, causes: descriptor.causes, terminal: entry.evidence.outcome, bytes, sha256: digest(bytes) });
+  }
+  if (hits) throw new TreatmentLeakError(hits, affectedSheets);
+  sheets.sort((a, b) => a.case < b.case ? -1 : a.case > b.case ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const manifestBytes = json({ version: 1, campaignBinding: bindingSHA256, oracleManifestSHA256, mappingSHA256: digest(mappingBytes), campaignState, selectedCount: sheets.length, excludedCount,
-    sheets: sheets.map(({ case: caseName, id, terminal, sha256 }) => ({ case: caseName, id, sha256, terminal })) });
+    sheets: sheets.map(({ case: caseName, id, causes, terminal, sha256 }) => ({ case: caseName, id, causes, sha256, terminal })) });
   if ((expectedMappingSHA256 !== undefined && digest(mappingBytes) !== expectedMappingSHA256) ||
       (expectedManifestSHA256 !== undefined && digest(manifestBytes) !== expectedManifestSHA256)) throw new Error('blind export binding changed');
+  const expectedFiles = new Map(sheets.map((sheet) => [`${sheet.id}.json`, sheet.bytes]));
+  expectedFiles.set('manifest.json', manifestBytes);
+  checkDestination(output, expectedFiles);
   // Prepare the entire projection before publishing either the key or sheets.
   mkdirSync(path.dirname(mapping), { recursive: true, mode: 0o700 });
   publish(mapping, mappingBytes);
@@ -87,9 +107,27 @@ function readBound(file, expected) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
+function verifyPrimaryBundle(manifestFile, manifest, mapping) {
+  if (mapping.bindingSHA256 !== manifest.campaignBinding || !Array.isArray(mapping.selections) || !Array.isArray(manifest.sheets) || !/^[a-f0-9]{64}$/u.test(mapping.key ?? '') || mapping.selections.length !== manifest.sheets.length) throw new Error('invalid first-lock manifest');
+  if (path.basename(manifestFile) !== 'manifest.json') throw new Error('invalid first-lock manifest path');
+  const key = Buffer.from(mapping.key, 'hex'), sheets = [], expectedFiles = new Map([['manifest.json', readCheckedFile(manifestFile)]]);
+  for (const item of mapping.selections) {
+    const sheet = manifest.sheets.find((entry) => entry.id === item.id);
+    if (!sheet || item.id !== opaque(key, mapping.bindingSHA256, item) || !validHash(sheet.sha256)) throw new Error('first-lock sheet mismatch');
+    const bytes = readCheckedFile(path.join(path.dirname(manifestFile), `${item.id}.json`));
+    if (digest(bytes) !== sheet.sha256) throw new Error('first-lock sheet mismatch');
+    expectedFiles.set(`${item.id}.json`, bytes);
+    const parsed = JSON.parse(bytes.toString('utf8'));
+    if (parsed.id !== item.id || parsed.case !== sheet.case || JSON.stringify(sheet.causes) !== JSON.stringify(item.causes)) throw new Error('first-lock sheet mismatch');
+    sheets.push(parsed);
+  }
+  checkDestination(path.dirname(manifestFile), expectedFiles);
+  return sheets;
+}
+
 // The caller supplies receipt-verified artifacts for precisely the mapped cohort.
 // All checks and projections precede creation of any mechanism output.
-export async function exportMechanism({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, evidence, outputDirectory }) {
+export async function exportMechanism({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, evidence, outputDirectory, expectedMechanismManifestSHA256, bindPrepared }) {
   const { verifyPrimaryLocks } = await import('./blind-locks.mjs');
   const { projectMechanism } = await import('./blind-mechanism.mjs');
   const manifest = readBound(manifestFile, manifestSHA256);
@@ -97,20 +135,15 @@ export async function exportMechanism({ manifestFile, manifestSHA256, mappingFil
   const mappingBytes = readCheckedFile(checkedOutside(mappingFile));
   if (digest(mappingBytes) !== manifest.mappingSHA256) throw new Error('mapping binding mismatch');
   const mapping = JSON.parse(mappingBytes.toString('utf8'));
-  if (mapping.bindingSHA256 !== manifest.campaignBinding || !Array.isArray(mapping.selections) || !Array.isArray(manifest.sheets) || !/^[a-f0-9]{64}$/u.test(mapping.key ?? '') || mapping.selections.length !== manifest.sheets.length) throw new Error('invalid first-lock manifest');
-  const key = Buffer.from(mapping.key, 'hex');
-  for (const item of mapping.selections) {
-    const sheet = manifest.sheets.find((entry) => entry.id === item.id);
-    if (!sheet || item.id !== opaque(key, mapping.bindingSHA256, item) || !validHash(sheet.sha256) || digest(readCheckedFile(path.join(path.dirname(manifestFile), `${item.id}.json`))) !== sheet.sha256) throw new Error('first-lock sheet mismatch');
-  }
-  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation });
+  const sheets = verifyPrimaryBundle(manifestFile, manifest, mapping);
+  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation, manifest, sheets });
   const selected = mapping.selections.filter((item) => item.arm === 'treatment');
   if (!Array.isArray(evidence) || evidence.length !== selected.length || new Set(evidence.map((item) => item.id)).size !== selected.length ||
       selected.some((item) => !manifest.sheets.some((sheet) => sheet.id === item.id) || !evidence.some((entry) => entry.id === item.id))) throw new Error('mechanism cohort mismatch');
   const projections = selected.map((item) => {
     const source = evidence.find((entry) => entry.id === item.id);
     if (!source || source.receiptSHA256 !== item.receiptSHA256) throw new Error('mechanism receipt mismatch');
-    const bytes = json(projectMechanism({ id: item.id, records: source.records, packets: source.packets }));
+    const bytes = json(projectMechanism({ id: item.id, records: source.records, packets: source.packets, anchorMappings: item.anchorMappings }));
     return { id: item.id, bytes, sha256: digest(bytes) };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const output = checkedOutside(outputDirectory);
@@ -118,6 +151,10 @@ export async function exportMechanism({ manifestFile, manifestSHA256, mappingFil
   if (output === firstLockDirectory || output.startsWith(`${firstLockDirectory}${path.sep}`) || mappingPath === output || mappingPath.startsWith(`${output}${path.sep}`)) throw new Error('mechanism output overlaps protected files');
   const bytes = json({ version: 1, firstLockManifestSHA256: manifestSHA256, reconciliationSHA256: reconciliation.sha256,
     reviews: projections.map(({ id, sha256 }) => ({ id, sha256 })) });
+  if (expectedMechanismManifestSHA256 !== undefined && digest(bytes) !== expectedMechanismManifestSHA256) throw new Error('mechanism export binding changed');
+  const expectedFiles = new Map(projections.map((entry) => [`${entry.id}.json`, entry.bytes])); expectedFiles.set('manifest.json', bytes);
+  checkDestination(output, expectedFiles);
+  if (bindPrepared !== undefined && (typeof bindPrepared !== 'function' || bindPrepared(digest(bytes)) !== true)) throw new Error('mechanism export binding failed');
   mkdirSync(output, { recursive: true, mode: 0o700 });
   for (const projection of projections) publish(path.join(output, `${projection.id}.json`), projection.bytes);
   publish(path.join(output, 'manifest.json'), bytes);
@@ -133,19 +170,28 @@ export async function revealPairing({ manifestFile, manifestSHA256, mappingFile,
   const mappingBytes = readCheckedFile(checkedOutside(mappingFile));
   if (digest(mappingBytes) !== manifest.mappingSHA256) throw new Error('mapping binding mismatch');
   const mapping = JSON.parse(mappingBytes.toString('utf8'));
-  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation });
+  const sheets = verifyPrimaryBundle(manifestFile, manifest, mapping);
+  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation, manifest, sheets });
   const mechanism = readBound(mechanismManifestFile, mechanismManifestSHA256);
   if (mechanism.firstLockManifestSHA256 !== manifestSHA256 || mechanism.reconciliationSHA256 !== reconciliation.sha256 || !Array.isArray(mechanism.reviews)) throw new Error('mechanism manifest mismatch');
   const expected = mapping.selections.filter((item) => item.arm === 'treatment').map((item) => item.id).sort();
   if (mechanism.reviews.length !== expected.length || mechanism.reviews.map((item) => item.id).sort().join(',') !== expected.join(',')) throw new Error('mechanism cohort mismatch');
+  if (path.basename(mechanismManifestFile) !== 'manifest.json') throw new Error('invalid mechanism manifest path');
+  const mechanismReviews = [], expectedMechanismFiles = new Map([['manifest.json', readCheckedFile(mechanismManifestFile)]]);
   for (const item of mechanism.reviews) {
-    if (!/^[a-f0-9]{24}$/u.test(item.id ?? '') || !validHash(item.sha256) || digest(readCheckedFile(path.join(path.dirname(mechanismManifestFile), `${item.id}.json`))) !== item.sha256) throw new Error('mechanism review changed');
+    if (!/^[a-f0-9]{24}$/u.test(item.id ?? '') || !validHash(item.sha256)) throw new Error('mechanism review changed');
+    const bytes = readCheckedFile(path.join(path.dirname(mechanismManifestFile), `${item.id}.json`));
+    if (digest(bytes) !== item.sha256) throw new Error('mechanism review changed');
+    expectedMechanismFiles.set(`${item.id}.json`, bytes);
+    const review = JSON.parse(bytes.toString('utf8')); if (review.id !== item.id || !Array.isArray(review.passes)) throw new Error('mechanism review changed');
+    mechanismReviews.push(review);
   }
-  verifyMechanismFreeze({ mechanismManifestSHA256, coding });
+  checkDestination(path.dirname(mechanismManifestFile), expectedMechanismFiles);
+  const verifiedCoding = verifyMechanismFreeze({ mechanismManifestSHA256, coding, manifest, mapping, mechanismReviews });
   const output = checkedOutside(outputFile);
   if (output === mappingFile || output.startsWith(`${path.dirname(manifestFile)}${path.sep}`) || output.startsWith(`${path.dirname(mechanismManifestFile)}${path.sep}`)) throw new Error('reveal overlaps protected evidence');
   const bytes = json({ version: 1, manifestSHA256, mechanismManifestSHA256, codingSHA256: coding.sha256,
-    reviews: mapping.selections.map((item) => ({ id: item.id, case: item.caseId, arm: item.arm, draw: item.draw })) });
+    reviews: mapping.selections.map((item) => ({ id: item.id, case: item.caseId, arm: item.arm, draw: item.draw })), mechanismCoding: verifiedCoding.derived });
   mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
   publish(output, bytes);
   return { revealSHA256: digest(bytes), reviewCount: mapping.selections.length };
