@@ -4993,22 +4993,47 @@ describe("phase 5 pipeline regressions", () => {
     expect(new Set(packets.flatMap((packet) => packet.lenses))).toEqual(new Set(["lang/typescript"]));
   });
 
-  it("truncates oversized single hunks with omission markers", async () => {
+  it("reports a partially delivered changed row and makes a simple packet recoverable", async () => {
+    const content = 'import "' + "x".repeat(20_000) + '";';
+    const events: TelemetryEvent[] = [];
     const packets = await buildReviewPackets(
       fakePlan(),
-      [fakeDiffFile("app.ts", "x".repeat(20_000))],
+      [fakeDiffFile("app.ts", content)],
       [fakeFacts("app.ts", "per-hunk")],
       fakeRepositoryIndex(),
-      nullTelemetry(),
+      { ...nullTelemetry(), event: event => events.push(event as TelemetryEvent) },
       { config: config(), enabledLenses: ["core/code-review"] }
     );
 
-    const hunk = packets[0]?.hunks[0];
-    expect(hunk).toMatchObject({ hunkId: "h1", truncated: true });
-    expect(hunk?.contentWithLineNumbers).toContain("chars truncated");
-    expect(hunk?.contentWithLineNumbers.length).toBeLessThanOrEqual(12_000);
-    expect(packets[0]?.degraded?.reason).toContain("patch truncated");
-    expect(packets[0]?.contextLoss).toContainEqual(expect.stringContaining("patch truncated"));
+    const packet = packets[0]!;
+    const hunk = packet.hunks[0]!;
+    expect(hunk).toMatchObject({
+      hunkId: "h1", truncated: true, omittedLineCount: 0, omittedChangedLineCount: 1,
+      omittedChangedRanges: { old: [], new: [[1, 1]] },
+      partialChangedLine: { side: "new", line: 1, totalChars: content.length }
+    });
+    const omittedChars = hunk.partialChangedLine!.omittedChars;
+    expect(omittedChars).toBeGreaterThan(0);
+    expect(hunk.lines[0]?.content).toBe(content.slice(0, content.length - omittedChars) + ` [... ${omittedChars} chars truncated ...]`);
+    expect(hunk.contentWithLineNumbers).toContain(`new changed line 1 is partial. ${omittedChars} of ${content.length} characters omitted`);
+    expect(hunk.contentWithLineNumbers.length).toBeLessThanOrEqual(12_000);
+    expect(packet.degraded?.reason).toContain("patch truncated");
+    expect(packet.contextLoss).toContainEqual(expect.stringContaining("1 changed rows missing or partial"));
+    expect(packet.reviewProfile).toBe("standard");
+    expect(packet.toolBudget.maxToolCalls).toBeGreaterThan(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "packet_hunk_truncated", data: expect.objectContaining({
+        omittedChangedLineCount: 1, omittedChangedRanges: hunk.omittedChangedRanges, partialChangedLine: hunk.partialChangedLine
+      })
+    }));
+    for (const toolSurface of ["current", "six"] as const) {
+      const built = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet, skills: [] });
+      expect(built.templateVersion).toBe(toolSurface === "six" ? "p7.17-six.1" : "p7.17");
+      expect(built.prompt).toContain("Context loss: some patch text was omitted");
+      expect(built.prompt).toContain(toolSurface === "six" ? "read_change using hunkId" : "read_diff_blocks using packetId");
+      expect(extractPromptJson<ReviewPacket>(built.prompt, "review-packet")?.hunks[0]?.omittedChangedRanges).toEqual({ old: [], new: [[1, 1]] });
+      if (toolSurface === "six") expect(built.prompt).not.toContain("read_diff_blocks");
+    }
   });
 
   it("applies verifier revisedAnchor when no finalFinding is returned", async () => {

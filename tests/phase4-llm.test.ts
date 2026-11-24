@@ -6180,6 +6180,54 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls[0]).not.toHaveProperty("incompleteCandidatePaths");
   });
 
+  it("records typed tool budget refusals as rejected without changing feedback or accounting", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-budget-status-"));
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const tools: ToolDefinition[] = [
+        { name: "search_files", description: "search", parameters: Type.Object({}), execute: async () => {
+          throw new CodegenieError("budget_exhausted", "No matching line fits the search allowance.");
+        } },
+        { name: "read_change", description: "change", parameters: Type.Object({}), execute: async () => ({
+          text: "No change row fits the allowance.", isError: true, errorCode: "budget_exhausted" as const,
+          meta: { backend: "text" as const, precision: "exact" as const, degraded: false, deliveryStatus: "budget_rejected" as const }
+        }) },
+        { name: "bad_args", description: "invalid", parameters: Type.Object({}), execute: async () => {
+          throw new CodegenieError("invalid_args", "invalid selector");
+        } },
+        { name: "broken_backend", description: "backend", parameters: Type.Object({}), execute: async () => {
+          throw new Error("backend failed");
+        } }
+      ];
+      const adapter = scriptedAdapter([assistant(tools.map((tool, index) => ({ type: "toolCall" as const,
+        id: `tool-${index}`, name: tool.name, arguments: {} }))), assistant([validSubmitReviewCall("done")])]);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("budget-status"), tools,
+        toolBudget: { maxToolCalls: 8, maxInvestigationRounds: 2, maxResultChars: 4_000 } });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const rows = readFileSync(path.join(attached.runDir, "tool-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(rows.filter(row => row.errorCode === "budget_exhausted")).toHaveLength(2);
+      expect(rows.filter(row => row.errorCode === "budget_exhausted").every(row => row.status === "rejected")).toBe(true);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tool: "bad_args", status: "error", errorCode: "invalid_args" }),
+        expect.objectContaining({ tool: "broken_backend", status: "error", errorCode: "llm_call_failed" })
+      ]));
+      const summary = JSON.parse(readFileSync(path.join(attached.runDir, "stages/00-run/tool-calls-summary.json"), "utf8"));
+      expect(summary.byTool.search_files.errors).toBe(0);
+      expect(summary.byTool.read_change.errors).toBe(0);
+      expect(summary.byTool.bad_args.errors).toBe(1);
+      expect(summary.byTool.broken_backend.errors).toBe(1);
+      const events = readFileSync(path.join(attached.runDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+      const budget = events.find(event => event.message === "tool_budget_remaining");
+      expect(budget.data.hardRemaining.toolCalls).toBe(12); // All four executed calls still consume their slots.
+      expect(adapter.contexts[1]).toContain("No matching line fits the search allowance.");
+      expect(adapter.contexts[1]).toContain("No change row fits the allowance.");
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it.each([{ limit: 0, meta: true }, { limit: 38, meta: true }, { limit: 38, meta: false }])("counts a search refusal without losing its correction message: %j", async ({ limit, meta }) => {
     const telemetry = fakeTelemetry();
     const matches = [{ path: "src/store.ts", line: 1, matchText: "export function loadAccount() {}" }];

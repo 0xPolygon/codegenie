@@ -2643,7 +2643,7 @@ function recordToolCall(
     resultCount: meta.usageDelivery?.deliveredRows ?? meta.searchDelivery?.deliveredCount ?? meta.pathListDelivery?.deliveredCount ?? (searchOrListBudgetRefusal ? 0 : undefined),
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
-    status: outcome.status,
+    status: outcome.errorCode === "budget_exhausted" ? "rejected" : outcome.status,
     errorCode: outcome.errorCode
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordToolCall"]>[0];
   opts.telemetry.recordToolCall(record);

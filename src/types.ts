@@ -514,6 +514,10 @@ export type PacketHunk = {
   omittedSignalCount?: number;
   truncated?: boolean;
   omittedLineCount?: number;
+  /** Changed rows absent or only partially present in the rendered patch. */
+  omittedChangedLineCount?: number;
+  omittedChangedRanges?: { old: Array<[number, number]>; new: Array<[number, number]> };
+  partialChangedLine?: { side: "old" | "new"; line: number; omittedChars: number; totalChars: number };
   plannerFallbackReason?: string;
 };
 

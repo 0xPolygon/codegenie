@@ -42,6 +42,12 @@ describe("reliable search", () => {
         searchDelivery: { deliveredCount: 0, scanIncomplete: false, discoveryOmittedCount: 0, backendOmittedCount: 1,
           nextRead: { path: "big.txt", line: 2 } } }
     });
+    const recordToolCall = vi.fn(() => "tc-budget");
+    const tools = new RepositoryToolsFacade({ resolver, diff: { files: [] }, registry: new LanguageAdapterRegistry(new TreeSitterService()),
+      telemetry: { ...nullTelemetry(), recordToolCall } });
+    await expect(tools.searchFiles("x+", { pathGlob: "big.txt" })).rejects.toMatchObject({ code: "budget_exhausted" });
+    expect(recordToolCall).toHaveBeenCalledWith(expect.objectContaining({ tool: "search_files", status: "rejected", errorCode: "budget_exhausted",
+      deliveryStatus: "budget_rejected" }));
     expect((await service.search("absent", { pathGlob: "big.txt" })).results).toEqual([]);
   });
 
