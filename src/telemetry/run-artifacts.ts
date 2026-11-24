@@ -2265,7 +2265,7 @@ function canonicalize(input: unknown): unknown {
   }
 
   if (input && typeof input === "object") {
-    const output: Record<string, unknown> = {};
+    const output: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(input).sort()) {
       const value = (input as Record<string, unknown>)[key];
       if (value !== undefined) {
