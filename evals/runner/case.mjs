@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,27 +23,44 @@ function outsideCheckout(dir) {
   return resolved;
 }
 
-export function prepareTarget(target, url, base, head, pullRequest) {
-  if (!sha.test(base ?? '') || !sha.test(head ?? '')) throw new Error('public case must pin full base and head commit IDs');
-  target = outsideCheckout(target);
-  if (!existsSync(target)) {
-    mkdirSync(path.dirname(target), { recursive: true });
-    mkdirSync(target);
-    git(target, 'init', '--quiet');
-    try { git(target, 'fetch', '--quiet', '--no-tags', '--depth=2', url, head); }
-    catch (error) {
-      if (!Number.isSafeInteger(pullRequest) || pullRequest < 1) throw error;
-      git(target, 'fetch', '--quiet', '--no-tags', '--depth=2', url, `refs/pull/${pullRequest}/head`);
-      try { git(target, 'cat-file', '-e', `${head}^{commit}`); }
-      catch { git(target, 'fetch', '--quiet', '--no-tags', '--deepen=200', url, `refs/pull/${pullRequest}/head`); }
-    }
-    git(target, '-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', head);
-  }
+function validateTarget(target, base, head) {
   if (realpathSync(git(target, 'rev-parse', '--show-toplevel')) !== realpathSync(target)) throw new Error('target must be a Git worktree root');
   if (git(target, 'rev-parse', 'HEAD') !== head || git(target, 'rev-parse', 'HEAD^') !== base || git(target, 'status', '--porcelain') !== '') throw new Error('target checkout does not match clean pinned head and parent');
   try { git(target, 'symbolic-ref', '-q', 'HEAD'); throw new Error('target checkout must be detached'); }
   catch (error) { if (error?.message === 'target checkout must be detached') throw error; if (error?.status !== 1) throw error; }
-  return target;
+}
+
+function pathExists(target) {
+  try { lstatSync(target); return true; }
+  catch (error) { if (error?.code === 'ENOENT') return false; throw error; }
+}
+
+export function prepareTarget(target, url, base, head, pullRequest) {
+  if (!sha.test(base ?? '') || !sha.test(head ?? '')) throw new Error('public case must pin full base and head commit IDs');
+  target = outsideCheckout(target);
+  if (pathExists(target)) { validateTarget(target, base, head); return target; }
+  mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = mkdtempSync(path.join(path.dirname(target), `.${path.basename(target)}-staging-`));
+  try {
+    git(temporary, 'init', '--quiet');
+    try { git(temporary, 'fetch', '--quiet', '--no-tags', '--depth=2', url, head); }
+    catch (error) {
+      if (!Number.isSafeInteger(pullRequest) || pullRequest < 1) throw error;
+      git(temporary, 'fetch', '--quiet', '--no-tags', '--depth=2', url, `refs/pull/${pullRequest}/head`);
+      try { git(temporary, 'cat-file', '-e', `${head}^{commit}`); }
+      catch { git(temporary, 'fetch', '--quiet', '--no-tags', '--deepen=200', url, `refs/pull/${pullRequest}/head`); }
+    }
+    git(temporary, 'cat-file', '-e', `${head}^{commit}`);
+    git(temporary, 'cat-file', '-e', `${head}^`);
+    git(temporary, '-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', head);
+    validateTarget(temporary, base, head);
+    // Never intentionally replace a target that appeared while fetching.
+    if (pathExists(target)) throw new Error('target appeared while preparing checkout');
+    renameSync(temporary, target);
+    return target;
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 }
 
 export async function runCase(configFile) {

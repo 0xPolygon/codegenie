@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -45,6 +45,10 @@ describe("development eval entry point", () => {
       const head = git(source, "rev-parse", "HEAD");
       const script = `import {prepareTarget} from ${JSON.stringify(caseModule)}; prepareTarget(...process.argv.slice(1));`;
       const invoke = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${source}`, base, head], { stdio: "pipe" });
+      const failing = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${tmp}/missing`, base, head], { stdio: "pipe" });
+      expect(failing).toThrow();
+      expect(existsSync(target)).toBe(false);
+      expect(readdirSync(tmp).filter((name) => name.startsWith(".target-staging-"))).toEqual([]);
       invoke(); invoke();
       expect(git(target, "rev-parse", "HEAD")).toBe(head);
       writeFileSync(path.join(target, "source.txt"), "local changes\n");
