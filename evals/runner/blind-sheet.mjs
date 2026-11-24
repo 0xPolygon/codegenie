@@ -45,6 +45,7 @@ export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, 
   gather(sheet);
   const clean = (v, field) => { if (Array.isArray(v)) return v.map((x) => clean(x, field)); if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clean(x, k)]));
     if (typeof v !== 'string') return v;
+    if (/(?:^|[^a-z0-9_])[a-z]:[\\/]/iu.test(v)) throw new Error('absolute source locator');
     if (['path', 'files'].includes(field)) { if (!relative(v)) throw new Error('non-relative source locator'); return v; }
     let result = v; for (const [old, replacement] of [...ids].sort((a, b) => b[0].length - a[0].length)) result = result.replaceAll(old, replacement);
     return result.replace(marker, '[redacted identifier]'); };

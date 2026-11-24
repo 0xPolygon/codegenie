@@ -32,5 +32,6 @@ describe('blind grading projection', () => {
     expect(projectBlindSheet(base).discovery.findings[0].path).toBe('src/file.ts');
     expect(() => projectBlindSheet({ ...base, candidates: [{ id: 'candidate-1', path: 'C:/Users/alice/private.ts' }] })).toThrow('source locator');
     expect(() => projectBlindSheet({ ...base, promotion: { decisions: [{ question: 'q', files: ['d:/private/file'], promoted: false }] } })).toThrow('source locator');
+    expect(() => projectBlindSheet({ ...base, candidates: [{ id: 'candidate-1', path: 'src/file.ts', title: 'Read C:/Users/alice/private' }] })).toThrow('absolute source locator');
   });
 });
