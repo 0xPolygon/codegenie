@@ -3,8 +3,10 @@ import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-healt
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
-import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
-import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
+import type { LlmPostToolNudgeInput, LlmRunner, LlmStructuredRequest, LlmToolResultSummary } from "../llm/llm-runner.js";
+import { submitPacketReviewSchema, type AssignedEffect, type SubmitPacketReview } from "../llm/schemas.js";
+import { checkAssignedEffects, createAssignedEffectsFieldRepair, type PacketReviewWithEffects } from "../llm/assigned-effects.js";
+import { ASSIGNED_EFFECTS_GUIDANCE } from "../llm/submit-review-guidance.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { exactSourceToolNames, projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -41,6 +43,16 @@ type LensRunnerOptions = {
   signal?: AbortSignal;
   checkpoint?: (stage: ReviewStage) => "ok" | "exhausted";
   diff?: UnifiedDiff;
+  recordAssignedEffects?: (record: AssignedEffectsRecord) => void;
+};
+
+type AssignedEffectsRecord = {
+  packetId: string;
+  workerId: string;
+  pass: number;
+  assignedHunkIds: string[];
+  reviewStatus: NonNullable<SubmitPacketReview["reviewStatus"]>;
+  assignedEffects: AssignedEffect[];
 };
 
 type SubmittedFollowUpHint = SubmitPacketReview["followUpHints"][number];
@@ -79,6 +91,8 @@ export async function runLensPackets(
   opts: LensRunnerOptions
 ): Promise<PacketReviewResult[]> {
   telemetry.event({ stage: 7, level: "info", message: "stage_started", data: { packets: packets.length } });
+  const effectRecords: AssignedEffectsRecord[] | undefined = config.review.assignedEffects === true ? [] : undefined;
+  const packetOpts = effectRecords ? { ...opts, recordAssignedEffects: (record: AssignedEffectsRecord) => { effectRecords.push(record); } } : opts;
   const workerRunner = createWorkerRunner({
     telemetry,
     concurrency: config.review.concurrency,
@@ -97,7 +111,7 @@ export async function runLensPackets(
     repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
     awaitCancellation: true,
     retryOnTransient: true,
-    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, 1)
+    run: packetAttemptRunner(packet, tools, config, packetOpts, telemetry, retainedReads, 1)
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const passResults = outcomes.map((outcome): PacketReviewResult => {
@@ -143,7 +157,9 @@ export async function runLensPackets(
     const result = resultByPacket.get(packet.id);
     return poolPassResults(packet, result === undefined ? [] : [result]);
   });
-  results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
+  results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, packetOpts);
+  if (effectRecords) await telemetry.writeArtifact("assigned-effects.json",
+    effectRecords.sort((a, b) => a.packetId.localeCompare(b.packetId) || a.pass - b.pass));
   const adaptiveReviews = summarizeAdaptiveReviews(results);
   await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
@@ -463,19 +479,25 @@ async function runPacket(
   const hasTools = packetHasRepositoryTools(packet);
   const currentHunks = toolSurface === "six" ? packet.hunks.map(hunk => hunk.hunkId) : undefined;
   const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
-  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
+  const assignedHunkIds = config.review.assignedEffects === true ? [...new Set(packet.hunks.map(hunk => hunk.hunkId))] : undefined;
+  const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}),
+    ...(assignedHunkIds ? { assignedEffects: true } : {}) });
   const passSkillIds = projectedSkillIds(prompt.projection);
   const repositoryTools = !hasTools
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
       ...(currentHunks ? { currentHunks } : {}) });
   let toolResults: LlmToolResultSummary[] = [];
-  const submitted = await opts.runner.runStructured<SubmitPacketReview>({
+  const schema = submitPacketReviewSchema(assignedHunkIds);
+  const noResultInstruction = assignedHunkIds ? STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION + " " + ASSIGNED_EFFECTS_GUIDANCE
+    : STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION;
+  const effectTracking = assignedHunkIds ? trackAssignedEffects(assignedHunkIds, packet.id, workerId, adaptivePass ?? 1, telemetry, opts) : undefined;
+  const request: LlmStructuredRequest<PacketReviewWithEffects> = {
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
     ...(adaptivePass !== undefined ? { cacheDraw: "stage7-adaptive-2" as const } : {}),
     prompt: prompt.prompt,
-    schema: SubmitPacketReviewSchema,
+    schema,
     signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
@@ -483,21 +505,35 @@ async function runPacket(
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: packet.id, toolSurface },
     normalizeSubmit: normalizeStage7Submit,
+    ...(effectTracking ? { validateSubmit: effectTracking.validateSubmit } : {}),
     // Plan 95: stage 7's deterministic submit cleanup rides the shared
     // recoverInvalidSubmit seam like every other stage; the engine and its
     // telemetry live in stage7-submit-repair.ts.
     schemaRepair: {
-      recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id })
+      recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id,
+        ...(assignedHunkIds ? { schema } : {}) }),
+      ...(effectTracking && assignedHunkIds ? {
+        createFieldRepair: (repairSchema, retained) => createAssignedEffectsFieldRepair(repairSchema, retained, assignedHunkIds),
+        onRepairScheduled: effectTracking.onRepairScheduled
+      } : {})
     },
     finalization: {
-      noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
+      noResultInstruction,
       ...(toolSurface === "six"
         ? { softTargetNotice: "The local investigation target has been reached. Continue only while a removed or added line in this packet's hunks is still unaccounted for; then submit." }
-        : { buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface]) })
+        : { buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface], noResultInstruction) })
     }
-  });
+  };
+  let submitted: PacketReviewWithEffects;
+  try {
+    submitted = await opts.runner.runStructured(request);
+  } catch (error) {
+    effectTracking?.finish();
+    throw error;
+  }
   const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
   const reviewStatus = normalizedReviewStatus(submitted, findings.length);
+  effectTracking?.finish(submitted, reviewStatus);
   if (reviewStatus === "no_findings") {
     telemetry.event({
       stage: 7,
@@ -550,6 +586,42 @@ async function runPacket(
     droppedUncertainties: uncertainties.droppedCount
   });
   return result;
+}
+
+function trackAssignedEffects(
+  assignedHunkIds: string[], packetId: string, workerId: string, pass: number, telemetry: TelemetryRecorder, opts: LensRunnerOptions
+) {
+  let uncoveredHunksFirstSubmit: string[] | null = null;
+  let repairing = false;
+  let effectRepairUsed = false;
+  let otherRepairUsed = false;
+  return {
+    validateSubmit(value: PacketReviewWithEffects) {
+      const { uncovered, errors } = checkAssignedEffects(value, assignedHunkIds);
+      if (!repairing && uncoveredHunksFirstSubmit === null) uncoveredHunksFirstSubmit = uncovered;
+      return errors.length ? { ok: false as const, classification: "schema_invalid" as const, details: errors.join(" ") } : { ok: true as const };
+    },
+    onRepairScheduled(fieldPaths?: readonly string[]) {
+      repairing = true;
+      if (fieldPaths?.length === 1 && fieldPaths[0] === "assignedEffects") effectRepairUsed = true;
+      else otherRepairUsed = true;
+    },
+    finish(submitted?: PacketReviewWithEffects, reviewStatus?: AssignedEffectsRecord["reviewStatus"]) {
+      const assignedEffects = submitted?.assignedEffects ?? [];
+      const countsByKind = { removed_guarantee: 0, skipped_path: 0, relied_guard: 0, none: 0 };
+      const countsByDisposition = { safe: 0, finding: 0, question: 0 };
+      for (const effect of assignedEffects) {
+        countsByKind[effect.kind]++;
+        countsByDisposition[effect.disposition]++;
+      }
+      telemetry.event({ stage: 7, level: "info", message: "stage7_assigned_effects", packetId, workerId, data: {
+        pass, countsByKind, countsByDisposition, uncoveredHunksFirstSubmit,
+        uncoveredHunksAccepted: submitted ? checkAssignedEffects(submitted, assignedHunkIds).uncovered : null,
+        effectRepairUsed, otherRepairUsed
+      } });
+      if (submitted && reviewStatus) opts.recordAssignedEffects?.({ packetId, workerId, pass, assignedHunkIds, reviewStatus, assignedEffects });
+    }
+  };
 }
 
 function normalizeFollowUpHints(
@@ -827,12 +899,12 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
   "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
 
-function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput, toolNames: string): string | undefined {
+function buildPostToolCloseNudge(packet: ReviewPacket, input: LlmPostToolNudgeInput, toolNames: string, noResultInstruction: string): string | undefined {
   const threshold = closeNudgeThreshold(packet);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
-  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as ${toolNames}. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
+  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as ${toolNames}. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${noResultInstruction}`;
 }
 
 export function closeNudgeThreshold(packet: Pick<ReviewPacket, "coverage" | "reviewProfile">): number {
