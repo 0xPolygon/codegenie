@@ -31,9 +31,10 @@ function processNamespace() {
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
 export class CampaignSupervisor {
-  constructor(file, { binding, scheduleBytes, scheduleSHA256, receiptDirectory, runRootFor }) {
+  constructor(file, { binding, scheduleBytes, scheduleSHA256, configSHA256 = null, receiptDirectory, runRootFor }) {
     if (typeof binding !== 'string' || !binding || !Buffer.isBuffer(scheduleBytes) || !isHash(scheduleSHA256) || sha(scheduleBytes) !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
     if ((receiptDirectory === undefined) !== (runRootFor === undefined) || (receiptDirectory !== undefined && (typeof receiptDirectory !== 'string' || typeof runRootFor !== 'function'))) throw new Error('invalid receipt store binding');
+    if (configSHA256 !== null && !isHash(configSHA256)) throw new Error('invalid campaign config digest');
     const parsed = JSON.parse(scheduleBytes.toString('utf8'));
     if (!Array.isArray(parsed.slots) || parsed.slots.length === 0 || parsed.slots.some((s) =>
       typeof s.id !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(s.id) || ['.', '..'].includes(s.id) || typeof s.boundaryId !== 'string' || !s.boundaryId || typeof s.provider !== 'string' || !s.provider) ||
@@ -45,7 +46,7 @@ export class CampaignSupervisor {
     this.dbPath = outsideCheckout(file);
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL, config_sha256 TEXT);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, spawn_state TEXT NOT NULL DEFAULT 'claimed', pid INTEGER, host TEXT, process_start TEXT, pid_namespace TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
@@ -55,8 +56,8 @@ export class CampaignSupervisor {
     try {
       this.transaction(() => {
         const old = this.db.prepare('SELECT * FROM campaign').get();
-        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?)').run(binding, scheduleSHA256);
-        else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
+        if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?)').run(binding, scheduleSHA256, configSHA256);
+        else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256) throw new Error('campaign schedule binding mismatch');
         if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
     } catch (error) { this.db.close(); throw error; }

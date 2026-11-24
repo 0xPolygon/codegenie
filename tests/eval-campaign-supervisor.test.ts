@@ -25,10 +25,11 @@ describe('campaign admission custody', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-store-'));
     try {
       const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
-      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'out') };
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), configSHA256: digest('config'), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'out') };
       const db = path.join(dir, 'supervisor.db');
       const supervisor = new CampaignSupervisor(db, binding);
       expect(supervisor.receipts.find('one', 1)).toBeNull(); supervisor.close();
+      expect(() => new CampaignSupervisor(db, { ...binding, configSHA256: digest('changed') })).toThrow('binding mismatch');
       rmSync(binding.receiptDirectory, { recursive: true });
       expect(() => new CampaignSupervisor(db, binding)).toThrow();
       expect(() => new CampaignSupervisor(db, binding)).toThrow();
