@@ -183,6 +183,8 @@ export function proofVisibilityDiagnostics(findings: CandidateFinding[], section
   }));
 }
 
+export const MAX_PRIMARY_EVIDENCE_REFS = 3;
+
 function validateSources(findings: CandidateFinding[], sections: CompositionSection[], evidenceRefs: string[], presentation: CompositionPresentation, prefix = "", assessmentFindings = findings) {
   const sources = compositionSources(findings, assessmentFindings);
   const byId = new Map(sources.map(source => [source.id, source]));
@@ -201,7 +203,7 @@ function validateSources(findings: CandidateFinding[], sections: CompositionSect
     if (sources.some(source => source.kind === kind) && !kinds.has(kind)) errors.push("Supply one current " + kind + " conclusion; provenance alone is insufficient.");
   }
   const primary = presentation.primaryEvidenceRefs ?? evidenceRefs.slice(0, 1);
-  if (primary.length > 3 || new Set(primary).size !== primary.length) errors.push("Select up to three distinct primary evidence references.");
+  if (primary.length > MAX_PRIMARY_EVIDENCE_REFS || new Set(primary).size !== primary.length) errors.push("Select up to three distinct primary evidence references.");
   for (const ref of primary) if (!evidenceRefs.includes(ref)) errors.push("Primary evidence must be an accounted evidence reference: " + shown(ref));
   if (sources.some(source => source.kind === "evidence") && !primary.length) errors.push("Select at least one decisive primary evidence reference.");
   const reconciled = new Set<string>();
@@ -227,9 +229,10 @@ function validateSources(findings: CandidateFinding[], sections: CompositionSect
   return { sources, byId, primary };
 }
 
-function renderEvidence(source: CompositionSource, link?: (path: string, line?: number) => string | undefined): string {
-  const url = source.path ? link?.(source.path) : undefined;
-  const location = inlineCode(source.path ?? "") + (url ? " ([source](" + url + "))" : "");
+function renderEvidence(source: CompositionSource, link?: (path: string, line?: number) => string | undefined, anchor?: CandidateFinding["anchor"]): string {
+  const url = source.path && anchor?.side !== "LEFT" ? link?.(source.path, anchor?.line) : undefined;
+  const label = anchor === undefined ? source.path ?? "" : `${source.path}:${anchor.line}${anchor.side === "LEFT" ? " (base)" : ""}`;
+  const location = inlineCode(label) + (url ? " ([source](" + url + "))" : "");
   const content = /^\d+(?:\s*[-–,:]\s*\d+)*$/u.test(source.text)
     ? "Lines " + source.text : codeBlock(source.text, fenceLanguageForPath(source.path ?? ""));
   return location + "\n" + content + (source.explanation ? "\n" + safeReportProse(source.explanation) : "");
@@ -244,10 +247,12 @@ export function composePresentation(
   assessmentFindings = findings,
   {
     unreconciledSuggestionKinds = [],
-    normalizeRecordedVerification = text => text
+    normalizeRecordedVerification = text => text,
+    showChangedAnchorLines = false
   }: {
     unreconciledSuggestionKinds?: ReadonlyArray<"fix" | "test">;
     normalizeRecordedVerification?: (text: string) => string;
+    showChangedAnchorLines?: boolean;
   } = {}
 ) {
   const { sources, byId, primary } = validateSources(findings, sections, evidenceRefs, presentation, "", assessmentFindings);
@@ -299,7 +304,12 @@ export function composePresentation(
   ].map(text => normalizeRecordedVerification(text).trim())
     .filter(text => text.length > 0 && !verificationBlock.includes(`\n\n${text}\n\n`)))];
   const recordedBody = recordedVerification.length ? "**Recorded verification:**\n\n" + recordedVerification.map(safeReportProse).join("\n\n") : "";
-  const evidenceBody = primary.map(ref => renderEvidence(byId.get(ref)!, link)).join("\n\n");
+  const evidenceBody = primary.map(ref => {
+    const source = byId.get(ref)!;
+    const anchor = showChangedAnchorLines && ref === source.findingId + "/evidence/changedCode"
+      ? findings.find(finding => finding.id === source.findingId)?.anchor : undefined;
+    return renderEvidence(source, link, anchor);
+  }).join("\n\n");
   prose.push("**Evidence:**\n\n" + evidenceBody);
 
   const body = [uncertaintyBody, recordedBody, ...prose].filter(Boolean).join("\n\n");
@@ -351,7 +361,7 @@ export function validateCompositionSubmission(
 
 export type CompositionMetrics = ReturnType<typeof composePresentation>["metrics"];
 
-export function renderRetainedComposition(findings: CandidateFinding[], link?: (path: string, line?: number) => string | undefined, normalizeProse: (text: string) => string = text => text, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = findings): string {
+export function renderRetainedComposition(findings: CandidateFinding[], link?: (path: string, line?: number) => string | undefined, normalizeProse: (text: string) => string = text => text, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = findings, showChangedAnchorLines = false): string {
   const sources = compositionSources(findings, assessmentFindings);
   const sections: CompositionSection[] = [];
   const retainedSourceRefs: string[] = [];
@@ -386,10 +396,14 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
     sections.push({ kind, sourceRefs: equivalent.map(source => source.id), text: renderedTexts.join("\n\n") });
     retainedSourceRefs.push(...matching.filter(source => !equivalent.includes(source)).map(source => source.id));
   }
-  const presentation: CompositionPresentation = { retainedSourceRefs };
+  const presentation: CompositionPresentation = {
+    retainedSourceRefs,
+    ...(showChangedAnchorLines ? { primaryEvidenceRefs: findings.map(finding => finding.id + "/evidence/changedCode") } : {})
+  };
   const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, {
     unreconciledSuggestionKinds,
-    normalizeRecordedVerification: normalizeProse
+    normalizeRecordedVerification: normalizeProse,
+    showChangedAnchorLines
   });
   onMetrics?.(rendered.metrics);
   return "Source-based presentation because synthesis was unavailable.\n\n" + rendered.body;
