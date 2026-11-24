@@ -139,7 +139,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // A score failure is an observed outcome, not a harness failure.
   } catch (error) {
     const reason = error?.context?.reason;
-    const safe = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted'].includes(reason) ? reason : 'harness_exception';
+    const safe = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'unsupported_case_config'].includes(reason) ? reason : 'harness_exception';
     console.log(JSON.stringify({ error: safe }));
     process.exitCode = 1;
   }

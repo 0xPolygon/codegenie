@@ -22,7 +22,7 @@ function makeWritable(dir: string) {
 }
 
 describe('campaign worker spawn', () => {
-  it.each(['typed-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout', 'spawn-error', 'custody-error'])('handles %s without accepting foreign artifacts', async (scenario) => {
+  it.each(['typed-failure', 'config-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout', 'spawn-error', 'custody-error'])('handles %s without accepting foreign artifacts', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-spawn-failure-'));
     try {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: path.join(process.cwd(), 'evals/fixtures'), caseName: 'fixture-core-lens', outputDir: path.join(dir, 'out') }));
@@ -41,11 +41,11 @@ describe('campaign worker spawn', () => {
         child.pid = process.pid; child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = kill;
         notifySpawn();
         if (scenario !== 'timeout') process.nextTick(() => {
-          child.stdout.write(JSON.stringify(scenario === 'typed-failure' ? { error: 'binding_mismatch' } : scenario === 'operational-error'
+          child.stdout.write(JSON.stringify(scenario === 'typed-failure' ? { error: 'binding_mismatch' } : scenario === 'config-failure' ? { error: 'unsupported_case_config' } : scenario === 'operational-error'
             ? { caseName: 'fixture-core-lens', status: 'error', error: 'provider_failure', runDir: path.join(dir, 'out/one/attempt-01/1') } : scenario === 'wrong-case'
             ? { caseName: 'different', status: 'pass', runDir: path.join(dir, 'out/one/attempt-01/1') }
             : { caseName: 'fixture-core-lens', status: 'pass', runDir: path.join(dir, 'other') }));
-          child.stdout.end(); child.emit('close', scenario === 'typed-failure' ? 1 : 0);
+          child.stdout.end(); child.emit('close', ['typed-failure', 'config-failure'].includes(scenario) ? 1 : 0);
         });
         return child;
       };
@@ -53,6 +53,7 @@ describe('campaign worker spawn', () => {
       if (scenario === 'timeout') vi.useFakeTimers();
       const pending = spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config), spawnImpl });
       if (scenario === 'typed-failure') await expect(pending).resolves.toEqual({ status: 'worker_failed', error: 'binding_mismatch' });
+      else if (scenario === 'config-failure') await expect(pending).resolves.toEqual({ status: 'worker_failed', error: 'unsupported_case_config' });
       else if (scenario === 'operational-error') await expect(pending).resolves.toMatchObject({ status: 'error', error: 'provider_failure' });
       else if (scenario === 'foreign-output' || scenario === 'wrong-case') await expect(pending).rejects.toThrow('invalid worker result');
       else if (scenario === 'spawn-error') { await expect(pending).rejects.toThrow('worker start failed'); expect(supervisor.workerExited('one', 1)).toBe(true); }

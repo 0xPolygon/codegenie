@@ -44,7 +44,7 @@ export async function spawnAttempt({ supervisor, slotId, attemptNo, configFile, 
       if (code !== 0) {
         try {
           const parsed = JSON.parse(text);
-          const allowed = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'harness_exception'];
+          const allowed = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'unsupported_case_config', 'harness_exception'];
           if (allowed.includes(parsed.error)) { resolve({ status: 'worker_failed', error: parsed.error }); return; }
         } catch { /* malformed output is a harness failure */ }
         reject(new Error('worker did not complete')); return;
