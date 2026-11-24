@@ -4446,8 +4446,10 @@ function providerPolicyBlockMessage(cause: unknown): string | undefined {
   const candidates = [nested?.message, body?.message, ...(body === undefined ? [raw] : [])];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
-    const message = redactThenTruncate(candidate, PROVIDER_MESSAGE_MAX_CHARS, "…").replace(/\s+/gu, " ").trim();
-    if (/\bcontent[\s_-]+policy\b|\bresource\b.{0,100}\btemporarily blocked\b/iu.test(message)) return message;
+    const message = redactThenTruncate(candidate, 65_536, "…").replace(/\s+/gu, " ").trim();
+    if (/\bcontent[\s_-]+policy\b|\bresource\b.{0,100}\btemporarily blocked\b/iu.test(message)) {
+      return redactThenTruncate(message, PROVIDER_MESSAGE_MAX_CHARS, "…");
+    }
   }
   return undefined;
 }

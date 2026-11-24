@@ -8276,6 +8276,27 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   );
 
+  it.each([true, false])("checks the bounded provider message beyond the display limit (policy=%s)", async policy => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const telemetry = fakeTelemetry();
+    let starts = 0;
+    try {
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async () => {
+          starts++;
+          return Response.json({ error: { message: 'x'.repeat(300) + (policy ? ' Resource temporarily blocked by content policy' : ' temporary backend failure') } }, { status: 502 });
+        } }), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const error: CodegenieError = await runner.runStructured({ ...submitReviewRequest("late-policy"), purpose: "location_clarification", timeoutMs: 10_000 }).catch(error => error) as CodegenieError;
+      expect(starts).toBe(1);
+      expect(error.code).toBe(policy ? "provider_policy_block" : "llm_call_failed");
+      expect(telemetry.modelCalls[0]?.retryReason).toBe(policy ? "provider_policy_block" : "server_error");
+      if (policy) expect((error.context?.providerMessage as string).length).toBeLessThanOrEqual(300);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each([
     { values: ["Azure"], expected: "Azure" },
     { values: [], expected: undefined },
