@@ -13,6 +13,10 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) 
   const { TransportAdmissionError } = await import('../../dist/llm/transport-admission.js');
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros });
   try {
+    // The campaign supervisor runs one review attempt at a time. An open row
+    // at worker startup belongs to an interrupted attempt and requires custody
+    // reconciliation before any new physical admission.
+    ledger.assertRestartSafe();
     let boundaryVerified = false;
     const fetchForCall = (call) => {
       const matching = expectedCalls.filter((item) => item.stage === call.stage && item.kind === call.kind && (item.purpose ?? null) === (call.purpose ?? null));

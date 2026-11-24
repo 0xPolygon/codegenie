@@ -13,6 +13,22 @@ const checkout = process.cwd();
 beforeAll(() => { execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" }); }, 60_000);
 
 describe("development eval worker", () => {
+  it("requires reconciliation of an interrupted physical start before running an attempt", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-restart-"));
+    try {
+      const db = path.join(dir, "ledger.sqlite");
+      let ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000 });
+      ledger.reservePhysical({ id: "previous/physical-1", logicalId: "previous", kind: "initial", provider: "openrouter" });
+      ledger.close();
+      const fetchImpl = vi.fn();
+      await expect(runWorker({ caseConfig: path.join(dir, "missing.json"), ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000,
+        attemptPrefix: "next/attempt-01", expectedCalls: [] }, { fetchImpl })).rejects.toThrow("unmatched physical start");
+      expect(fetchImpl).not.toHaveBeenCalled();
+      ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000 });
+      expect(ledger.totals()).toMatchObject({ starts: 1, open: 1, chargedMicros: 400_000 }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("runs the built fake fixture with an external ledger and digest-bound worker config", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-"));
     try {
