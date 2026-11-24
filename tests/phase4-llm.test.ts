@@ -8752,7 +8752,8 @@ describe("Pi tool argument stream limits", () => {
     expect(contexts[2]).toBe(contexts[1]);
     expect(execute).toHaveBeenCalledTimes(1);
     const limit = { toolName: "search_files", contentIndex: 2, trigger: "whitespace_run",
-      limitChars: 4_096, observedChars: 4_097, toolArgumentChars: argumentChars };
+      limitChars: 4_096, observedChars: 4_097, toolArgumentChars: argumentChars,
+      whitespacePositions: { insideString: 0, outsideString: 0, indeterminate: 4_097 } };
     const progress = { partial: true, toolArgumentChars: argumentChars, toolArgumentChunks: 4,
       thinkingChars: 4, thinkingChunks: 1 };
     const abortEvent = telemetry.events.find(event => event.message === "model_tool_argument_stream_limit");
@@ -8937,16 +8938,85 @@ describe("Pi tool argument stream limits", () => {
     expect(streamSimple).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])("handles a Responses tool start with hidden prefix=%s", async (hiddenPrefix) => {
+    const file = path.join(fs.realpathSync("node_modules/@earendil-works/pi-ai/dist"), "api/openai-responses-shared.js");
+    const { processResponsesStream } = await import(file);
+    const prefix = '{"reason":"private-prefix';
+    const streamSimple: PiStreamSimpleForTest = (model, _context, options) => {
+      const stream = createAssistantMessageEventStream();
+      async function* frames() {
+        yield { type: "response.output_item.added", output_index: 0,
+          item: { type: "function_call", call_id: "call", id: "item", name: "submit_verdict", arguments: hiddenPrefix ? prefix : "" } };
+        await new Promise(resolve => setTimeout(resolve, 0));
+        yield { type: "response.function_call_arguments.delta", output_index: 0, delta: (hiddenPrefix ? "" : prefix) + " ".repeat(4_097) };
+        await new Promise<void>(resolve => {
+          if (options?.signal?.aborted) resolve();
+          else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+      void processResponsesStream(frames(), assistant([]), stream, model, {
+        onProviderStreamEvent: options?.onProviderStreamEvent
+      }).catch(() => {}).finally(() => stream.end());
+      return stream;
+    };
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({
+      stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000
+    })).rejects.toMatchObject({ code: "llm_call_failed" });
+    const limits = telemetry.modelCalls.filter(row => row.retryReason === "tool_argument_stream_limit");
+    expect(limits).toHaveLength(2);
+    for (const row of limits) expect(row.toolArgumentStreamLimit?.whitespacePositions).toEqual(hiddenPrefix
+      ? { insideString: 0, outsideString: 0, indeterminate: 4_097 }
+      : { insideString: 4_097, outsideString: 0, indeterminate: 0 });
+    expect(JSON.stringify([limits, telemetry.events])).not.toContain("private-prefix");
+  });
+
   it("keeps whitespace runs separate for interleaved argument blocks and resets after text", () => {
     const guard = createToolArgumentStreamGuard(9)!;
-    expect(guard(0, " ".repeat(3_000), 3_000)).toBeUndefined();
-    expect(guard(1, "\n".repeat(2_000), 5_000)).toBeUndefined();
-    expect(guard(1, '\ttext' + "\r".repeat(3_000), 8_005)).toBeUndefined();
-    expect(guard(0, " ".repeat(1_096), 9_101)).toBeUndefined();
-    expect(guard(0, "\t", 9_102)).toMatchObject({
+    expect(guard(0, " ".repeat(3_000), 3_000, true)).toBeUndefined();
+    expect(guard(1, "\n".repeat(2_000), 5_000, true)).toBeUndefined();
+    expect(guard(1, '\ttext' + "\r".repeat(3_000), 8_005, true)).toBeUndefined();
+    expect(guard(0, " ".repeat(1_096), 9_101, true)).toBeUndefined();
+    expect(guard(0, "\t", 9_102, true)).toMatchObject({
       trigger: "whitespace_run", limitChars: 4_096, observedChars: 4_097, contentIndex: 0
     });
     expect(createToolArgumentStreamGuard(6)).toBeUndefined();
+  });
+
+  it("classifies a whitespace run using only bounded JSON lexical state", () => {
+    const spaces = " ".repeat(4_097);
+    const outside = createToolArgumentStreamGuard(9)!;
+    const outsidePrefix = '{"text":';
+    expect(JSON.parse(`${outsidePrefix}${spaces}"value"}`).text).toBe("value");
+    expect(outside(0, outsidePrefix + spaces, outsidePrefix.length + spaces.length, true)?.whitespacePositions)
+      .toEqual({ insideString: 0, outsideString: 4_097, indeterminate: 0 });
+
+    const inside = createToolArgumentStreamGuard(9)!;
+    const insidePrefix = '{"text":"quoted \\\" value';
+    expect(JSON.parse(`${insidePrefix}${spaces}"}`).text.endsWith(spaces)).toBe(true);
+    expect(inside(0, insidePrefix.slice(0, -1), insidePrefix.length - 1, true)).toBeUndefined();
+    expect(inside(1, '{"other":"', insidePrefix.length + 9, true)).toBeUndefined();
+    expect(inside(0, insidePrefix.slice(-1) + spaces, insidePrefix.length + spaces.length + 9, true)?.whitespacePositions)
+      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+
+    const escaped = createToolArgumentStreamGuard(9)!;
+    expect(escaped(0, '{"text":"\\u00', 13, true)).toBeUndefined();
+    expect(escaped(0, '22' + spaces, 4_112, true)?.whitespacePositions)
+      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+
+    const rawNewlines = createToolArgumentStreamGuard(9)!;
+    const rawPrefix = '{"text":"value';
+    expect(rawNewlines(0, rawPrefix + "\n".repeat(5_000), rawPrefix.length + 5_000, true)?.whitespacePositions)
+      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+
+    for (const invalid of ['{"text":"\\q', '{"text":"\\u0', '{"text":"\u0001']) {
+      const guard = createToolArgumentStreamGuard(9)!;
+      const result = guard(0, invalid + spaces, invalid.length + spaces.length, true);
+      expect(result?.whitespacePositions).toEqual({ insideString: 0, outsideString: 0, indeterminate: 4_097 });
+    }
+    const missingStart = createToolArgumentStreamGuard(9)!;
+    expect(missingStart(0, spaces, spaces.length, false)?.whitespacePositions)
+      .toEqual({ insideString: 0, outsideString: 0, indeterminate: 4_097 });
   });
 });
 
