@@ -4895,7 +4895,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets.find((packet) => packet.path === "src/app.test.ts")?.lenses).toEqual(["lang/typescript", "core/code-review", "core/tests"]);
   });
 
-  it("demotes mechanical import-only source packets to language-only simple review", async () => {
+  it("gives isolated import changes a standard tool budget with the language lens", async () => {
     const file = fakeDiffFile("src/imports.ts", "import { quote } from './quote';");
     const plan: ReviewPlan = {
       diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
@@ -4919,9 +4919,9 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(packets[0]).toMatchObject({
-      reviewProfile: "simple",
+      reviewProfile: "standard",
       lenses: ["lang/typescript"],
-      toolBudget: { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 }
+      toolBudget: { maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10_000 }
     });
   });
 
@@ -4973,8 +4973,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "standard" })).toBe(2);
   });
 
-  it("keeps synthetic large import-only PRs on the simple no-tool budget profile", async () => {
-    const files = Array.from({ length: 100 }, (_, index) => fakeDiffFile(`src/import-${index}.ts`, `import { value${index} } from './value-${index}';`));
+  it("keeps unrelated simple packets on the no-tool profile in a large change", async () => {
+    const files = Array.from({ length: 100 }, (_, index) => fakeDiffFile(`src/module-${index}.ts`, `"step ${index}"`));
     const plan: ReviewPlan = {
       diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
       coverage: files.map((file) => ({
@@ -4983,7 +4983,7 @@ describe("phase 5 pipeline regressions", () => {
         coverage: "normal" as const,
         lenses: ["lang/typescript", "core/code-review", "core/tests"],
         surroundingContextHints: [],
-        reason: "bulk import update"
+        reason: "bulk label update"
       }))
     };
 

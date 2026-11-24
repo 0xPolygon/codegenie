@@ -4,6 +4,7 @@ import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { MAX_PATCH_CHARS, packPacketPatch } from "./packet-patch.js";
 import { CONTEXT_CUT_MARKER, joinPacketText, packetText, truncatePacketText, type PacketText } from "./packet-text.js";
+import { changedModuleBinding } from "./module-binding-change.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
 import type {
@@ -393,7 +394,7 @@ async function buildPacket(
     hasOmittedChangedLines,
     strongRelatedContext: false
   });
-  const reviewProfile = packetReviewProfile({
+  const initialProfile = packetReviewProfile({
     coverage,
     reviewPriority,
     planned,
@@ -403,6 +404,19 @@ async function buildPacket(
     hasOmittedChangedLines,
     strongRelatedContext
   });
+  const moduleBinding = initialProfile === "simple"
+    ? changedModuleBinding(planned.map(entry => entry.hunk), first.facts.language) : undefined;
+  const reviewProfile = moduleBinding ? "standard" : initialProfile;
+  if (moduleBinding) {
+    telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "packet_module_binding_tools_enabled",
+      packetId,
+      file: first.file.path,
+      data: moduleBinding
+    });
+  }
   if (strongRelatedContext && baseReviewProfile !== "investigate" && reviewProfile === "investigate") {
     const relationshipSources = cleanStrings(relatedChangedContext.flatMap((context) => context.relationshipSource ?? []));
     packetBuildMetrics.relatedContextBudgetNudges += 1;
