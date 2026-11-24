@@ -140,6 +140,10 @@ describe('campaign driver', () => {
       const yaml = path.join(suiteDir, 'core.yml');
       let suiteYaml = readFileSync(yaml, 'utf8').replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna\n  reasoning: high\n  compositionReasoningStepDown: false\n  debug: true');
       if (scenario !== 'checkpoint') suiteYaml = suiteYaml.replace('verify: true', 'verify: false');
+      const sharedCache = path.join(dir, 'shared-cache');
+      if (scenario === 'checkpoint') {
+        suiteYaml = suiteYaml.replace('cache: false', `cache: true\n  cacheDir: ${sharedCache}`);
+      }
       let plannerReplayBinding;
       if (scenario === 'checkpoint') {
         const repo = path.join(baseline.runDir, 'fixture-repo');
@@ -221,6 +225,12 @@ describe('campaign driver', () => {
             const receipt = campaign.supervisor.receipts.find(outcome.slot, 1).receipt;
             const models = readFileSync(path.join(receipt.runDir, 'telemetry/model-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
             expect(models.some((row: { stage: number }) => row.stage === 5)).toBe(false);
+            for (const stage of [7, 9, 10]) {
+              const calls = models.filter((row: { stage: number }) => row.stage === stage);
+              expect(calls.length).toBeGreaterThan(0);
+              for (const row of calls) expect(campaign.ledger.db.prepare('SELECT COUNT(*) AS n FROM physical WHERE logical_id=?').get(`${outcome.slot}/attempt-01/${row.callId}`).n).toBeGreaterThan(0);
+            }
+            expect(existsSync(sharedCache)).toBe(false);
             const verifierIds = models.filter((row: { stage: number }) => row.stage === 9).map((row: { callId: string }) => `${outcome.slot}/attempt-01/${row.callId}`);
             expect(verifierIds.length).toBeGreaterThanOrEqual(2);
             const starts = verifierIds.map((id: string) => campaign.ledger.db.prepare('SELECT started_at_ms,settled_at_ms FROM physical WHERE logical_id=?').get(id));
