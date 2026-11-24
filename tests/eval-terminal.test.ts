@@ -8,22 +8,23 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { validateTerminal } from '../evals/runner/terminal.mjs';
 
 function fixture(dir: string) {
-  mkdirSync(path.join(dir, 'stages/06-packets/packets'), { recursive: true });
+  const telemetry = path.join(dir, 'telemetry');
+  mkdirSync(path.join(telemetry, 'stages/06-packets/packets'), { recursive: true });
   const runId = 'run-1', prefix = 'one/attempt-01';
   const events: Array<Record<string, unknown>> = [{ runId, eventId: 'ev-1', stage: 7, message: 'structured_submission_accepted', data: { packetId: 'packet' } }];
   const models: Array<Record<string, unknown>> = [{ runId, callId: 'mc-1', stage: 7, cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 }];
   const tools: Array<Record<string, unknown>> = [{ runId, toolCallId: 'tc-1', status: 'error', errorCode: 'invalid_args' }];
-  writeFileSync(path.join(dir, 'run.json'), JSON.stringify({ runId, outcome: { status: 'completed_full' } }));
-  writeFileSync(path.join(dir, 'stages/06-packets/packets/packet.json'), JSON.stringify({ id: 'packet' }));
+  writeFileSync(path.join(telemetry, 'run.json'), JSON.stringify({ runId, outcome: { status: 'completed_full' } }));
+  writeFileSync(path.join(telemetry, 'stages/06-packets/packets/packet.json'), JSON.stringify({ id: 'packet' }));
   const ledger = new CampaignLedger(path.join(dir, 'ledger.sqlite'), { binding: 'b', limitMicros: 2_000_000 });
   ledger.reservePhysical({ id: `${prefix}/mc-1/physical-1`, logicalId: `${prefix}/mc-1`, kind: 'initial', provider: 'openrouter' });
   ledger.settlePhysical({ id: `${prefix}/mc-1/physical-1`, httpStatus: 200, providerCostMicros: 1, costConfirmed: true,
     usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } });
   const save = () => {
-    writeFileSync(path.join(dir, 'telemetry.json'), JSON.stringify({ runId, events: events.length, modelCalls: { totalRecords: models.length }, toolCalls: { totalCalls: tools.length } }));
-    for (const [name, rows] of [['events', events], ['model-calls', models], ['tool-calls', tools]] as const) writeFileSync(path.join(dir, `${name}.jsonl`), rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''));
+    writeFileSync(path.join(telemetry, 'telemetry.json'), JSON.stringify({ runId, events: events.length, packets: { generated: 1 }, modelCalls: { totalRecords: models.length }, toolCalls: { totalCalls: tools.length } }));
+    for (const [name, rows] of [['events', events], ['model-calls', models], ['tool-calls', tools]] as const) writeFileSync(path.join(telemetry, `${name}.jsonl`), rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''));
   };
-  return { events, models, tools, ledger, prefix, save, check: () => validateTerminal({ runDir: dir, attemptPrefix: prefix, ledger }) };
+  return { events, models, tools, ledger, prefix, save, check: (priorRecoveredResets = 0) => validateTerminal({ runDir: dir, attemptPrefix: prefix, ledger, expectedPacketIds: ['packet'], priorRecoveredResets }) };
 }
 
 describe('campaign terminal evidence', () => {
@@ -33,6 +34,13 @@ describe('campaign terminal evidence', () => {
     try {
       f.save(); expect(f.check()).toMatchObject({ packets: 1, physicalStarts: 1 });
       f.tools[0]!.errorCode = 'budget_exhausted'; f.save(); expect(f.check()).toMatchObject({ packets: 1 });
+      f.tools[0]!.errorCode = 'unavailable'; f.save(); expect(f.check()).toMatchObject({ packets: 1 });
+      rmSync(path.join(dir, 'telemetry/stages/06-packets/packets/packet.json'));
+      expect(() => f.check()).toThrow('packet inventory');
+      writeFileSync(path.join(dir, 'telemetry/stages/06-packets/packets/packet.json'), JSON.stringify({ id: 'packet' }));
+      f.models[0]!.outputTokens = 20; f.models[0]!.totalTokens = 21; f.save();
+      expect(() => f.check()).toThrow('usage differ');
+      f.models[0]!.outputTokens = 2; f.models[0]!.totalTokens = 3;
       f.tools[0]!.errorCode = 'timeout'; f.save(); expect(() => f.check()).toThrow('tool failure');
       f.tools[0]!.errorCode = 'invalid_args'; f.events.length = 0; f.save(); expect(() => f.check()).toThrow('packet submit missing');
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
@@ -41,12 +49,19 @@ describe('campaign terminal evidence', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-usage-'));
     const f = fixture(dir);
     try {
-      f.save(); writeFileSync(path.join(dir, 'tool-calls.jsonl'), ''); expect(() => f.check()).toThrow('row count');
+      f.save(); writeFileSync(path.join(dir, 'telemetry/tool-calls.jsonl'), ''); expect(() => f.check()).toThrow('row count');
       f.models[0]!.totalTokens = undefined; f.save(); expect(() => f.check()).toThrow('model usage');
       const limit = { trigger: 'whitespace_run', limitChars: 4096, observedChars: 4097, toolArgumentChars: 4097, contentIndex: 0 };
-      Object.assign(f.models[0]!, { status: 'aborted', retryReason: 'tool_argument_stream_limit', toolArgumentStreamLimit: limit });
+      Object.assign(f.models[0]!, { status: 'aborted', errorCode: 'llm_call_failed', retryReason: 'tool_argument_stream_limit', toolArgumentStreamLimit: limit });
       f.ledger.db.prepare("UPDATE physical SET state='unknown',charge=400000,evidence_json=NULL WHERE logical_id=?").run(`${f.prefix}/mc-1`);
       f.events.push({ runId: 'run-1', eventId: 'ev-2', stage: 7, message: 'model_tool_argument_stream_limit', data: { callId: 'mc-1', ...limit } });
+      f.save(); expect(f.check()).toMatchObject({ modelCalls: 1 });
+      f.ledger.db.prepare("UPDATE physical SET charge=0 WHERE logical_id=?").run(`${f.prefix}/mc-1`);
+      expect(() => f.check()).toThrow('model usage');
+      f.ledger.db.prepare("UPDATE physical SET charge=400000 WHERE logical_id=?").run(`${f.prefix}/mc-1`);
+      f.models[0]!.packetId = 'packet'; f.models[0]!.structuredRequestId = 'request';
+      f.save(); expect(() => f.check()).toThrow('model usage');
+      f.events[1]!.data = { callId: 'mc-1', packetId: 'packet', structuredRequestId: 'request', ...limit };
       f.save(); expect(f.check()).toMatchObject({ modelCalls: 1 });
       f.events[1]!.data = { callId: 'other' }; f.save(); expect(() => f.check()).toThrow('model usage');
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
@@ -68,6 +83,7 @@ describe('campaign terminal evidence', () => {
         }
       };
       addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
+      expect(() => f.check(2)).toThrow('too many recovered');
       f.models[1]!.status = 'transient_error'; f.save(); expect(() => f.check()).toThrow('model usage missing');
       f.models[1]!.status = 'ok'; addReset(2); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 2 });
       addReset(3); f.save(); expect(() => f.check()).toThrow('too many recovered');
