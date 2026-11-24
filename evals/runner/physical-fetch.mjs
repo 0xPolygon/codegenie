@@ -1,3 +1,5 @@
+import { observeStreamTerminal } from './stream-terminal.mjs';
+
 // Decimal conversion rounds upward without floating-point over-rounding.
 function costUnits(value, precision) {
   const [mantissa, expText = '0'] = value.toString().toLowerCase().split('e');
@@ -16,6 +18,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
   if (typeof fetchImpl !== 'function' || typeof AdmissionError !== 'function' || typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(attemptPrefix)) throw new TypeError('transport dependencies and attempt identity required');
   let ordinal = 0;
   let current;
+  let accountingFailed = false;
   const logicalId = `${attemptPrefix}/${call.callId}`;
   const valid = expected.api === 'openai-completions' && ['provider', 'modelId', 'reasoningSelected', 'templateVersion'].every((key) => expected[key] === call[key]);
   function wireMatches(input, init) {
@@ -36,6 +39,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
     } catch { return false; }
   }
   function stopAccounting() {
+    accountingFailed = true;
     try { ledger.stop('accounting_failed'); } catch { /* preserve open hold and require reconciliation */ }
     throw new AdmissionError('accounting_failed', current?.id);
   }
@@ -67,6 +71,7 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
     async fetch(input, init) {
       const id = `${logicalId}/physical-${++ordinal}`;
       try {
+        if (accountingFailed) return stopAccounting();
         if (current && !current.settled) settleCurrent();
         const credentialValid = credentialMatches(input, init);
         if (!valid || !wireMatches(input, init) || !credentialValid) {
@@ -100,9 +105,20 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
         try { settleCurrent(); } catch { return stopAccounting(); }
         throw new AdmissionError('provider_denied', id);
       }
+      if (response.status >= 200 && response.status < 300) {
+        const attemptId = id;
+        return observeStreamTerminal(response, { signal: init?.signal ?? (input instanceof Request ? input.signal : undefined), record: (terminal) => {
+          // Ignore delayed callbacks from a previous native attempt; they must
+          // never change the active attempt or reinterpret its evidence.
+          if (current?.id !== attemptId) return;
+          try { ledger.recordStreamTerminal(attemptId, terminal); }
+          catch { stopAccounting(); }
+        } });
+      }
       return response;
     },
     onUsage(observation) {
+      if (accountingFailed) return stopAccounting();
       if (observation.quotaDenied === true) {
         if (!current) return stopAccounting();
         try { ledger.stop('provider_quota'); } catch { return stopAccounting(); }

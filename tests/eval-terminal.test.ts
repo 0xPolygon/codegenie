@@ -2,6 +2,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { TransportAdmissionError } from '../src/llm/transport-admission.js';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { makePhysicalTransport } from '../evals/runner/physical-fetch.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
@@ -67,6 +70,50 @@ describe('campaign terminal evidence', () => {
       f.events[1]!.data = { callId: 'other' }; f.save(); expect(() => f.check()).toThrow('model usage');
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
   });
+  it('requires matching failed-stream evidence for HTTP-200 infrastructure retry', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-provider-evidence-'));
+    const f = fixture(dir);
+    try {
+      writeFileSync(path.join(dir, 'telemetry/run.json'), JSON.stringify({ runId: 'run-1', outcome: { status: 'failed' } }));
+      Object.assign(f.models[0]!, { status: 'transient_error', errorCode: 'llm_call_failed' }); f.save();
+      const check = () => validateTerminal({ runDir: dir, attemptPrefix: f.prefix, ledger: f.ledger, expectedPacketIds: ['packet'], failureCallId: 'mc-1' });
+      expect(() => check()).toThrow('transient failure evidence missing');
+      for (const terminal of ['body_reset', 'provider_error_event']) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=?').run(terminal); expect(check()).toMatchObject({ status: 'failed' });
+      }
+      for (const terminal of ['done', 'local_cancel', 'unknown', null]) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=?').run(terminal); expect(() => check()).toThrow('transient failure evidence missing');
+      }
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('accepts a real physical reset after finish when the exact retry and submit succeed', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-finish-reset-')), f = fixture(dir);
+    try {
+      f.ledger.db.prepare('DELETE FROM physical').run(); f.models.length = 0;
+      const keyFingerprint = f.ledger.fingerprint('synthetic-key');
+      f.ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
+      f.ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      const call = { callId: 'failed', provider: 'openrouter', modelId: 'model', reasoningSelected: 'high', templateVersion: 'p7', kind: 'initial' };
+      const expected = { ...call, api: 'openai-completions', destination: 'https://synthetic.invalid/chat', wireEffort: 'high' };
+      let sent = false;
+      const transport = makePhysicalTransport({ ledger: f.ledger, call, expected, attemptPrefix: f.prefix, AdmissionError: TransportAdmissionError,
+        fetchImpl: async () => new Response(new ReadableStream({ pull(controller) {
+          if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode('data: {"choices":[{"finish_reason":"stop"}]}\n\n')); }
+          else controller.error(new Error('synthetic reset before usage'));
+        } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
+      const response = await transport.fetch(expected.destination, { method: 'POST', headers: { authorization: 'Bearer synthetic-key' }, body: JSON.stringify({ model: 'model', reasoning: { effort: 'high' } }) });
+      await expect(response.text()).rejects.toThrow('synthetic reset');
+      transport.onUsage({ source: 'terminal', terminal: 'error', costFromProvider: false });
+      const failed = `${f.prefix}/failed/physical-1`;
+      expect(f.ledger.db.prepare('SELECT stream_terminal,state,charge FROM physical WHERE id=?').get(failed)).toEqual({ stream_terminal: 'body_reset', state: 'unknown', charge: 400_000 });
+      const success = `${f.prefix}/success/physical-1`;
+      f.ledger.reservePhysical({ id: success, logicalId: `${f.prefix}/success`, kind: 'initial', provider: 'openrouter' });
+      f.ledger.settlePhysical({ id: success, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } });
+      const common = { runId: 'run-1', stage: 7, kind: 'initial', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request', cacheStatus: 'disabled' };
+      f.models.push({ ...common, attempt: 1, callId: 'failed', status: 'transient_error' }, { ...common, attempt: 2, callId: 'success', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+      f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1, physicalStarts: 2 });
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('accepts a recovered held stream reset, but stops on failed retry or three resets', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-reset-'));
     const f = fixture(dir);
@@ -81,9 +128,15 @@ describe('campaign terminal evidence', () => {
           const id = `${f.prefix}/${call}/physical-1`;
           f.ledger.reservePhysical({ id, logicalId: `${f.prefix}/${call}`, kind: 'initial', provider: 'openrouter' });
           f.ledger.settlePhysical(success ? { id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } } : { id, httpStatus: 200 });
+          if (!success) f.ledger.recordStreamTerminal(id, 'body_reset');
         }
       };
       addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
+      for (const terminal of ['provider_error_event', 'unknown', 'local_cancel', 'done', null]) {
+        f.ledger.db.prepare('UPDATE physical SET stream_terminal=? WHERE logical_id=?').run(terminal, `${f.prefix}/reset-1`);
+        expect(() => f.check()).toThrow('model usage missing');
+      }
+      f.ledger.db.prepare("UPDATE physical SET stream_terminal='body_reset' WHERE logical_id=?").run(`${f.prefix}/reset-1`);
       expect(() => f.check(2)).toThrow('too many recovered');
       f.models.splice(1, 0, { runId: 'run-1', stage: 7, kind: 'repair', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request-1', attempt: 1, callId: 'intervening', cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
       const intervening = `${f.prefix}/intervening/physical-1`;

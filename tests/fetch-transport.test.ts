@@ -8,6 +8,8 @@ import { makePhysicalTransport } from "../evals/runner/physical-fetch.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { captureTransportAdmission, projectProviderUsage, TransportAdmissionError } from "../src/llm/transport-admission.js";
 import { createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+// @ts-expect-error Dev-only ESM has no emitted types.
+import { operationalError } from "../evals/runner/worker.mjs";
 
 describe("physical transport seam", () => {
   it("sees Pi's retry as two physical requests and keeps the first usage unknown", async () => {
@@ -60,6 +62,40 @@ describe("physical transport seam", () => {
       expect(evidence.inputTokens).toBe((result.usage?.input ?? 0) + (result.usage?.cacheRead ?? 0) + (result.usage?.cacheWrite ?? 0));
       ledger.close(); rmSync(dir, { recursive: true, force: true });
     } finally { vi.unstubAllEnvs(); }
+  });
+  it.each([['provider error', 'provider_error_event', 'provider_failure'], ['body reset', 'body_reset', 'provider_failure'], ['done', 'done', 'unclassified'], ['clean EOF', 'unknown', 'unclassified']])('binds %s to the physical row independently of billing', async (scenario, terminal, attribution) => {
+    vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-terminal-adapter-')), db = path.join(dir, 'calls.sqlite');
+    let ledger = new CampaignLedger(db, { binding: 'synthetic', limitMicros: 2_000_000 });
+    try {
+      const keyFingerprint = ledger.fingerprint('synthetic-key');
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      const adapter = createRealPiAiAdapter(), model = (await adapter.resolveModel({ provider: 'openrouter', model: 'openai/gpt-6-luna' }))!;
+      const call = { callId: 'mc-1', provider: 'openrouter', modelId: model.id, reasoningSelected: 'high', templateVersion: 'p7', kind: 'initial' };
+      const expected = { ...call, api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', wireEffort: 'high' };
+      let starts = 0;
+      const fetchFixture: typeof globalThis.fetch = async () => {
+        starts++;
+        const data = scenario === 'provider error' ? 'event: error\ndata: {"error":{"message":"synthetic"}}\n\n'
+          : scenario === 'done' ? `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', model: model.id, choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`
+          : `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', model: model.id, choices: [{ index: 0, delta: { content: 'partial' }, finish_reason: null }] })}\n\n`;
+        let sent = false;
+        const body = new ReadableStream({ pull(controller) { if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode(data)); } else if (scenario === 'body reset') controller.error(new Error('synthetic body reset')); else controller.close(); } });
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      };
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: 'slot/attempt-01', fetchImpl: fetchFixture, AdmissionError: TransportAdmissionError });
+      const message = await adapter.complete(model, { messages: [{ role: 'user', content: 'fixture', timestamp: 0 }], tools: [] }, { submitToolName: 'submit_review', fetch: transport.fetch, reasoning: 'high', maxRetries: 0,
+        onProviderStreamEvent: (chunk: unknown) => { const usage = projectProviderUsage(chunk); if (usage) transport.onUsage(usage); } });
+      transport.onUsage({ source: 'terminal', terminal: message.stopReason === 'error' ? 'error' : 'done', costFromProvider: false });
+      expect(starts).toBe(1);
+      expect(ledger.db.prepare('SELECT stream_terminal,state,charge FROM physical').get()).toEqual({ stream_terminal: terminal, state: 'unknown', charge: 400_000 });
+      ledger.close(); ledger = new CampaignLedger(db, { binding: 'synthetic', limitMicros: 2_000_000, initialize: false });
+      ledger.assertRestartSafe();
+      expect(operationalError(ledger, 'slot/attempt-01', { code: 'llm_call_failed', reason: 'transient_error', callId: 'mc-1' })).toBe(attribution);
+      expect(operationalError(ledger, 'slot/attempt-01', { code: 'llm_call_failed', reason: 'transient_error', callId: 'other' })).toBe('unclassified');
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000 });
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); }
   });
   it("uses the default global fetch with identical request bytes when no override is supplied", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");

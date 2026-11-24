@@ -43,10 +43,9 @@ export function operationalError(ledger, attemptPrefix, failure) {
   if (failure && ['config_error', 'budget_exhausted'].includes(failure.code) &&
       ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted'].includes(failure.reason)) return failure.reason;
   if (failure?.code === 'llm_call_failed' && ['transient_error', 'request_error'].includes(failure.reason) && typeof failure.callId === 'string') {
-    const row = ledger.db.prepare('SELECT http_status,state FROM physical WHERE logical_id=? ORDER BY rowid DESC LIMIT 1').get(`${attemptPrefix}/${failure.callId}`);
-    // Unknown is a billing state, not evidence that an HTTP-200 stream failed.
-    // Until the physical terminal is recorded explicitly, reconcile those.
-    if (row && row.http_status >= 400) return 'provider_failure';
+    const row = ledger.db.prepare('SELECT http_status,state,stream_terminal FROM physical WHERE logical_id=? ORDER BY rowid DESC LIMIT 1').get(`${attemptPrefix}/${failure.callId}`);
+    // Billing unknown alone does not establish a failed provider stream.
+    if (row && (row.http_status >= 400 || (row.http_status === 200 && ['provider_error_event', 'body_reset'].includes(row.stream_terminal)))) return 'provider_failure';
   }
   return 'unclassified';
 }

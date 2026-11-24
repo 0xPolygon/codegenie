@@ -68,6 +68,43 @@ describe("physical fetch settlement", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('keeps delayed stream callbacks bound to the original physical attempt', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-stale-stream-')), db = path.join(dir, 'db');
+    let ledger = testLedger(db, { binding: 'test', limitMicros: 2_000_000 });
+    try {
+      const fetchImpl = vi.fn(async () => new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: 'slot/attempt-01', fetchImpl, AdmissionError: TransportAdmissionError });
+      const first = await transport.fetch(expected.destination, init), second = await transport.fetch(expected.destination, init);
+      await first.text(); await second.text(); transport.onUsage({ ...terminal, terminal: 'done' });
+      ledger.close(); ledger = testLedger(db, { binding: 'test', limitMicros: 2_000_000 });
+      expect(ledger.db.prepare('SELECT id,stream_terminal,state,charge FROM physical ORDER BY id').all()).toEqual([
+        { id: 'slot/attempt-01/mc-1/physical-1', stream_terminal: null, state: 'unknown', charge: 400_000 },
+        { id: 'slot/attempt-01/mc-1/physical-2', stream_terminal: 'done', state: 'unknown', charge: 400_000 }
+      ]);
+      expect(fetchImpl).toHaveBeenCalledTimes(2); ledger.assertRestartSafe();
+      ledger.recordStreamTerminal('slot/attempt-01/mc-1/physical-2', 'done');
+      expect(() => ledger.recordStreamTerminal('slot/attempt-01/mc-1/physical-2', 'body_reset')).toThrow('reconciliation');
+      ledger.db.prepare("UPDATE physical SET stream_terminal='unrecognized' WHERE id=?").run('slot/attempt-01/mc-1/physical-2');
+      expect(() => ledger.assertRestartSafe()).toThrow('reconciliation');
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('stops further starts when terminal evidence cannot be committed', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-stream-write-')), db = path.join(dir, 'db');
+    let ledger = testLedger(db, { binding: 'test', limitMicros: 2_000_000 });
+    try {
+      const fetchImpl = vi.fn(async () => new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: 'slot/attempt-01', fetchImpl, AdmissionError: TransportAdmissionError });
+      ledger.recordStreamTerminal = () => { throw new Error('synthetic sqlite failure'); };
+      const result = await transport.fetch(expected.destination, init);
+      await expect(result.text()).rejects.toThrow();
+      expect(() => transport.onUsage({ ...terminal, terminal: 'done' })).toThrow();
+      await expect(transport.fetch(expected.destination, init)).rejects.toMatchObject({ context: { reason: 'accounting_failed' } });
+      ledger.close(); ledger = testLedger(db, { binding: 'test', limitMicros: 2_000_000 });
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, open: 1, stopped: 'accounting_failed' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1); expect(() => ledger.assertRestartSafe()).toThrow('unmatched physical');
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("retains the first retry hold and settles only the response producing usage", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
     try {

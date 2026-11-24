@@ -45,13 +45,13 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
   const accepted = new Set(events.filter((event) => event.stage === 7 && event.message === 'structured_submission_accepted' && typeof event.data?.packetId === 'string').map((event) => event.data.packetId));
   if ((!failureMode && packetIds.some((id) => !accepted.has(id))) || [...accepted].some((id) => !packetIds.includes(id))) throw new Error('packet submit missing');
   const prefix = `${attemptPrefix}/`;
-  const physical = ledger.db.prepare('SELECT id,logical_id,state,charge,http_status,evidence_json FROM physical WHERE substr(id,1,?)=? ORDER BY rowid').all(prefix.length, prefix);
+  const physical = ledger.db.prepare('SELECT id,logical_id,state,charge,http_status,evidence_json,stream_terminal FROM physical WHERE substr(id,1,?)=? ORDER BY rowid').all(prefix.length, prefix);
   if (physical.some((row) => row.state === 'open' || [401, 402, 429].includes(row.http_status))) throw new Error('physical call requires reconciliation');
   const byCall = new Map(models.map((row) => [`${attemptPrefix}/${row.callId}`, row]));
   if (physical.some((row) => !byCall.has(row.logical_id))) throw new Error('physical call missing telemetry');
   if (failureMode) {
     const row = models.find((item) => item.callId === failureCallId), starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${failureCallId}`), last = starts.at(-1);
-    if (!row || row.errorCode !== 'llm_call_failed' || row.status !== 'transient_error' || !last || last.http_status < 500 || last.http_status >= 600 || last.state === 'open') throw new Error('transient failure evidence missing');
+    if (!row || row.errorCode !== 'llm_call_failed' || row.status !== 'transient_error' || !last || !((last.http_status >= 500 && last.http_status < 600) || (last.http_status === 200 && ['provider_error_event', 'body_reset'].includes(last.stream_terminal))) || last.state === 'open') throw new Error('transient failure evidence missing');
   }
   let recoveredResets = 0;
   for (const [index, row] of models.entries()) {
@@ -72,7 +72,7 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
     const nextUsage = nextStart?.evidence_json ? JSON.parse(nextStart.evidence_json) : null;
     const reset = row.status === 'transient_error' && noUsage && typeof row.structuredRequestId === 'string' && row.structuredRequestId &&
       typeof row.packetId === 'string' && accepted.has(row.packetId) && Number.isSafeInteger(row.attempt) && row.attempt > 0 &&
-      starts.length === 1 && starts[0].http_status === 200 && starts[0].state === 'unknown' && starts[0].charge >= ledger.reserve &&
+      starts.length === 1 && starts[0].http_status === 200 && starts[0].stream_terminal === 'body_reset' && starts[0].state === 'unknown' && starts[0].charge >= ledger.reserve &&
       next?.kind === row.kind && next.attempt === row.attempt + 1 && next.status === 'ok' && [next.inputTokens, next.outputTokens, next.totalTokens].every(count) &&
       nextStart && nextStart.http_status >= 200 && nextStart.http_status < 300 && nextUsage?.usagePresent === true &&
       ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => count(nextUsage[key]) && nextUsage[key] === next[key]);
