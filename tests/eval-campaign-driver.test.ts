@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, lstatSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { openCampaign } from '../evals/runner/campaign.mjs';
@@ -78,6 +79,17 @@ describe('campaign driver', () => {
       const reopened = await openCampaign(file, sha(config), { fetchImpl, models });
       expect(await reopened.step()).toMatchObject({ action: 'stop', reason: 'terminal_evidence' });
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 }); reopened.close();
+      for (const dbPath of [base.ledgerPath, base.supervisorPath]) {
+        const backup = `${dbPath}-backup`; renameSync(dbPath, backup); writeFileSync(dbPath, '');
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toThrow('database custody');
+        rmSync(dbPath); copyFileSync(backup, dbPath);
+        const db = new DatabaseSync(dbPath); db.exec('DELETE FROM campaign'); db.close();
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toThrow('database custody');
+        rmSync(dbPath); renameSync(backup, dbPath);
+        expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
+        const preserved = await openCampaign(file, sha(config), { fetchImpl, models });
+        expect(preserved.ledger.totals()).toMatchObject({ starts: 1, stopped: 'terminal_evidence' }); preserved.close();
+      }
       renameSync(base.supervisorPath, `${base.supervisorPath}-moved`); renameSync(base.ledgerPath, `${base.ledgerPath}-moved`);
       await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toThrow('namespace requires reconciliation');
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });

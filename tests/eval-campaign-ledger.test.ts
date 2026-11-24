@@ -3,11 +3,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error The development-only runner is intentionally plain ESM.
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it('rejects an obsolete ledger schema with a clear error', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-schema-'));
+    try {
+      const file = path.join(dir, 'db'), old = new DatabaseSync(file);
+      old.exec('CREATE TABLE campaign(binding TEXT)'); old.close();
+      expect(() => new CampaignLedger(file, { binding: 'fixture', limitMicros: 1_000_000 })).toThrow('unsupported campaign ledger schema');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('requires a covering snapshot after multiple 25-start marks and retains unknown holds', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-prefix-'));
     try {

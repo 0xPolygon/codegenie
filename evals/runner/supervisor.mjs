@@ -42,10 +42,10 @@ function definitelyExited(row) {
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
 export class CampaignSupervisor {
-  constructor(file, { binding, scheduleBytes, scheduleSHA256, configSHA256 = null, receiptDirectory, runRootFor }) {
+  constructor(file, { binding, scheduleBytes, scheduleSHA256, configSHA256 = null, receiptDirectory, runRootFor, initialize = true }) {
     if (typeof binding !== 'string' || !binding || !Buffer.isBuffer(scheduleBytes) || !isHash(scheduleSHA256) || sha(scheduleBytes) !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
     if ((receiptDirectory === undefined) !== (runRootFor === undefined) || (receiptDirectory !== undefined && (typeof receiptDirectory !== 'string' || typeof runRootFor !== 'function'))) throw new Error('invalid receipt store binding');
-    if (configSHA256 !== null && !isHash(configSHA256)) throw new Error('invalid campaign config digest');
+    if ((configSHA256 !== null && !isHash(configSHA256)) || typeof initialize !== 'boolean') throw new Error('invalid campaign config digest');
     const boundReceiptDirectory = receiptDirectory === undefined ? null : path.resolve(receiptDirectory);
     if (boundReceiptDirectory !== null && outsideCheckout(boundReceiptDirectory) !== boundReceiptDirectory) throw new Error('invalid receipt store binding');
     const parsed = JSON.parse(scheduleBytes.toString('utf8'));
@@ -73,6 +73,7 @@ export class CampaignSupervisor {
       if (!['binding', 'schedule_sha256', 'config_sha256', 'receipt_directory', 'schema_version'].every((name) => columns.includes(name))) throw new Error('unsupported campaign supervisor schema');
       this.transaction(() => {
         const old = this.db.prepare('SELECT * FROM campaign').get();
+        if (!old && !initialize) throw new Error('campaign supervisor custody requires reconciliation');
         if (!old) this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?,1)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
         else if (old.schema_version !== 1) throw new Error('unsupported campaign supervisor schema');
         else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256 || old.receipt_directory !== boundReceiptDirectory) throw new Error('campaign schedule binding mismatch');

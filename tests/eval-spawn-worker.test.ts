@@ -81,6 +81,7 @@ describe('campaign worker spawn', () => {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: path.join(process.cwd(), 'evals/fixtures'), caseName: 'fixture-core-lens', outputDir: path.join(dir, 'out') }));
       writeFileSync(caseFile, caseBytes);
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b', caseConfig: caseFile, caseConfigSHA256: digest(caseBytes), ledgerPath: path.join(dir, 'ledger'), limitMicros: 2_000_000, expectedCalls: [] };
+      new CampaignLedger(base.ledgerPath, { binding: 'b', limitMicros: base.limitMicros }).close();
       const bytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: base }] }));
       const binding = { binding: 'b', scheduleBytes: bytes, scheduleSHA256: digest(bytes) };
       let supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);

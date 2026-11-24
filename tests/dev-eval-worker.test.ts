@@ -94,6 +94,7 @@ describe("development eval worker", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-"));
     try {
       const caseFile = path.join(dir, "case.json"), workerFile = path.join(dir, "worker.json"), ledgerPath = path.join(dir, "ledger.sqlite");
+      new CampaignLedger(ledgerPath, { binding: "synthetic", limitMicros: 15_000_000 }).close();
       writeFileSync(caseFile, JSON.stringify({ caseDir: path.join(checkout, "evals/fixtures"), caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
       const worker = JSON.stringify({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath, ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
       writeFileSync(workerFile, worker);
@@ -171,6 +172,7 @@ describe("development eval worker", () => {
       const source = readFileSync(path.join(checkout, "evals/fixtures/core.yml"), "utf8").replace("minFindings: 1", "minFindings: 99").replace("maxFindings: 1", "maxFindings: 100");
       writeFileSync(path.join(suite, "core.yml"), source);
       const caseFile = path.join(dir, "case.json"), workerFile = path.join(dir, "worker.json");
+      new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 }).close();
       writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
       const worker = JSON.stringify({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath: path.join(dir, "ledger.sqlite"), ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
       writeFileSync(workerFile, worker); const digest = createHash("sha256").update(worker).digest("hex");

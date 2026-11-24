@@ -3,16 +3,16 @@ import { createHmac, randomBytes } from 'node:crypto';
 
 // Values are integer microdollars; no native estimate is treated as a bill.
 export class CampaignLedger {
-  constructor(file, { binding, limitMicros, reserveMicros = 400_000, errorHoldMicros = 50_000 }) {
+  constructor(file, { binding, limitMicros, reserveMicros = 400_000, errorHoldMicros = 50_000, initialize = true }) {
     if (typeof binding !== 'string' || !binding || !Number.isSafeInteger(limitMicros) || limitMicros <= 0 ||
-        !Number.isSafeInteger(reserveMicros) || reserveMicros <= 0 || !Number.isSafeInteger(errorHoldMicros) || errorHoldMicros < 0 || errorHoldMicros > reserveMicros) throw new TypeError('invalid ledger binding or cap');
+        !Number.isSafeInteger(reserveMicros) || reserveMicros <= 0 || !Number.isSafeInteger(errorHoldMicros) || errorHoldMicros < 0 || errorHoldMicros > reserveMicros || typeof initialize !== 'boolean') throw new TypeError('invalid ledger binding or cap');
     this.binding = binding;
     this.limit = limitMicros;
     this.reserve = reserveMicros;
     this.errorHold = errorHoldMicros;
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT);
+      CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT, schema_version INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, retry_for TEXT, retry_failure_sha256 TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
       CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, key_fingerprint TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL, boundary_id TEXT NOT NULL, physical_starts INTEGER NOT NULL);
@@ -21,9 +21,14 @@ export class CampaignLedger {
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
     try {
+      const campaignColumns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
+      const snapshotColumns = this.db.prepare('PRAGMA table_info(key_snapshot)').all().map((column) => column.name);
+      if (!campaignColumns.includes('schema_version') || !snapshotColumns.includes('physical_starts')) throw new Error('unsupported campaign ledger schema');
       this.transaction(() => {
         const row = this.db.prepare('SELECT * FROM campaign').get();
+        if (!row && !initialize) throw new Error('campaign ledger custody requires reconciliation');
         if (!row) this.db.prepare('INSERT INTO campaign(binding,limit_micros,reserve_micros,error_hold_micros,salt) VALUES(?,?,?,?,?)').run(binding, limitMicros, reserveMicros, errorHoldMicros, randomBytes(32));
+        else if (row.schema_version !== 1) throw new Error('unsupported campaign ledger schema');
         else if (row.binding !== binding || row.limit_micros !== limitMicros || row.reserve_micros !== reserveMicros || row.error_hold_micros !== errorHoldMicros) throw Object.assign(new Error('ledger binding mismatch'), { context: { reason: 'binding_mismatch' } });
       });
     } catch (error) { this.db.close(); throw error; }

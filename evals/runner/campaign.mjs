@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, constants, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { outsideCheckout, workerBounds } from './case.mjs';
 import { CampaignLedger } from './ledger.mjs';
 import { CampaignSupervisor } from './supervisor.mjs';
@@ -14,6 +15,39 @@ const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(valu
 const attemptPrefix = (slot, number) => `${slot}/attempt-${String(number).padStart(2, '0')}`;
 const proofHash = (binding, slot, attempt, failure, probe) => sha(JSON.stringify({ binding, slot, attempt, failure, probe }));
 const readBytes = (file) => { const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); try { return readFileSync(fd); } finally { closeSync(fd); } };
+
+function checkExisting(config, configSHA256) {
+  const check = (file, schema, checkRow) => {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      for (const [table, columns] of Object.entries(schema)) {
+        const found = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+        if (columns.some((column) => !found.has(column))) throw new Error('schema');
+      }
+      const rows = db.prepare('SELECT * FROM campaign').all();
+      if (rows.length !== 1 || !checkRow(rows[0])) throw new Error('binding');
+    } finally { db.close(); }
+  };
+  try {
+    check(config.supervisorPath, {
+      campaign: ['binding', 'schedule_sha256', 'config_sha256', 'receipt_directory', 'schema_version'],
+      attempt: ['slot_id', 'attempt_no', 'state', 'receipt_sha256'],
+      worker_claim: ['slot_id', 'attempt_no', 'config_sha256', 'token_sha256', 'activated', 'spawn_state', 'pid', 'host', 'process_start', 'pid_namespace'],
+      outcome: ['slot_id', 'state', 'attempt_no', 'receipt_sha256'], retry_authorization: ['slot_id', 'attempt_no', 'failure_sha256', 'proof_sha256', 'probe_id'],
+      exclusion: ['slot_id', 'first_attempt_no', 'first_sha256', 'second_attempt_no', 'second_sha256'],
+      case_reset_event: ['slot_id', 'attempt_no', 'case_id', 'receipt_sha256', 'resets'],
+      driver_claim: ['id', 'pid', 'host', 'process_start', 'pid_namespace', 'token_sha256'], release: ['prefix_sha256']
+    }, (row) => row.schema_version === 1 && row.binding === config.binding && row.schedule_sha256 === config.scheduleSHA256 && row.config_sha256 === configSHA256 && row.receipt_directory === config.receiptDirectory);
+    check(config.ledgerPath, {
+      campaign: ['binding', 'limit_micros', 'reserve_micros', 'error_hold_micros', 'salt', 'meter_stale', 'stopped', 'schema_version'],
+      physical: ['id', 'logical_id', 'kind', 'provider', 'health_boundary', 'health_purpose', 'retry_for', 'retry_failure_sha256', 'started_at_ms', 'settled_at_ms', 'state', 'charge', 'http_status', 'evidence_json', 'lower_bound', 'provider_cost_nanos'],
+      key_baseline: ['usage_micros', 'usage_nanos', 'evidence_sha256', 'key_fingerprint'],
+      key_snapshot: ['usage_micros', 'usage_nanos', 'priced_floor_micros', 'priced_floor_nanos', 'observed_ms', 'evidence_sha256', 'fresh', 'boundary_id', 'physical_starts'],
+      health_receipt: ['physical_id', 'outcome', 'observed_ms', 'evidence_sha256'], meter_poll: ['boundary_id', 'attempts', 'stale_count', 'next_ms', 'pending'],
+      local_refusal: ['id', 'logical_id', 'reason'], logical: ['id', 'status']
+    }, (row) => row.schema_version === 1 && row.binding === config.binding && row.limit_micros === config.limitMicros && row.reserve_micros === config.reserveMicros && row.error_hold_micros === config.errorHoldMicros);
+  } catch { throw new Error('campaign database custody requires reconciliation'); }
+}
 
 // Only schedule-derived bytes are written; a restart never replaces an existing
 // worker config. The actual worker independently checks the same digest.
@@ -71,14 +105,15 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   if (existing !== ledgerExists) throw new Error('campaign ledger custody requires reconciliation');
   if (!existing && [config.receiptDirectory, config.evidenceDirectory, config.workDirectory, `${config.supervisorPath}-wal`, `${config.supervisorPath}-shm`, `${config.ledgerPath}-wal`, `${config.ledgerPath}-shm`, ...roots.values()].some((file) => existsSync(file))) throw new Error('campaign namespace requires reconciliation');
   if (existing && (!existsSync(config.receiptDirectory) || !existsSync(config.evidenceDirectory) || !existsSync(config.workDirectory))) throw new Error('campaign directory custody requires reconciliation');
+  if (existing) checkExisting(config, expectedSHA256);
   if (!existing) {
     for (const directory of [path.dirname(config.supervisorPath), path.dirname(config.ledgerPath), config.evidenceDirectory, config.workDirectory]) mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
-  const supervisor = new CampaignSupervisor(config.supervisorPath, { binding: config.binding, configSHA256: expectedSHA256, scheduleBytes, scheduleSHA256: config.scheduleSHA256, receiptDirectory: config.receiptDirectory, runRootFor });
+  const supervisor = new CampaignSupervisor(config.supervisorPath, { binding: config.binding, configSHA256: expectedSHA256, scheduleBytes, scheduleSHA256: config.scheduleSHA256, receiptDirectory: config.receiptDirectory, runRootFor, initialize: !existing });
   let ledger, token;
   try {
     token = supervisor.claimDriver();
-    ledger = new CampaignLedger(config.ledgerPath, { binding: config.binding, limitMicros: config.limitMicros, reserveMicros: config.reserveMicros, errorHoldMicros: config.errorHoldMicros });
+    ledger = new CampaignLedger(config.ledgerPath, { binding: config.binding, limitMicros: config.limitMicros, reserveMicros: config.reserveMicros, errorHoldMicros: config.errorHoldMicros, initialize: !existing });
   } catch (error) { if (token) supervisor.releaseDriver(token); supervisor.close(); throw error; }
   const files = () => listEvidenceFiles(config.evidenceDirectory);
   const verifyRetry = (slotId, attempt, failure, proof, probe) => {
