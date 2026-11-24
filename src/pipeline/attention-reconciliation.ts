@@ -47,10 +47,13 @@ type Inventory = {
   // This is review context, not a claim that each excerpt was read at head.
   // Individual excerpts/observations retain their original source wording.
   reviewRevision: { base?: string; head?: string };
-  concerns: Array<Pick<Concern, "id" | "question"> & { files: string[] }>;
+  concerns: Array<Pick<Concern, "id" | "question"> & { files: string[]; promotedEvidenceRefs?: string[] }>;
   // Published observations are already in the composition source components.
   // Register their IDs without duplicating their text in this bounded inventory.
-  evidence: Array<Omit<Evidence, "text" | "verdict" | "proofStatus" | "assumptions"> & { text?: string }>;
+  evidence: Array<Omit<Evidence, "text" | "verdict" | "proofStatus" | "assumptions"> & {
+    text?: string;
+    promotedFromConcern?: string;
+  }>;
   // Shared qualifications are retained once, keyed by each entry's candidateId.
   evidenceContexts: Array<Pick<Evidence, "candidateId" | "verdict" | "proofStatus" | "assumptions">>;
 };
@@ -109,6 +112,8 @@ export function buildAttentionReconciliation(
       question: hint.question, essential: true, verdict: "not_verified", scope: original }] });
   }
   const candidates = new Map(packetResults.flatMap(result => result.findings).map(finding => [finding.id, finding]));
+  const links = linkPromotedAttention(packetHints, [...candidates.values()], verdicts,
+    new Set(publishedInputs.map(finding => finding.id)));
   for (const verdict of verdicts) if (verdict.finalFinding) candidates.set(verdict.candidateId, verdict.finalFinding);
   for (const finding of publishedInputs) candidates.set(finding.id, finding);
   const publishedSources = new Map(compositionSources(publishedInputs).map(source => [source.id, source]));
@@ -174,12 +179,44 @@ export function buildAttentionReconciliation(
         origin: "repository_tool", ...(read.symbols ? { symbols: read.symbols } : {}), source: read.source, verdict: "not_verified" });
     }
   }
-  const inventory: Inventory = {
-    reviewRevision: {
-      ...(resolved.baseRef ? { base: resolved.baseRef } : {}),
-      ...(resolved.headSha ?? resolved.headRef ? { head: resolved.headSha ?? resolved.headRef } : {})
-    }, concerns: [], evidence: [], evidenceContexts: []
-  };
+  return packAttentionReconciliation(groups, allEvidence, {
+    ...(resolved.baseRef ? { base: resolved.baseRef } : {}),
+    ...(resolved.headSha ?? resolved.headRef ? { head: resolved.headSha ?? resolved.headRef } : {})
+  }, links);
+}
+
+/** Join the original promotion origin to the exact question. Publication is checked after composition. */
+export function linkPromotedAttention(
+  hints: RawAttentionHint[],
+  candidates: CandidateFinding[],
+  verdicts: VerificationVerdict[],
+  compositionCandidateIds: ReadonlySet<string>
+): ReadonlyMap<string, string> {
+  const verified = new Set(verdicts.filter(verdict => (verdict.verdict === "keep" || verdict.verdict === "revise")
+    && verdict.requiredEvidencePresent && !verdict.verificationIncomplete).map(verdict => verdict.candidateId));
+  const byOrigin = new Map<string, string>();
+  for (const candidate of candidates) {
+    const origin = candidate.provenance;
+    if (origin?.source !== "uncertainty_promotion" || !verified.has(candidate.id) || !compositionCandidateIds.has(candidate.id)) continue;
+    const key = JSON.stringify([origin.sourcePacketId, origin.sourceKind, origin.question.trim()]);
+    // Ambiguous promotion origins do not get a preferred finding.
+    byOrigin.set(key, byOrigin.has(key) ? "" : candidate.id);
+  }
+  const links = new Map<string, string>();
+  for (const hint of hints) {
+    const id = byOrigin.get(JSON.stringify([hint.packetId, hint.source, hint.question]));
+    if (id) links.set(`packet/${hint.id}`, id);
+  }
+  return links;
+}
+
+export function packAttentionReconciliation(
+  groups: ConcernGroup[],
+  allEvidence: Evidence[],
+  reviewRevision: Inventory["reviewRevision"],
+  links: ReadonlyMap<string, string> = new Map()
+): AttentionReconciliation {
+  const inventory: Inventory = { reviewRevision, concerns: [], evidence: [], evidenceContexts: [] };
   const omittedConcernIds: string[] = [];
   const omittedEvidenceIds: string[] = [];
   const excludedEvidenceIds: string[] = [];
@@ -213,7 +250,7 @@ export function buildAttentionReconciliation(
     .map(item => item.evidence));
   const observations = new Set<string>();
   const sizeRejected = new Set<string>();
-  const admit = (evidence: Evidence): "added" | "covered" | "rejected" => {
+  const admit = (evidence: Evidence, promotedFromConcern?: string): "added" | "covered" | "rejected" => {
     if (inventory.evidence.some(entry => entry.id === evidence.id)) return "covered";
     const { observation, context } = evidenceProjection(evidence);
     const contexts = inventory.evidenceContexts.some(entry => entry.candidateId === evidence.candidateId)
@@ -227,7 +264,8 @@ export function buildAttentionReconciliation(
     if (covered || observations.has(key)) return "covered";
     const replaced = evidence.origin === "repository_tool" ? inventory.evidence.filter(item => item.origin === "repository_tool"
       && item.text !== undefined && item.source !== undefined && sourceEvidenceCovered({ ...item, source: item.source, text: item.text }, [{ ...evidence, source: evidence.source! }])) : [];
-    const next = [...inventory.evidence.filter(item => !replaced.includes(item)), observation];
+    const next = [...inventory.evidence.filter(item => !replaced.includes(item)),
+      { ...observation, ...(promotedFromConcern ? { promotedFromConcern } : {}) }];
     if (JSON.stringify({ ...inventory, evidence: next, evidenceContexts: contexts }).length > MAX_ATTENTION_RECONCILIATION_CHARS) {
       sizeRejected.add(evidence.id);
       return "rejected";
@@ -237,6 +275,42 @@ export function buildAttentionReconciliation(
     observations.add(key);
     return "added";
   };
+  // Reserve at most one proof and one source excerpt per linked concern.
+  // Keep the remaining inventory available to the ordinary allocation.
+  let linkedAllowance = MAX_ATTENTION_RECONCILIATION_CHARS / 4;
+  for (const [position, concern] of concerns.entries()) {
+    const candidateId = links.get(concern.id);
+    if (!candidateId) continue;
+    const suppliedConcern = inventory.concerns[position]!;
+    const proofs = eligible.filter(evidence => evidence.candidateId === candidateId
+      && (evidence.id.endsWith("/proofAssessment") || evidence.id.endsWith("/verification")))
+      .sort((a, b) => Number(b.id.endsWith("/proofAssessment")) - Number(a.id.endsWith("/proofAssessment")));
+    const excerpts = eligible.filter(evidence => evidence.candidateId === candidateId && evidence.kind === "excerpt")
+      .sort((a, b) => Number(b.id.includes("/evidence/relatedCode/")) - Number(a.id.includes("/evidence/relatedCode/"))
+        || evidencePriority(b, concern, fairShare) - evidencePriority(a, concern, fairShare)
+        || a.id.localeCompare(b.id));
+    for (const choices of [proofs, excerpts]) {
+      for (const evidence of choices) {
+        if (evidence.sourceRef) {
+          // These observations are already in the finding components. Refer
+          // to them directly so a duplicate row cannot crowd out other reads.
+          const current = suppliedConcern.promotedEvidenceRefs;
+          const next = [...(current ?? []), evidence.id];
+          const size = JSON.stringify({ ...suppliedConcern, promotedEvidenceRefs: next }).length
+            - JSON.stringify(suppliedConcern).length;
+          if (size > linkedAllowance || JSON.stringify(inventory).length + size > MAX_ATTENTION_RECONCILIATION_CHARS) continue;
+          suppliedConcern.promotedEvidenceRefs = next;
+          linkedAllowance -= size;
+          break;
+        }
+        const size = JSON.stringify(evidenceProjection(evidence)).length
+          + JSON.stringify({ promotedFromConcern: concern.id }).length;
+        if (size > linkedAllowance || admit(evidence, concern.id) !== "added") continue;
+        linkedAllowance -= size;
+        break;
+      }
+    }
+  }
   // First give each question a complete relevant source. A refusal must not
   // reserve a path or consume an allocation; try its smaller alternatives.
   const sourceQueues = concerns.map(concern => {
@@ -267,10 +341,13 @@ export function buildAttentionReconciliation(
   // After each concern had its turn, spare capacity may retain secondary
   // assessments whose relevance is not expressible by source identifiers.
   for (const evidence of [...eligible].sort((a, b) => a.id.localeCompare(b.id))) admit(evidence);
-  const suppliedIds = new Set(inventory.evidence.map(evidence => evidence.id));
+  const supplied = new Map(inventory.evidence.map(evidence => [evidence.id, evidence]));
+  const suppliedIds = new Set(supplied.keys());
   omittedEvidenceIds.push(...eligible.filter(evidence => !suppliedIds.has(evidence.id)).map(evidence => evidence.id));
-  const selection = concerns.map(concern => ({ concernId: concern.id,
-    suppliedRefs: eligible.filter(evidence => suppliedIds.has(evidence.id) && relevance(evidence, concern) > 0).map(evidence => evidence.id),
+  const selection = concerns.map((concern, index) => ({ concernId: concern.id,
+    suppliedRefs: eligible.filter(evidence => inventory.concerns[index]?.promotedEvidenceRefs?.includes(evidence.id)
+      || (suppliedIds.has(evidence.id) && (relevance(evidence, concern) > 0 || supplied.get(evidence.id)?.promotedFromConcern === concern.id)))
+      .map(evidence => evidence.id),
     omittedForSize: eligible.filter(evidence => !suppliedIds.has(evidence.id) && sizeRejected.has(evidence.id) && relevance(evidence, concern) > 0).map(evidence => evidence.id)
   }));
   return { groups, inventory, allEvidence, omittedConcernIds, omittedEvidenceIds, excludedEvidenceIds, selection };

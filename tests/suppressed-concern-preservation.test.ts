@@ -35,6 +35,53 @@ const DIFF = [
 ].join("\n");
 
 describe("suppressed findings preserve their source concerns (#52)", () => {
+  it.each([false, true])("links only the original promotion and preserves distinct concerns after publication (suppressed=%s)", async suppress => {
+    const diff = parseDiff(DIFF);
+    const hunk = diff.files[0]!.hunks[0]!;
+    const question = "Can two sync calls write state for the same session?";
+    const stale = "Can two sync calls receive a stale session listing?";
+    const promoted = candidate({
+      id: "promoted-write",
+      title: "Concurrent state writes collide",
+      confidence: suppress ? "low" : "high",
+      path: "src/service.ts",
+      failureMode: "Two writes share a temporary file.",
+      evidence: { changedCode: "writeFile(sharedTemp, state);" },
+      provenance: {
+        source: "uncertainty_promotion", sourceKind: "follow_up_hint", sourcePacketId: "packet-1",
+        question, files: ["src/service.ts"], symbols: ["sync"], reason: "The outcome depends on concurrent calls."
+      }
+    });
+    const hint = { question, files: ["src/service.ts"], symbols: ["sync"], suggestedLenses: [],
+      projectedSkillIds: [], reason: "The outcome depends on concurrent calls.", confidence: "medium" as const };
+    const result = await dedupeRankAndComposeReview({
+      verified: [promoted],
+      verdicts: [{
+        candidateId: promoted.id, verdict: "revise", requiredEvidencePresent: true, falsePositiveRisk: "low",
+        reason: "The exported sync calls do not serialize their writes.",
+        proofAssessment: { status: "established", evidence: "Both sync functions write sharedTemp without a mutex.", assumptions: [] }
+      }]
+    }, fakePlan(), fakeResolved(), fakeCoverage(), defaultConfig, nullTelemetry(), {
+      promptBuilder: fakePromptBuilder(), diff, packets: [fakePacket(hunk.id)],
+      packetResults: [{ packetId: "packet-1", lenses: [], findings: [promoted], uncertainties: [], status: "completed",
+        followUpHints: [hint, { ...hint, question: stale }] }],
+      runner: { runStructured: async <T>(req: LlmStructuredRequest<T>) => {
+        const inventory = extractAttentionInventory(req.prompt);
+        const linked = inventory.concerns.find(item => item.question === question)!;
+        const distinct = inventory.concerns.find(item => item.question === stale)!;
+        const evidence = inventory.evidence.filter(item => item.promotedFromConcern === linked.id);
+        expect(evidence.map(item => item.id)).toEqual(["attention/promoted-write/proofAssessment"]);
+        expect(linked.promotedEvidenceRefs).toEqual(["promoted-write/evidence/changedCode"]);
+        expect(distinct.promotedEvidenceRefs).toBeUndefined();
+        expect(inventory.evidence.some(item => item.promotedFromConcern === distinct.id)).toBe(false);
+        return resolvingComposerRunner([promoted], evidence[0]!.id, distinct.id).runStructured(req);
+      } }
+    });
+    expect(result.noFindings).toBe(suppress);
+    expect(result.needsHumanAttention.some(note => note.question.includes(stale))).toBe(true);
+    expect(result.needsHumanAttention.some(note => note.question.includes(question))).toBe(suppress);
+  });
+
   it("does not send a conclusively refuted promoted question to the reader", async () => {
     const diff = parseDiff(DIFF);
     const question = "Does the changed handler reject a missing token?";
@@ -941,12 +988,15 @@ describe("suppressed findings preserve their source concerns (#52)", () => {
   });
 });
 
-function extractAttentionInventory(prompt: string): { concerns: Array<{ id: string; question: string }> } {
+function extractAttentionInventory(prompt: string): {
+  concerns: Array<{ id: string; question: string; promotedEvidenceRefs?: string[] }>;
+  evidence: Array<{ id: string; promotedFromConcern?: string }>;
+} {
   const match = /(`{4,})untrusted-data label=attention-reconciliation\n([\s\S]*?)\n\1/u.exec(prompt);
   if (!match?.[2]) {
     throw new Error("missing attention-reconciliation block in prompt");
   }
-  return JSON.parse(match[2]) as { concerns: Array<{ id: string; question: string }> };
+  return JSON.parse(match[2]);
 }
 
 function extractFirstConcernId(prompt: string): string {
@@ -957,7 +1007,7 @@ function extractFirstConcernId(prompt: string): string {
   return first.id;
 }
 
-function resolvingComposerRunner(findings: CandidateFinding[], supportingRef: string): LlmRunner {
+function resolvingComposerRunner(findings: CandidateFinding[], supportingRef: string, unresolvedConcernId?: string): LlmRunner {
   return {
     runStructured: async <T>(req: LlmStructuredRequest<T>) => {
       const concernId = extractFirstConcernId(req.prompt);
@@ -977,7 +1027,10 @@ function resolvingComposerRunner(findings: CandidateFinding[], supportingRef: st
           disposition: "resolved" as const,
           supportingRefs: [supportingRef],
           rationale: "Supported by verified evidence."
-        }]
+        }, ...(unresolvedConcernId ? [{
+          concernId: unresolvedConcernId, disposition: "unresolved" as const, supportingRefs: [],
+          rationale: "Concurrent writes do not establish listing freshness."
+        }] : [])]
       };
       expect(req.validateSubmit?.(response as T)?.ok).toBe(true);
       return response as T;
