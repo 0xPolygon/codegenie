@@ -45,6 +45,10 @@ describe("development eval entry point", () => {
       const head = git(source, "rev-parse", "HEAD");
       const script = `import {prepareTarget} from ${JSON.stringify(caseModule)}; prepareTarget(...process.argv.slice(1));`;
       const invoke = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${source}`, base, head], { stdio: "pipe" });
+      const badTarget = path.join(tmp, "bad-parent");
+      expect(() => execFileSync("node", ["--input-type=module", "-e", script, badTarget, `file://${source}`, head, head], { stdio: "pipe" })).toThrow();
+      expect(existsSync(badTarget)).toBe(false);
+      expect(readdirSync(tmp).filter((name) => name.startsWith(".bad-parent-staging-"))).toEqual([]);
       const failing = () => execFileSync("node", ["--input-type=module", "-e", script, target, `file://${tmp}/missing`, base, head], { stdio: "pipe" });
       expect(failing).toThrow();
       expect(existsSync(target)).toBe(false);
