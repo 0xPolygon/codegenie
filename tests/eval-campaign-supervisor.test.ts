@@ -9,6 +9,7 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare('INSERT INTO worker_claim VALUES(?,?,?)').run(slot, number, 'a'.repeat(64));
 function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void }) {
   ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 50 });
   ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 100 });
@@ -30,10 +31,11 @@ describe('campaign admission custody', () => {
       const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       const yes = () => true, first = digest('first'), proof = digest('proof'), args = { ledger, evidenceFiles: {}, verifyReceipt: yes, verifyRetry: yes };
       supervisor.begin('one', args);
+      claim(supervisor, 'one', 1);
       prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
       supervisor.sealFailure('one', 1, first, { verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
       supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
-      supervisor.begin('one', args); supervisor.seal('one', 2, digest('success'), yes, yes, ledger);
+      supervisor.begin('one', args); claim(supervisor, 'one', 2); supervisor.seal('one', 2, digest('success'), yes, yes, ledger);
       supervisor.close(); supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
       realLedger.db.prepare('DELETE FROM health_receipt WHERE physical_id=?').run('retry-probe');
       expect(() => supervisor.begin('two', args)).toThrow('retry probe');
@@ -53,10 +55,12 @@ describe('campaign admission custody', () => {
       const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       const yes = () => true, args = { ledger, evidenceFiles: {}, verifyReceipt: yes, verifyRetry: yes };
       supervisor.begin('one', args);
+      claim(supervisor, 'one', 1);
       prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
       supervisor.sealFailure('one', 1, digest('first'), { verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
       supervisor.authorizeRetry('one', 1, digest('proof'), { ledger, retryProbeId: 'retry-probe', verifyReceipt: yes, verifyFailure: yes, verifyRetry: yes });
       supervisor.begin('one', args);
+      claim(supervisor, 'one', 2);
       realLedger.reservePhysical({ id: 'one/attempt-02/mc-1/physical-1', logicalId: 'one/attempt-02/mc-1', kind: 'initial', provider: 'openrouter' });
       supervisor.reconcile('one', 2, { ledger, verifyWorkerExited: yes, findTerminalReceipt: () => null, sealInterrupted: () => digest('second'), verifyReceipt: yes, verifyRetry: yes });
       expect(supervisor.db.prepare('SELECT state FROM outcome').get()).toEqual({ state: 'excluded' });
@@ -75,6 +79,7 @@ describe('campaign admission custody', () => {
       const verifyReceipt = vi.fn(() => true), verifyFailure = vi.fn(() => true), verifyRetry = vi.fn(() => true);
       const args = { ledger, evidenceFiles: {}, verifyReceipt, verifyRetry }, first = digest('first'), second = digest('second'), proof = digest('proof');
       expect(supervisor.begin('one', args)).toMatchObject({ attempt: 1 });
+      claim(supervisor, 'one', 1);
       prepareProbe(realLedger, 'old-probe', 'admission', 10); prepareProbe(realLedger, 'early-retry', 'retry', 20); prepareFailure(realLedger); prepareProbe(realLedger, 'retry-probe', 'retry', 200);
       supervisor.sealFailure('one', 1, first, { verifyReceipt, verifyFailure, verifyRetry });
       expect(() => supervisor.begin('one', args)).toThrow('retry authorization');
@@ -83,6 +88,7 @@ describe('campaign admission custody', () => {
       expect(() => supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt, verifyFailure, verifyRetry: async () => false })).toThrow('retry evidence');
       supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt, verifyFailure, verifyRetry });
       expect(supervisor.begin('one', args)).toMatchObject({ attempt: 2, attemptPrefix: 'one/attempt-02' });
+      claim(supervisor, 'one', 2);
       const config = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-02', ledgerBinding: 'b' }));
       expect(supervisor.verifyWorkerBinding('one', 2, config, digest(config))).toBe(true);
       const wrongConfig = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-01', ledgerBinding: 'b' }));
@@ -103,6 +109,7 @@ describe('campaign admission custody', () => {
       const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) });
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       supervisor.db.prepare("INSERT INTO attempt VALUES('one',1,'started',NULL)").run();
+      claim(supervisor, 'one', 1);
       ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter' });
       const receiptHash = digest('interrupted');
       const sealInterrupted = vi.fn(() => receiptHash), verifyReceipt = vi.fn(() => true);
@@ -142,6 +149,7 @@ describe('campaign admission custody', () => {
       expect(supervisor.reconcile('one', 1, { ledger, verifyWorkerExited: () => true, findTerminalReceipt: () => null })).toEqual({ state: 'no_start' });
       expect(supervisor.noStartCount('one')).toBe(1);
       expect(supervisor.begin('one', args)).toMatchObject({ action: 'started', attempt: 2, attemptPrefix: 'one/attempt-02' });
+      claim(supervisor, 'one', 2);
       expect(() => supervisor.seal('one', 2, digest('receipt'), async () => false)).toThrow('receipt');
       expect(() => supervisor.begin('one', args)).toThrow('requires reconciliation');
       supervisor.seal('one', 2, digest('receipt'), verifyReceipt);

@@ -82,11 +82,13 @@ export class CampaignSupervisor {
     for (const slot of this.slots.slice(0, rows.length)) {
       const row = byId.get(slot.id);
       const attempt = this.db.prepare('SELECT state,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no=?').get(row.slot_id, row.attempt_no);
-      if (!attempt || attempt.receipt_sha256 !== row.receipt_sha256 || verifyReceipt(row.slot_id, row.attempt_no, row.receipt_sha256) !== true) throw new Error('attempt receipt missing or changed');
+      const claim = this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(row.slot_id, row.attempt_no);
+      if (!attempt || !claim || attempt.receipt_sha256 !== row.receipt_sha256 || verifyReceipt(row.slot_id, row.attempt_no, row.receipt_sha256) !== true) throw new Error('attempt receipt missing or changed');
       const priorFailures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no<? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slot.id, row.attempt_no);
       if (priorFailures.length) {
         const auth = this.db.prepare('SELECT * FROM retry_authorization WHERE slot_id=?').get(slot.id);
-        if (priorFailures.length !== 1 || verifyReceipt(slot.id, priorFailures[0].attempt_no, priorFailures[0].receipt_sha256) !== true ||
+        if (priorFailures.length !== 1 || !this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slot.id, priorFailures[0].attempt_no) ||
+            verifyReceipt(slot.id, priorFailures[0].attempt_no, priorFailures[0].receipt_sha256) !== true ||
             !auth || auth.attempt_no !== priorFailures[0].attempt_no || auth.failure_sha256 !== priorFailures[0].receipt_sha256 ||
             typeof verifyRetry !== 'function' || verifyRetry(slot.id, auth.attempt_no, auth.failure_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
         this.assertRetryProbe(ledger, slot.id, auth.attempt_no, auth.failure_sha256, auth.probe_id);
@@ -169,6 +171,7 @@ export class CampaignSupervisor {
         this.db.prepare("UPDATE attempt SET state='no_start' WHERE slot_id=? AND attempt_no=?").run(slotId, attemptNo);
         return { state: 'no_start' };
       }
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('physical start lacks worker claim');
       if (typeof sealInterrupted !== 'function' || typeof verifyReceipt !== 'function') throw new Error('interrupted attempt receipt required');
       const hash = sealInterrupted(slotId, attemptNo, physical);
       if (!isHash(hash) || verifyReceipt(slotId, attemptNo, hash) !== true) throw new Error('interrupted attempt receipt missing or changed');
@@ -207,6 +210,7 @@ export class CampaignSupervisor {
     if (!isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || typeof verifyFailure !== 'function' ||
         verifyReceipt(slotId, attemptNo, receiptSHA256) !== true || verifyFailure(slotId, attemptNo, receiptSHA256) !== true) throw new Error('failure evidence missing or changed');
     this.transaction(() => {
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length > 1) throw new Error('retry limit exhausted');
       if (failures.length === 1) {
@@ -228,6 +232,7 @@ export class CampaignSupervisor {
   seal(slotId, attemptNo, receiptSHA256, verifyReceipt, verifyRetry, ledger) {
     if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || !isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || verifyReceipt(slotId, attemptNo, receiptSHA256) !== true) throw new Error('attempt receipt missing or changed');
     this.transaction(() => {
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length) {
         const first = failures[0], auth = this.db.prepare('SELECT * FROM retry_authorization WHERE slot_id=?').get(slotId);
