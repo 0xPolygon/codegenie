@@ -2,7 +2,20 @@
 
 ## 0.9.7
 
-- `review.assignedEffects` was removed (it was an experimental opt-in, off by default). Configs that set it now fail validation with an unknown-key error. Delete the key.
+### Fixed
+
+- `search_files` can suggest a corrected call to search for the exact text when a regular expression fails to parse. [#454](https://github.com/0xPolygon/codegenie/issues/454)
+- A confirmed provider outage ends the review early when a planner, packet review, or verifier call exhausts its retry limit. The CLI and GitHub Action name the provider and model and include the redacted provider message when available. Final composition retains its deterministic fallback. [#459](https://github.com/0xPolygon/codegenie/issues/459)
+- Codegenie classifies explicit content-policy errors in HTTP 200 streams across providers and policy refusals detected in OpenRouter HTTP 5xx responses as `provider_policy_block`. These requests stop retrying, and Codegenie records the upstream provider when OpenRouter reports it. [#348](https://github.com/0xPolygon/codegenie/issues/348)
+
+### Changed
+
+- Tool-argument whitespace guard diagnostics count whitespace by its position relative to JSON strings. The guard still enforces the same limit. [#456](https://github.com/0xPolygon/codegenie/issues/456)
+- The development-only eval runner aliases registered hunk IDs in blind-sheet prose using a consistent alias within each sheet. The npm package excludes `evals/`. [#462](https://github.com/0xPolygon/codegenie/issues/462)
+
+### Removed
+
+- `review.assignedEffects` was removed (it was an experimental opt-in, off by default). Configs that set it now fail validation with an unknown-key error. Delete the key. [#464](https://github.com/0xPolygon/codegenie/issues/464)
 
 ## 0.9.6
 
