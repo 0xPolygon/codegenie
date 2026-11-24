@@ -28,5 +28,9 @@ describe('blind grading projection', () => {
   });
   it('refuses malformed or absolute source locators', () => {
     expect(() => projectBlindSheet({ id: 'a'.repeat(24), caseId: 'x', outcome: 'completed_full', key: Buffer.alloc(32), candidates: [{ id: 'candidate-1', path: '/private/file' }], promotion: { decisions: [] }, verification: [], finalReview: {} })).toThrow('source locator');
+    const base = { id: 'a'.repeat(24), caseId: 'x', outcome: 'completed_full', key: Buffer.alloc(32), candidates: [{ id: 'candidate-1', path: 'src/file.ts' }], promotion: { decisions: [] }, verification: [], finalReview: {} };
+    expect(projectBlindSheet(base).discovery.findings[0].path).toBe('src/file.ts');
+    expect(() => projectBlindSheet({ ...base, candidates: [{ id: 'candidate-1', path: 'C:/Users/alice/private.ts' }] })).toThrow('source locator');
+    expect(() => projectBlindSheet({ ...base, promotion: { decisions: [{ question: 'q', files: ['d:/private/file'], promoted: false }] } })).toThrow('source locator');
   });
 });

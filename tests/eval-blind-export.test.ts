@@ -24,6 +24,7 @@ it('writes one stable, private mapping and receipt-selected blind sheets', () =>
     expect(all).not.toMatch(/secret-treatment-slot|raw-id-123|"arm"|"draw"|"score"|cccccccc/);
     expect(() => exportFirstLock({ ...args, selections: [] })).toThrow('selection changed');
     expect(() => exportFirstLock({ ...args, mappingFile: path.join(args.outputDirectory, 'mapping') })).toThrow('overlaps');
+    expect(() => exportFirstLock({ ...args, selections: [{ ...args.selections[0], sourceLocator: 'C:/Users/alice/private' }] })).toThrow('selected review');
     expect(readdirSync(args.outputDirectory)).toHaveLength(2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

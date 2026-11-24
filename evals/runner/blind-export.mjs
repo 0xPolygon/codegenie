@@ -37,7 +37,7 @@ function opaque(key, binding, item) {
   return createHmac('sha256', key).update(JSON.stringify([binding, item.slotId, item.attempt, item.receiptSHA256])).digest('hex').slice(0, 24);
 }
 function neutral(value) {
-  return typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !value.includes('\\') &&
+  return typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !/^[a-z]:/iu.test(value) && !value.includes('\\') &&
     !value.split('/').includes('..') && !/(?:assigned.?effects|openrouter|openai|\b(?:control|treatment)\b|\barm[-_ ]|\bdraw[-_ ]|attempt[-_ ]|\bp7\.)/iu.test(value);
 }
 

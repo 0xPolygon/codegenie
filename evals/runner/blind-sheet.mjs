@@ -12,7 +12,7 @@ const pick = (value, keys) => Object.fromEntries(keys.filter((key) => value?.[ke
   if (item !== null && !['string', 'number', 'boolean'].includes(typeof item) && !(Array.isArray(item) && item.every((entry) => typeof entry === 'string'))) throw new Error('invalid grading field');
   return [key, item];
 }));
-const relative = (value) => typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !value.includes('\\') && !value.split('/').includes('..');
+const relative = (value) => typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !/^[a-z]:/iu.test(value) && !value.includes('\\') && !value.split('/').includes('..');
 const anchor = (value) => value && typeof value === 'object' ? pick(value, ['path', 'line', 'side']) : undefined;
 function visible(value) {
   if (typeof value !== 'string') return value;
