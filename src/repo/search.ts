@@ -89,7 +89,7 @@ type RawSearchOptions = SearchOptions & {
 
 const DEFAULT_MAX_RESULTS = 50;
 const HARD_MAX_RESULTS = 200;
-const MAX_QUERY_CHARS = 500;
+export const MAX_QUERY_CHARS = 500;
 const MAX_MATCH_TEXT_CHARS = 500;
 const MAX_TOTAL_RESULT_CHARS = 16_000;
 
@@ -118,7 +118,7 @@ export class SearchService {
       ...(startAt ? { startAt } : {})
     })).catch(error => {
       if (error instanceof CodegenieError && error.code === "invalid_args" && options.mode === "regex") {
-        throw new CodegenieError("invalid_args", error.message + " Use mode=literal to search for source text.", { cause: error });
+        throw new CodegenieError("invalid_args", error.message + " Use mode=literal to search for source text.", { cause: error, ...(error.context ? { context: error.context } : {}) });
       }
       throw error;
     });
@@ -409,7 +409,7 @@ function precheckEreGroups(query: string, literalModeAvailable = false): void {
   }
   if (openGroups > 0) {
     const literalHint = literalModeAvailable ? " Use mode=literal to search for source text." : "";
-    throw new CodegenieError("invalid_args", invalidEreMessage("unclosed parenthesis group") + literalHint);
+    throw new CodegenieError("invalid_args", invalidEreMessage("unclosed parenthesis group") + literalHint, { context: { reason: "invalid_search_regex" } });
   }
 }
 

@@ -6,13 +6,14 @@ import type { RepositoryTools, ReviewToolSurface, SearchPage, SearchPageOptions,
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
-import { hasSearchContext, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
+import { hasSearchContext, MAX_QUERY_CHARS, SearchBudgetError, searchContextPosition, searchDeliveryMeta } from "../repo/search.js";
 import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 import { buildReadDefinitionTool } from "./definition-tool.js";
 import type { ReadChangeInput } from "../repo/read-change.js";
 import { LineRangeSchema } from "./line-range-schema.js";
 import { stripCredentialsAtSink } from "../telemetry/redaction.js";
+import { isDeepStrictEqual } from "node:util";
 
 const SourceSelectorSchema = Type.Optional(
   Type.Object(
@@ -125,11 +126,33 @@ function correctedSourceCallHint(parameters: ToolDefinition["parameters"], corre
   return json.length <= 1_000 && !json.includes("Received arguments:") ? `. Corrected call arguments: ${json}` : "";
 }
 
+function literalSearchRetryHint(error: CodegenieError, parameters: ToolDefinition["parameters"], args: unknown): string {
+  if (error.code !== "invalid_args" || error.context?.reason !== "invalid_search_regex" || !args || typeof args !== "object" || Array.isArray(args)) return "";
+  const input = args as Record<string, unknown>, query = input.query;
+  // A cursor is bound to the original query, while Git interprets newlines as
+  // separate patterns. Neither can safely be presented as one literal retry.
+  if (typeof query !== "string" || /[\r\n\0]/u.test(query) || input.cursor !== undefined || input.mode === "literal" || !isDeepStrictEqual(stripCredentialsAtSink(input), input)) return "";
+  const escaped = query.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
+  const corrected = { ...input, query: escaped };
+  if (escaped.length > MAX_QUERY_CHARS || !isDeepStrictEqual(stripCredentialsAtSink(corrected), corrected)) return "";
+  const hint = correctedSourceCallHint(parameters, corrected);
+  return hint ? `. To search for this exact text${hint}` : "";
+}
+
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
   assertRepositoryToolSurfaceAvailable(options.toolSurface);
   if (options.toolSurface === "six") {
     return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools, options));
   }
+  const searchParameters = Type.Object({
+    query: Type.String({ minLength: 1, maxLength: MAX_QUERY_CHARS }),
+    pathGlob: Type.Optional(Type.String({ minLength: 1 })),
+    contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
+    maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+    caseSensitive: Type.Optional(Type.Boolean()),
+    source: SourceSelectorSchema,
+    ...(tools.searchFilesPage ? { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) } : {})
+  }, { additionalProperties: false });
   const definitions: ToolDefinition[] = [
     buildBoundedReadRangeTool(tools),
     {
@@ -281,18 +304,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       name: "search_files",
       description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]. Escape literal punctuation, for example name\\( or return \\{. No lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence."
         + (tools.searchFilesPage ? " Continue with the returned cursor and the same search arguments." : ""),
-      parameters: Type.Object(
-        {
-          query: Type.String({ minLength: 1, maxLength: 500 }),
-          pathGlob: Type.Optional(Type.String({ minLength: 1 })),
-          contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
-          maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-          caseSensitive: Type.Optional(Type.Boolean()),
-          source: SourceSelectorSchema,
-          ...(tools.searchFilesPage ? { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) } : {})
-        },
-        { additionalProperties: false }
-      ),
+      parameters: searchParameters,
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as SearchPageOptions & { query: string };
         if (tools.searchFilesPage) {
@@ -308,7 +320,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           source: input.source
         })));
         return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
-      })
+      }, error => literalSearchRetryHint(error, searchParameters, args))
     },
     {
       name: "find_symbol_mentions",
@@ -464,7 +476,7 @@ export function buildSixReadChangeTool(tools: RepositoryTools, options: Reposito
   };
 }
 
-async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
+async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionResult>, hint?: (error: CodegenieError) => string): Promise<ToolExecutionResult> {
   try {
     throwIfAborted(signal);
     return await Promise.race([run(), abortPromise(signal)]);
@@ -473,8 +485,9 @@ async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionRes
       throw error;
     }
     if (isCodegenieError(error)) {
+      const message = error.context?.reason === "invalid_search_regex" ? stripCredentialsAtSink(error.message) : error.message;
       return {
-        text: `tool error: ${error.code}: ${error.message}`,
+        text: `tool error: ${error.code}: ${message}${hint?.(error) ?? ""}`,
         isError: true,
         errorCode: error.code,
         meta: error instanceof SearchBudgetError ? error.meta : { backend: "text", precision: "text", degraded: true, degradationReason: error.code }
@@ -658,23 +671,24 @@ function renderSourceFileMap(map: SourceFileMap): ToolExecutionResult {
 }
 
 export function buildSixSearchTool(tools: RepositoryTools): ToolDefinition {
+  const parameters = Type.Object({
+    query: Type.String({ minLength: 1, maxLength: MAX_QUERY_CHARS }),
+    mode: Type.Optional(Type.Union([Type.Literal("regex"), Type.Literal("literal")])),
+    pathGlob: Type.Optional(Type.String({ minLength: 1 })),
+    source: SourceSelectorSchema,
+    contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
+    cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
+  }, { additionalProperties: false });
   return {
     name: "search_files",
     description: 'Search pinned repository source. Pass source as {"kind":"head"} (default) or {"kind":"base"}. Pass pathGlob, mode and contextMode at the top level beside source. Use mode "regex" for POSIX ERE (default, e.g. "track\\(") or mode "literal" for source text (e.g. "track("). Continue with the returned cursor and the same query, mode, source, pathGlob and contextMode.',
-    parameters: Type.Object({
-      query: Type.String({ minLength: 1, maxLength: 500 }),
-      mode: Type.Optional(Type.Union([Type.Literal("regex"), Type.Literal("literal")])),
-      pathGlob: Type.Optional(Type.String({ minLength: 1 })),
-      source: SourceSelectorSchema,
-      contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 }))
-    }, { additionalProperties: false }),
+    parameters,
     execute: (args, signal) => wrapTool(signal, async () => {
       const { query, ...options } = args as SearchPageOptions & { query: string };
       if (!tools.searchFilesPage) throw new CodegenieError("config_error", "This repository cannot produce search pages.");
       const page = await runWithoutFacadeRecording(tools, () => tools.searchFilesPage!(query, { ...options, mode: options.mode ?? "regex" }));
       return renderSearchPage(page, options.source?.kind ?? "head");
-    })
+    }, error => literalSearchRetryHint(error, parameters, args))
   };
 }
 
