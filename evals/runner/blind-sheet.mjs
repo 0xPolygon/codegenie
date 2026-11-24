@@ -44,7 +44,7 @@ export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, 
     return [hunk, alias(key, id, 'h', hunk)];
   }));
   const alternatives = [...hunkAliases.keys()].sort((a, b) => b.length - a.length).map((value) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
-  const hunkPattern = alternatives.length ? new RegExp(`(?<![A-Za-z0-9_-])(?:${alternatives.join('|')})(?![A-Za-z0-9_-])`, 'gu') : null;
+  const hunkPattern = alternatives.length ? new RegExp(`(?<![\\p{L}\\p{N}_-])(?:${alternatives.join('|')})(?![\\p{L}\\p{N}_-])`, 'gu') : null;
   const ids = new Map();
   const gather = (v, field) => { if (Array.isArray(v)) { for (const item of v) gather(item, field); return; } if (v && typeof v === 'object') { for (const [k, x] of Object.entries(v)) gather(x, k); return; }
     if (typeof v === 'string' && ['id', 'candidateId', 'mergedCandidateIds', 'packetId'].includes(field) && !(field === 'id' && v === id)) ids.set(v, alias(key, id, field === 'packetId' ? 'p' : 'f', v)); };

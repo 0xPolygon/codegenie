@@ -145,7 +145,7 @@ it('aliases registered hunks consistently across projected prose and separately 
   // @ts-expect-error Development-only ESM has no emitted types.
   const { projectBlindSheet } = await import('../evals/runner/blind-sheet.mjs');
   const key = Buffer.alloc(32, 7), registered = 'abcd1234', punct = 'test.h+01';
-  const text = `(${registered}), ${punct}. feedcafe _${registered} ${registered}-part testXhh01`;
+  const text = `(${registered}), ${punct}. feedcafe _${registered} ${registered}-part testXhh01 é${registered}é`;
   const project = (id: string) => projectBlindSheet({ id, key, hunkIdentifiers: [registered, punct], caseId: 'synthetic', outcome: 'completed_full',
     candidates: [{ id: 'candidate-001', failureMode: text, evidence: { changedCode: text } }],
     promotion: { decisions: [{ packetId: 'packet-001', question: text }] },
@@ -153,7 +153,7 @@ it('aliases registered hunks consistently across projected prose and separately 
     finalReview: { summary: text, findings: [{ id: 'finding-001', finalBody: text }], summaryOnlyFindings: [{ id: 'finding-002', finalBody: text }], needsHumanAttention: [{ question: text }] } });
   const alias = (id: string, value: string) => 'h-' + createHmac('sha256', key).update(`${id}\0h\0${value}`).digest('hex').slice(0, 16);
   for (const id of ['a'.repeat(24), 'b'.repeat(24)]) {
-    const p = project(id), expected = `(${alias(id, registered)}), ${alias(id, punct)}. feedcafe _${registered} ${registered}-part testXhh01`;
+    const p = project(id), expected = `(${alias(id, registered)}), ${alias(id, punct)}. feedcafe _${registered} ${registered}-part testXhh01 é${registered}é`;
     expect([p.discovery.findings[0].failureMode, p.discovery.findings[0].changedCode, p.discovery.questions[0].question,
       p.verification[0].reason, p.published.summary, p.published.findings[0].visibleBody,
       p.published.summaryOnly[0].visibleBody, p.published.attentionQuestions[0].question]).toEqual(Array(8).fill(expected));
@@ -180,5 +180,9 @@ it('exports registered hunk prose and refuses residual identifiers before publis
     const bad = { ...selection, evidence: { ...evidence, candidates: [{ id: 'candidate', failureMode: `prefix${hunk}` }] } };
     expect(() => exportFirstLock({ ...args, outputDirectory: badOutput, mappingFile: badMapping, selections: [bad] })).toThrow('private identifier');
     expect(() => readdirSync(badOutput)).toThrow(); expect(() => readFileSync(badMapping)).toThrow();
+    const unicodeOutput = path.join(dir, 'unicode'), unicodeMapping = path.join(dir, 'private', 'unicode.json');
+    const unicode = { ...selection, evidence: { ...evidence, candidates: [{ id: 'candidate', failureMode: `é${hunk}é` }] } };
+    expect(() => exportFirstLock({ ...args, outputDirectory: unicodeOutput, mappingFile: unicodeMapping, selections: [unicode] })).toThrow('private identifier');
+    expect(() => readdirSync(unicodeOutput)).toThrow(); expect(() => readFileSync(unicodeMapping)).toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
