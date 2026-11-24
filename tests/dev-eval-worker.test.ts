@@ -121,10 +121,10 @@ describe("development eval worker", () => {
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
     const supervisorPath = path.join(dir, "supervisor.sqlite"), workerToken = "b".repeat(64), workerConfigSHA256 = "c".repeat(64);
     const supervisorDb = new DatabaseSync(supervisorPath);
-    supervisorDb.exec("CREATE TABLE campaign(binding TEXT); INSERT INTO campaign VALUES('synthetic'); CREATE TABLE worker_claim(slot_id TEXT,attempt_no INTEGER,config_sha256 TEXT,token_sha256 TEXT,activated INTEGER); CREATE TABLE attempt(slot_id TEXT,attempt_no INTEGER,state TEXT); INSERT INTO attempt VALUES('other-slot',1,'started'),('slot',1,'started')");
+    supervisorDb.exec("CREATE TABLE campaign(binding TEXT); INSERT INTO campaign VALUES('synthetic'); CREATE TABLE worker_claim(slot_id TEXT,attempt_no INTEGER,config_sha256 TEXT,token_sha256 TEXT,activated INTEGER,spawn_state TEXT); CREATE TABLE attempt(slot_id TEXT,attempt_no INTEGER,state TEXT); INSERT INTO attempt VALUES('other-slot',1,'started'),('slot',1,'started')");
     const tokenHash = createHash("sha256").update(workerToken).digest("hex");
-    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0)").run("other-slot", 1, workerConfigSHA256, tokenHash);
-    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0)").run("slot", 1, workerConfigSHA256, tokenHash); supervisorDb.close();
+    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0,'started')").run("other-slot", 1, workerConfigSHA256, tokenHash);
+    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0,'started')").run("slot", 1, workerConfigSHA256, tokenHash); supervisorDb.close();
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));
     const originalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", originalFetch);
     try {

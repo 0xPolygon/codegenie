@@ -27,7 +27,7 @@ function activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerCo
     db.exec('BEGIN IMMEDIATE');
     try {
       const campaign = db.prepare('SELECT binding FROM campaign').get();
-      const result = campaign?.binding === ledgerBinding ? db.prepare("UPDATE worker_claim SET activated=1 WHERE slot_id=? AND attempt_no=? AND config_sha256=? AND token_sha256=? AND activated=0 AND EXISTS (SELECT 1 FROM attempt WHERE attempt.slot_id=worker_claim.slot_id AND attempt.attempt_no=worker_claim.attempt_no AND attempt.state='started')").run(
+      const result = campaign?.binding === ledgerBinding ? db.prepare("UPDATE worker_claim SET activated=1 WHERE slot_id=? AND attempt_no=? AND config_sha256=? AND token_sha256=? AND activated=0 AND spawn_state='started' AND EXISTS (SELECT 1 FROM attempt WHERE attempt.slot_id=worker_claim.slot_id AND attempt.attempt_no=worker_claim.attempt_no AND attempt.state='started')").run(
         match[1], Number(match[2]), workerConfigSHA256, createHash('sha256').update(workerToken).digest('hex')) : { changes: 0 };
       db.exec('COMMIT'); return result.changes === 1;
     } catch (error) { db.exec('ROLLBACK'); throw error; }

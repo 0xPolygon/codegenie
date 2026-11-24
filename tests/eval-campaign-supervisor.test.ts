@@ -9,7 +9,7 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare('INSERT INTO worker_claim VALUES(?,?,?,?,?)').run(slot, number, 'a'.repeat(64), 'b'.repeat(64), 1);
+const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare("INSERT INTO worker_claim(slot_id,attempt_no,config_sha256,token_sha256,activated,spawn_state) VALUES(?,?,?,?,?,'exited')").run(slot, number, 'a'.repeat(64), 'b'.repeat(64), 1);
 function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void }) {
   ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 50 });
   ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 100 });

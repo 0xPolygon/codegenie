@@ -12,7 +12,7 @@ import { spawnAttempt } from '../evals/runner/spawn-worker.mjs';
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 
 describe('campaign worker spawn', () => {
-  it.each(['typed-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout'])('handles %s without accepting foreign artifacts', async (scenario) => {
+  it.each(['typed-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout', 'spawn-error', 'custody-error'])('handles %s without accepting foreign artifacts', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-spawn-failure-'));
     try {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: path.join(process.cwd(), 'evals/fixtures'), caseName: 'fixture-core-lens', outputDir: path.join(dir, 'out') }));
@@ -26,8 +26,9 @@ describe('campaign worker spawn', () => {
       const kill = vi.fn();
       let notifySpawn = () => {}; const spawned = new Promise<void>((resolve) => { notifySpawn = resolve; });
       const spawnImpl = () => {
-        const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill(): void };
-        child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = kill;
+        if (scenario === 'spawn-error') throw new Error('synthetic spawn failure');
+        const child = new EventEmitter() as EventEmitter & { pid: number; stdin: PassThrough; stdout: PassThrough; kill(): void };
+        child.pid = process.pid; child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = kill;
         notifySpawn();
         if (scenario !== 'timeout') process.nextTick(() => {
           child.stdout.write(JSON.stringify(scenario === 'typed-failure' ? { error: 'binding_mismatch' } : scenario === 'operational-error'
@@ -38,15 +39,19 @@ describe('campaign worker spawn', () => {
         });
         return child;
       };
+      if (scenario === 'custody-error') vi.spyOn(supervisor, 'recordWorkerStart').mockImplementation(() => { throw new Error('synthetic custody failure'); });
       if (scenario === 'timeout') vi.useFakeTimers();
       const pending = spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config), spawnImpl });
       if (scenario === 'typed-failure') await expect(pending).resolves.toEqual({ status: 'worker_failed', error: 'binding_mismatch' });
       else if (scenario === 'operational-error') await expect(pending).resolves.toMatchObject({ status: 'error', error: 'provider_failure' });
       else if (scenario === 'foreign-output' || scenario === 'wrong-case') await expect(pending).rejects.toThrow('invalid worker result');
+      else if (scenario === 'spawn-error') { await expect(pending).rejects.toThrow('worker start failed'); expect(supervisor.workerExited('one', 1)).toBe(true); }
+      else if (scenario === 'custody-error') { await expect(pending).rejects.toThrow('requires reconciliation'); expect(kill).toHaveBeenCalledWith('SIGKILL'); expect(supervisor.workerExited('one', 1)).toBe(false); }
       else {
         const assertion = expect(pending).rejects.toThrow('timeout requires reconciliation');
         await spawned;
         await vi.advanceTimersByTimeAsync(3_000_000); await assertion; expect(kill).toHaveBeenCalledWith('SIGKILL');
+        expect(supervisor.workerExited('one', 1)).toBe(false);
       }
       expect(supervisor.db.prepare("SELECT state FROM attempt WHERE slot_id='one'").get()).toEqual({ state: 'started' }); supervisor.close();
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
@@ -60,11 +65,13 @@ describe('campaign worker spawn', () => {
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b', caseConfig: caseFile, caseConfigSHA256: digest(caseBytes), ledgerPath: path.join(dir, 'ledger'), limitMicros: 2_000_000, expectedCalls: [] };
       const bytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: base }] }));
       const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes: bytes, scheduleSHA256: digest(bytes) });
+      expect(supervisor.workerExited('one', 1)).toBe(false);
       const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: () => true });
       const config = Buffer.from(JSON.stringify({ ...base, attemptPrefix: 'one/attempt-01' })), file = path.join(dir, 'worker.json');
       writeFileSync(file, config);
       await expect(spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config) })).resolves.toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
+      expect(supervisor.workerExited('one', 1)).toBe(true);
       supervisor.close();
     } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
@@ -82,8 +89,8 @@ describe('campaign worker spawn', () => {
       const file = path.join(dir, 'worker.json'), wrong = Buffer.from(JSON.stringify({ ...base, attemptPrefix: 'one/attempt-02' }));
       writeFileSync(file, wrong);
       const spawnImpl = vi.fn(() => {
-        const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill(): void };
-        child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = () => {};
+        const child = new EventEmitter() as EventEmitter & { pid: number; stdin: PassThrough; stdout: PassThrough; kill(): void };
+        child.pid = process.pid; child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.kill = () => {};
         process.nextTick(() => { child.stdout.write(JSON.stringify({ caseName: 'fixture-core-lens', status: 'fail', runDir: path.join(dir, 'out/one/attempt-01/1') })); child.stdout.end(); child.emit('close', 0); });
         return child;
       });
