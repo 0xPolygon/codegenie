@@ -11,6 +11,8 @@ import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 import { spawnAttempt } from '../evals/runner/spawn-worker.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { createReceiptStore } from '../evals/runner/receipt.mjs';
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 
 describe('campaign worker spawn', () => {
@@ -81,17 +83,23 @@ describe('campaign worker spawn', () => {
       supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: () => true });
       const config = Buffer.from(JSON.stringify({ ...base, attemptPrefix: 'one/attempt-01' })), file = path.join(dir, 'worker.json');
       writeFileSync(file, config);
-      await expect(spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config) })).resolves.toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
+      const result = await spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config) });
+      expect(result).toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
+      const receipts = createReceiptStore({ directory: path.join(dir, 'receipts'), binding: 'b', runRootFor: (slot: string, attempt: number) => path.join(dir, 'out', slot, `attempt-${String(attempt).padStart(2, '0')}`) });
+      const receiptHash = receipts.seal('one', 1, result);
       expect(supervisor.workerExited('one', 1)).toBe(true);
       // Simulate a crash after the child exited but before the parent persisted close.
       supervisor.db.prepare("UPDATE worker_claim SET spawn_state='started' WHERE slot_id='one'").run(); supervisor.close();
       supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
       expect(supervisor.workerExited('one', 1)).toBe(true);
-      supervisor.recordWorkerExit('one', 1); supervisor.seal('one', 1, digest(Buffer.from('receipt')), () => true); supervisor.close();
+      supervisor.recordWorkerExit('one', 1); supervisor.seal('one', 1, receiptHash, receipts.verify); supervisor.close();
       supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
       supervisor.recordWorkerExit('one', 1);
       expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM outcome').get()).toEqual({ total: 1 });
       expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM attempt').get()).toEqual({ total: 1 });
+      expect(supervisor.checkedOutcomes(receipts.verify)).toHaveLength(1);
+      writeFileSync(path.join(result.runDir, 'run.json'), 'tampered');
+      expect(() => supervisor.checkedOutcomes(receipts.verify)).toThrow('receipt missing or changed');
       const campaign = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'b', limitMicros: 2_000_000 });
       expect(campaign.totals().starts).toBe(0); campaign.close(); supervisor.close();
     } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
