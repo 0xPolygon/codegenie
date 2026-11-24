@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.5
+
+### Repository tools
+
+- Source-selector descriptions show the supported object shapes and where to put filters. When a malformed call has an unambiguous correction, the `invalid_args` response includes the corrected call. This covers `find_definition` and `find_likely_tests` on the default surface and `find_usages` and `search_files` on the six-tool surface. [#425](https://github.com/0xPolygon/codegenie/issues/425)
+
+### Providers
+
+- Direct OpenAI Responses now declares tools at the top level and sends the selected reasoning effort on each request, matching the existing `openai-codex` workaround. ChatGPT sign-in already sent the selected effort and now declares tools at the top level too. [#431](https://github.com/0xPolygon/codegenie/issues/431) · [Pi #12464](https://github.com/earendil-works/pi/issues/12464) · [Removal tracker #432](https://github.com/0xPolygon/codegenie/issues/432)
+
+### Experimental review option
+
+- Set `review.assignedEffects = true` to try structured effect reporting for the changed hunks assigned to each review packet. The option defaults to off, and its effect on review quality is unmeasured. [#405](https://github.com/0xPolygon/codegenie/issues/405)
+
+### Development
+
+- Source checkouts include a development entry point under `evals/runner` for running one pinned public eval case. It is excluded from the npm package. [#429](https://github.com/0xPolygon/codegenie/pull/429)
+
 ## 0.9.4
 
 ### Repository tool fixes
