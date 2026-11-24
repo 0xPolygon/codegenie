@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_PATCH_CHARS, packPacketPatch } from "../src/pipeline/packet-patch.js";
+import { joinPacketText, packetText, truncatePacketText } from "../src/pipeline/packet-text.js";
 import { renderNumberedDiffLine } from "../src/repo/numbered-diff.js";
 import type { PacketLine } from "../src/types.js";
 
@@ -66,5 +67,33 @@ describe("packet patch packing", () => {
     expect(patch.lines.length).toBeGreaterThan(600);
     expect(patch.omittedChangedRanges?.new[0]).toEqual([1, 20]);
     expect(patch.contentWithLineNumbers.length).toBeLessThanOrEqual(MAX_PATCH_CHARS);
+  });
+
+  it("retreats only when an oversized row's cut splits a credential", () => {
+    const plain = "x".repeat(20_000);
+    const row = { kind: "add", newLine: 20, content: plain } satisfies PacketLine;
+    const before = packPacketPatch([row]);
+    const cut = plain.length - before.partialChangedLine!.omittedChars;
+    const credential = "sk-" + "A1b2".repeat(8);
+    for (const [start, end] of [[cut - 13, cut - 13], [cut, cut], [cut - credential.length, cut]] as const) {
+      const content = plain.slice(0, start - 1) + " " + credential + " " + plain.slice(start + credential.length + 1);
+      const after = packPacketPatch([{ ...row, content }]);
+      expect(after.partialChangedLine).toEqual({ side: "new", line: 20, totalChars: content.length, omittedChars: content.length - end });
+      expect(after.lines).toEqual([{ ...row, content: content.slice(0, end) + ` [... ${content.length - end} chars truncated ...]` }]);
+      expect(after.omittedChangedRanges).toEqual(before.omittedChangedRanges);
+      expect(after.boundaryRetreatChars).toBe(end === cut ? undefined : cut - end);
+      expect(after.decisionChars ?? after.contentWithLineNumbers.length).toBe(before.contentWithLineNumbers.length);
+    }
+  });
+
+  it("keeps nested cuts at the original selection boundary after retreating a leaf cut", () => {
+    const credential = "sk-" + "A1b2".repeat(8);
+    const first = truncatePacketText(packetText("before " + credential), 20, "!");
+    const second = packetText("visible follow-up source");
+    const joined = joinPacketText([first, second], "\n");
+    const packed = truncatePacketText(joined, 29, "!");
+    expect(packed.decisionText).toBe(first.decisionText + "\nvisible!");
+    expect(packed.text).toBe("before!\nvisible!");
+    expect(truncatePacketText(joined, 15, "!").text).toBe("before!");
   });
 });

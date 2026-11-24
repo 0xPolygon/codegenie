@@ -1,4 +1,5 @@
 import { renderNumberedDiffLine } from "../repo/numbered-diff.js";
+import { credentialSafeCut } from "../telemetry/redaction.js";
 import type { PacketHunk, PacketLine } from "../types.js";
 
 export const MAX_PATCH_CHARS = 12_000;
@@ -6,7 +7,10 @@ const CONTEXT_MARGIN = 2;
 const COMPACT_CUT_NOTICE = "[Changed rows omitted or clipped. See omittedChangedRanges for exact positions.]";
 
 type Patch = Pick<PacketHunk, "lines" | "contentWithLineNumbers" | "truncated" | "omittedLineCount" |
-  "omittedChangedLineCount" | "omittedChangedRanges" | "partialChangedLine">;
+  "omittedChangedLineCount" | "omittedChangedRanges" | "partialChangedLine"> & {
+    decisionChars?: number;
+    boundaryRetreatChars?: number;
+  };
 type ChangedRanges = NonNullable<Patch["omittedChangedRanges"]>;
 
 export function packPacketPatch(lines: PacketLine[]): Patch {
@@ -52,13 +56,21 @@ export function packPacketPatch(lines: PacketLine[]): Patch {
   const notice = (omittedChars: number) => `[${side} changed line ${line} is partial. ${omittedChars} of ${row.content.length} characters omitted.]`;
   let prefixChars = MAX_PATCH_CHARS - empty.length - sampleMarker.length - notice(row.content.length).length - 1;
   if (/[\uDC00-\uDFFF]/u.test(row.content.charAt(prefixChars))) prefixChars = Math.max(0, prefixChars - 1);
-  const omittedChars = row.content.length - prefixChars;
-  const clipped = { ...row, content: row.content.slice(0, prefixChars) + ` [... ${omittedChars} chars truncated ...]` };
+  const safeEnd = credentialSafeCut(row.content, prefixChars);
+  const omittedChars = row.content.length - safeEnd;
+  const renderClipped = (end: number) => ({ ...row,
+    content: row.content.slice(0, end) + ` [... ${row.content.length - end} chars truncated ...]` });
+  const clipped = renderClipped(safeEnd);
+  const renderPartial = (line: PacketLine, omitted: number) => [renderNumberedDiffLine(line), notice(omitted)].join("\n");
   return {
-    ...patchResult(lines, new Set(), [renderNumberedDiffLine(clipped), notice(omittedChars)].join("\n")),
+    ...patchResult(lines, new Set(), renderPartial(clipped, omittedChars)),
     lines: [clipped],
     omittedLineCount: lines.length - 1,
-    partialChangedLine: { side, line, omittedChars, totalChars: row.content.length }
+    partialChangedLine: { side, line, omittedChars, totalChars: row.content.length },
+    ...(safeEnd !== prefixChars ? {
+      decisionChars: renderPartial(renderClipped(prefixChars), row.content.length - prefixChars).length,
+      boundaryRetreatChars: prefixChars - safeEnd
+    } : {})
   };
 }
 

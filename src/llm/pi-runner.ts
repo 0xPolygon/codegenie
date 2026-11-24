@@ -29,7 +29,7 @@ import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../pr
 import { getCodegeniePiModels, splitProviderQualifiedModel } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
-import { redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
+import { credentialSafeCut, redactThenTruncate, stripCredentials, stripCredentialsAtSink, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage } from "../provider/provider-services.js";
@@ -3048,12 +3048,16 @@ function queueSchemaRepair(input: {
   // conversation replacement. Inspect raw arguments before cleanup loses keys.
   const rejectedSchema = input.rejectedSchema ?? input.request.schema;
   const properties = ((input.repairSchema ?? input.request.schema) as { properties?: Record<string, { type?: string; items?: { type?: string; enum?: unknown[] } }> }).properties;
+  let boundaryRetreatChars = 0;
   const feedback = {
     error: stripCredentials(error).slice(0, 1600),
     supplied: input.submitCalls.filter(isTrustedSubmitCall).slice(0, 1).map(call => ({
-      fields: Object.entries(call.arguments ?? {}).slice(0, 32).map(([key, value]) => ({
-        key: key.slice(0, 200), type: value === null ? "null" : Array.isArray(value) ? "array" : typeof value
-      })),
+      fields: Object.entries(call.arguments ?? {}).slice(0, 32).map(([key, value]) => {
+        const originalEnd = Math.min(key.length, 200);
+        const end = credentialSafeCut(key, originalEnd);
+        boundaryRetreatChars += originalEnd - end;
+        return { key: key.slice(0, end), type: value === null ? "null" : Array.isArray(value) ? "array" : typeof value };
+      }),
       issues: submissionIssues(rejectedSchema, call.arguments).slice(0, 16)
     })),
     omittedPermittedFieldCount: Math.max(0, Object.keys(properties ?? {}).length - 32),
@@ -3100,6 +3104,7 @@ function queueSchemaRepair(input: {
       invalidSubmitCallCount: input.submitCalls.length,
       extraToolNames: input.extraToolNames,
       repairPromptChars: content.length,
+      boundaryRetreatChars: boundaryRetreatChars || undefined,
       replaceConversation,
       candidateId: input.request.telemetryContext?.candidateId,
       error

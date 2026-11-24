@@ -1,7 +1,9 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { credentialSafeCut } from "../telemetry/redaction.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { MAX_PATCH_CHARS, packPacketPatch } from "./packet-patch.js";
+import { CONTEXT_CUT_MARKER, joinPacketText, packetText, truncatePacketText, type PacketText } from "./packet-text.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
 import type {
@@ -49,6 +51,7 @@ type PacketReviewContext = {
   prSummary: string;
   intentText?: string;
   intentSignals?: IntentSignals;
+  boundaryRetreats?: Array<{ site: string; boundaryRetreatChars: number }>;
 };
 
 type PlannedHunk = {
@@ -108,7 +111,7 @@ type PacketBuildMetrics = {
 };
 
 type RelationshipAttentionCandidate = {
-  note: string;
+  note: PacketText;
   sourceKind?: RelatedChangedContext["sourceKind"];
   relationshipStrength?: RelatedChangedContext["relationshipStrength"];
   relationshipSource?: RelatedChangedContext["relationshipSource"];
@@ -116,7 +119,7 @@ type RelationshipAttentionCandidate = {
 };
 
 type AttentionNoteSelection = {
-  notes: string[];
+  notes: PacketText[];
   plannerNoteCount: number;
   relationshipNoteCount: number;
   keptRelationshipNotes: RelationshipAttentionCandidate[];
@@ -303,10 +306,11 @@ async function buildPacket(
   const plannedCoverage = maxCoverage(decisions.map((decision) => decision.coverage));
   const reviewPriority = maxReviewPriority(planned.map((entry) => entry.facts.reviewPriority));
   const symbolFacts = planned.flatMap((entry) => entry.symbolFacts);
-  const packetHunks = planned.map((entry, index) =>
+  const patchWindows = planned.map((entry, index) =>
     renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
   );
-  const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
+  const packetHunks = patchWindows.map(window => window.hunk);
+  const patchChars = patchWindows.reduce((sum, window) => sum + window.decisionChars, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
   // Decide the coverage floor (plan 92 E1) before context, profile, lenses and
   // tool budget, so an escalated packet is built as the deep packet it is.
@@ -323,9 +327,11 @@ async function buildPacket(
     });
   }
   const relatedChangedContext = await buildRelatedChangedContext(planned, relationshipGraph, repoIndex, telemetry);
-  const plannerAttentionNotes = attentionNotesForDecisions(decisions);
-  const attentionNoteSelection = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
-  const attentionNotes = attentionNoteSelection.notes;
+  const plannerNotes = attentionNotesForDecisions(decisions);
+  const plannerAttentionNotes = plannerNotes.map(note => note.decisionText);
+  const attentionNoteSelection = mergeAttentionNotes(plannerNotes, relatedChangedContext);
+  const attentionNotes = attentionNoteSelection.notes.map(note => note.text);
+  const decisionAttentionNotes = attentionNoteSelection.notes.map(note => note.decisionText);
   emitRelationshipAttentionTelemetry(telemetry, first.file.path, attentionNoteSelection);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
@@ -333,15 +339,17 @@ async function buildPacket(
     hunkCount: planned.length,
     patchChars,
     lenses: decisions.flatMap((decision) => decision.lenses),
-    attentionNotes,
+    attentionNotes: decisionAttentionNotes,
     labels: first.facts.labels
   }, symbolContextMetrics, group.wholeFileText);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
-  const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
+  const auxiliaryContextText = joinPacketText(
+    [context.content, hintContext.content].filter(text => text.decisionText.trim().length > 0), "\n\n"
+  );
   const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
   for (const entry of hintContext.emitted) {
-    if (!renderedContext.text.includes(entry.text)) {
+    if (!renderedContext.content.decisionText.includes(entry.content.decisionText)) {
       hintContext.workerHints.push(toToolLookupHint(entry.hint));
       telemetry.event({ stage: 6, level: "warn", message: "packet_context_hint_unresolved", file: entry.hint.path ?? first.file.path,
         data: { kind: entry.hint.kind, reason: entry.hint.reason, outcome: "context_truncated" } });
@@ -353,7 +361,8 @@ async function buildPacket(
   const contextTruncationReason = renderedContext.contextTruncated
     ? `packet context truncated to ${MAX_CONTEXT_CHARS} chars`
     : undefined;
-  const contextQuality = finalContextQuality(context.contextQuality, renderedContext.text, truncationReason.length > 0 || renderedContext.contextTruncated);
+  const contextQuality = finalContextQuality(context.contextQuality, renderedContext.content.decisionText,
+    truncationReason.length > 0 || renderedContext.contextTruncated);
   const contextDegradationReasons = [
     ...context.contextDegradationReasons,
     ...(truncationReason.length > 0 ? [truncationReason] : []),
@@ -368,7 +377,7 @@ async function buildPacket(
       level: "debug",
       message: "packet_context_truncated",
       file: first.file.path,
-      data: { maxContextChars: MAX_CONTEXT_CHARS }
+      data: { maxContextChars: MAX_CONTEXT_CHARS, ...retreatMetric(renderedContext.content) }
     });
   }
   const strongRelatedContext = hasStrongRelatedChangedContext(planned, relatedChangedContext);
@@ -421,7 +430,7 @@ async function buildPacket(
     facts: first.facts,
     planned,
     relevantTests: context.relevantTests,
-    attentionNotes,
+    attentionNotes: decisionAttentionNotes,
     coverage,
     reviewPriority,
     reviewProfile,
@@ -438,11 +447,17 @@ async function buildPacket(
     group.degradationReason,
     context.symbolSliced === true && reviewProfile === "simple" ? "enclosing symbol source sliced with no review tools" : undefined
   ].filter((reason): reason is string => reason !== undefined && reason.length > 0);
+  const summary = truncatePacketText(packetText(reviewContext?.prSummary ?? "Review local diff."), 500, "");
+  recordBoundaryRetreat(telemetry, "prSummary", summary, { packetId });
+  for (const { site, boundaryRetreatChars } of reviewContext?.boundaryRetreats ?? []) {
+    telemetry.event({ stage: 6, level: "debug", message: "packet_credential_boundary_retreated",
+      data: { packetId, site, boundaryRetreatChars } });
+  }
   const packet: ReviewPacket = {
     id: packetId,
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
     kind,
-    prSummary: (reviewContext?.prSummary ?? "Review local diff.").slice(0, 500),
+    prSummary: summary.text,
     path: first.file.path,
     ...(first.file.oldPath !== undefined ? { oldPath: first.file.oldPath } : {}),
     fileStatus: first.file.status,
@@ -456,7 +471,7 @@ async function buildPacket(
     hunks: packetHunks,
     symbolFacts,
     context: context.context,
-    contextText: renderedContext.text,
+    contextText: renderedContext.content.text,
     contextQuality,
     ...(contextDegradationReasons.length > 0 ? { contextDegradationReasons } : {}),
     ...(testCoverageDelta !== undefined ? { testCoverageDelta } : {}),
@@ -479,6 +494,11 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
+  for (const [index, note] of attentionNoteSelection.notes.entries()) {
+    if (note.text !== note.decisionText) {
+      recordBoundaryRetreat(telemetry, "attentionNotes", note, { packetId, index });
+    }
+  }
   emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.contextLoss !== undefined);
   return packet;
 }
@@ -507,21 +527,27 @@ export function packetDispatchRank(
 
 export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketReviewContext {
   const title = deterministicDeclaredIntent(dossier);
-  const summary = truncateTail(
-    `${title} (${dossier.totals.files} changed file${dossier.totals.files === 1 ? "" : "s"}, ${dossier.totals.hunks} reviewable hunk${dossier.totals.hunks === 1 ? "" : "s"}, +${dossier.totals.addedLines}/-${dossier.totals.deletedLines}).`,
+  const summary = truncatePacketText(
+    packetText(`${title} (${dossier.totals.files} changed file${dossier.totals.files === 1 ? "" : "s"}, ${dossier.totals.hunks} reviewable hunk${dossier.totals.hunks === 1 ? "" : "s"}, +${dossier.totals.addedLines}/-${dossier.totals.deletedLines}).`),
     500
   );
   const body = dossier.pr?.body?.trim();
   const commitBody = dossier.commits[0]?.body?.trim();
   const intentParts = [title, body && body.length > 0 ? body : commitBody].filter((part): part is string => part !== undefined && part.length > 0);
+  const intent = truncatePacketText(packetText(intentParts.join("\n\n")), 1000);
+  const boundaryRetreats = [
+    { site: "prSummary", boundaryRetreatChars: summary.decisionText.length - summary.text.length },
+    { site: "intentText", boundaryRetreatChars: intent.decisionText.length - intent.text.length }
+  ].filter(row => row.boundaryRetreatChars > 0);
   return {
-    prSummary: summary,
-    ...(intentParts.length > 0 ? { intentText: truncateTail(intentParts.join("\n\n"), 1000) } : {}),
+    prSummary: summary.text,
+    ...(intentParts.length > 0 ? { intentText: intent.text } : {}),
+    ...(boundaryRetreats.length > 0 ? { boundaryRetreats } : {}),
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {})
   };
 }
 
-function attentionNotesForDecisions(decisions: EffectiveDecision[]): string[] {
+function attentionNotesForDecisions(decisions: EffectiveDecision[]): PacketText[] {
   const notes = [
     ...decisions.flatMap((decision) => {
       const hunkScopedAttention =
@@ -536,14 +562,17 @@ function attentionNotesForDecisions(decisions: EffectiveDecision[]): string[] {
       ];
     })
   ];
-  return normalizeAttentionNotes(notes);
+  return selectAttentionNotes(notes.map(normalizeNote));
 }
 
 function mergeAttentionNotes(
-  plannerAttentionNotes: string[],
+  plannerAttentionNotes: PacketText[],
   relatedChangedContext: RelatedChangedContext[]
 ): AttentionNoteSelection {
-  const plannerNotes = normalizeAttentionNotes(plannerAttentionNotes);
+  // The legacy second pass collapses the planner note's marker newline.
+  const plannerNotes = selectAttentionNotes(plannerAttentionNotes.map(note => ({
+    text: normalizeWhitespace(note.text), decisionText: normalizeWhitespace(note.decisionText)
+  })));
   const relationshipNotes = relationshipAttentionCandidates(relatedChangedContext);
   if (relationshipNotes.length === 0) {
     return {
@@ -566,28 +595,33 @@ function mergeAttentionNotes(
   }
 
   const selectedRelationshipNotes = relationshipNotes.slice(0, Math.min(2, MAX_ATTENTION_NOTES));
-  const selectedRelationshipSet = new Set(selectedRelationshipNotes.map((candidate) => candidate.note));
+  const selectedRelationshipSet = new Set(selectedRelationshipNotes.map((candidate) => candidate.note.decisionText));
   const selectedPlannerNotes = plannerNotes
-    .filter((note) => !selectedRelationshipSet.has(note))
+    .filter((note) => !selectedRelationshipSet.has(note.decisionText))
     .slice(0, MAX_ATTENTION_NOTES - selectedRelationshipNotes.length);
-  const selectedPlannerSet = new Set(selectedPlannerNotes);
+  const selectedPlannerSet = new Set(selectedPlannerNotes.map(note => note.decisionText));
   const extraRelationshipNotes = relationshipNotes
     .slice(selectedRelationshipNotes.length)
-    .filter((candidate) => !selectedRelationshipSet.has(candidate.note) && !selectedPlannerSet.has(candidate.note))
+    .filter((candidate) => !selectedRelationshipSet.has(candidate.note.decisionText) && !selectedPlannerSet.has(candidate.note.decisionText))
     .slice(0, MAX_ATTENTION_NOTES - selectedRelationshipNotes.length - selectedPlannerNotes.length);
   const keptRelationshipNotes = [...selectedRelationshipNotes, ...extraRelationshipNotes];
-  const keptRelationshipSet = new Set(keptRelationshipNotes.map((candidate) => candidate.note));
+  const keptRelationshipSet = new Set(keptRelationshipNotes.map((candidate) => candidate.note.decisionText));
   return {
     notes: [...keptRelationshipNotes.map((candidate) => candidate.note), ...selectedPlannerNotes].slice(0, MAX_ATTENTION_NOTES),
     plannerNoteCount: plannerNotes.length,
     relationshipNoteCount: relationshipNotes.length,
     keptRelationshipNotes,
-    omittedRelationshipNotes: relationshipNotes.filter((candidate) => !keptRelationshipSet.has(candidate.note))
+    omittedRelationshipNotes: relationshipNotes.filter((candidate) => !keptRelationshipSet.has(candidate.note.decisionText))
   };
 }
 
-function normalizeAttentionNotes(notes: string[]): string[] {
-  return dedupe(notes.map(normalizeNote).filter((note) => note.length > 0)).slice(0, MAX_ATTENTION_NOTES);
+function selectAttentionNotes(notes: PacketText[]): PacketText[] {
+  const seen = new Set<string>();
+  return notes.filter(note => {
+    if (!note.decisionText || seen.has(note.decisionText)) return false;
+    seen.add(note.decisionText);
+    return true;
+  }).slice(0, MAX_ATTENTION_NOTES);
 }
 
 function relationshipAttentionCandidates(relatedChangedContext: RelatedChangedContext[]): RelationshipAttentionCandidate[] {
@@ -599,15 +633,15 @@ function relationshipAttentionCandidates(relatedChangedContext: RelatedChangedCo
       relationshipSource: context.relationshipSource,
       index
     }))
-    .filter((candidate) => candidate.note.length > 0)
+    .filter((candidate) => candidate.note.decisionText.length > 0)
     .sort(compareRelationshipAttentionCandidates);
   const seen = new Set<string>();
   const result: RelationshipAttentionCandidate[] = [];
   for (const candidate of candidates) {
-    if (seen.has(candidate.note)) {
+    if (seen.has(candidate.note.decisionText)) {
       continue;
     }
-    seen.add(candidate.note);
+    seen.add(candidate.note.decisionText);
     result.push(candidate);
   }
   return result;
@@ -666,7 +700,7 @@ function emitRelationshipAttentionTelemetry(
 
 function relationshipAttentionTelemetryEntry(candidate: RelationshipAttentionCandidate): Record<string, unknown> {
   return {
-    note: candidate.note,
+    note: candidate.note.text,
     ...(candidate.sourceKind !== undefined ? { sourceKind: candidate.sourceKind } : {}),
     ...(candidate.relationshipStrength !== undefined ? { relationshipStrength: candidate.relationshipStrength } : {}),
     ...(candidate.relationshipSource !== undefined ? { relationshipSource: candidate.relationshipSource } : {})
@@ -1018,7 +1052,8 @@ async function relatedContextForTarget(
   telemetry: TelemetryRecorder
 ): Promise<RelatedChangedContext | undefined> {
   const fact = primarySymbolFactWithMergedChanges(target.symbolFacts);
-  const patchExcerpt = truncateTail(renderLines(target.hunk.lines.map(packetLine)), MAX_RELATED_CONTEXT_PATCH_CHARS);
+  const patchExcerpt = truncatePacketText(packetText(renderLines(target.hunk.lines.map(packetLine))), MAX_RELATED_CONTEXT_PATCH_CHARS);
+  recordBoundaryRetreat(telemetry, "relatedChangedContext.patchExcerpt", patchExcerpt, { hunkId: target.hunk.id });
   const base: RelatedChangedContext = {
     path: target.file.path,
     hunkId: target.hunk.id,
@@ -1029,7 +1064,7 @@ async function relatedContextForTarget(
     relationshipSource: edge.source,
     relationshipStrength: edge.strength,
     sourceKind: relatedContextSourceKind(target),
-    patchExcerpt
+    patchExcerpt: patchExcerpt.text
   };
   if (fact === undefined) {
     return base;
@@ -1049,12 +1084,14 @@ async function relatedContextForTarget(
     if (result.text === undefined || result.text.trim().length === 0) {
       return base;
     }
+    const sourceSnippet = truncatePacketText(packetText(result.text), MAX_RELATED_CONTEXT_SNIPPET_CHARS);
+    recordBoundaryRetreat(telemetry, "relatedChangedContext.sourceSnippet", sourceSnippet, { hunkId: target.hunk.id });
     return {
       ...base,
       path: readPath,
       ...(result.symbol?.name !== undefined ? { symbol: result.symbol.name } : {}),
       ...(result.symbol?.lineRange !== undefined ? { lineRange: result.symbol.lineRange } : {}),
-      sourceSnippet: truncateTail(result.text, MAX_RELATED_CONTEXT_SNIPPET_CHARS)
+      sourceSnippet: sourceSnippet.text
     };
   } catch (error) {
     telemetry.event({
@@ -1207,8 +1244,44 @@ function bareIdentifier(value: string): string {
   return match?.[0] ?? normalized;
 }
 
-function normalizeNote(value: string): string {
-  return truncateTail(value.trim().replace(/\s+/gu, " "), MAX_ATTENTION_NOTE_CHARS);
+function normalizeWhitespace(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function normalizeNote(value: string): PacketText {
+  const original = value.trim();
+  const note = normalizeWhitespace(original);
+  return truncatePacketText(packetText(note), MAX_ATTENTION_NOTE_CHARS, CONTEXT_CUT_MARKER, (text, index) => {
+    let end = credentialSafeCut(text, index);
+    if (text === original) return end;
+    // Map the normalized boundary back so registered values with whitespace
+    // are recognized even if their exact spelling changed in the note.
+    while (end > 0) {
+      let originalEnd = end;
+      for (const whitespace of original.matchAll(/\s{2,}/gu)) {
+        if (whitespace.index >= originalEnd) break;
+        originalEnd += whitespace[0].length - 1;
+      }
+      const safeEnd = credentialSafeCut(original, originalEnd);
+      if (safeEnd === originalEnd) break;
+      end = credentialSafeCut(text, original.slice(0, safeEnd).replace(/\s+/gu, " ").length);
+    }
+    return end;
+  });
+}
+
+function retreatMetric(value: PacketText): { boundaryRetreatChars?: number } {
+  const chars = value.decisionText.length - value.text.length;
+  return chars > 0 ? { boundaryRetreatChars: chars } : {};
+}
+
+function recordBoundaryRetreat(
+  telemetry: TelemetryRecorder, site: string, value: PacketText, context: Record<string, string | number>
+): void {
+  const metric = retreatMetric(value);
+  if (metric.boundaryRetreatChars === undefined) return;
+  telemetry.event({ stage: 6, level: "debug", message: "packet_credential_boundary_retreated",
+    data: { ...context, site, ...metric } });
 }
 
 function stripLocationSuffix(value: string): string {
@@ -1391,11 +1464,11 @@ function renderPacketHunk(
   staticSignals: StaticSignal[],
   telemetry: TelemetryRecorder,
   plannerFallback: string | undefined = undefined
-): PacketHunk {
+): { hunk: PacketHunk; decisionChars: number } {
   const lines = hunk.lines.map(packetLine);
   const changedNewLineNumbers = lines.flatMap((line) => (line.kind === "add" && line.newLine !== undefined ? [line.newLine] : []));
   const changedOldLineNumbers = lines.flatMap((line) => (line.kind === "delete" && line.oldLine !== undefined ? [line.oldLine] : []));
-  const window = packPacketPatch(lines);
+  const { decisionChars, boundaryRetreatChars, ...window } = packPacketPatch(lines);
   const packetSignals = staticSignals.slice(0, MAX_STATIC_SIGNALS_PER_PACKET_HUNK);
   const omittedSignalCount = Math.max(0, staticSignals.length - packetSignals.length);
   if (window.truncated) {
@@ -1407,10 +1480,11 @@ function renderPacketHunk(
       data: { hunkId: hunk.id, omittedLineCount: window.omittedLineCount, omittedChangedLineCount: window.omittedChangedLineCount,
         ...(window.omittedChangedRanges ? { omittedChangedRanges: window.omittedChangedRanges } : {}),
         ...(window.partialChangedLine ? { partialChangedLine: window.partialChangedLine } : {}),
+        ...(boundaryRetreatChars !== undefined ? { boundaryRetreatChars, emittedChars: window.contentWithLineNumbers.length } : {}),
         maxPatchChars: MAX_PATCH_CHARS }
     });
   }
-  return {
+  const packetHunk: PacketHunk = {
     hunkId: hunk.id,
     oldStart: hunk.oldStart,
     oldLines: hunk.oldLines,
@@ -1424,6 +1498,7 @@ function renderPacketHunk(
     ...(omittedSignalCount > 0 ? { omittedSignalCount } : {}),
     ...(plannerFallback !== undefined ? { plannerFallbackReason: plannerFallback } : {})
   };
+  return { hunk: packetHunk, decisionChars: decisionChars ?? window.contentWithLineNumbers.length };
 }
 
 function truncationReasons(hunks: PacketHunk[]): string[] {
@@ -1479,23 +1554,23 @@ async function headContentProbe(
 function renderPacketContextText(
   path: string,
   wholeFileText: string | undefined,
-  contextText: string
-): { text: string; auxiliaryContextDropped: boolean; contextTruncated: boolean } {
+  context: PacketText
+): { content: PacketText; auxiliaryContextDropped: boolean; contextTruncated: boolean } {
   if (wholeFileText === undefined) {
-    if (contextText.length > MAX_CONTEXT_CHARS) {
-      return { text: truncateTail(contextText, MAX_CONTEXT_CHARS), auxiliaryContextDropped: false, contextTruncated: true };
+    if (context.decisionText.length > MAX_CONTEXT_CHARS) {
+      return { content: truncatePacketText(context, MAX_CONTEXT_CHARS), auxiliaryContextDropped: false, contextTruncated: true };
     }
-    return { text: contextText, auxiliaryContextDropped: false, contextTruncated: false };
+    return { content: context, auxiliaryContextDropped: false, contextTruncated: false };
   }
   const wholeFileBlock = renderWholeFileBlock(path, wholeFileText);
-  if (contextText.trim().length === 0) {
-    return { text: wholeFileBlock, auxiliaryContextDropped: false, contextTruncated: false };
+  if (context.decisionText.trim().length === 0) {
+    return { content: packetText(wholeFileBlock), auxiliaryContextDropped: false, contextTruncated: false };
   }
-  const combined = `${wholeFileBlock}\n\n${contextText}`;
-  if (combined.length <= MAX_CONTEXT_CHARS) {
-    return { text: combined, auxiliaryContextDropped: false, contextTruncated: false };
+  const combined = joinPacketText([packetText(wholeFileBlock), context], "\n\n");
+  if (combined.decisionText.length <= MAX_CONTEXT_CHARS) {
+    return { content: combined, auxiliaryContextDropped: false, contextTruncated: false };
   }
-  return { text: wholeFileBlock, auxiliaryContextDropped: true, contextTruncated: false };
+  return { content: packetText(wholeFileBlock), auxiliaryContextDropped: true, contextTruncated: false };
 }
 
 function renderWholeFileBlock(path: string, wholeFileText: string): string {
@@ -1504,17 +1579,9 @@ function renderWholeFileBlock(path: string, wholeFileText: string): string {
     : `Whole file content for ${path}: <empty file>`;
 }
 
-function truncateTail(input: string, maxChars: number): string {
-  if (input.length <= maxChars) {
-    return input;
-  }
-  const marker = "\n[... content truncated to fit packet context budget ...]";
-  return `${input.slice(0, Math.max(0, maxChars - marker.length)).trimEnd()}${marker}`;
-}
-
 type PacketContextBuildResult = {
   context: ReviewPacket["context"];
-  text: string;
+  content: PacketText;
   relevantTests: SymbolInfo[];
   contextQuality: PacketContextQuality;
   contextDegradationReasons: string[];
@@ -1526,7 +1593,7 @@ type PacketContextBuildResult = {
 };
 
 type SymbolSourceContext = {
-  text: string;
+  content: PacketText;
   quality?: Extract<PacketContextQuality, "full" | "sliced">;
   degradation?: string;
   /** Set when source the packet needed could not be read in full (#175). */
@@ -1607,7 +1674,7 @@ async function buildContext(
     symbolContextMetrics.outlineOnly += 1;
     return {
       context: { path: file.path },
-      text: "",
+      content: packetText(""),
       relevantTests: [],
       contextQuality: "path_only",
       contextDegradationReasons: ["repository tools do not provide packet context"],
@@ -1618,7 +1685,7 @@ async function buildContext(
   try {
     const result = await repoIndex.tools.buildPacketContext(file, hunks, symbolFacts);
     const symbolSource = await readEnclosingSymbolSource(repoIndex, file, symbolFacts, telemetry, symbolContextInput, symbolContextMetrics);
-    const contextText = renderContext(result, symbolSource.text);
+    const content = renderContext(result, symbolSource.content);
     const reasons = [
       ...(result.degradation !== undefined ? [result.degradation] : []),
       ...symbolSource.reasons,
@@ -1631,9 +1698,9 @@ async function buildContext(
       && result.outline.sourceText?.text === wholeFileText;
     return {
       context: result.context,
-      text: contextText,
+      content,
       relevantTests: result.relevantTests,
-      contextQuality: contextQualityFor(result, symbolSource, contextText),
+      contextQuality: contextQualityFor(result, symbolSource, content.decisionText),
       contextDegradationReasons: reasons,
       packetSymbols: result.packetSymbols ?? (result.primarySymbol !== undefined ? [result.primarySymbol] : []),
       ...(degradation.length > 0 ? { degradation } : {}),
@@ -1647,7 +1714,7 @@ async function buildContext(
     telemetry.event({ stage: 6, level: "warn", message: "packet_context_degraded", file: file.path, data: { error: message } });
     return {
       context: { path: file.path },
-      text: "",
+      content: packetText(""),
       relevantTests: [],
       contextQuality: "path_only",
       contextDegradationReasons: [message],
@@ -1670,7 +1737,7 @@ async function readEnclosingSymbolSource(
   const selector = fact === undefined ? undefined : symbolSourceSelector(fact);
   if (fact === undefined || selector === undefined) {
     symbolContextMetrics.outlineOnly += 1;
-    return { text: "", reasons: ["no_primary_symbol"] };
+    return { content: packetText(""), reasons: ["no_primary_symbol"] };
   }
   const source = fact.changedLinesSide === "old" ? { kind: "base" as const } : { kind: "head" as const };
   const readPath = fact.changedLinesSide === "old" ? file.oldPath ?? file.path : file.path;
@@ -1684,8 +1751,8 @@ async function readEnclosingSymbolSource(
       symbolContextMetrics.outlineOnly += 1;
       const unavailable = result.meta.degradationReason ?? "enclosing symbol source unavailable";
       return result.meta.degraded
-        ? { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable }
-        : { text: "", reasons: ["enclosing symbol source empty"] };
+        ? { content: packetText(""), reasons: [unavailable], degradation: unavailable, loss: unavailable }
+        : { content: packetText(""), reasons: ["enclosing symbol source empty"] };
     }
     const label = result.symbol?.name ?? fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
     const block = renderFullSymbolContext(readPath, label, fact, result.text);
@@ -1733,10 +1800,10 @@ async function readEnclosingSymbolSource(
           reason: budget.reason
         }
       });
-      return { text: block, quality: "full", reasons: [] };
+      return { content: packetText(block), quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
+    const content = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -1744,8 +1811,8 @@ async function readEnclosingSymbolSource(
     }
     const outputMode = budget.adaptive ? "adaptive_sliced" : "default_sliced";
     emitSymbolContextBudgetAudit(telemetry, file.path, readPath, fact, result.symbol?.name, budget, {
-      emittedChars: text.length,
-      omittedChars: Math.max(0, block.length - text.length),
+      emittedChars: content.text.length,
+      omittedChars: Math.max(0, block.length - content.text.length),
       outputMode,
       materialOmission: true,
       providerTruncated: result.meta.truncated === true
@@ -1763,8 +1830,9 @@ async function readEnclosingSymbolSource(
         reviewPriority: budget.reviewPriority,
         originalChars: block.length,
         selectedBudgetChars: budget.maxChars,
-        emittedChars: text.length,
-        omittedChars: Math.max(0, block.length - text.length),
+        emittedChars: content.text.length,
+        omittedChars: Math.max(0, block.length - content.text.length),
+        ...retreatMetric(content),
         singlePrimarySymbol: budget.singlePrimarySymbol,
         uniqueSymbolCount: budget.uniqueSymbolCount,
         budgetReason: budget.reason,
@@ -1779,7 +1847,7 @@ async function readEnclosingSymbolSource(
       }
     });
     return {
-      text,
+      content,
       quality: "sliced",
       reasons: ["enclosing symbol source sliced"],
       degradation: "enclosing symbol source truncated",
@@ -1800,7 +1868,7 @@ async function readEnclosingSymbolSource(
       data: { hunkId: fact.hunkId, path: readPath, error: message }
     });
     const unavailable = `enclosing symbol source unavailable: ${message}`;
-    return { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable };
+    return { content: packetText(""), reasons: [unavailable], degradation: unavailable, loss: unavailable };
   }
 }
 
@@ -2098,7 +2166,7 @@ function renderSlicedSymbolContext(
   excerpts: string[],
   fallbackSource: string,
   maxChars: number
-): string {
+): PacketText {
   const header = [
     `Primary symbol: ${readPath}:${label}`,
     fact.signature !== undefined ? `Signature: ${fact.signature}` : undefined,
@@ -2110,36 +2178,23 @@ function renderSlicedSymbolContext(
   const bodyBudget = Math.max(0, maxChars - header.length - footer.length - 2);
   const excerptText = excerpts.length > 0
     ? fitSymbolExcerpts(excerpts, bodyBudget)
-    : truncateToBudget(fallbackSource.trimEnd(), Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));
-  return [
-    header,
-    excerptText,
-    footer
-  ].filter((part) => part.length > 0).join("\n");
+    : truncateToBudget(packetText(fallbackSource.trimEnd()), Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));
+  return joinPacketText([packetText(header), excerptText, packetText(footer)]
+    .filter(part => part.decisionText.length > 0), "\n");
 }
 
-function fitSymbolExcerpts(excerpts: string[], maxChars: number): string {
+function fitSymbolExcerpts(excerpts: string[], maxChars: number): PacketText {
   if (maxChars <= 0) {
-    return "";
+    return packetText("");
   }
   const separatorChars = Math.max(0, excerpts.length - 1) * 2;
   const perExcerptBudget = Math.max(0, Math.floor((maxChars - separatorChars) / Math.max(1, excerpts.length)));
-  const fitted = excerpts.map((excerpt) => truncateToBudget(excerpt, perExcerptBudget)).join("\n\n");
-  return fitted.length <= maxChars ? fitted : truncateToBudget(fitted, maxChars);
+  const fitted = joinPacketText(excerpts.map(excerpt => truncateToBudget(packetText(excerpt), perExcerptBudget)), "\n\n");
+  return truncateToBudget(fitted, maxChars);
 }
 
-function truncateToBudget(input: string, maxChars: number): string {
-  if (input.length <= maxChars) {
-    return input;
-  }
-  if (maxChars <= 0) {
-    return "";
-  }
-  const marker = "\n[... content truncated to fit packet context budget ...]";
-  if (maxChars <= marker.length) {
-    return input.slice(0, maxChars);
-  }
-  return `${input.slice(0, maxChars - marker.length).trimEnd()}${marker}`;
+function truncateToBudget(input: PacketText, maxChars: number): PacketText {
+  return truncatePacketText(input, maxChars, maxChars <= CONTEXT_CUT_MARKER.length ? "" : CONTEXT_CUT_MARKER);
 }
 
 async function readChangedLineExcerpts(
@@ -2250,8 +2305,9 @@ async function resolvePacketContextHints(
   file: DiffFile,
   hints: SurroundingContextHint[],
   telemetry: TelemetryRecorder
-): Promise<{ text: string; workerHints: SurroundingContextHint[]; emitted: Array<{ hint: SurroundingContextHint; text: string }>; degradation?: string }> {
-  const blocks: Array<{ hint: SurroundingContextHint; text: string; recovered: boolean }> = [];
+): Promise<{ content: PacketText; workerHints: SurroundingContextHint[]; emitted: Array<{ hint: SurroundingContextHint; content: PacketText }>;
+  degradation?: string }> {
+  const blocks: Array<{ hint: SurroundingContextHint; content: PacketText; recovered: boolean }> = [];
   const workerHints: SurroundingContextHint[] = [];
   const failures: string[] = [];
 
@@ -2297,7 +2353,7 @@ async function resolvePacketContextHints(
   if (hasRecovered) {
     let used = 0;
     for (const block of ordered) {
-      const extra = block.text.length + (admitted.length ? 2 : 0);
+      const extra = block.content.decisionText.length + (admitted.length ? 2 : 0);
       if (used + extra > MAX_HINT_CONTEXT_CHARS) {
         workerHints.push(toToolLookupHint(block.hint));
         telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: block.hint.path ?? file.path,
@@ -2305,17 +2361,20 @@ async function resolvePacketContextHints(
       } else { admitted.push(block); used += extra; }
     }
   } else admitted.push(...ordered);
-  const text = truncateTail(admitted.map(block => block.text).join("\n\n"), MAX_HINT_CONTEXT_CHARS);
-  const emitted = admitted.filter(block => text.includes(block.text) && !block.text.endsWith("[... content truncated to fit packet context budget ...]"));
+  const content = truncatePacketText(joinPacketText(admitted.map(block => block.content), "\n\n"), MAX_HINT_CONTEXT_CHARS);
+  recordBoundaryRetreat(telemetry, "hintContext", content, { path: file.path });
+  const emitted: typeof blocks = [];
   for (const block of admitted) {
-    if (!text.includes(block.text) || block.text.endsWith("[... content truncated to fit packet context budget ...]")) {
+    if (!content.decisionText.includes(block.content.decisionText) || block.content.decisionText.endsWith(CONTEXT_CUT_MARKER.trimStart())) {
       if (hasRecovered) workerHints.push(toToolLookupHint(block.hint));
       telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: block.hint.path ?? file.path,
         data: { kind: block.hint.kind, reason: block.hint.reason, outcome: "hint_budget" } });
+    } else {
+      emitted.push(block);
     }
   }
   return {
-    text,
+    content,
     emitted,
     workerHints,
     ...(failures.length > 0 ? { degradation: `planner packet_context hint(s) unresolved: ${failures.slice(0, 3).join("; ")}` } : {})
@@ -2327,7 +2386,7 @@ async function resolvePacketContextHint(
   hint: SurroundingContextHint,
   path: string,
   telemetry: TelemetryRecorder
-): Promise<{ text: string; recovered: boolean } | undefined> {
+): Promise<{ content: PacketText; recovered: boolean } | undefined> {
   if (hint.lineRange !== undefined) {
     const normalized = normalizeStage6ReadRange({
       startLine: hint.lineRange[0],
@@ -2346,13 +2405,13 @@ async function resolvePacketContextHint(
       { stage: 6, initiator: "harness" },
       () => repoIndex.tools.readRange(path, normalized.startLine, normalized.endLine, { kind: "head" })
     );
-    return { text: renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text), recovered: false };
+    return { content: renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text), recovered: false };
   }
   const symbol = hint.symbol;
   if (symbol !== undefined) {
     if (hint.kind === "call_site") {
-      const text = await resolveCallSiteContextHint(repoIndex, hint, path, symbol, telemetry);
-      return text === undefined ? undefined : { text, recovered: false };
+      const content = await resolveCallSiteContextHint(repoIndex, hint, path, symbol, telemetry);
+      return content === undefined ? undefined : { content, recovered: false };
     }
     const result = await withRepositoryToolCallContext(
       repoIndex.tools,
@@ -2363,10 +2422,10 @@ async function resolvePacketContextHint(
       && (result.meta.lookupStatus === undefined || result.meta.lookupStatus === "found")) {
       if (result.meta.truncated) telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: path,
         data: { kind: hint.kind, reason: hint.reason, outcome: "symbol_truncated" } });
-      const text = renderHintContextBlock(hint, path, symbol, result.text);
-      const marker = "\n[... content truncated to fit packet context budget ...]";
-      return { text: result.meta.truncated && !text.endsWith(marker.trimStart())
-        ? truncateTail(text + marker, MAX_HINT_CONTEXT_CHARS) : text, recovered: false };
+      const content = renderHintContextBlock(hint, path, symbol, result.text);
+      return { content: result.meta.truncated && !content.decisionText.endsWith(CONTEXT_CUT_MARKER.trimStart())
+        ? truncatePacketText(joinPacketText([content, packetText(CONTEXT_CUT_MARKER)], ""), MAX_HINT_CONTEXT_CHARS)
+        : content, recovered: false };
     }
     const fallback = await withRepositoryToolCallContext(
       repoIndex.tools, { stage: 6, initiator: "harness" },
@@ -2388,7 +2447,7 @@ async function resolvePacketContextHint(
     const text = [`Planner packet context (${hint.kind}) for ${definition.symbol.path}:${symbol}`, `Reason: ${hint.reason}`,
       renderSourceBlockHeader(definition.symbol.path, "head", definition.deliveredLineRange, definition.totalLines),
       ...lines.map((line, index) => numberSourceLine(line, first + index))].join("\n");
-    return { text, recovered: true };
+    return { content: packetText(text), recovered: true };
   }
   return undefined;
 }
@@ -2399,7 +2458,7 @@ async function resolveCallSiteContextHint(
   path: string,
   symbol: string,
   telemetry: TelemetryRecorder
-): Promise<string | undefined> {
+): Promise<PacketText | undefined> {
   const scopedMentions = await findCallSiteMentions(repoIndex, symbol, { pathGlob: path });
   const scopedSelected = selectCallSiteCallerSymbols(scopedMentions.results, symbol, path);
   const needsRepoWideFallback = scopedSelected.length === 0;
@@ -2442,7 +2501,7 @@ async function resolveCallSiteContextHint(
     return undefined;
   }
 
-  const blocks: string[] = [];
+  const blocks: PacketText[] = [];
   let failedReads = 0;
   for (const caller of selected.slice(0, CALL_SITE_CONTEXT_SYMBOL_LIMIT)) {
     const result = await withRepositoryToolCallContext(
@@ -2515,7 +2574,7 @@ async function resolveCallSiteContextHint(
     });
   }
 
-  return truncateTail(blocks.join("\n\n"), MAX_HINT_CONTEXT_CHARS);
+  return truncatePacketText(joinPacketText(blocks, "\n\n"), MAX_HINT_CONTEXT_CHARS);
 }
 
 function findCallSiteMentions(
@@ -2666,13 +2725,13 @@ function renderHintContextBlock(
   path: string,
   locator: string,
   text: string
-): string {
-  return truncateTail(
-    [
+): PacketText {
+  return truncatePacketText(
+    packetText([
       `Planner packet context (${hint.kind}) for ${path}:${locator}`,
       `Reason: ${hint.reason}`,
       text.trimEnd()
-    ].filter((part) => part.length > 0).join("\n"),
+    ].filter((part) => part.length > 0).join("\n")),
     MAX_HINT_CONTEXT_CHARS
   );
 }
@@ -2681,10 +2740,10 @@ function toToolLookupHint(hint: SurroundingContextHint): SurroundingContextHint 
   return { ...hint, expectedUse: "tool_lookup" };
 }
 
-function renderContext(result: Awaited<ReturnType<RepositoryToolsHost["buildPacketContext"]>>, symbolSourceText = ""): string {
-  const parts: string[] = [];
-  if (symbolSourceText.trim().length > 0) {
-    parts.push(symbolSourceText);
+function renderContext(result: Awaited<ReturnType<RepositoryToolsHost["buildPacketContext"]>>, symbolSource: PacketText): PacketText {
+  const parts: PacketText[] = [];
+  if (symbolSource.decisionText.trim().length > 0) {
+    parts.push(symbolSource);
   }
   if (result.outline) {
     const outline: string[] = [`Outline for ${result.outline.path}`];
@@ -2694,12 +2753,12 @@ function renderContext(result: Awaited<ReturnType<RepositoryToolsHost["buildPack
     if (result.outline.topLevelSymbols.length > 0) {
       outline.push(`Top-level symbols: ${result.outline.topLevelSymbols.map((symbol) => symbol.name).join(", ")}`);
     }
-    parts.push(outline.join("\n"));
+    parts.push(packetText(outline.join("\n")));
   }
   if (result.relevantTests.length > 0) {
-    parts.push(`Likely tests: ${result.relevantTests.map((symbol) => `${symbol.path}:${symbol.name}`).join(", ")}`);
+    parts.push(packetText(`Likely tests: ${result.relevantTests.map((symbol) => `${symbol.path}:${symbol.name}`).join(", ")}`));
   }
-  return parts.join("\n");
+  return joinPacketText(parts, "\n");
 }
 
 function contextQualityFor(

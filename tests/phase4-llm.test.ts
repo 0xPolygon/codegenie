@@ -5144,6 +5144,51 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it("preserves ordinary repair-field previews and retreats from credentials in a large rejected key set", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codegenie-field-boundary-"));
+    const credential = "SyntheticRegisteredValueForRepairFieldCheck";
+    const prefix = "x".repeat(187);
+    const field = prefix + credential;
+    const ordinary = "ordinaryField".repeat(20);
+    const rejected = { [field]: true, [ordinary]: 1,
+      ...Object.fromEntries(Array.from({ length: 4_096 }, (_, index) => [`invalidField${index}`, false])) };
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "invalid", name: "submit_verdict", arguments: rejected }]),
+      assistant([{ type: "toolCall", id: "fixed", name: "submit_verdict", arguments: { verdict: "reject" } }])
+    ]);
+    registerSecret(credential);
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
+      const attached = await run.attachRunDirectory(directory);
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await expect(runner.runStructured({ stage: 9, prompt: "verify", templateVersion: "test", timeoutMs: 5_000,
+        schema: Type.Object({ verdict: Type.String() }, { additionalProperties: false }),
+        schemaRepair: { replaceConversation: true } })).resolves.toEqual({ verdict: "reject" });
+      const repair = (JSON.parse(adapter.contexts[1]!) as Array<{ content: unknown }>)
+        .map(message => message.content).find(content => typeof content === "string" && content.includes("latest-repair-feedback")) as string;
+      const feedback = repair.split("label=latest-repair-feedback\n")[1]!.split("\n")[0]!;
+      const { supplied } = JSON.parse(feedback) as { supplied: Array<{ fields: Array<{ key: string }> }> };
+      expect(supplied[0]!.fields.map(field => field.key)).toEqual([
+        prefix, ordinary.slice(0, 200), ...Array.from({ length: 30 }, (_, index) => `invalidField${index}`)
+      ]);
+      expect(feedback.includes(credential.slice(0, 13))).toBe(false);
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const events = readFileSync(path.join(attached.runDir, "events.jsonl"), "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+      expect(events).toContainEqual(expect.objectContaining({ message: "schema_repair_scheduled",
+        data: expect.objectContaining({ boundaryRetreatChars: 13 }) }));
+      const folder = path.join(attached.runDir, "debug", "llm-calls");
+      const requests = readdirSync(folder).filter(name => name.endsWith(".request.json"))
+        .map(name => readFileSync(path.join(folder, name), "utf8")).join("\n");
+      expect(requests).toContain("latest-repair-feedback");
+      expect(requests.includes(credential.slice(0, 13))).toBe(false);
+    } finally {
+      clearRegisteredSecretsForTests();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("redacts multiline secret components in separately persisted records", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codegenie-multiline-secret-"));
     registerSecret("BEGIN\nshort-key-123\nEND");
