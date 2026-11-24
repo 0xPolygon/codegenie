@@ -40,7 +40,6 @@ import { CodegenieError, truncateDiagnostic, type CodegenieErrorCode } from "../
 import {
   roleForStage,
   type CreateRunnerOptions,
-  type LlmCallUsage,
   type LlmInvalidSubmitRecovery,
   type LlmSchemaInvalidSubmitRecoveryInput,
   type LlmSchemaRepairInput,
@@ -99,7 +98,7 @@ class ToolArgumentStreamLimitError extends CodegenieError {
     });
     const usage = normalizeUsage(rawUsage);
     // Pi initializes usage to zero before any provider accounting arrives.
-    this.observedUsage = usage && Object.values(usage).some(value => value > 0) ? usage : undefined;
+    this.observedUsage = hasNonzeroUsage(usage) ? usage : undefined;
   }
 }
 
@@ -1111,12 +1110,25 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): RealPiAiA
       return "model" in resolution ? resolution.model : undefined;
     },
     complete: async (model, context, options) => {
-      const { submitToolName, onStreamEvent, onRejectedArguments, ...providerOptions } = options;
+      const { submitToolName, onStreamEvent, onRejectedArguments, onUsageReported, ...providerOptions } = options;
       const streamHooks = {
         ...(typeof onStreamEvent === "function" ? { onEvent: onStreamEvent as (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => void } : {}),
         ...(typeof onRejectedArguments === "function" ? { onRejectedArguments: onRejectedArguments as (diagnostic: RejectedArgumentDiagnostic) => void } : {})
       };
       const completeOptions = { ...providerOptions } as SimpleStreamOptions & Record<string, unknown>;
+      const raw = model.raw as Model<Api>;
+      const observeUsage = typeof onUsageReported === "function" && (
+        raw.api === "openai-completions" || raw.api === "openai-responses" ||
+        raw.api === "openai-codex-responses" || raw.api === "azure-openai-responses"
+      );
+      let usageReported = false;
+      if (observeUsage) {
+        const observer = completeOptions.onProviderStreamEvent;
+        completeOptions.onProviderStreamEvent = (event, requestModel) => {
+          usageReported ||= hasProviderUsage(raw.api, event);
+          return observer?.(event, requestModel);
+        };
+      }
       // Forced submits use the same simple path as ordinary calls, so Pi's
       // model-aware reasoning mapping applies to both; only the tool choice is
       // mapped here (Pi's simple adapters forward it to the native request).
@@ -1125,20 +1137,31 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): RealPiAiA
         const { forceSubmitToolChoice: _forceSubmit, ...rest } = options;
         return rest;
       };
+      let stream: AssistantMessageEventStream;
       if (deps.streamSimple !== undefined) {
         const prepared = await prepareInjectedCompletion(model, completeOptions, models);
-        return consumeFinalToolArguments(
-          deps.streamSimple(prepared.model, context as Context, simpleOptions(prepared.model, prepared.options)),
-          submitToolName, streamHooks
-        );
+        stream = deps.streamSimple(prepared.model, context as Context, simpleOptions(prepared.model, prepared.options));
+      } else {
+        stream = models.streamSimple(raw, context as Context, simpleOptions(raw, completeOptions));
       }
-      return consumeFinalToolArguments(
-        models.streamSimple(model.raw as Model<Api>, context as Context, simpleOptions(model.raw as Model<Api>, completeOptions)),
-        submitToolName, streamHooks
-      );
+      const message = await consumeFinalToolArguments(stream, submitToolName, streamHooks);
+      if (observeUsage) onUsageReported(usageReported);
+      return message;
     },
     validateToolCall: (tools, toolCall) => validateToolCall(tools as Tool[], toolCall as ToolCall)
   };
+}
+
+function hasProviderUsage(api: Api, event: unknown): boolean {
+  if (!isRecord(event)) return false;
+  if (api === "openai-completions") {
+    const choice = Array.isArray(event.choices) ? event.choices[0] : undefined;
+    const usage = event.usage ?? (isRecord(choice) ? choice.usage : undefined);
+    return isRecord(usage) && firstNumber(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) !== undefined;
+  }
+  if (event.type !== "response.completed" && event.type !== "response.done" && event.type !== "response.incomplete") return false;
+  const usage = isRecord(event.response) ? event.response.usage : undefined;
+  return isRecord(usage) && firstNumber(usage.input_tokens, usage.output_tokens, usage.total_tokens) !== undefined;
 }
 
 function queueForcedFinalizePrompt(input: {
@@ -1603,7 +1626,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           cacheStatus: "hit",
           promptText,
           durationMs: 0,
-          usage: cachedResponse.usage
+          usage: normalizeUsage(cachedResponse.usage)
         });
         return { source: "cache", message: cachedResponse.message, callId };
       }
@@ -1641,6 +1664,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const failureLocation = { callId, workerId: request.telemetryContext?.workerId };
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
+    let usageReported: boolean | undefined;
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1726,6 +1750,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                   ...request.telemetryContext, ...diagnostic, diagnosticOnly: true
                 }),
               maxRetries: 0,
+              onUsageReported: (reported: boolean) => { usageReported = reported; },
               ...(anthropicForcedSubmitCall(model, toolChoice, opts.llmConfig.forceSubmitToolChoice !== false)
                 ? {}
                 : { reasoning: reasoning }),
@@ -1764,6 +1789,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         submitToolNameForStage(request.stage)
       );
       const durationMs = Date.now() - startedAt;
+      const normalizedUsage = normalizeUsage(message.usage);
+      // Pi sends a zero-filled initializer when no stream usage was received.
+      const usage = usageReported === false && !hasNonzeroUsage(normalizedUsage) ? undefined : normalizedUsage;
       const providerFailure = providerFailureFromMessage(message, taskTimedOut());
       if (providerFailure) {
         const retry = taskTimedOut()
@@ -1780,6 +1808,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           cacheStatus: opts.cache ? "miss" : "disabled",
           promptText,
           durationMs,
+          usage,
           status: providerFailure.status,
           errorCode: "llm_call_failed",
           errorMessage: providerFailure.message,
@@ -1789,7 +1818,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           retryExhausted: retry.retryable && attempt >= maxAttempts
         });
         releaseReservation();
-        reportUsage(opts, request.stage, message);
+        reportAttemptUsage(opts, request.stage, usage);
         lastError = providerFailure.cause;
         if (providerFailure.status === "transient_error" && retry.retryable && attempt < maxAttempts) {
           const delayMs = retryDelayMs(providerFailure.cause, attempt);
@@ -1816,8 +1845,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const { valid: schemaValid, error: schemaError } = schemaValidityForResponse(adapter, request, tools, kind, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
       releaseReservation();
-      reportUsage(opts, request.stage, message);
-      const cacheStatus = await modelCallCacheWriteStatus(opts, cacheKey, request.stage, message, cacheable);
+      reportAttemptUsage(opts, request.stage, usage);
+      const cacheStatus = await modelCallCacheWriteStatus(opts, cacheKey, request.stage, message, cacheable, usage);
       const modelCallMeta = definedRecord({
         callId,
         protocol,
@@ -1843,12 +1872,13 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       };
       const callStatus = schemaValid === false ? "schema_invalid" : "ok";
       const callErrorCode = schemaValid === false ? "llm_schema_invalid" : undefined;
-      recordModelCall(opts, request, model, message, definedRecord({
+      recordModelCall(opts, request, model, message, {
         ...modelCallMeta,
         status: callStatus,
-        errorCode: callErrorCode,
-        errorMessage: schemaValid === false && schemaError !== undefined ? recordedSchemaError(schemaError) : undefined
-      }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode; errorMessage?: string });
+        usage,
+        ...(callErrorCode === undefined ? {} : { errorCode: callErrorCode }),
+        ...(schemaValid === false && schemaError !== undefined ? { errorMessage: recordedSchemaError(schemaError) } : {})
+      });
       return { source: "provider", message, callId };
     } catch (cause) {
       if (isRecordedProviderFailure(cause)) {
@@ -1948,7 +1978,8 @@ async function modelCallCacheWriteStatus(
   cacheKey: string,
   stage: ReviewStage,
   message: PiAssistantMessage,
-  cacheable: boolean
+  cacheable: boolean,
+  usage: NormalizedUsage | undefined
 ): Promise<ModelCallCacheStatus> {
   if (!opts.cache) {
     return "disabled";
@@ -1957,7 +1988,7 @@ async function modelCallCacheWriteStatus(
     return "miss";
   }
   try {
-    const result = await opts.cache.put(cacheKey, cacheEntry(stage, message));
+    const result = await opts.cache.put(cacheKey, cacheEntry(stage, message, usage));
     return result.status;
   } catch (cause) {
     const error = cause instanceof Error ? stripCredentials(cause.message) : stripCredentials(String(cause));
@@ -3517,7 +3548,7 @@ function recordModelCall(
     cacheStatus: ModelCallCacheStatus;
     promptText: string;
     durationMs: number;
-    usage?: StoredProviderResponse["usage"];
+    usage: NormalizedUsage | undefined;
     schemaValid?: boolean;
     status?: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode?: CodegenieErrorCode;
@@ -3529,7 +3560,7 @@ function recordModelCall(
   }
 ): void {
   const outputText = stableJson(message.content);
-  const usage = normalizeUsage(meta.usage ?? message.usage);
+  const usage = meta.usage;
   const finalArguments = finalArgumentTelemetry(message, request.stage, submitToolNameForStage(request.stage), meta.callId);
   const record = definedRecord({
     callId: meta.callId,
@@ -3579,7 +3610,7 @@ function recordModelCall(
     retryExhausted: meta.retryExhausted
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
-  const usageDebug = usageDebugPayload(model, message.usage, usage);
+  const usageDebug = usageDebugPayload(model, usage === undefined ? undefined : message.usage, usage);
   writeModelCallResponseDebug(opts, request, meta.callId, record, { response: message, usage: usageDebug });
   writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, { response: message, usage: usageDebug });
 }
@@ -3755,14 +3786,6 @@ function isCacheableProviderResponse(schemaValid: boolean | undefined, message: 
     toolCalls.every((toolCall) => tools.some((tool) => tool.name === toolCall.name));
 }
 
-function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiAssistantMessage): void {
-  opts.hooks.onUsage(definedRecord({
-    stage,
-    providerCalls: 1,
-    ...normalizeUsage(message.usage)
-  }) as LlmCallUsage);
-}
-
 function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage, usage?: NormalizedUsage): void {
   opts.hooks.onUsage({ stage, providerCalls: 1, ...usage });
 }
@@ -3774,16 +3797,19 @@ function tokensFromPartialUsage(usage: NormalizedUsage): NormalizedUsage {
   return tokens;
 }
 
-function cacheEntry(stage: ReviewStage, message: PiAssistantMessage): StoredProviderResponse {
-  const usage = normalizeUsage(message.usage);
+function cacheEntry(stage: ReviewStage, message: PiAssistantMessage, usage: NormalizedUsage | undefined): StoredProviderResponse {
   return {
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
     stage,
     message,
     finishReason: message.stopReason ?? stopReason(message),
-    usage: definedRecord(usage ?? {}) as StoredProviderResponse["usage"]
+    usage: usage ?? {}
   };
+}
+
+function hasNonzeroUsage(usage: NormalizedUsage | undefined): boolean {
+  return usage !== undefined && Object.values(usage).some(value => value > 0);
 }
 
 function normalizeUsage(input: unknown): NormalizedUsage | undefined {

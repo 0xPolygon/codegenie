@@ -147,6 +147,7 @@ type ModelStageSummary = {
   cacheReadCostUSD: number;
   cacheWriteCostUSD: number;
   unknownCostCalls: number;
+  usageUnknownCalls: number;
   cache: CacheCounts;
   retryAttempts: number;
   repairCalls: number;
@@ -415,6 +416,7 @@ class RunTelemetryImpl {
     cacheReadCostUSD: 0,
     cacheWriteCostUSD: 0,
     unknownCostCalls: 0,
+    usageUnknownCalls: 0,
     cache: emptyCacheCounts(),
     retryAttempts: 0,
     repairCalls: 0,
@@ -884,6 +886,7 @@ class RunTelemetryImpl {
     this.modelSummary.totalCalls += providerCallCount;
     this.modelSummary.providerCalls += providerCallCount;
     if (providerCallCount > 0) {
+      this.modelSummary.usageUnknownCalls += Number(record.totalTokens === undefined);
       this.modelSummary.inputTokens += record.inputTokens ?? 0;
       this.modelSummary.uncachedInputTokens += record.uncachedInputTokens ?? 0;
       this.modelSummary.cacheReadTokens += record.cacheReadTokens ?? 0;
@@ -927,6 +930,7 @@ class RunTelemetryImpl {
     bucket.count += providerCallCount;
     bucket.providerCalls += providerCallCount;
     if (providerCallCount > 0) {
+      bucket.usageUnknownCalls += Number(record.totalTokens === undefined);
       bucket.inputTokens += record.inputTokens ?? 0;
       bucket.uncachedInputTokens += record.uncachedInputTokens ?? 0;
       bucket.cacheReadTokens += record.cacheReadTokens ?? 0;
@@ -1099,6 +1103,7 @@ class RunTelemetryImpl {
     return {
       totalCostUSD: this.modelSummary.costUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
+      usageUnknownCalls: this.modelSummary.usageUnknownCalls,
       localModelCallCache: copyCacheCounts(this.modelSummary.cache),
       providerPromptCache: providerPromptCacheSummary(this.modelSummary),
       costBreakdown: costBreakdownSummary(this.modelSummary),
@@ -1193,6 +1198,7 @@ class RunTelemetryImpl {
       cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
       costBreakdown: costBreakdownSummary(this.modelSummary),
       unknownCostCalls: this.modelSummary.unknownCostCalls,
+      usageUnknownCalls: this.modelSummary.usageUnknownCalls,
       cache: this.modelSummary.cache,
       localModelCallCache: copyCacheCounts(this.modelSummary.cache),
       providerPromptCache: providerPromptCacheSummary(this.modelSummary),
@@ -1647,6 +1653,7 @@ function emptyModelStageSummary(): ModelStageSummary {
     cacheReadCostUSD: 0,
     cacheWriteCostUSD: 0,
     unknownCostCalls: 0,
+    usageUnknownCalls: 0,
     cache: emptyCacheCounts(),
     retryAttempts: 0,
     repairCalls: 0,
