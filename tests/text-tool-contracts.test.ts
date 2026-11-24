@@ -459,6 +459,35 @@ describe("text tools: exact range and model-facing argument contracts", () => {
     }
     expect(description("find_symbol_mentions")).toContain("including comments/strings");
   });
+
+  it("describes and enforces selector cardinality without top-level schema combinators", async () => {
+    const cases = [
+      { name: "read_symbol", fields: ["symbolName", "line"], rule: "exactly one of symbolName or line",
+        missing: { path: "src/shared.ts" }, both: { path: "src/shared.ts", symbolName: "SharedCall", line: 1 } },
+      { name: "read_diff_blocks", fields: ["packetId", "path"], rule: "exactly one of packetId or path",
+        missing: {}, both: { packetId: "packet", path: "src/shared.ts" } },
+      { name: "find_likely_tests", fields: ["path", "symbol"], rule: "at least one of path or symbol", missing: {} }
+    ];
+    for (const entry of cases) {
+      const tool = fixture.definitions.find(item => item.name === entry.name)!;
+      const schema = tool.parameters as { properties: Record<string, { description?: string }> } & Record<string, unknown>;
+      expect(tool.description).toContain(entry.rule);
+      for (const field of entry.fields) expect(schema.properties[field]!.description).toContain(entry.rule);
+      for (const combinator of ["oneOf", "anyOf", "allOf"]) expect(schema).not.toHaveProperty(combinator);
+      const absent = await fixture.call(entry.name, entry.missing);
+      expect(absent).toMatchObject({ isError: true, errorCode: "invalid_args" });
+      expect(absent.text).toContain(entry.rule);
+      if (entry.both) {
+        const both = await fixture.call(entry.name, entry.both);
+        expect(both).toMatchObject({ isError: true, errorCode: "invalid_args" });
+        expect(both.text).toContain(entry.rule);
+      }
+    }
+    const pathAndSymbol = await fixture.call("find_likely_tests", { path: "src/shared.ts", symbol: {
+      path: "src/shared.ts", name: "SharedCall", kind: "function", lineRange: [1, 1]
+    } });
+    expect(pathAndSymbol.isError).not.toBe(true);
+  });
 });
 
 const exactSource = {

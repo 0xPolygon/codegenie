@@ -915,7 +915,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if (input.path === undefined && input.symbol === undefined) {
-          throw new CodegenieError("invalid_args", "findLikelyTests requires a path or symbol");
+          throw new CodegenieError("invalid_args", "find_likely_tests requires at least one of path or symbol");
         }
         const normalizedInput = this.normalizeLikelyTestsInput(input);
         const result = await findLikelyTestsForInput(this.opts.resolver, this.opts.registry, normalizedInput);
