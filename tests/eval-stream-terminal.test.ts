@@ -44,6 +44,27 @@ describe('physical SSE terminal observation', () => {
     await observeStreamTerminal(body, { record: (value: string) => terminals.push(value) }).text();
     expect(terminals).toEqual(['provider_error_event']);
   });
+  it('uses primary-choice and SDK error-event semantics', async () => {
+    for (const [text, expected] of [
+      ['event: error\ndata: "synthetic"\n\ndata: [DONE]\n\n', 'provider_error_event'],
+      ['data: {"error":"synthetic"}\n\ndata: [DONE]\n\n', 'provider_error_event'],
+      ['event: thread.message\ndata: {"error":"not a completion error"}\n\n', 'unknown'],
+      ['data: {"choices":[{"finish_reason":"network_error"}]}\n\ndata: [DONE]\n\n', 'provider_error_event'],
+      ['data: {"choices":[{"finish_reason":null},{"finish_reason":"stop"}]}\n\n', 'unknown']
+    ] as const) {
+      const terminals: string[] = [];
+      await observeStreamTerminal(response([text]), { record: (value: string) => terminals.push(value) }).text();
+      expect(terminals).toEqual([expected]);
+    }
+  });
+  it('records a body reset after finish but before usage and DONE', async () => {
+    const finish = 'data: {"choices":[{"finish_reason":"stop"}]}\n\n';
+    for (const [fail, expected] of [[true, 'body_reset'], [false, 'done']] as const) {
+      const terminals: string[] = [], stream = observeStreamTerminal(response(['data: {"choices":[]}\n\n', finish], fail), { record: (value: string) => terminals.push(value) });
+      try { await stream.text(); } catch { /* synthetic reset */ }
+      expect(terminals).toEqual([expected]);
+    }
+  });
   it('distinguishes local abort from ambiguous consumer cancellation', async () => {
     for (const [abort, expected] of [[true, 'local_cancel'], [false, 'unknown']] as const) {
       const signal = new AbortController(), terminals: string[] = [];

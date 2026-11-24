@@ -2,6 +2,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { TransportAdmissionError } from '../src/llm/transport-admission.js';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { makePhysicalTransport } from '../evals/runner/physical-fetch.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
@@ -81,6 +84,34 @@ describe('campaign terminal evidence', () => {
       for (const terminal of ['done', 'local_cancel', 'unknown', null]) {
         f.ledger.db.prepare('UPDATE physical SET stream_terminal=?').run(terminal); expect(() => check()).toThrow('transient failure evidence missing');
       }
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('accepts a real physical reset after finish when the exact retry and submit succeed', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-finish-reset-')), f = fixture(dir);
+    try {
+      f.ledger.db.prepare('DELETE FROM physical').run(); f.models.length = 0;
+      const keyFingerprint = f.ledger.fingerprint('synthetic-key');
+      f.ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
+      f.ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      const call = { callId: 'failed', provider: 'openrouter', modelId: 'model', reasoningSelected: 'high', templateVersion: 'p7', kind: 'initial' };
+      const expected = { ...call, api: 'openai-completions', destination: 'https://synthetic.invalid/chat', wireEffort: 'high' };
+      let sent = false;
+      const transport = makePhysicalTransport({ ledger: f.ledger, call, expected, attemptPrefix: f.prefix, AdmissionError: TransportAdmissionError,
+        fetchImpl: async () => new Response(new ReadableStream({ pull(controller) {
+          if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode('data: {"choices":[{"finish_reason":"stop"}]}\n\n')); }
+          else controller.error(new Error('synthetic reset before usage'));
+        } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
+      const response = await transport.fetch(expected.destination, { method: 'POST', headers: { authorization: 'Bearer synthetic-key' }, body: JSON.stringify({ model: 'model', reasoning: { effort: 'high' } }) });
+      await expect(response.text()).rejects.toThrow('synthetic reset');
+      transport.onUsage({ source: 'terminal', terminal: 'error', costFromProvider: false });
+      const failed = `${f.prefix}/failed/physical-1`;
+      expect(f.ledger.db.prepare('SELECT stream_terminal,state,charge FROM physical WHERE id=?').get(failed)).toEqual({ stream_terminal: 'body_reset', state: 'unknown', charge: 400_000 });
+      const success = `${f.prefix}/success/physical-1`;
+      f.ledger.reservePhysical({ id: success, logicalId: `${f.prefix}/success`, kind: 'initial', provider: 'openrouter' });
+      f.ledger.settlePhysical({ id: success, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } });
+      const common = { runId: 'run-1', stage: 7, kind: 'initial', workerId: 'worker', packetId: 'packet', structuredRequestId: 'request', cacheStatus: 'disabled' };
+      f.models.push({ ...common, attempt: 1, callId: 'failed', status: 'transient_error' }, { ...common, attempt: 2, callId: 'success', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+      f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1, physicalStarts: 2 });
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
   });
   it('accepts a recovered held stream reset, but stops on failed retry or three resets', () => {

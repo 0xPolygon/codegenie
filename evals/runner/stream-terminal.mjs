@@ -16,9 +16,14 @@ export function observeStreamTerminal(response, { signal, record }) {
       else {
         try {
           const parsed = JSON.parse(payload);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            if ((event === 'error' || (parsed.error !== null && typeof parsed.error === 'object' && !Array.isArray(parsed.error))) && !terminal) terminal = 'provider_error_event';
-            else if (!terminal && Array.isArray(parsed.choices) && parsed.choices.some((choice) => finishes.has(choice?.finish_reason))) sawFinish = true;
+          // The SDK yields thread envelopes before inspecting data.error;
+          // named error events and truthy top-level errors otherwise throw.
+          if (event.startsWith('thread.')) { /* not a completion terminal */ }
+          else if (event === 'error' || (parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'error') && Boolean(parsed.error))) terminal = 'provider_error_event';
+          else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.choices)) {
+            const reason = parsed.choices[0]?.finish_reason;
+            if (['network_error', 'content_filter'].includes(reason)) terminal = 'provider_error_event';
+            else if (finishes.has(reason)) sawFinish = true;
           }
         } catch { uncertain = true; }
       }
@@ -68,7 +73,7 @@ export function observeStreamTerminal(response, { signal, record }) {
         if (terminal) persist(terminal);
         controller.enqueue(result.value);
       } catch (error) {
-        try { persist(terminal ?? (sawFinish && !uncertain ? 'done' : signal?.aborted || cancelled ? 'local_cancel' : uncertain ? 'unknown' : 'body_reset')); }
+        try { persist(terminal ?? (signal?.aborted || cancelled ? 'local_cancel' : uncertain ? 'unknown' : 'body_reset')); }
         catch (accountingError) { controller.error(accountingError); return; }
         controller.error(error);
       }
