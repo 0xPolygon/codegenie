@@ -84,6 +84,10 @@ describe('campaign terminal evidence', () => {
       };
       addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
       expect(() => f.check(2)).toThrow('too many recovered');
+      const successRow = f.ledger.db.prepare('SELECT * FROM physical WHERE logical_id=?').get(`${f.prefix}/success-1`);
+      f.ledger.db.prepare("UPDATE physical SET http_status=503,state='unknown',charge=400000,evidence_json=NULL WHERE logical_id=?").run(`${f.prefix}/success-1`);
+      expect(() => f.check()).toThrow('model usage missing');
+      f.ledger.db.prepare('UPDATE physical SET http_status=?,state=?,charge=?,evidence_json=? WHERE logical_id=?').run(successRow.http_status, successRow.state, successRow.charge, successRow.evidence_json, `${f.prefix}/success-1`);
       f.models[1]!.status = 'transient_error'; f.save(); expect(() => f.check()).toThrow('model usage missing');
       f.models[1]!.status = 'ok'; addReset(2); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 2 });
       addReset(3); f.save(); expect(() => f.check()).toThrow('too many recovered');

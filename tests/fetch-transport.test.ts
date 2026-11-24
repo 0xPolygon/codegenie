@@ -30,7 +30,7 @@ describe("physical transport seam", () => {
         }
         const chunks = [
           { id: "fixture", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: null }] },
-          { id: "fixture", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.000123, is_byok: false } }
+          { id: "fixture", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, prompt_tokens_details: { cached_tokens: 2, cache_write_tokens: 3 }, completion_tokens: 5, total_tokens: 15, cost: 0.000123, is_byok: false } }
         ];
         return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
       };
@@ -46,6 +46,7 @@ describe("physical transport seam", () => {
       ]);
       expect(calls[0]?.body).toBe(calls[1]?.body);
       expect(result.usage?.totalTokens).toBe(15);
+      expect(result.usage).toMatchObject({ input: 5, cacheRead: 2, cacheWrite: 3, output: 5, totalTokens: 15 });
       // The native usage event belongs to the successful physical attempt.
       calls[1]!.usage = result.usage?.totalTokens ?? null;
       expect(calls.map((call) => call.usage)).toEqual([null, 15]);
@@ -54,6 +55,9 @@ describe("physical transport seam", () => {
       transport.onUsage({ source: "terminal", terminal: "done", costFromProvider: cost?.totalFromProvider, providerCost: cost?.total });
       const rows = ledger.db.prepare("SELECT logical_id,state,charge FROM physical ORDER BY id").all();
       expect(rows).toEqual([{ logical_id: "slot/attempt-01/mc-1", state: "unknown", charge: 400_000 }, { logical_id: "slot/attempt-01/mc-1", state: "priced", charge: 123 }]);
+      const evidence = JSON.parse(ledger.db.prepare("SELECT evidence_json FROM physical WHERE state='priced'").get().evidence_json);
+      expect(evidence).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+      expect(evidence.inputTokens).toBe((result.usage?.input ?? 0) + (result.usage?.cacheRead ?? 0) + (result.usage?.cacheWrite ?? 0));
       ledger.close(); rmSync(dir, { recursive: true, force: true });
     } finally { vi.unstubAllEnvs(); }
   });
