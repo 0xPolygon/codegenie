@@ -23,6 +23,10 @@ describe("module binding changes in diff rows", () => {
     { language: "typescript", rows: [' export {', '-  original,', '+  next as renamed,', ' } from "./values";'], rule: "ecma_export" },
     { language: "go", rows: ['-import prior "example.org/service"', '+import updated "example.org/service"'], rule: "go_import" },
     { language: "go", rows: [' import (', '-  "fmt"', '   "io"', ' )'], rule: "go_import" },
+    { language: "go", rows: ['   "fmt"', '+  "io"', ' )'], rule: "go_import" },
+    { language: "go", rows: ['   "fmt"', '   // driver registration', '+  _ "example.org/driver"', '   "io"'], rule: "go_import" },
+    { language: "go", rows: ['   "fmt"', '-  prior "example.org/driver"', '+  next "example.org/driver"'], rule: "go_import" },
+    { language: "go", rows: ['   first "example.org/first"', '+  next "example.org/second"', ' )'], rule: "go_import" },
     { language: "python", rows: ['-from .database import prepare', '+from .database import prepare as start'], rule: "python_import" }
   ])("recognizes $rule in $language", ({ language, rows, rule }) => {
     expect(changedModuleBinding([hunk(rows)], language)).toEqual({ hunkId: "h1", rule });
@@ -34,6 +38,9 @@ describe("module binding changes in diff rows", () => {
     { language: "typescript", rows: ["-import { one } from './values';", '+import {', '+  one,', '+} from "./values" // style'] },
     { language: "go", rows: ['-import "fmt"', '+import (', '+ "fmt"', '+)'] },
     { language: "go", rows: ['+  "looks/like/a/path"'] },
+    { language: "go", rows: ['   "first",', '-  "second",', '+  "third",'] },
+    { language: "go", rows: ['   Embedded "first"', '-  Feature "second"', '+  Feature "third"', ' }'] },
+    { language: "go", rows: ['   "fmt"', '+  // adjacent comment', '   "io"'] },
     { language: "python", rows: ['+# from .database import prepare', '+'] }
   ])("keeps unrelated and formatting-only $language changes outside the rule", ({ language, rows }) => {
     expect(changedModuleBinding([hunk(rows)], language)).toBeUndefined();
