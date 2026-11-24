@@ -156,7 +156,6 @@ describe("package build scaffold", () => {
       const consumerDirectory = path.join(sandbox, "consumer");
       mkdirSync(packageDirectory);
       mkdirSync(consumerDirectory);
-      execFileSync("pnpm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" });
       const packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", packageDirectory], {
         cwd: process.cwd(),
         encoding: "utf8"

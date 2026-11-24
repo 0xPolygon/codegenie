@@ -1,14 +1,12 @@
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { runHealthProbe } from '../evals/runner/health.mjs';
 
-beforeAll(() => { execFileSync('pnpm', ['build'], { stdio: 'pipe' }); }, 60_000);
 const expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', templateVersion: 'campaign-health.1', wireEffort: 'high' };
 function response(usage: object = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.0001, is_byok: false }) {
   const base = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'openai/gpt-6-luna' };

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { outsideCheckout } from './case.mjs';
 import { boundaryDecision } from './boundary.mjs';
@@ -16,17 +16,18 @@ export class CampaignSupervisor {
     if (typeof binding !== 'string' || !binding || !Buffer.isBuffer(scheduleBytes) || !isHash(scheduleSHA256) || sha(scheduleBytes) !== scheduleSHA256) throw new Error('campaign schedule binding mismatch');
     const parsed = JSON.parse(scheduleBytes.toString('utf8'));
     if (!Array.isArray(parsed.slots) || parsed.slots.length === 0 || parsed.slots.some((s) =>
-      typeof s.id !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(s.id) || typeof s.boundaryId !== 'string' || !s.boundaryId || typeof s.provider !== 'string' || !s.provider) ||
+      typeof s.id !== 'string' || !/^[A-Za-z0-9._-]+$/u.test(s.id) || ['.', '..'].includes(s.id) || typeof s.boundaryId !== 'string' || !s.boundaryId || typeof s.provider !== 'string' || !s.provider) ||
       new Set(parsed.slots.map((s) => s.id)).size !== parsed.slots.length ||
       (parsed.pauseAfterSlot !== undefined && !parsed.slots.some((s) => s.id === parsed.pauseAfterSlot))) throw new Error('invalid campaign schedule');
     this.slots = parsed.slots;
     this.binding = binding;
     this.pauseAfterSlot = parsed.pauseAfterSlot;
-    this.db = new DatabaseSync(outsideCheckout(file));
+    this.dbPath = outsideCheckout(file);
+    this.db = new DatabaseSync(this.dbPath);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
-      CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, PRIMARY KEY(slot_id,attempt_no));
+      CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retry_authorization(slot_id TEXT PRIMARY KEY, attempt_no INTEGER NOT NULL, failure_sha256 TEXT NOT NULL, proof_sha256 TEXT NOT NULL, probe_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
@@ -45,14 +46,16 @@ export class CampaignSupervisor {
     const row = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
     const slot = this.slots.find((item) => item.id === slotId);
     if (!row || row.state !== 'started' || !slot?.workerConfig || typeof slot.workerConfig !== 'object' || Array.isArray(slot.workerConfig) ||
-        config.ledgerBinding !== this.binding || JSON.stringify(canonical(config)) !== JSON.stringify(canonical({ ...slot.workerConfig, attemptPrefix: prefixFor(slotId, attemptNo) }))) throw new Error('worker attempt binding mismatch');
+        typeof config.supervisorPath !== 'string' || outsideCheckout(config.supervisorPath) !== this.dbPath || config.ledgerBinding !== this.binding ||
+        JSON.stringify(canonical(config)) !== JSON.stringify(canonical({ ...slot.workerConfig, attemptPrefix: prefixFor(slotId, attemptNo) }))) throw new Error('worker attempt binding mismatch');
     return true;
   }
   claimWorker(slotId, attemptNo, configBytes, configSHA256) {
     return this.transaction(() => {
       this.verifyWorkerBinding(slotId, attemptNo, configBytes, configSHA256);
-      this.db.prepare('INSERT INTO worker_claim VALUES(?,?,?)').run(slotId, attemptNo, configSHA256);
-      return true;
+      const token = randomBytes(32).toString('hex');
+      this.db.prepare('INSERT INTO worker_claim(slot_id,attempt_no,config_sha256,token_sha256) VALUES(?,?,?,?)').run(slotId, attemptNo, configSHA256, sha(token));
+      return token;
     });
   }
   noStartCount(slotId) {
@@ -82,12 +85,12 @@ export class CampaignSupervisor {
     for (const slot of this.slots.slice(0, rows.length)) {
       const row = byId.get(slot.id);
       const attempt = this.db.prepare('SELECT state,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no=?').get(row.slot_id, row.attempt_no);
-      const claim = this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(row.slot_id, row.attempt_no);
+      const claim = this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1').get(row.slot_id, row.attempt_no);
       if (!attempt || !claim || attempt.receipt_sha256 !== row.receipt_sha256 || verifyReceipt(row.slot_id, row.attempt_no, row.receipt_sha256) !== true) throw new Error('attempt receipt missing or changed');
       const priorFailures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no<? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slot.id, row.attempt_no);
       if (priorFailures.length) {
         const auth = this.db.prepare('SELECT * FROM retry_authorization WHERE slot_id=?').get(slot.id);
-        if (priorFailures.length !== 1 || !this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slot.id, priorFailures[0].attempt_no) ||
+        if (priorFailures.length !== 1 || !this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1').get(slot.id, priorFailures[0].attempt_no) ||
             verifyReceipt(slot.id, priorFailures[0].attempt_no, priorFailures[0].receipt_sha256) !== true ||
             !auth || auth.attempt_no !== priorFailures[0].attempt_no || auth.failure_sha256 !== priorFailures[0].receipt_sha256 ||
             typeof verifyRetry !== 'function' || verifyRetry(slot.id, auth.attempt_no, auth.failure_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
@@ -171,7 +174,7 @@ export class CampaignSupervisor {
         this.db.prepare("UPDATE attempt SET state='no_start' WHERE slot_id=? AND attempt_no=?").run(slotId, attemptNo);
         return { state: 'no_start' };
       }
-      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('physical start lacks worker claim');
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1').get(slotId, attemptNo)) throw new Error('physical start lacks worker claim');
       if (typeof sealInterrupted !== 'function' || typeof verifyReceipt !== 'function') throw new Error('interrupted attempt receipt required');
       const hash = sealInterrupted(slotId, attemptNo, physical);
       if (!isHash(hash) || verifyReceipt(slotId, attemptNo, hash) !== true) throw new Error('interrupted attempt receipt missing or changed');
@@ -210,7 +213,7 @@ export class CampaignSupervisor {
     if (!isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || typeof verifyFailure !== 'function' ||
         verifyReceipt(slotId, attemptNo, receiptSHA256) !== true || verifyFailure(slotId, attemptNo, receiptSHA256) !== true) throw new Error('failure evidence missing or changed');
     this.transaction(() => {
-      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length > 1) throw new Error('retry limit exhausted');
       if (failures.length === 1) {
@@ -232,7 +235,7 @@ export class CampaignSupervisor {
   seal(slotId, attemptNo, receiptSHA256, verifyReceipt, verifyRetry, ledger) {
     if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || !isHash(receiptSHA256) || typeof verifyReceipt !== 'function' || verifyReceipt(slotId, attemptNo, receiptSHA256) !== true) throw new Error('attempt receipt missing or changed');
     this.transaction(() => {
-      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
+      if (!this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=? AND activated=1').get(slotId, attemptNo)) throw new Error('attempt lacks worker claim');
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length) {
         const first = failures[0], auth = this.db.prepare('SELECT * FROM retry_authorization WHERE slot_id=?').get(slotId);

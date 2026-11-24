@@ -20,11 +20,13 @@ export class CampaignLedger {
       CREATE TABLE IF NOT EXISTS meter_poll(boundary_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, stale_count INTEGER NOT NULL, next_ms INTEGER NOT NULL, pending INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
-    this.transaction(() => {
-      const row = this.db.prepare('SELECT * FROM campaign').get();
-      if (!row) this.db.prepare('INSERT INTO campaign(binding,limit_micros,reserve_micros,error_hold_micros,salt) VALUES(?,?,?,?,?)').run(binding, limitMicros, reserveMicros, errorHoldMicros, randomBytes(32));
-      else if (row.binding !== binding || row.limit_micros !== limitMicros || row.reserve_micros !== reserveMicros || row.error_hold_micros !== errorHoldMicros) throw new Error('ledger binding mismatch');
-    });
+    try {
+      this.transaction(() => {
+        const row = this.db.prepare('SELECT * FROM campaign').get();
+        if (!row) this.db.prepare('INSERT INTO campaign(binding,limit_micros,reserve_micros,error_hold_micros,salt) VALUES(?,?,?,?,?)').run(binding, limitMicros, reserveMicros, errorHoldMicros, randomBytes(32));
+        else if (row.binding !== binding || row.limit_micros !== limitMicros || row.reserve_micros !== reserveMicros || row.error_hold_micros !== errorHoldMicros) throw Object.assign(new Error('ledger binding mismatch'), { context: { reason: 'binding_mismatch' } });
+      });
+    } catch (error) { this.db.close(); throw error; }
   }
   fingerprint(key) {
     if (typeof key !== 'string' || !key) throw new TypeError('key required');

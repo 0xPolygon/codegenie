@@ -63,12 +63,28 @@ export function prepareTarget(target, url, base, head, pullRequest) {
   }
 }
 
-export async function runCase(configFile, { fetchForCall, caseConfigBytes } = {}) {
+export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
+  if (typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._-]+\/attempt-\d{2,}$/u.test(attemptPrefix) || ['.', '..'].includes(attemptPrefix.split('/')[0])) throw new Error('invalid attempt prefix');
+  const file = path.resolve(configFile), config = JSON.parse(caseConfigBytes.toString('utf8'));
+  if (!config || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
+  const suiteDir = path.resolve(path.dirname(file), config.caseDir);
+  const { loadEvalSuite } = await import('../../dist/evals/eval-runner.js');
+  const { loadConfig } = await import('../../dist/config/config-loader.js');
+  const suite = await loadEvalSuite(suiteDir), found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
+  if (found.length !== 1) throw new Error('campaign caseName must match one case');
+  const base = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false }).config;
+  const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('invalid review timeout');
+  const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
+  return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
+}
+
+export async function runCase(configFile, { fetchForCall, caseConfigBytes, outputOverride } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
   const suiteDir = path.resolve(path.dirname(file), config.caseDir);
-  const output = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
+  const output = outsideCheckout(outputOverride ?? (config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName)));
   const { loadEvalSuite, runEvalCase } = await import('../../dist/evals/eval-runner.js');
   const { loadConfig } = await import('../../dist/config/config-loader.js');
   const suite = await loadEvalSuite(suiteDir);

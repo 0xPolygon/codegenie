@@ -9,7 +9,7 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare('INSERT INTO worker_claim VALUES(?,?,?)').run(slot, number, 'a'.repeat(64));
+const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare('INSERT INTO worker_claim VALUES(?,?,?,?,?)').run(slot, number, 'a'.repeat(64), 'b'.repeat(64), 1);
 function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void }) {
   ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 50 });
   ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 100 });
@@ -72,7 +72,7 @@ describe('campaign admission custody', () => {
   it('allows one authenticated retry and preserves both failures on exclusion', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-retry-'));
     try {
-      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: { ledgerBinding: 'b' } }, { id: 'paired', boundaryId: 'paired', provider: 'openrouter' }] }));
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: { supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b' } }, { id: 'paired', boundaryId: 'paired', provider: 'openrouter' }] }));
       const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) });
       const realLedger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
@@ -89,9 +89,9 @@ describe('campaign admission custody', () => {
       supervisor.authorizeRetry('one', 1, proof, { ledger, retryProbeId: 'retry-probe', verifyReceipt, verifyFailure, verifyRetry });
       expect(supervisor.begin('one', args)).toMatchObject({ attempt: 2, attemptPrefix: 'one/attempt-02' });
       claim(supervisor, 'one', 2);
-      const config = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-02', ledgerBinding: 'b' }));
+      const config = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-02', supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b' }));
       expect(supervisor.verifyWorkerBinding('one', 2, config, digest(config))).toBe(true);
-      const wrongConfig = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-01', ledgerBinding: 'b' }));
+      const wrongConfig = Buffer.from(JSON.stringify({ attemptPrefix: 'one/attempt-01', supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b' }));
       expect(() => supervisor.verifyWorkerBinding('one', 2, wrongConfig, digest(wrongConfig))).toThrow('binding mismatch');
       supervisor.sealFailure('one', 2, second, { ledger, verifyReceipt, verifyFailure, verifyRetry });
       expect(supervisor.db.prepare('SELECT state FROM outcome WHERE slot_id=?').get('one')).toEqual({ state: 'excluded' });

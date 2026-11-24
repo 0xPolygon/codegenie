@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
@@ -16,7 +17,6 @@ function evidence(dir: string, receipt: object) {
   const text = JSON.stringify(receipt), hash = createHash("sha256").update(text).digest("hex"), file = path.join(dir, hash);
   writeFileSync(file, text); return { hash, file };
 }
-beforeAll(() => { execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" }); }, 60_000);
 
 describe("development eval worker", () => {
   it("keeps unadmitted boundaries and accounting failures distinct from a campaign stop", () => {
@@ -85,9 +85,11 @@ describe("development eval worker", () => {
       const out = execFileSync("node", command, { encoding: "utf8", env: { ...process.env, CODEGENIE_HOME: path.join(dir, "home") }, timeout: 60_000 });
       expect(JSON.parse(out)).toMatchObject({ caseName: "fixture-core-lens", status: "pass" });
       expect(readFileSync(ledgerPath).byteLength).toBeGreaterThan(0);
-      expect(() => execFileSync("node", [command[0]!, workerFile, "0".repeat(64)], { stdio: "pipe" })).toThrow();
+      const badWorker = spawnSync("node", [command[0]!, workerFile, "0".repeat(64)], { encoding: "utf8" });
+      expect(badWorker.status).toBe(1); expect(JSON.parse(badWorker.stdout)).toEqual({ error: "binding_mismatch" });
       writeFileSync(caseFile, JSON.stringify({ caseDir: path.join(checkout, "evals/fixtures"), caseName: "different", outputDir: path.join(dir, "output") }));
-      expect(() => execFileSync("node", command, { stdio: "pipe" })).toThrow();
+      const badCase = spawnSync("node", command, { encoding: "utf8" });
+      expect(badCase.status).toBe(1); expect(JSON.parse(badCase.stdout)).toEqual({ error: "binding_mismatch" });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 
@@ -100,6 +102,12 @@ describe("development eval worker", () => {
     const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "boundary-1" });
     const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
+    const supervisorPath = path.join(dir, "supervisor.sqlite"), workerToken = "b".repeat(64), workerConfigSHA256 = "c".repeat(64);
+    const supervisorDb = new DatabaseSync(supervisorPath);
+    supervisorDb.exec("CREATE TABLE campaign(binding TEXT); INSERT INTO campaign VALUES('synthetic'); CREATE TABLE worker_claim(slot_id TEXT,attempt_no INTEGER,config_sha256 TEXT,token_sha256 TEXT,activated INTEGER); CREATE TABLE attempt(slot_id TEXT,attempt_no INTEGER,state TEXT); INSERT INTO attempt VALUES('other-slot',1,'started'),('slot',1,'started')");
+    const tokenHash = createHash("sha256").update(workerToken).digest("hex");
+    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0)").run("other-slot", 1, workerConfigSHA256, tokenHash);
+    supervisorDb.prepare("INSERT INTO worker_claim VALUES(?,?,?,?,0)").run("slot", 1, workerConfigSHA256, tokenHash); supervisorDb.close();
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));
     const originalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", originalFetch);
     try {
@@ -116,15 +124,23 @@ describe("development eval worker", () => {
       const fetchImpl = vi.fn(async () => new Response("synthetic failure", { status: 400 }));
       const rejectedCase = path.join(dir, "rejected-case.json");
       writeFileSync(rejectedCase, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "rejected-output") }));
-      const rejected = await runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
-        attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles }, { fetchImpl });
+      await expect(runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+        attemptPrefix: "missing/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken })).rejects.toMatchObject({ context: { reason: "binding_mismatch" } });
+      await expect(runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken: "d".repeat(64) })).rejects.toMatchObject({ context: { reason: "binding_mismatch" } });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      const rejected = await runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+        attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken });
       expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
       const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
       expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "key_snapshot" }); afterRejection.close();
-      const result = await runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
-        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl });
+      const result = await runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken });
       expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
+      await expect(runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), supervisorPath, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+        attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl, workerConfigSHA256, workerToken })).rejects.toMatchObject({ context: { reason: "binding_mismatch" } });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
       const reopened = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(reopened.totals()).toMatchObject({ starts: 2, unknown: 1, chargedMicros: 300_000 }); reopened.close();
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
