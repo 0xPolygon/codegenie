@@ -15,6 +15,25 @@ const chunkZero = { source: "provider_chunk", usagePresent: true, costPresent: f
 const terminal = { source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, terminal: "error", costFromProvider: false };
 
 describe("physical fetch settlement", () => {
+  it.each([false, true])("stops and preserves the physical charge if settlement fails %s commit", async (afterCommit) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "test", limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      const settle = ledger.settlePhysical.bind(ledger);
+      ledger.settlePhysical = (entry: unknown) => { if (afterCommit) settle(entry); throw new Error("synthetic settlement failure"); };
+      const fetchImpl = vi.fn(async () => new Response("ok"));
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl, AdmissionError: TransportAdmissionError });
+      await transport.fetch(expected.destination, init);
+      expect(() => transport.onUsage({ ...terminal, terminal: "done", costFromProvider: true, providerCost: 0.01 })).toThrow();
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: afterCommit ? 10_000 : 400_000, stopped: "accounting_failed" });
+      const restart = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-02", fetchImpl, AdmissionError: TransportAdmissionError });
+      await expect(restart.fetch(expected.destination, init)).rejects.toMatchObject({ context: { reason: "accounting_failed" } });
+      expect(fetchImpl).toHaveBeenCalledTimes(1); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("retains the first retry hold and settles only the response producing usage", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
     try {
