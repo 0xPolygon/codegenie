@@ -96,7 +96,7 @@ export function verifyMechanismFreeze({ mechanismManifestSHA256, coding, manifes
       }
       if (cause.matchingEffect && !validMatch) throw new Error('matching effect lacks source-valid row');
       const diagnostic = projected.diagnostics.find((entry) => entry.causeId === cause.causeId);
-      if (!['mapped', 'unmapped'].includes(diagnostic.mapping) || !Array.isArray(diagnostic.uncoveredOnIncomplete)) throw new Error('invalid mechanism diagnostics');
+      if (!['mapped', 'unmapped', 'unavailable'].includes(diagnostic.mapping) || !Array.isArray(diagnostic.uncoveredOnIncomplete)) throw new Error('invalid mechanism diagnostics');
       derived.push({ id: item.id, causeId: cause.causeId, optional: first.causes.find((entry) => entry.id === cause.causeId).optional, matchingEffect: cause.matchingEffect, dispositions: [...dispositions].sort(), mapping: diagnostic.mapping, uncoveredOnIncomplete: diagnostic.uncoveredOnIncomplete, safetyBasis: cause.safetyBasis, missingSupport: cause.missingSupport, duplicateBoilerplate: cause.duplicateBoilerplate });
     }
   }

@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { verifyPrimaryLocks, verifyMechanismFreeze } from '../evals/runner/blind-locks.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { projectMechanism } from '../evals/runner/blind-mechanism.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 const sha = (x: string) => createHash('sha256').update(x).digest('hex');
 describe('blind export lock gate', () => {
   it('requires complete grades, two distinct locks, reconciliation and coding', () => {
@@ -73,6 +75,19 @@ it('accepts a source-valid assigned caller row for a callee-anchored cause, but 
     const write = (name: string, reviews: unknown[]) => { const bytes = JSON.stringify({ frozen: true, mechanismManifestSHA256, reviews }), file = path.join(dir, name); writeFileSync(file, bytes); return { path: file, sha256: sha(bytes) }; };
     const reviews = [{ id, causes: [cause('callee', true, [citation]), cause('topical', false, [{ ...citation, rowIndex: 1, sourceValid: false }])] }];
     expect(verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: write('ok', reviews) })).toMatchObject({ derived: [{ causeId: 'callee', dispositions: ['safe'], mapping: 'mapped' }, { causeId: 'topical', dispositions: [], mapping: 'unmapped' }] });
+    // Both codings are structurally valid, but a revealed cause judgment cannot be changed.
+    const initial = write('initial-freeze', reviews);
+    const flipped = write('flipped-freeze', [{ id, causes: [cause('callee', false, []), cause('topical', false, [])] }]);
+    expect(verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: flipped }).codingSHA256).toBe(flipped.sha256);
+    const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+    const dbPath = path.join(dir, 'supervisor.db'), binding = { binding: 'campaign', scheduleBytes, scheduleSHA256: sha(scheduleBytes.toString()), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'output') };
+    let supervisor = new CampaignSupervisor(dbPath, binding), token = supervisor.claimDriver();
+    supervisor.bindBlindExport('c'.repeat(64), 'd'.repeat(64)); supervisor.bindMechanismExport(mechanismManifestSHA256);
+    expect(supervisor.bindCodingFreeze(initial.sha256)).toBe(true); supervisor.releaseDriver(token); supervisor.close();
+    supervisor = new CampaignSupervisor(dbPath, binding); token = supervisor.claimDriver();
+    expect(supervisor.bindCodingFreeze(initial.sha256)).toBe(true);
+    expect(() => supervisor.bindCodingFreeze(flipped.sha256)).toThrow('coding freeze changed');
+    supervisor.releaseDriver(token); supervisor.close();
     const noRow = [{ id, causes: [cause('callee', true, []), cause('topical', false, [])] }];
     expect(() => verifyMechanismFreeze({ mechanismManifestSHA256, manifest, mapping, mechanismReviews, coding: write('none', noRow) })).toThrow('source-valid');
     const uncovered = [{ id, causes: [cause('callee', true, [{ ...citation, hunkId: 'uncovered' }]), cause('topical', false, [])] }];

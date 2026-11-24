@@ -54,7 +54,7 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
       anchorMappings: entry.anchorMappings ?? [] };
   });
   if (new Set(descriptors.map((entry) => entry.slotId)).size !== descriptors.length) throw new Error('duplicate selected slot');
-  if (descriptors.some((entry) => !Array.isArray(entry.anchorMappings) || entry.anchorMappings.length !== entry.causes.length || entry.causes.some((cause) => !entry.anchorMappings.some((mapping) => mapping.id === cause.id && mapping.optional === cause.optional && Array.isArray(mapping.hunkIds) && typeof mapping.unmapped === 'boolean' && mapping.unmapped === (mapping.hunkIds.length === 0))))) throw new Error('missing anchor diagnostics');
+  if (descriptors.some((entry) => !Array.isArray(entry.anchorMappings) || entry.anchorMappings.length !== entry.causes.length || entry.causes.some((cause) => !entry.anchorMappings.some((mapping) => mapping.id === cause.id && mapping.optional === cause.optional && Array.isArray(mapping.hunkIds) && typeof mapping.unmapped === 'boolean' && (mapping.unavailable === true ? !mapping.unmapped && mapping.hunkIds.length === 0 : mapping.unmapped === (mapping.hunkIds.length === 0)))))) throw new Error('missing anchor diagnostics');
   let key;
   if (existsSync(mapping)) {
     const stat = lstatSync(mapping);
@@ -163,7 +163,7 @@ export async function exportMechanism({ manifestFile, manifestSHA256, mappingFil
 
 // Pairing is released only after primary reconciliation and frozen mechanism
 // coding. The analyst-facing output never contains the export key or receipts.
-export async function revealPairing({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, mechanismManifestFile, mechanismManifestSHA256, coding, outputFile }) {
+export async function revealPairing({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, mechanismManifestFile, mechanismManifestSHA256, coding, outputFile, expectedCodingSHA256, bindPrepared }) {
   const { verifyPrimaryLocks, verifyMechanismFreeze } = await import('./blind-locks.mjs');
   const manifest = readBound(manifestFile, manifestSHA256);
   if ((lstatSync(checkedOutside(mappingFile)).mode & 0o077) !== 0) throw new Error('mapping permissions too broad');
@@ -188,10 +188,12 @@ export async function revealPairing({ manifestFile, manifestSHA256, mappingFile,
   }
   checkDestination(path.dirname(mechanismManifestFile), expectedMechanismFiles);
   const verifiedCoding = verifyMechanismFreeze({ mechanismManifestSHA256, coding, manifest, mapping, mechanismReviews });
+  if (expectedCodingSHA256 !== undefined && expectedCodingSHA256 !== verifiedCoding.codingSHA256) throw new Error('coding freeze changed');
   const output = checkedOutside(outputFile);
   if (output === mappingFile || output.startsWith(`${path.dirname(manifestFile)}${path.sep}`) || output.startsWith(`${path.dirname(mechanismManifestFile)}${path.sep}`)) throw new Error('reveal overlaps protected evidence');
   const bytes = json({ version: 1, manifestSHA256, mechanismManifestSHA256, codingSHA256: coding.sha256,
     reviews: mapping.selections.map((item) => ({ id: item.id, case: item.caseId, arm: item.arm, draw: item.draw })), mechanismCoding: verifiedCoding.derived });
+  if (bindPrepared !== undefined && (typeof bindPrepared !== 'function' || bindPrepared(verifiedCoding.codingSHA256) !== true)) throw new Error('coding freeze binding failed');
   mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
   publish(output, bytes);
   return { revealSHA256: digest(bytes), reviewCount: mapping.selections.length };

@@ -26,9 +26,9 @@ export function projectMechanism({ id, records, packets, anchorMappings = [] }) 
       source: { path: packet.path, hunks: packet.hunks.filter((hunk) => assigned.has(hunk.hunkId)) } };
   });
   const diagnostics = anchorMappings.map((mapping) => {
-    if (!mapping || typeof mapping.id !== 'string' || !Array.isArray(mapping.hunkIds) || typeof mapping.unmapped !== 'boolean' || mapping.unmapped !== (mapping.hunkIds.length === 0)) throw new Error('invalid anchor mapping');
+    if (!mapping || typeof mapping.id !== 'string' || !Array.isArray(mapping.hunkIds) || typeof mapping.unmapped !== 'boolean' || (mapping.unavailable === true ? mapping.unmapped || mapping.hunkIds.length !== 0 : mapping.unmapped !== (mapping.hunkIds.length === 0))) throw new Error('invalid anchor mapping');
     const uncovered = passes.flatMap((pass) => pass.reviewStatus === 'incomplete' ? pass.uncoveredHunks.filter((hunkId) => mapping.hunkIds.includes(hunkId)).map((hunkId) => ({ packetId: pass.packetId, pass: pass.pass, hunkId })) : []);
-    return { causeId: mapping.id, mapping: mapping.unmapped ? 'unmapped' : 'mapped', uncoveredOnIncomplete: uncovered };
+    return { causeId: mapping.id, mapping: mapping.unavailable === true ? 'unavailable' : mapping.unmapped ? 'unmapped' : 'mapped', uncoveredOnIncomplete: uncovered };
   });
   return { id, passes, diagnostics };
 }

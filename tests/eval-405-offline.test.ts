@@ -79,6 +79,19 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       supervisor.recordWorkerExit(slotId, attemptNo); return { caseName: 'fixture-core-lens', status: 'fail', runDir };
     };
     const dependencies = { fetchImpl, models, spawnWorker };
+    const changedCapture = JSON.parse(captureBytes.toString('utf8'));
+    changedCapture.result.plan.diffUnderstanding.declaredIntent = 'different captured plan';
+    changedCapture.telemetry[0].data = changedCapture.result.plan;
+    const changedBytes = Buffer.from(JSON.stringify(changedCapture)), changedPath = path.join(dir, 'other-planner.json'); writeFileSync(changedPath, changedBytes);
+    for (const kind of ['capture', 'packets']) {
+      const altered = JSON.parse(schedule.toString('utf8'));
+      if (kind === 'capture') Object.assign(altered.slots[1].workerConfig.plannerReplayBinding, { capturePath: changedPath, captureSHA256: sha(changedBytes) });
+      else altered.slots[1].expectedPacketIds = ['different-packet'];
+      const scheduleBytes = Buffer.from(JSON.stringify(altered)), alteredPath = path.join(dir, `schedule-${kind}.json`); writeFileSync(alteredPath, scheduleBytes);
+      const alteredConfig = { ...JSON.parse(config.toString('utf8')), schedulePath: alteredPath, scheduleSHA256: sha(scheduleBytes) };
+      const configBytes = Buffer.from(JSON.stringify(alteredConfig)), alteredConfigPath = path.join(dir, `config-${kind}.json`); writeFileSync(alteredConfigPath, configBytes);
+      await expect(openCampaign(alteredConfigPath, sha(configBytes), dependencies)).rejects.toThrow('sibling');
+    }
     const incompleteConfig = JSON.parse(config.toString('utf8')); delete incompleteConfig.blind.locatorManifestPath;
     const badConfig = Buffer.from(JSON.stringify(incompleteConfig)), badFile = path.join(dir, 'bad-campaign.json'); writeFileSync(badFile, badConfig);
     await expect(openCampaign(badFile, sha(badConfig), dependencies)).rejects.toThrow('blind manifest');

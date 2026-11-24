@@ -68,7 +68,7 @@ export class CampaignSupervisor {
       CREATE TABLE IF NOT EXISTS case_reset_event(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, case_id TEXT NOT NULL, receipt_sha256 TEXT NOT NULL, resets INTEGER NOT NULL, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS driver_claim(id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, host TEXT NOT NULL, process_start TEXT, pid_namespace TEXT, token_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS blind_export(id INTEGER PRIMARY KEY CHECK(id=1), mapping_sha256 TEXT, manifest_sha256 TEXT, mechanism_sha256 TEXT);`);
+      CREATE TABLE IF NOT EXISTS blind_export(id INTEGER PRIMARY KEY CHECK(id=1), mapping_sha256 TEXT, manifest_sha256 TEXT, mechanism_sha256 TEXT, coding_sha256 TEXT);`);
     try {
       const columns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
       if (!['binding', 'schedule_sha256', 'config_sha256', 'receipt_directory', 'schema_version'].every((name) => columns.includes(name))) throw new Error('unsupported campaign supervisor schema');
@@ -77,12 +77,12 @@ export class CampaignSupervisor {
         if (!old && !initialize) throw new Error('campaign supervisor custody requires reconciliation');
         if (!old) {
           this.db.prepare('INSERT INTO campaign VALUES(?,?,?,?,1)').run(binding, scheduleSHA256, configSHA256, boundReceiptDirectory);
-          this.db.prepare('INSERT INTO blind_export VALUES(1,NULL,NULL,NULL)').run();
+          this.db.prepare('INSERT INTO blind_export VALUES(1,NULL,NULL,NULL,NULL)').run();
         }
         else if (old.schema_version !== 1) throw new Error('unsupported campaign supervisor schema');
         else if (old.binding !== binding || old.schedule_sha256 !== scheduleSHA256 || old.config_sha256 !== configSHA256 || old.receipt_directory !== boundReceiptDirectory) throw new Error('campaign schedule binding mismatch');
-        const blind = this.db.prepare('SELECT mapping_sha256,manifest_sha256,mechanism_sha256 FROM blind_export WHERE id=1').get();
-        if (!blind || ((blind.mapping_sha256 === null) !== (blind.manifest_sha256 === null)) || (blind.mapping_sha256 !== null && (!isHash(blind.mapping_sha256) || !isHash(blind.manifest_sha256))) || (blind.mechanism_sha256 !== null && (!isHash(blind.mechanism_sha256) || blind.mapping_sha256 === null))) throw new Error('blind export custody requires reconciliation');
+        const blind = this.db.prepare('SELECT mapping_sha256,manifest_sha256,mechanism_sha256,coding_sha256 FROM blind_export WHERE id=1').get();
+        if (!blind || ((blind.mapping_sha256 === null) !== (blind.manifest_sha256 === null)) || (blind.mapping_sha256 !== null && (!isHash(blind.mapping_sha256) || !isHash(blind.manifest_sha256))) || (blind.mechanism_sha256 !== null && (!isHash(blind.mechanism_sha256) || blind.mapping_sha256 === null)) || (blind.coding_sha256 !== null && (!isHash(blind.coding_sha256) || blind.mechanism_sha256 === null))) throw new Error('blind export custody requires reconciliation');
         if (receiptDirectory !== undefined) this.receipts = createReceiptStore({ directory: receiptDirectory, binding, runRootFor, create: !old });
       });
     } catch (error) { this.db.close(); throw error; }
@@ -106,6 +106,17 @@ export class CampaignSupervisor {
       if (!existing || !isHash(existing.mapping_sha256) || !isHash(existing.manifest_sha256)) throw new Error('blind export not bound');
       if (existing.mechanism_sha256 !== null && existing.mechanism_sha256 !== mechanismSHA256) throw new Error('mechanism export binding changed');
       if (existing.mechanism_sha256 === null) this.db.prepare('UPDATE blind_export SET mechanism_sha256=? WHERE id=1').run(mechanismSHA256);
+      return true;
+    });
+  }
+  bindCodingFreeze(codingSHA256) {
+    if (!isHash(codingSHA256)) throw new Error('invalid coding freeze');
+    return this.transaction(() => {
+      this.assertDriver();
+      const existing = this.db.prepare('SELECT mechanism_sha256,coding_sha256 FROM blind_export WHERE id=1').get();
+      if (!existing || !isHash(existing.mechanism_sha256)) throw new Error('mechanism export not bound');
+      if (existing.coding_sha256 !== null && existing.coding_sha256 !== codingSHA256) throw new Error('coding freeze changed');
+      if (existing.coding_sha256 === null) this.db.prepare('UPDATE blind_export SET coding_sha256=? WHERE id=1').run(codingSHA256);
       return true;
     });
   }
