@@ -1,6 +1,6 @@
 import { CodegenieError } from "../util/errors.js";
 
-export type TransportAdmissionReason = "campaign_budget" | "binding_mismatch" | "provider_denied" | "accounting_failed";
+export type TransportAdmissionReason = "campaign_budget" | "binding_mismatch" | "provider_denied" | "accounting_failed" | "campaign_stopped";
 
 /** Internal campaign admission decision made before a physical provider start. */
 export class TransportAdmissionError extends CodegenieError {
@@ -50,6 +50,7 @@ export type ProviderUsageObservation = {
   reasoningTokens?: number;
   providerCost?: number;
   providerBilledCost?: number;
+  providerCostLowerBound?: number;
   isByok?: boolean;
   terminal?: "done" | "error" | "aborted";
   costFromProvider?: boolean;
@@ -64,7 +65,8 @@ const numberValue = (value: unknown): number | undefined =>
 /** Project only usage and explicit presence from an OpenRouter provider chunk. */
 export function projectProviderUsage(chunk: unknown): ProviderUsageObservation | undefined {
   const root = asRecord(chunk);
-  if (!root || !Object.hasOwn(root, "usage")) return undefined;
+  if (!root) return undefined;
+  const usagePresent = Object.hasOwn(root, "usage");
   const usage = asRecord(root.usage);
   const details = asRecord(usage?.completion_tokens_details);
   const inputTokens = numberValue(usage?.prompt_tokens);
@@ -74,6 +76,17 @@ export function projectProviderUsage(chunk: unknown): ProviderUsageObservation |
   const providerCost = numberValue(usage?.cost);
   const isByok = typeof usage?.is_byok === "boolean" ? usage.is_byok : undefined;
   const costDetails = asRecord(usage?.cost_details);
+  let providerCostLowerBound = providerCost;
+  if (isByok === true && costDetails !== undefined) {
+    const aggregate = numberValue(costDetails.upstream_inference_cost);
+    const prompt = numberValue(costDetails.upstream_inference_prompt_cost);
+    const completion = numberValue(costDetails.upstream_inference_completions_cost);
+    const upstreamBound = aggregate !== undefined ? aggregate : (prompt ?? 0) + (completion ?? 0);
+    if (aggregate !== undefined || prompt !== undefined || completion !== undefined) {
+      const total = (providerCost ?? 0) + upstreamBound;
+      if (Number.isFinite(total)) providerCostLowerBound = total;
+    }
+  }
   let providerBilledCost: number | undefined;
   if (providerCost !== undefined && isByok === false) providerBilledCost = providerCost;
   if (providerCost !== undefined && isByok === true && costDetails !== undefined) {
@@ -86,7 +99,7 @@ export function projectProviderUsage(chunk: unknown): ProviderUsageObservation |
     if (upstream !== undefined && Number.isFinite(providerCost + upstream)) providerBilledCost = providerCost + upstream;
   }
   return {
-    source: "provider_chunk", usagePresent: true,
+    source: "provider_chunk", usagePresent,
     costPresent: usage !== undefined && Object.hasOwn(usage, "cost"),
     reasoningTokensPresent: details !== undefined && Object.hasOwn(details, "reasoning_tokens"),
     ...(inputTokens !== undefined ? { inputTokens } : {}),
@@ -95,6 +108,7 @@ export function projectProviderUsage(chunk: unknown): ProviderUsageObservation |
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     ...(providerCost !== undefined ? { providerCost } : {}),
     ...(providerBilledCost !== undefined ? { providerBilledCost } : {}),
+    ...(providerCostLowerBound !== undefined ? { providerCostLowerBound } : {}),
     ...(isByok !== undefined ? { isByok } : {})
   };
 }

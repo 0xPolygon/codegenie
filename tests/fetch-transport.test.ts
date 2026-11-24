@@ -37,7 +37,10 @@ describe("physical transport seam", () => {
       const result = await adapter.complete(model, { messages: [{ role: "user", content: "fixture", timestamp: 0 }], tools: [] }, { submitToolName: "submit_review", fetch: transport.fetch, reasoning: "high", maxRetries: 1,
         onProviderStreamEvent: (chunk: unknown) => { const usage = projectProviderUsage(chunk); if (usage) { observed.push(usage); transport.onUsage(usage); } } });
       expect(calls).toHaveLength(2);
-      expect(observed).toEqual([{ source: "provider_chunk", usagePresent: true, costPresent: true, reasoningTokensPresent: false, inputTokens: 10, outputTokens: 5, totalTokens: 15, providerCost: 0.000123, providerBilledCost: 0.000123, isByok: false }]);
+      expect(observed).toEqual([
+        { source: "provider_chunk", usagePresent: false, costPresent: false, reasoningTokensPresent: false },
+        { source: "provider_chunk", usagePresent: true, costPresent: true, reasoningTokensPresent: false, inputTokens: 10, outputTokens: 5, totalTokens: 15, providerCost: 0.000123, providerBilledCost: 0.000123, providerCostLowerBound: 0.000123, isByok: false }
+      ]);
       expect(calls[0]?.body).toBe(calls[1]?.body);
       expect(result.usage?.totalTokens).toBe(15);
       // The native usage event belongs to the successful physical attempt.
@@ -72,11 +75,11 @@ describe("physical transport seam", () => {
   });
 
   it("distinguishes missing usage from an explicitly reported zero", () => {
-    expect(projectProviderUsage({ choices: [{ delta: { content: "do not retain" } }] })).toBeUndefined();
+    expect(projectProviderUsage({ choices: [{ delta: { content: "do not retain" } }] })).toEqual({ source: "provider_chunk", usagePresent: false, costPresent: false, reasoningTokensPresent: false });
     expect(projectProviderUsage({ usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost: 0,
       completion_tokens_details: { reasoning_tokens: 0 } }, secret: "do not retain" })).toEqual({
       source: "provider_chunk", usagePresent: true, costPresent: true, reasoningTokensPresent: true,
-      inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, providerCost: 0
+      inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, providerCost: 0, providerCostLowerBound: 0
     });
   });
   it("does not turn a normal fetch failure into a local admission denial", async () => {

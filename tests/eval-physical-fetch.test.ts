@@ -64,6 +64,62 @@ describe("physical fetch settlement", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("does not treat an earlier zero as final after later provider output", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl: async () => new Response("ok"), AdmissionError: TransportAdmissionError });
+      await transport.fetch(expected.destination, init);
+      transport.onUsage(chunkZero);
+      transport.onUsage(projectProviderUsage({ choices: [{ delta: { content: "later" } }] }));
+      transport.onUsage(terminal);
+      expect(ledger.totals()).toMatchObject({ chargedMicros: 400_000, unknown: 1 }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("does not qualify a later zero when an earlier usage block reported tokens", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl: async () => new Response("ok"), AdmissionError: TransportAdmissionError });
+      await transport.fetch(expected.destination, init);
+      transport.onUsage({ ...chunkZero, inputTokens: 10, totalTokens: 10 });
+      transport.onUsage(chunkZero); transport.onUsage(terminal);
+      expect(ledger.totals()).toMatchObject({ chargedMicros: 400_000, unknown: 1 }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("charges independently known BYOK components as an unknown lower bound", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "test", limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl: async () => new Response("ok"), AdmissionError: TransportAdmissionError });
+      await transport.fetch(expected.destination, init);
+      transport.onUsage(projectProviderUsage({ usage: { cost: 0.01, is_byok: true, cost_details: { upstream_inference_cost: null, upstream_inference_prompt_cost: 0.44 } } }));
+      transport.onUsage(terminal); ledger.close(); ledger = new CampaignLedger(file, config);
+      const row = ledger.db.prepare("SELECT state,charge,evidence_json FROM physical").get();
+      expect(row).toMatchObject({ state: "unknown", charge: 450_000 });
+      expect(JSON.parse(row.evidence_json)).toMatchObject({ usagePresent: true, costPresent: true, isByok: true });
+      expect(ledger.totals().stopped).toBe("unpriced_lower_bound"); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps an earlier higher incomplete lower bound when terminal cost contradicts it", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "test", limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl: async () => new Response("ok"), AdmissionError: TransportAdmissionError });
+      await transport.fetch(expected.destination, init);
+      transport.onUsage(projectProviderUsage({ usage: { cost: 0.45, is_byok: true } }));
+      expect(() => transport.onUsage({ ...terminal, costFromProvider: true, providerCost: 0.1 })).toThrow();
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.db.prepare("SELECT state,charge FROM physical").get()).toEqual({ state: "unknown", charge: 450_000 });
+      expect(ledger.totals().stopped).toBe("unpriced_lower_bound"); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("settles a raw billed cost before a later native attempt starts", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
     try {
@@ -72,11 +128,12 @@ describe("physical fetch settlement", () => {
       const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl: async () => new Response("ok"), AdmissionError: TransportAdmissionError });
       await transport.fetch(expected.destination, init);
       transport.onUsage(projectProviderUsage({ usage: { cost: 0.45, is_byok: false } }));
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 450_000, open: 1, stopped: "unpriced_lower_bound" });
       // A provider total above the reservation latches further admission.
       await expect(transport.fetch(expected.destination, init)).rejects.toMatchObject({ context: { reason: "accounting_failed" } });
       ledger.close(); ledger = new CampaignLedger(file, config);
       expect(ledger.db.prepare("SELECT state,charge FROM physical").all()).toEqual([{ state: "priced", charge: 450_000 }]);
-      expect(ledger.totals()).toMatchObject({ starts: 1, stopped: "charge_above_reservation" }); ledger.close();
+      expect(ledger.totals()).toMatchObject({ starts: 1, stopped: "unpriced_lower_bound" }); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -88,8 +145,21 @@ describe("physical fetch settlement", () => {
       await transport.fetch(expected.destination, init);
       transport.onUsage(projectProviderUsage({ usage: { cost: 0.1, is_byok: false } }));
       expect(() => transport.onUsage({ ...terminal, terminal: "done", costFromProvider: true, providerCost: 0.2 })).toThrow();
-      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, open: 1, stopped: "accounting_failed" });
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, open: 0, unknown: 1, stopped: "accounting_failed" });
       ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([["binding_mismatch", "binding_mismatch"], ["operator_stop", "campaign_stopped"], ["accounting_failed", "accounting_failed"]] as const)("preserves the meaning of a latched %s stop", async (latched, reason) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-physical-"));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+      ledger.stop(latched);
+      const fetchImpl = vi.fn(async () => new Response("ok"));
+      const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix: "slot/attempt-01", fetchImpl, AdmissionError: TransportAdmissionError });
+      await expect(transport.fetch(expected.destination, init)).rejects.toMatchObject({ code: "config_error", context: { reason } });
+      expect(ledger.totals().starts).toBe(0); expect(fetchImpl).not.toHaveBeenCalled();
+      expect(ledger.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: latched }); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

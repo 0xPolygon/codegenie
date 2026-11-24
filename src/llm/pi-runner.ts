@@ -1911,7 +1911,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           errorCode: denial.code, errorMessage: denial.message,
           retryable: false, retryReason: denial.reason, maxAttempts, retryExhausted: false
         });
-        opts.telemetry.event({ stage: request.stage, level: "warn", message: denial.reason === "accounting_failed" ? "transport_accounting_failed" : denial.reason === "provider_denied" ? "transport_provider_denied" : "transport_admission_denied",
+        opts.telemetry.event({ stage: request.stage, level: "warn", message: denial.reason === "accounting_failed" ? "transport_accounting_failed" : denial.reason === "provider_denied" && denial.physicalId !== undefined ? "transport_provider_denied" : "transport_admission_denied",
           data: { callId, reason: denial.reason, ...(denial.physicalId !== undefined ? { physicalId: denial.physicalId } : {}) } });
         throw denial;
       }
