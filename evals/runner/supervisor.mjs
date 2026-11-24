@@ -124,7 +124,7 @@ export class CampaignSupervisor {
     return row.spawn_state === 'started' && definitelyExited(row);
   }
   claimDriver() {
-    return this.transaction(() => {
+    const token = this.transaction(() => {
       const old = this.db.prepare('SELECT * FROM driver_claim WHERE id=1').get();
       if (old) {
         if (!definitelyExited(old)) throw new Error('campaign driver already active or requires reconciliation');
@@ -132,17 +132,18 @@ export class CampaignSupervisor {
       }
       const token = randomBytes(32).toString('hex');
       this.db.prepare('INSERT INTO driver_claim VALUES(1,?,?,?,?,?)').run(process.pid, hostname(), processStart(process.pid), processNamespace(), sha(token));
-      this.driverToken = token;
       return token;
     });
+    this.driverToken = token;
+    return token;
   }
   releaseDriver(token) {
     if (typeof token !== 'string' || !/^[a-f0-9]{64}$/u.test(token)) throw new Error('invalid campaign driver claim');
     if (this.driverToken !== token) throw new Error('campaign driver claim mismatch');
     this.transaction(() => {
       if (this.db.prepare('DELETE FROM driver_claim WHERE id=1 AND token_sha256=?').run(sha(token)).changes !== 1) throw new Error('campaign driver claim mismatch');
-      this.driverToken = undefined;
     });
+    this.driverToken = undefined;
   }
   assertDriver() {
     if (!this.receipts) return;
@@ -243,6 +244,23 @@ export class CampaignSupervisor {
       const first = r.state === 'excluded' ? this.db.prepare('SELECT first_attempt_no,first_sha256 FROM exclusion WHERE slot_id=?').get(r.slot_id) : null;
       return [r.slot_id, r.state, r.attempt_no, r.receipt_sha256, first];
     })));
+  }
+  nextSlot(verifyReceipt, verifyRetry, ledger) {
+    return this.transaction(() => {
+      this.assertDriver();
+      const rows = this.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
+      const active = this.db.prepare("SELECT slot_id,attempt_no FROM attempt WHERE state='started'").all();
+      if (active.length > 1) throw new Error('multiple started attempts');
+      if (active.length === 1) return { action: 'reconcile', ...active[0] };
+      if (this.pauseAfterSlot !== undefined) {
+        const count = this.slots.findIndex((slot) => slot.id === this.pauseAfterSlot) + 1;
+        if (rows.length >= count) {
+          const release = this.db.prepare('SELECT prefix_sha256 FROM release').get();
+          if (!release || release.prefix_sha256 !== this.checkpointHash(rows.slice(0, count))) return { action: 'paused' };
+        }
+      }
+      return rows.length === this.slots.length ? { action: 'completed' } : { action: 'next', slot: this.slots[rows.length] };
+    });
   }
   releaseCheckpoint(verifyReceipt, verifyRetry, ledger) {
     if (typeof verifyReceipt !== 'function' || this.pauseAfterSlot === undefined) throw new Error('checkpoint not configured');

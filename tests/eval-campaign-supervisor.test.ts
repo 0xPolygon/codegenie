@@ -27,6 +27,23 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('keeps the in-memory driver token consistent when commit fails', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-commit-'));
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) });
+      const original = supervisor.db.exec.bind(supervisor.db); let fail = true;
+      const spy = vi.spyOn(supervisor.db, 'exec').mockImplementation((sql: string) => { if (sql === 'COMMIT' && fail) { fail = false; throw new Error('commit failed'); } return original(sql); });
+      expect(() => supervisor.claimDriver()).toThrow('commit failed');
+      expect(supervisor.driverToken).toBeUndefined();
+      expect(supervisor.db.prepare('SELECT * FROM driver_claim').get()).toBeUndefined();
+      const token = supervisor.claimDriver(); fail = true;
+      expect(() => supervisor.releaseDriver(token)).toThrow('commit failed');
+      expect(supervisor.driverToken).toBe(token);
+      expect(supervisor.db.prepare('SELECT * FROM driver_claim').get()).toBeDefined();
+      supervisor.releaseDriver(token); expect(supervisor.driverToken).toBeUndefined(); spy.mockRestore(); supervisor.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('allows one driver and conservatively recovers a verified stale claim', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-driver-'));
     try {
@@ -298,11 +315,13 @@ describe('campaign admission custody', () => {
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) };
       let supervisor = new CampaignSupervisor(file, binding);
       const verifyReceipt = vi.fn(() => true), args = { ledger, evidenceFiles, nowMs: 2, verifyReceipt };
+      expect(supervisor.nextSlot(verifyReceipt, undefined, ledger)).toMatchObject({ action: 'next', slot: { id: 'one' } });
       expect(supervisor.begin('one', args)).toMatchObject({ action: 'probe' });
       ledger.reservePhysical({ id: 'health', logicalId: 'health', kind: 'health', provider: 'openrouter', healthBoundary: 'one' });
       ledger.settlePhysical({ id: 'health', httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
       ledger.recordHealth({ physicalId: 'health', outcome: 'clean', observedMs: 1, evidenceSHA256: healthHash });
       expect(supervisor.begin('one', args)).toMatchObject({ action: 'started' });
+      expect(supervisor.nextSlot(verifyReceipt, undefined, ledger)).toMatchObject({ action: 'reconcile', slot_id: 'one' });
       supervisor.close(); supervisor = new CampaignSupervisor(file, binding);
       expect(() => supervisor.begin('one', args)).toThrow('requires reconciliation');
       expect(() => supervisor.reconcile('one', 1, { ledger, verifyWorkerExited: () => false })).toThrow('worker exit');
@@ -317,7 +336,9 @@ describe('campaign admission custody', () => {
       supervisor.seal('one', 2, digest('receipt'), verifyReceipt);
       expect(() => supervisor.begin('two', { ...args, verifyReceipt: async () => false })).toThrow('receipt');
       expect(supervisor.begin('two', args)).toMatchObject({ action: 'paused' });
+      expect(supervisor.nextSlot(verifyReceipt, undefined, ledger)).toEqual({ action: 'paused' });
       supervisor.releaseCheckpoint(verifyReceipt);
+      expect(supervisor.nextSlot(verifyReceipt, undefined, ledger)).toMatchObject({ action: 'next', slot: { id: 'two' } });
       supervisor.db.prepare('UPDATE outcome SET receipt_sha256=? WHERE slot_id=?').run(digest('changed'), 'one');
       supervisor.db.prepare('UPDATE attempt SET receipt_sha256=? WHERE slot_id=? AND attempt_no=2').run(digest('changed'), 'one');
       expect(supervisor.begin('two', args)).toMatchObject({ action: 'paused' });
