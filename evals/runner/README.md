@@ -13,3 +13,5 @@ This initial single-case entry point does **not** yet implement campaign budgets
 The in-progress campaign admission primitives use a fixed 15-second interval after a stale OpenRouter key reading and stop after 20 consecutive stale readings at a boundary. They persist the number of initiated reads, an upper bound on actual GETs, and require reconciliation after an interrupted read. These primitives are not yet wired into the public example above.
 
 An HTTP-200 stream with unknown billing is not by itself evidence of a provider failure. Until the physical stream terminal is recorded separately, an associated failed review remains unclassified and needs receipt reconciliation before a retry.
+
+Worker recovery is local to the recorded host. On Linux, PID-based recovery also requires the recorded PID namespace to match; on macOS it assumes a single host. If process identity or exit cannot be verified, the attempt remains blocked for reconciliation.

@@ -9,6 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { spawnAttempt } from '../evals/runner/spawn-worker.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { CampaignLedger } from '../evals/runner/ledger.mjs';
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 
 describe('campaign worker spawn', () => {
@@ -52,6 +54,14 @@ describe('campaign worker spawn', () => {
         await spawned;
         await vi.advanceTimersByTimeAsync(3_000_000); await assertion; expect(kill).toHaveBeenCalledWith('SIGKILL');
         expect(supervisor.workerExited('one', 1)).toBe(false);
+        if (process.platform === 'linux') {
+          supervisor.db.prepare("UPDATE worker_claim SET process_start='0' WHERE slot_id='one'").run();
+          expect(supervisor.workerExited('one', 1)).toBe(true);
+          supervisor.db.prepare("UPDATE worker_claim SET pid_namespace='different' WHERE slot_id='one'").run();
+          expect(supervisor.workerExited('one', 1)).toBe(false);
+          supervisor.db.prepare("UPDATE worker_claim SET process_start=NULL WHERE slot_id='one'").run();
+          expect(supervisor.workerExited('one', 1)).toBe(false);
+        }
       }
       expect(supervisor.db.prepare("SELECT state FROM attempt WHERE slot_id='one'").get()).toEqual({ state: 'started' }); supervisor.close();
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
@@ -64,7 +74,8 @@ describe('campaign worker spawn', () => {
       writeFileSync(caseFile, caseBytes);
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerBinding: 'b', caseConfig: caseFile, caseConfigSHA256: digest(caseBytes), ledgerPath: path.join(dir, 'ledger'), limitMicros: 2_000_000, expectedCalls: [] };
       const bytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: base }] }));
-      const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes: bytes, scheduleSHA256: digest(bytes) });
+      const binding = { binding: 'b', scheduleBytes: bytes, scheduleSHA256: digest(bytes) };
+      let supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
       expect(supervisor.workerExited('one', 1)).toBe(false);
       const ledger = { assertRestartSafe() {}, keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };
       supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: () => true });
@@ -72,7 +83,17 @@ describe('campaign worker spawn', () => {
       writeFileSync(file, config);
       await expect(spawnAttempt({ supervisor, slotId: 'one', attemptNo: 1, configFile: file, configSHA256: digest(config) })).resolves.toMatchObject({ caseName: 'fixture-core-lens', status: 'pass' });
       expect(supervisor.workerExited('one', 1)).toBe(true);
-      supervisor.close();
+      // Simulate a crash after the child exited but before the parent persisted close.
+      supervisor.db.prepare("UPDATE worker_claim SET spawn_state='started' WHERE slot_id='one'").run(); supervisor.close();
+      supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      expect(supervisor.workerExited('one', 1)).toBe(true);
+      supervisor.recordWorkerExit('one', 1); supervisor.seal('one', 1, digest(Buffer.from('receipt')), () => true); supervisor.close();
+      supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding);
+      supervisor.recordWorkerExit('one', 1);
+      expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM outcome').get()).toEqual({ total: 1 });
+      expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM attempt').get()).toEqual({ total: 1 });
+      const campaign = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'b', limitMicros: 2_000_000 });
+      expect(campaign.totals().starts).toBe(0); campaign.close(); supervisor.close();
     } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
   it('requires the schedule-bound worker configuration before spawning', async () => {

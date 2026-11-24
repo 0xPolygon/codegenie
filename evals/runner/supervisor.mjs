@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { hostname } from 'node:os';
+import { readFileSync, readlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { outsideCheckout } from './case.mjs';
 import { boundaryDecision } from './boundary.mjs';
 
@@ -9,6 +11,21 @@ const isHash = (value) => /^[a-f0-9]{64}$/u.test(value ?? '');
 const prefixFor = (slot, number) => `${slot}/attempt-${String(number).padStart(2, '0')}`;
 const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+function processStart(pid) {
+  try {
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'), close = stat.lastIndexOf(')');
+      const start = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/u)[19] : undefined;
+      return /^\d+$/u.test(start ?? '') ? start : null;
+    }
+    if (process.platform === 'darwin') return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+  } catch { /* Ambiguous process identity stays blocked. */ }
+  return null;
+}
+function processNamespace() {
+  if (process.platform !== 'linux') return null;
+  try { return readlinkSync('/proc/self/ns/pid'); } catch { return null; }
+}
 
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
@@ -28,7 +45,7 @@ export class CampaignSupervisor {
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
-      CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, spawn_state TEXT NOT NULL DEFAULT 'claimed', pid INTEGER, host TEXT, PRIMARY KEY(slot_id,attempt_no));
+      CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, token_sha256 TEXT NOT NULL, activated INTEGER NOT NULL DEFAULT 0, spawn_state TEXT NOT NULL DEFAULT 'claimed', pid INTEGER, host TEXT, process_start TEXT, pid_namespace TEXT, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retry_authorization(slot_id TEXT PRIMARY KEY, attempt_no INTEGER NOT NULL, failure_sha256 TEXT NOT NULL, proof_sha256 TEXT NOT NULL, probe_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
@@ -62,22 +79,30 @@ export class CampaignSupervisor {
   recordWorkerStart(slotId, attemptNo, pid) {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new TypeError('invalid worker process identity');
     this.transaction(() => {
-      const result = this.db.prepare("UPDATE worker_claim SET spawn_state='started',pid=?,host=? WHERE slot_id=? AND attempt_no=? AND spawn_state='claimed'").run(pid, hostname(), slotId, attemptNo);
+      const result = this.db.prepare("UPDATE worker_claim SET spawn_state='started',pid=?,host=?,process_start=?,pid_namespace=? WHERE slot_id=? AND attempt_no=? AND spawn_state='claimed'").run(pid, hostname(), processStart(pid), processNamespace(), slotId, attemptNo);
       if (result.changes !== 1) throw new Error('worker start custody mismatch');
     });
   }
   recordWorkerExit(slotId, attemptNo, spawnFailed = false) {
     this.transaction(() => {
       const result = this.db.prepare('UPDATE worker_claim SET spawn_state=? WHERE slot_id=? AND attempt_no=? AND spawn_state=?').run(spawnFailed ? 'failed' : 'exited', slotId, attemptNo, spawnFailed ? 'claimed' : 'started');
-      if (result.changes !== 1) throw new Error('worker exit custody mismatch');
+      if (result.changes !== 1) {
+        const row = this.db.prepare('SELECT spawn_state FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+        if (row?.spawn_state !== (spawnFailed ? 'failed' : 'exited')) throw new Error('worker exit custody mismatch');
+      }
     });
   }
   workerExited(slotId, attemptNo) {
-    const row = this.db.prepare('SELECT spawn_state,pid,host FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+    const row = this.db.prepare('SELECT spawn_state,pid,host,process_start,pid_namespace FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
     if (!row) return false; // Missing custody needs explicit reconciliation.
     if (['failed', 'exited'].includes(row.spawn_state)) return true;
     if (row.spawn_state !== 'started' || row.host !== hostname() || !Number.isSafeInteger(row.pid) || row.pid <= 0) return false;
-    try { process.kill(row.pid, 0); return false; }
+    if (process.platform === 'linux' && (!row.pid_namespace || row.pid_namespace !== processNamespace())) return false;
+    try {
+      process.kill(row.pid, 0);
+      const observed = processStart(row.pid);
+      return typeof row.process_start === 'string' && observed !== null && row.process_start !== observed;
+    }
     catch (error) { return error?.code === 'ESRCH'; }
   }
   noStartCount(slotId) {
