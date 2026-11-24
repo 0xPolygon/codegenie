@@ -731,6 +731,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 ?? activeRequest.normalizeSubmit?.(submitCall.arguments);
               if (canonicalization) recordFidelity("submit_semantic_canonicalization_accepted", {
                 callId: providerResult.callId, removedFields: canonicalization.removedFields, addedFields: canonicalization.addedFields, reason: canonicalization.reason,
+                attentionRefsRemoved: canonicalization.attentionRefsRemoved,
                 originalArguments: effectiveSubmitCall.arguments, submittedArguments: submitCall.arguments, validation: "complete_schema_and_semantics_passed"
               });
               const localEdits = cleanupSubmitShape(request.schema, normalizeSubmitArguments(request, effectiveSubmitCall.arguments)).edits;
@@ -770,6 +771,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
               const normalization = request.normalizeSubmit?.(submitCall.arguments);
               if (normalization) recordFidelity("submit_semantic_canonicalization_applied", {
                 callId: providerResult.callId, removedFields: normalization.removedFields, addedFields: normalization.addedFields, reason: normalization.reason,
+                attentionRefsRemoved: normalization.attentionRefsRemoved,
                 originalArguments: submitCall.arguments, validation: "remaining_schema_or_semantic_failure"
               });
               const draft = cleanupSubmitShape(request.schema, normalization?.value ?? submitCall.arguments);
@@ -2922,6 +2924,7 @@ function tryRecoverInvalidSubmit(input: {
     if (canonicalization) input.opts.telemetry.event({ stage: input.request.stage, level: "info",
       message: "submit_semantic_canonicalization_accepted", data: { callId: recoveredCallId,
         removedFields: canonicalization.removedFields, addedFields: canonicalization.addedFields, reason: canonicalization.reason,
+        attentionRefsRemoved: canonicalization.attentionRefsRemoved,
         originalArguments: recovery.arguments, validation: "complete_schema_and_semantics_passed" } });
     if (recovery.onRecovered !== undefined) {
       recovery.onRecovered(recoveredCallId);

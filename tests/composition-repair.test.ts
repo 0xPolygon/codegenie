@@ -29,13 +29,13 @@ describe("absent provenance components", () => {
     expect(normalized.removedFields).toEqual(["composedFindings.0.retainedSourceRefs.0", "composedFindings.0.retainedSourceRefs.1"]);
     expect(normalized.value).toEqual(valid);
     expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).not.toThrow();
-    // Unknown findings, non-component suffixes and absent components cited
-    // behind published prose are not bookkeeping; they still need repair.
+    // General provenance refs and a visible list with no valid support still
+    // need repair.
     for (const mutate of [
       (draft: typeof original) => { draft.composedFindings[0]!.retainedSourceRefs = ["other-finding/suggestedFix"]; },
       (draft: typeof original) => { draft.composedFindings[0]!.retainedSourceRefs = [`${id}/notAComponent`]; },
-      (draft: typeof original) => { draft.composedFindings[0]!.sections[0]!.sourceRefs.push(absent[0]!); },
-      (draft: typeof original) => { draft.composedFindings[0]!.evidenceRefs.push(absent[1]!); }
+      (draft: typeof original) => { draft.composedFindings[0]!.sections[0]!.sourceRefs = [absent[0]!]; },
+      (draft: typeof original) => { draft.composedFindings[0]!.evidenceRefs = [absent[1]!]; }
     ]) {
       const draft = structuredClone(valid);
       mutate(draft);
@@ -189,12 +189,38 @@ describe("composition attribution repair", () => {
     expect(normalizeCompositionReferences(value, findings)).toBeUndefined();
   });
 
-  it.each(["duplicate", "unknown"])("does not infer source ownership for %s finding assignments", kind => {
+  it("dedupes finding IDs within a group without using the dedupe to add provenance", () => {
     const { findings, original, group } = fixture();
     group.retainedSourceRefs = [];
-    group.findingIds.push(kind === "duplicate" ? findings[0]!.id : "unknown-finding");
+    const expected = structuredClone(original);
+    group.findingIds.push(findings[0]!.id);
+    const normalized = normalizeCompositionReferences(original, findings)!;
+    expect(normalized.value).toEqual(expected);
+    expect(normalized.removedFields).toEqual(["composedFindings.0.findingIds.2"]);
+    expect(normalized.addedFields).toEqual([]);
+    expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).toThrow(/missing_source/);
+    original.composedFindings.push(structuredClone(expected.composedFindings[0]!));
+    group.findingIds.pop();
     expect(normalizeCompositionReferences(original, findings)).toBeUndefined();
-    expect(() => validateCompositionSubmission(original, findings)).toThrow();
+    expect(() => validateCompositionSubmission(original, findings)).toThrow(/Unknown or repeated finding ID/);
+  });
+
+  it("drops unavailable visible references and redundant retained evidence without changing prose or adding refs", () => {
+    const { findings, original, group } = fixture();
+    const expected = structuredClone(original);
+    group.sections[0]!.sourceRefs.unshift("invented/impact");
+    group.evidenceRefs.push("invented/evidence");
+    group.primaryEvidenceRefs!.push("invented/evidence", group.primaryEvidenceRefs![0]!);
+    group.retainedSourceRefs!.push(group.evidenceRefs[0]!);
+    const normalized = normalizeCompositionReferences(original, findings)!;
+    expect(normalized.value).toEqual(expected);
+    expect(normalized.removedFields).toHaveLength(5);
+    expect(normalized.addedFields).toEqual([]);
+    expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).not.toThrow();
+    expect(normalizeCompositionReferences(expected, findings)).toBeUndefined();
+    expected.composedFindings[0]!.primaryEvidenceRefs = ["invented/evidence"];
+    expect(normalizeCompositionReferences(expected, findings)).toBeUndefined();
+    expect(() => validateCompositionSubmission(expected, findings)).toThrow(/Primary evidence/);
   });
 
   it("does not use retained provenance to replace missing visible proof", () => {
@@ -205,15 +231,16 @@ describe("composition attribution repair", () => {
     expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).toThrow();
   });
 
-  it("retains unknown references and a source's sole misplaced occurrence", () => {
+  it("retains a source's sole misplaced occurrence after removing unknown refs with support remaining", () => {
     const { findings, original, group } = fixture();
     const verification = group.sections.find(section => section.kind === "verification")!.sourceRefs.pop()!;
     group.sections.find(section => section.kind === "fix")!.sourceRefs.push(verification, "unknown/source", "unknown/source");
-    expect(normalizeCompositionReferences(original, findings)).toBeUndefined();
-    expect(() => validateCompositionSubmission(original, findings)).toThrow(/unknown_source/);
-    const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
+    const normalized = normalizeCompositionReferences(original, findings)!;
+    expect(normalized.removedFields).toHaveLength(2);
+    expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).toThrow(/wrong_section/);
+    const result = (normalized.value as typeof original).composedFindings[0]!;
+    const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), result.sections, result.evidenceRefs, result, "composedFindings.0.");
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "unknown_source", path: expect.stringMatching(/^composedFindings\.0\.sections\.\d+\.sourceRefs\.\d+$/u) }),
       expect.objectContaining({ code: "wrong_section", reference: verification, actualKind: "verification", expectedKind: "fix", accountedAt: undefined }),
       expect.objectContaining({ code: "missing_source", reference: verification })
     ]));

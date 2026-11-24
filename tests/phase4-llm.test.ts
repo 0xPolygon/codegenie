@@ -2974,12 +2974,21 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   it.each([false, true])("repairs attribution in fresh constrained contexts and validates the assembled report (exhaust=%s)", async exhaust => {
     const telemetry = fakeTelemetry();
     const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
-    const good = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs, ...presentation, publication: "inline" }] };
+    const finding = findings[0]!;
+    const related = finding.evidence.relatedCode!;
+    const misplaced = [related.length, related.length + 1].map(index => `${finding.id}/evidence/relatedCode/${index}`);
+    related.push(
+      { path: finding.path, lines: "24", whyRelevant: "Shows the authorization guard." },
+      { path: finding.path, lines: "27", whyRelevant: "Shows the return path." }
+    );
+    const good = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs, ...presentation,
+      retainedSourceRefs: misplaced, publication: "inline" }] };
     const original = structuredClone(good);
     const fixIndex = sections.findIndex(section => section.kind === "fix");
     const testIndex = sections.findIndex(section => section.kind === "test");
-    original.composedFindings[0]!.sections[fixIndex]!.sourceRefs.push("invented/fix");
-    original.composedFindings[0]!.sections[testIndex]!.sourceRefs.push("invented/test");
+    original.composedFindings[0]!.sections[fixIndex]!.sourceRefs.push(misplaced[0]!);
+    original.composedFindings[0]!.sections[testIndex]!.sourceRefs.push(misplaced[1]!);
+    original.composedFindings[0]!.retainedSourceRefs = [];
     const fixPath = `composedFindings.0.sections.${fixIndex}.sourceRefs`;
     const testPath = `composedFindings.0.sections.${testIndex}.sourceRefs`;
     const adapter = scriptedAdapter([]);
@@ -2992,7 +3001,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         const prompt = JSON.stringify(context.messages);
         expect(prompt).toContain("attribution-repair-context");
         expect(prompt).not.toContain("original-composition-marker");
-        expect(prompt).toContain("unknown_source");
+        expect(prompt).toContain("wrong_section");
         if (calls > 2) expect(Object.keys(context.tools![0]!.parameters.properties ?? {})).not.toContain(fixPath);
         arguments_ = calls === 2 ? { [fixPath]: sections[fixIndex]!.sourceRefs } : { [testPath]: exhaust ? ["invented/test"] : sections[testIndex]!.sourceRefs };
       }
@@ -3031,7 +3040,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": []
       } }]),
       assistant([{ type: "toolCall", id: "fixed", name: "submit_composition", arguments: {
-        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix"]
+        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix", evidenceRefs[0]!]
       } }])
     ]);
     const runner = createPiRunner({
@@ -3056,6 +3065,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(repairTool.parameters).toMatchObject({ properties: { "composedFindings.0.sections": expect.anything() } });
     expect(adapter.complete).toHaveBeenCalledTimes(3);
     expect(telemetry.events.filter(event => event.message === "field_repair_accepted")).toHaveLength(1);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
+      data: expect.objectContaining({ removedFields: ["composedFindings.0.retainedSourceRefs.1"] }) }));
     expect(telemetry.events.filter(event => event.message === "recovery_content_revised")).not.toHaveLength(0);
   });
 
@@ -8958,9 +8969,13 @@ async function delay(ms: number): Promise<void> {
 describe("plan 124 repair feedback and failed-request evidence", () => {
   it.each(["underscore", "string", "envelope"])("explains rejected %s patches in replaced composition contexts", async mode => {
     const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const finding = findings[0]!;
+    const related = finding.evidence.relatedCode!;
+    const misplaced = `${finding.id}/evidence/relatedCode/${related.length}`;
+    related.push({ path: finding.path, lines: "24", whyRelevant: "Shows the authorization guard." });
     const original = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections: structuredClone(sections), evidenceRefs, ...presentation, publication: "inline" }] };
     const index = sections.findIndex(section => section.kind === "fix");
-    original.composedFindings[0]!.sections[index]!.sourceRefs.push("invented/fix");
+    original.composedFindings[0]!.sections[index]!.sourceRefs.push(misplaced);
     const key = `composedFindings.0.sections.${index}.sourceRefs`;
     const good = { [key]: sections[index]!.sourceRefs };
     const bad = mode === "underscore" ? { [key.replaceAll(".", "_")]: JSON.stringify(good[key]) }

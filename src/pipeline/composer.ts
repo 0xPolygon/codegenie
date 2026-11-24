@@ -524,7 +524,7 @@ async function runComposer(
     compositionReasoningStepDown: config.review.compositionReasoningStepDown,
     prompt: prompt.prompt,
     schema: composerSubmissionSchema(groups, attention),
-    normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings)),
+    normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings), attention),
     validateSubmit: value => {
       try {
         validateCompositionSubmission(value, groups.flatMap(group => group.findings));
