@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { exportFirstLock } from '../evals/runner/blind-export.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { readCheckedFile } from '../evals/runner/safe-read.mjs';
 
 it('writes one stable, private mapping and receipt-selected blind sheets', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-export-'));
@@ -11,10 +13,13 @@ it('writes one stable, private mapping and receipt-selected blind sheets', () =>
     const evidence = { outcome: 'completed_partial', candidates: [{ id: 'raw-id-123', title: 'A write can fail', path: 'src/a.ts' }], promotion: { decisions: [] }, verification: [], finalReview: { findings: [] } };
     const args = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 1, outputDirectory: path.join(dir, 'blind'), mappingFile: path.join(dir, 'private', 'mapping.json'),
       selections: [{ slotId: 'secret-treatment-slot', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'treatment', draw: 1, caseId: 'case-01', causes: [], sourceLocator: 'sources/case-01', oracleLocator: 'oracles/case-01', evidence }] };
-    const first = exportFirstLock(args), mapping = readFileSync(args.mappingFile), manifest = readFileSync(path.join(args.outputDirectory, 'manifest.json'));
-    expect(statSync(args.mappingFile).mode & 0o777).toBe(0o600);
+    const first = exportFirstLock(args), manifest = readFileSync(path.join(args.outputDirectory, 'manifest.json'));
+    const mappingFd = openSync(args.mappingFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let mapping: Buffer;
+    try { expect(fstatSync(mappingFd).mode & 0o777).toBe(0o600); mapping = readFileSync(mappingFd); }
+    finally { closeSync(mappingFd); }
     expect(exportFirstLock(args)).toEqual(first);
-    expect(readFileSync(args.mappingFile)).toEqual(mapping); expect(readFileSync(path.join(args.outputDirectory, 'manifest.json'))).toEqual(manifest);
+    expect(readCheckedFile(args.mappingFile)).toEqual(mapping); expect(readFileSync(path.join(args.outputDirectory, 'manifest.json'))).toEqual(manifest);
     const sheetFile = readdirSync(args.outputDirectory).find((name) => name !== 'manifest.json')!;
     const sheetBytes = readFileSync(path.join(args.outputDirectory, sheetFile)); rmSync(path.join(args.outputDirectory, sheetFile));
     expect(exportFirstLock(args)).toEqual(first); expect(readFileSync(path.join(args.outputDirectory, sheetFile))).toEqual(sheetBytes);
