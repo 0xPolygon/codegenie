@@ -38,11 +38,12 @@ export function validateTerminal({ runDir, attemptPrefix, ledger }) {
   const accepted = new Set(events.filter((event) => event.stage === 7 && event.message === 'structured_submission_accepted').map((event) => event.data?.packetId));
   if (packetIds.some((id) => !accepted.has(id))) throw new Error('packet submit missing');
   const prefix = `${attemptPrefix}/`;
-  const physical = ledger.db.prepare('SELECT id,logical_id,state,http_status,evidence_json FROM physical WHERE substr(id,1,?)=? ORDER BY rowid').all(prefix.length, prefix);
+  const physical = ledger.db.prepare('SELECT id,logical_id,state,charge,http_status,evidence_json FROM physical WHERE substr(id,1,?)=? ORDER BY rowid').all(prefix.length, prefix);
   if (physical.some((row) => row.state === 'open' || [401, 402, 429].includes(row.http_status))) throw new Error('physical call requires reconciliation');
   const byCall = new Map(models.map((row) => [`${attemptPrefix}/${row.callId}`, row]));
   if (physical.some((row) => !byCall.has(row.logical_id))) throw new Error('physical call missing telemetry');
-  for (const row of models) {
+  let recoveredResets = 0;
+  for (const [index, row] of models.entries()) {
     const starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${row.callId}`);
     if (row.cacheStatus === 'hit' ? starts.length !== 0 : starts.length === 0) throw new Error('logical and physical call mismatch');
     if (row.cacheStatus === 'hit' && ledger.db.prepare('SELECT status FROM logical WHERE id=?').get(`${attemptPrefix}/${row.callId}`)?.status !== 'cache_hit') throw new Error('cache hit missing ledger record');
@@ -51,15 +52,24 @@ export function validateTerminal({ runDir, attemptPrefix, ledger }) {
       ['whitespace_run', 'total_chars'].includes(limit.trigger) && ['limitChars', 'observedChars', 'toolArgumentChars', 'contentIndex'].every((key) => count(limit[key])) && limit.observedChars > limit.limitChars &&
       events.some((event) => event.message === 'model_tool_argument_stream_limit' && event.data?.callId === row.callId && event.stage === row.stage &&
         ['trigger', 'limitChars', 'observedChars', 'toolArgumentChars', 'contentIndex'].every((key) => event.data?.[key] === limit[key]));
-    if (!abort && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
+    const noUsage = [row.inputTokens, row.outputTokens, row.totalTokens].every((value) => value === undefined || value === null);
+    const sameRequest = (next) => next.stage === row.stage && next.kind === row.kind && next.workerId === row.workerId && next.packetId === row.packetId && next.structuredRequestId === row.structuredRequestId;
+    const next = models.slice(index + 1).find(sameRequest);
+    const reset = row.status === 'transient_error' && noUsage && typeof row.structuredRequestId === 'string' && row.structuredRequestId &&
+      typeof row.packetId === 'string' && accepted.has(row.packetId) && Number.isSafeInteger(row.attempt) && row.attempt > 0 &&
+      starts.length === 1 && starts[0].http_status === 200 && starts[0].state === 'unknown' && starts[0].charge >= ledger.reserve &&
+      next?.attempt === row.attempt + 1 && next.status === 'ok' && [next.inputTokens, next.outputTokens, next.totalTokens].every(count);
+    if (reset) recoveredResets++;
+    if (!abort && !reset && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
     for (const start of starts) {
       if (start.http_status >= 200 && start.http_status < 300) {
         const usage = start.evidence_json ? JSON.parse(start.evidence_json) : null;
-        if ((!usage || usage.usagePresent !== true || ![usage.inputTokens, usage.outputTokens, usage.totalTokens].every(count)) && !abort) throw new Error('physical usage missing');
+        if ((!usage || usage.usagePresent !== true || ![usage.inputTokens, usage.outputTokens, usage.totalTokens].every(count)) && !abort && !reset) throw new Error('physical usage missing');
       }
     }
   }
+  if (recoveredResets >= 3) throw new Error('too many recovered stream resets');
   const stopped = ledger.totals().stopped;
   if (stopped) throw new Error('campaign stop is latched');
-  return { status: run.outcome.status, packets: packetIds.length, modelCalls: models.length, physicalStarts: physical.length };
+  return { status: run.outcome.status, packets: packetIds.length, modelCalls: models.length, physicalStarts: physical.length, recoveredResets };
 }

@@ -51,4 +51,26 @@ describe('campaign terminal evidence', () => {
       f.events[1]!.data = { callId: 'other' }; f.save(); expect(() => f.check()).toThrow('model usage');
     } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
   });
+  it('accepts a recovered held stream reset, but stops on failed retry or three resets', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-reset-'));
+    const f = fixture(dir);
+    try {
+      f.models.length = 0;
+      f.ledger.db.prepare('DELETE FROM physical').run();
+      const addReset = (index: number) => {
+        const request = `request-${index}`, failed = `reset-${index}`, good = `success-${index}`;
+        f.models.push({ runId: 'run-1', stage: 7, kind: 'initial', workerId: 'worker', packetId: 'packet', structuredRequestId: request, attempt: 1, callId: failed, cacheStatus: 'disabled', status: 'transient_error' });
+        f.models.push({ runId: 'run-1', stage: 7, kind: 'initial', workerId: 'worker', packetId: 'packet', structuredRequestId: request, attempt: 2, callId: good, cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+        for (const [call, success] of [[failed, false], [good, true]] as const) {
+          const id = `${f.prefix}/${call}/physical-1`;
+          f.ledger.reservePhysical({ id, logicalId: `${f.prefix}/${call}`, kind: 'initial', provider: 'openrouter' });
+          f.ledger.settlePhysical(success ? { id, httpStatus: 200, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 2, totalTokens: 3 } } : { id, httpStatus: 200 });
+        }
+      };
+      addReset(1); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 1 });
+      f.models[1]!.status = 'transient_error'; f.save(); expect(() => f.check()).toThrow('model usage missing');
+      f.models[1]!.status = 'ok'; addReset(2); f.save(); expect(f.check()).toMatchObject({ recoveredResets: 2 });
+      addReset(3); f.save(); expect(() => f.check()).toThrow('too many recovered');
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
 });
