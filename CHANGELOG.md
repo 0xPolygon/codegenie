@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.6
+
+### Telemetry
+
+- OpenAI-format streams that end without provider usage now leave token and cost fields absent. Provider-reported zero stays zero. Run and per-stage summaries include `usageUnknownCalls`. Unknown calls still count toward the model-call limit and contribute no tokens to Codegenie's local token budget. [#436](https://github.com/0xPolygon/codegenie/issues/436) · [PR #438](https://github.com/0xPolygon/codegenie/pull/438)
+
+### Providers
+
+- Direct `anthropic` Messages requests with adaptive thinking now send the selected effort in top-level `output_config.effort`. This aligns request encoding on the direct route and causes a one-time local model-call cache miss there. [#443](https://github.com/0xPolygon/codegenie/issues/443) · [PR #446](https://github.com/0xPolygon/codegenie/pull/446) · [Pi #12464](https://github.com/earendil-works/pi/issues/12464) · [Removal tracker #432](https://github.com/0xPolygon/codegenie/issues/432)
+
+### Development
+
+- Source checkouts include the eval campaign launcher's accounting, blinded export, and offline qualification, plus stream-terminal evidence for individual provider attempts. The npm package excludes `evals/`. [#427](https://github.com/0xPolygon/codegenie/issues/427) · [PR #440](https://github.com/0xPolygon/codegenie/pull/440) · [PR #444](https://github.com/0xPolygon/codegenie/pull/444) · [#439](https://github.com/0xPolygon/codegenie/issues/439) · [PR #445](https://github.com/0xPolygon/codegenie/pull/445)
+
 ## 0.9.5
 
 ### Repository tools
