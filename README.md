@@ -112,7 +112,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.9.3
+      - uses: 0xPolygon/codegenie@v0.9.4
         with:
           # Works with any model!
           model: "openrouter/openai/gpt-6-luna:xhigh"
@@ -133,7 +133,7 @@ The `model` input is one spec: `provider/model[:reasoning]` — any model in [mo
 List named models once. `model` stays the default for automatic reviews and a bare `codegenie review`. A collaborator can comment `codegenie review opus` to run that one review with the `opus` entry instead.
 
 ```yaml
-      - uses: 0xPolygon/codegenie@v0.9.3
+      - uses: 0xPolygon/codegenie@v0.9.4
         env:
           # one credential env var per provider in the list (see Credentials below)
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.4
+
+### Repository tool fixes
+
+- `read_definition` accepts a directory scope on the selected revision, with bounded discovery and cursors. Dotted names in `find_symbol_mentions` now match qualified member references.
+- Empty cursors start at the first page; invalid or mismatched cursors explain how to recover. Search reports unclosed regular-expression groups with guidance. Tool descriptions clarify selector requirements.
+- Budget refusals are consistently recorded as rejected rather than errors. Invalid tool arguments are retained in redacted telemetry for diagnosis, and interrupted argument streams record the available tool and partial progress.
+
+### Review quality
+
+- Oversized patch packets prioritize changed lines and identify omitted ranges. Import and export changes receive bounded repository tools when needed.
+- Generated-file detection checks leading comments rather than matching marker text embedded in source. Fallback composition can combine same-cause findings across hunks when they cite each other; promoted questions can use their verified evidence during composition.
+- Verification scheduling telemetry records the effective concurrency and reservation mode.
+- Composition removes invalid or redundant references where it can do so safely, reducing avoidable fallback reports while retaining source evidence.
+
+### Security
+
+- Packet, source and repair-text caps move boundaries out of recognized or registered credentials rather than splitting them. Selection and packing budgets retain their original decisions; complete examples remain available to the model.
+- Persisted telemetry and debug records redact credentials in property names as well as values, preserving all values when redacted names collide. These protections cover recognized patterns and registered secrets; they do not promise redaction of every possible secret format.
+
+### Provider and CLI
+
+- Review model selection accepts provider-qualified model names with any configured provider. Local reviews accept Git ancestry expressions such as `HEAD~1`. The authentication-status command lists authenticated providers.
+
+### Portable tool schemas
+
+- Repository tools, submissions and repair requests use a more portable schema subset. Line ranges retain their `[start, end]` shape, and runtime validation continues to enforce range and repair constraints. Some planner, verifier and repair request schemas change; live compatibility with every provider has not been tested.
+
 ## 0.9.3
 
 - `openai-codex` now declares tools at the top level and sends the selected reasoning effort directly on each request. In tests, this restored reported reasoning on most tool turns for two of three fixtures. The third reported reasoning on one of five draws with either format. OpenRouter request bodies matched the previous release byte for byte. [Codegenie #385](https://github.com/0xPolygon/codegenie/pull/385), [Pi #12361](https://github.com/earendil-works/pi/issues/12361), [Codex #47843](https://github.com/openai/codex/issues/47843).
