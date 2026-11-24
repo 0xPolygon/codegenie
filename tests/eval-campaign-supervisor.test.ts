@@ -27,6 +27,27 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('allows one driver and conservatively recovers a verified stale claim', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-driver-'));
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) }, db = path.join(dir, 'supervisor.db');
+      const first = new CampaignSupervisor(db, binding), second = new CampaignSupervisor(db, binding);
+      const token = first.claimDriver();
+      expect(() => second.claimDriver()).toThrow('already active');
+      expect(() => second.releaseDriver('f'.repeat(64))).toThrow('claim mismatch');
+      first.releaseDriver(token);
+      const replacement = second.claimDriver(); second.releaseDriver(replacement);
+      if (process.platform === 'linux') {
+        first.claimDriver();
+        first.db.prepare("UPDATE driver_claim SET process_start=NULL WHERE id=1").run();
+        expect(() => second.claimDriver()).toThrow('requires reconciliation');
+        first.db.prepare("UPDATE driver_claim SET process_start='0' WHERE id=1").run();
+        const recovered = second.claimDriver(); second.releaseDriver(recovered);
+      }
+      first.close(); second.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('retains a receipt-backed 503, authorizes one fresh retry and excludes a second failure', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-bound-retry-')), runs: string[] = [];
     try {
