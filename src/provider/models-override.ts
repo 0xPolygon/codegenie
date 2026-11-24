@@ -1,34 +1,42 @@
 import {
   clampThinkingLevel,
-  type Api, type Model, type ModelThinkingLevel,
+  type AnthropicMessagesCompat, type Api, type Model, type ModelThinkingLevel,
   type OpenAICompletionsCompat, type OpenAIResponsesCompat, type OpenRouterRouting
 } from "@earendil-works/pi-ai";
 
 const DEEPSEEK_UPSTREAMS = ["deepseek", "fireworks", "together"];
 
-function usesOpenAIResponses(model: Model<Api>): boolean {
-  return (model.provider === "openai" && model.api === "openai-responses") ||
-    (model.provider === "openai-codex" && model.api === "openai-codex-responses");
+type RequestLevelEffortCompat = {
+  supportsMidConvoEffort: false;
+  supportsAdditionalTools?: false;
+  supportsToolSearch?: false;
+};
+
+const RESPONSES_COMPAT = {
+  supportsAdditionalTools: false,
+  supportsToolSearch: false,
+  supportsMidConvoEffort: false
+} as const;
+
+// Luna can skip reasoning with in-band tools and has inconsistent effort
+// updates (#375, #431, earendil-works/pi#12361 and openai/codex#47843).
+// The Anthropic override addresses low-like Opus reasoning on one fixture (#443).
+// Requalify the routes independently on Pi upgrades (earendil-works/pi#12464, #432).
+const REQUEST_LEVEL_EFFORT_OVERRIDES = new Map<string, RequestLevelEffortCompat>([
+  ["openai/openai-responses", RESPONSES_COMPAT],
+  ["openai-codex/openai-codex-responses", RESPONSES_COMPAT],
+  ["anthropic/anthropic-messages", { supportsMidConvoEffort: false }]
+]);
+
+function requestLevelEffortOverrides(model: Model<Api>): RequestLevelEffortCompat | undefined {
+  return REQUEST_LEVEL_EFFORT_OVERRIDES.get(`${model.provider}/${model.api}`);
 }
 
 // Apply request compatibility overrides without mutating Pi's catalog.
 export function applyModelOverrides(model: Model<Api>): Model<Api> {
-  if (usesOpenAIResponses(model)) {
-    // Luna can skip reasoning when Codex declares tools in input (#375).
-    // Direct OpenAI also echoes medium when effort is sent as an update (#431).
-    // Request-level effort avoids in-band effort updates
-    // (earendil-works/pi#12361 and openai/codex#47843).
-    // Remove the direct OpenAI workaround once Pi pins effort on openai-responses
-    // (earendil-works/pi#12464, tracked in #432).
-    return {
-      ...model,
-      compat: {
-        ...model.compat,
-        supportsAdditionalTools: false,
-        supportsToolSearch: false,
-        supportsMidConvoEffort: false
-      }
-    };
+  const effortOverrides = requestLevelEffortOverrides(model);
+  if (effortOverrides) {
+    return { ...model, compat: { ...model.compat, ...effortOverrides } };
   }
   if (model.provider !== "openrouter" || model.api !== "openai-completions") {
     return model;
@@ -53,20 +61,32 @@ export function applyModelOverrides(model: Model<Api>): Model<Api> {
   };
 }
 
-type ResponsesWireProtocol = {
+type EffortWireProtocol = {
   wireEffort?: string;
-  toolPlacement: "top_level" | "none";
+  toolPlacement?: "top_level" | "none";
   configurationUpdate: false;
 };
 
-export function responsesWireProtocol(raw: unknown, effort: string, toolCount: number): ResponsesWireProtocol | undefined {
+export function effortWireProtocol(raw: unknown, effort: string | undefined, toolCount: number): EffortWireProtocol | undefined {
   const model = raw as Model<Api>;
-  if (!usesOpenAIResponses(model)) return undefined;
-  const compat = model.compat as OpenAIResponsesCompat | undefined;
-  if (compat?.supportsAdditionalTools !== false || compat.supportsToolSearch !== false
-    || compat.supportsMidConvoEffort !== false) return undefined;
+  const overrides = requestLevelEffortOverrides(model);
+  const compat = model.compat as (AnthropicMessagesCompat & OpenAIResponsesCompat) | undefined;
+  if (!overrides || !compat || Object.keys(overrides).some(key => compat[key as keyof RequestLevelEffortCompat] !== false)) {
+    return undefined;
+  }
 
-  const selected = clampThinkingLevel(model, effort as ModelThinkingLevel);
+  if (model.api === "anthropic-messages") {
+    // Pi sends output_config.effort only for adaptive thinking here. The
+    // forced-submit path omits reasoning for models that can disable thinking.
+    if (!effort || !model.reasoning || !compat.forceAdaptiveThinking) return { configurationUpdate: false };
+    const mapped = model.thinkingLevelMap?.[effort as ModelThinkingLevel];
+    return {
+      wireEffort: mapped ?? (effort === "minimal" || effort === "low" ? "low" : effort === "medium" ? "medium" : "high"),
+      configurationUpdate: false
+    };
+  }
+
+  const selected = clampThinkingLevel(model, (effort ?? "off") as ModelThinkingLevel);
   const levels = model.thinkingLevelMap;
   const wireEffort = selected === "off"
     ? model.reasoning && levels?.off !== null ? levels?.off ?? "none" : undefined

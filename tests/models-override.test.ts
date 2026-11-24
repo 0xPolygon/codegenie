@@ -4,9 +4,11 @@ import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import type { Model } from "@earendil-works/pi-ai";
-import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice, responsesWireProtocol } from "../src/provider/models-override.js";
+import { Type } from "typebox";
+import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice, effortWireProtocol } from "../src/provider/models-override.js";
 import { getCodegeniePiModels } from "../src/provider/pi-ai-models.js";
-import { createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import { nullTelemetry } from "./helpers/git.js";
 
 const routing = { only: ["deepseek", "fireworks", "together"], order: ["deepseek", "fireworks", "together"], allow_fallbacks: false };
 const catalogModel = () => getCodegeniePiModels().getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
@@ -102,8 +104,8 @@ describe("OpenAI Responses tool and effort framing", () => {
         const oldTools = before.input.find(item => item.type === "additional_tools")?.tools;
         expect(oldTools).toHaveLength(menu.length);
         expect(after.tools).toEqual(oldTools);
-        expect(responsesWireProtocol(catalog, selected, menu.length)).toBeUndefined();
-        expect(responsesWireProtocol(model.raw, selected, menu.length)).toEqual({
+        expect(effortWireProtocol(catalog, selected, menu.length)).toBeUndefined();
+        expect(effortWireProtocol(model.raw, selected, menu.length)).toEqual({
           wireEffort, toolPlacement: "top_level", configurationUpdate: false
         });
         const normalize = (body: typeof before) => {
@@ -128,7 +130,7 @@ describe("OpenAI Responses tool and effort framing", () => {
   ] as const)("leaves %s/%s compatibility unchanged", (provider, id) => {
     const original = getCodegeniePiModels().getModel(provider, id)!;
     expect(applyModelOverrides(original)).toBe(original);
-    expect(responsesWireProtocol(original, "high", 1)).toBeUndefined();
+    expect(effortWireProtocol(original, "high", 1)).toBeUndefined();
   });
 
   it.each([
@@ -174,6 +176,149 @@ describe("OpenAI Responses tool and effort framing", () => {
     } finally {
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("Anthropic request-level effort", () => {
+  const models = getCodegeniePiModels({
+    read: async provider => provider === "anthropic" ? { type: "api_key", key: "fixture-claude-key" } : undefined,
+    list: async () => [],
+    modify: async () => { throw new Error("unexpected auth refresh"); },
+    delete: async () => undefined
+  });
+  const adapter = createRealPiAiAdapter({ models });
+  const effortBetas = ["mid-conversation-output-config-2026-07-01", "thinking-binding-controls-2026-08-01"];
+  const context = {
+    messages: [{ role: "user", content: "Review the changed code.", timestamp: 0 }],
+    tools: [
+      { name: "read_range", description: "Read source", parameters: Type.Object({ path: Type.String() }) },
+      { name: "submit_review", description: "Submit the review", parameters: Type.Object({}) }
+    ]
+  };
+  const options = { submitToolName: "submit_review", maxRetries: 0, cacheRetention: "none" };
+
+  type Capture = {
+    body: string;
+    betas: string[];
+  };
+  function captureMessages() {
+    const captures: Capture[] = [];
+    vi.stubGlobal("fetch", async (url: string, request: RequestInit) => {
+      const { origin, pathname } = new URL(url);
+      expect(origin + pathname).toBe("https://api.anthropic.com/v1/messages");
+      expect(typeof request.body).toBe("string");
+      captures.push({
+        body: request.body as string,
+        betas: (new Headers(request.headers).get("anthropic-beta") ?? "").split(",").map(beta => beta.trim()).filter(Boolean)
+      });
+      return new Response("offline request captured", { status: 401 });
+    });
+    return captures;
+  }
+
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5"])("pins %s effort without changing the tool request", async id => {
+    const catalog = models.getModel("anthropic", id)!;
+    const original = structuredClone(catalog);
+    const adjusted = (await adapter.resolveModel({ provider: "anthropic", model: id }))!;
+    expect(catalog.compat).toMatchObject({ supportsMidConvoEffort: true });
+    expect(adjusted.raw).toEqual({ ...catalog, compat: { ...catalog.compat, supportsMidConvoEffort: false } });
+    const captured = captureMessages();
+
+    try {
+      for (const reasoning of ["low", "medium", "high", "max"] as const) {
+        // Opus and Sonnet 5.5 must keep adaptive thinking even when a submit
+        // is requested. Codegenie downgrades the tool choice to auto.
+        const toolChoice = reasoning === "max" ? { type: "tool", name: "submit_review" } : "auto";
+        await adapter.complete({ ...adjusted, raw: catalog }, context, { ...options, reasoning, toolChoice });
+        await adapter.complete(adjusted, context, { ...options, reasoning, toolChoice });
+        const before = captured.at(-2)!;
+        const after = captured.at(-1)!;
+        const native = JSON.parse(before.body);
+        const fixed = JSON.parse(after.body);
+        expect(native.output_config).toEqual({ effort: "low" });
+        expect(native.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: reasoning } });
+        expect(native.thinking.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
+        expect(before.betas).toEqual(expect.arrayContaining(effortBetas));
+        expect(after.betas).toEqual(before.betas.filter(beta => !effortBetas.includes(beta)));
+        expect(fixed.tool_choice).toEqual({ type: "auto" });
+        expect(fixed.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["read_range", "submit_review"]));
+        native.messages.pop();
+        delete native.thinking.block_binding;
+        native.output_config.effort = reasoning;
+        expect(fixed).toEqual(native);
+        expect(effortWireProtocol(catalog, reasoning, 2)).toBeUndefined();
+        expect(effortWireProtocol(adjusted.raw, reasoning, 2)).toEqual({ wireEffort: reasoning, configurationUpdate: false });
+      }
+      expect(captured).toHaveLength(8);
+      expect(catalog).toEqual(original);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves forced-submit bodies with disabled thinking byte-identical", async () => {
+    const id = "claude-haiku-5-5";
+    const catalog = models.getModel("anthropic", id)!;
+    const adjusted = (await adapter.resolveModel({ provider: "anthropic", model: id }))!;
+    const captured = captureMessages();
+    try {
+      const opts = { ...options, reasoning: "high", toolChoice: { type: "tool", name: "submit_review" } };
+      await adapter.complete({ ...adjusted, raw: catalog }, context, opts);
+      await adapter.complete(adjusted, context, opts);
+      expect(captured).toHaveLength(2);
+      expect(captured[1]!.body).toBe(captured[0]!.body);
+      expect(captured[1]!.betas).toEqual(captured[0]!.betas.filter(beta => !effortBetas.includes(beta)));
+      const body = JSON.parse(captured[1]!.body);
+      expect(body.thinking).toEqual({ type: "disabled" });
+      expect(body.tool_choice).toEqual({ type: "tool", name: "submit_review" });
+      expect(body).not.toHaveProperty("output_config");
+      expect(effortWireProtocol(adjusted.raw, undefined, 2)).toEqual({ configurationUpdate: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses literal effort in model call and debug telemetry and separates cache keys", async () => {
+    const id = "claude-opus-5-5";
+    const catalog = models.getModel("anthropic", id)!;
+    const adjusted = (await adapter.resolveModel({ provider: "anthropic", model: id }))!;
+    const captured = captureMessages();
+    const recordModelCall = vi.fn();
+    const writeDebug = vi.fn(async () => {});
+    const get = vi.fn(async (_key: string) => ({ status: "miss", reason: "not_found" }) as const);
+    const put = vi.fn(async () => ({ status: "write" }) as const);
+    const noop = () => {};
+    try {
+      for (const ref of [{ ...adjusted, raw: catalog }, adjusted]) {
+        const runner = createPiRunner({
+          llmConfig: { provider: "anthropic", model: id, maxConcurrentCalls: 1, reasoning: "high" },
+          adapter: { ...adapter, resolveModel: () => ref },
+          logger: { debug: noop, info: noop, warn: noop, error: noop },
+          telemetry: { ...nullTelemetry(), recordModelCall, writeDebug },
+          cache: { runFingerprint: "anthropic-effort", get, put },
+          runSignal: new AbortController().signal,
+          hooks: { checkpoint: () => "ok", onUsage: noop }
+        });
+        await expect(runner.runStructured({
+          stage: 7, prompt: "Test request", schema: Type.Object({}), templateVersion: "test", timeoutMs: 5_000,
+          tools: [{ ...context.tools[0]!, execute: async () => ({ text: "fixture" }) }],
+          toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1_000 }
+        })).rejects.toMatchObject({ code: "llm_call_failed" });
+      }
+      expect(captured).toHaveLength(2);
+      expect(JSON.parse(captured[0]!.body).output_config.effort).toBe("low");
+      expect(JSON.parse(captured[1]!.body).output_config.effort).toBe("high");
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(get.mock.calls[0]).not.toEqual(get.mock.calls[1]);
+      expect(recordModelCall).toHaveBeenCalledTimes(2);
+      expect(recordModelCall.mock.calls[0]![0]).not.toHaveProperty("wireEffort");
+      expect(recordModelCall.mock.calls[1]![0]).toMatchObject({ wireEffort: "high", configurationUpdate: false });
+      expect(writeDebug).toHaveBeenCalledWith("llm-calls", expect.stringMatching(/\.request$/u), expect.objectContaining({
+        provider: expect.objectContaining({ wireEffort: "high", configurationUpdate: false })
+      }));
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });
@@ -296,8 +441,7 @@ describe("Anthropic models that cannot disable thinking (issue #46)", () => {
       } else {
         // Default settings: the 400-rejected named choice must not be sent, and
         // the configured effort still reaches the model.
-        expect(payload).toMatchObject({ tool_choice: { type: "auto" }, thinking: { type: "adaptive" } });
-        expect(JSON.stringify((payload as { messages: unknown[] }).messages)).toContain('"output_config":{"effort":"high"}');
+        expect(payload).toMatchObject({ tool_choice: { type: "auto" }, thinking: { type: "adaptive" }, output_config: { effort: "high" } });
       }
     } finally {
       vi.unstubAllEnvs();
