@@ -5,7 +5,7 @@ import { focusedRepairDiagnostics, submissionIssues } from "../llm/submit-preser
 import type { CandidateFinding } from "../types.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { removeUnavailableAttentionReferences, type AttentionReconciliation } from "./attention-reconciliation.js";
-import { compatibleCompositionPlacement, eligibleCompositionPlacement, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
+import { compatibleCompositionPlacement, eligibleCompositionPlacement, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type AttributionDiagnostic, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
 
 type Group = CompositionPresentation & { findingIds: string[]; sections: CompositionSection[]; evidenceRefs: string[] };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -16,6 +16,13 @@ function groups(value: unknown): Group[] | undefined {
     && (group.retainedSourceRefs === undefined || strings(group.retainedSourceRefs)) && Array.isArray(group.sections)
     && group.sections.every(section => object(section) && typeof section.kind === "string" && typeof section.text === "string" && strings(section.sourceRefs)))) return;
   return value.composedFindings as Group[];
+}
+
+export function compositionAttributionIssues(value: unknown, findings: CandidateFinding[]): AttributionDiagnostic[] {
+  return (groups(value) ?? []).flatMap((group, index) => {
+    const sources = compositionSources(findings.filter(finding => group.findingIds.includes(finding.id)), findings);
+    return compositionAttributionDiagnostics(sources, group.sections, group.evidenceRefs, group, `composedFindings.${index}.`);
+  });
 }
 
 // Component names compositionSources can produce for a finding.

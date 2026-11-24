@@ -1,9 +1,11 @@
+import { Errors } from "typebox/value";
 import { deriveReviewHealth, factualReviewSummary, renderReviewHealth, requiredDiagnosticsAfterComposition } from "../util/review-health.js";
-import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
+import { compositionAttributionIssues, createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, MAX_PRIMARY_EVIDENCE_REFS, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
+import { cleanupSubmitShape } from "../llm/submit-preservation.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { isCodegenieError } from "../util/errors.js";
@@ -520,15 +522,18 @@ async function runComposer(
     followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`),
     ...(attention.inventory.concerns.length ? { attentionReconciliationJson: JSON.stringify(attention.inventory) } : {})
   });
+  const schema = composerSubmissionSchema(groups, attention);
+  const findings = groups.flatMap(group => group.findings);
+  const normalizeSubmit = (value: unknown) => normalizeCompositionReferences(value, findings, attention);
   const submitted = await opts.runner.runStructured<SubmitComposition>({
     stage: 10,
     compositionReasoningStepDown: config.review.compositionReasoningStepDown,
     prompt: prompt.prompt,
-    schema: composerSubmissionSchema(groups, attention),
-    normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings), attention),
+    schema,
+    normalizeSubmit,
     validateSubmit: value => {
       try {
-        validateCompositionSubmission(value, groups.flatMap(group => group.findings));
+        validateCompositionSubmission(value, findings);
         const attentionErrors = attentionResolutionErrors(attention, value.attentionResolutions);
         if (attentionErrors.length) return { ok: false, classification: "schema_invalid", details: `${attentionErrors.join("; ")}. Assess each supplied concern; use unresolved when independent evidence is insufficient.` };
         return { ok: true };
@@ -541,16 +546,30 @@ async function runComposer(
     schemaRepair: {
       createFieldRepair: (schema, retained) => {
         try {
-          validateCompositionSubmission(retained as SubmitComposition, groups.flatMap(group => group.findings));
+          validateCompositionSubmission(retained as SubmitComposition, findings);
           const repair = createAttentionResolutionRepair(schema, retained as SubmitComposition, attention);
           if (repair) return repair;
         } catch { /* Finding-content failures need their existing repair contract. */ }
-        return createCompositionAttributionRepair(schema, retained, groups.flatMap(group => group.findings));
+        return createCompositionAttributionRepair(schema, retained, findings);
       },
       // Source IDs alone cannot establish their meaning. Keep the immutable
       // source inventory available during the bounded semantic repair.
       replaceConversation: false,
-      recoverInvalidSubmit: (input) => recoverComposerInvalidSubmit(input, groups, telemetry),
+      recoverInvalidSubmit: (input) => {
+        const classification = classifyComposerSchemaInvalid(input, schema, findings, normalizeSubmit);
+        telemetry.event({
+          stage: 10,
+          level: "warn",
+          message: "composer_schema_invalid_classified",
+          data: {
+            submitTool: input.submitTool,
+            invalidSubmitCallCount: input.submitCalls.length,
+            schemaRepairUsed: input.schemaRepairUsed,
+            schemaInvalidKind: classification
+          }
+        });
+        return recoverComposerInvalidSubmit(input, groups, telemetry);
+      },
       buildPrompt: (input) => buildComposerSchemaRepairPrompt(input, groups)
     }
   });
@@ -594,6 +613,8 @@ type ComposerSchemaInvalidKind =
   | "xml_parameter_bleed"
   | "missing_composed_findings"
   | "summary_overflow"
+  | "wrong_section"
+  | "missing_source"
   | "missing_submit_call"
   | "invalid_tool_arguments";
 
@@ -602,52 +623,20 @@ function recoverComposerInvalidSubmit(
   groups: FindingGroup[],
   telemetry: TelemetryRecorder
 ): Record<string, unknown> | undefined {
-  const classification = classifyComposerSchemaInvalid(input);
-  telemetry.event({
-    stage: 10,
-    level: "warn",
-    message: "composer_schema_invalid_classified",
-    data: {
-      submitTool: input.submitTool,
-      invalidSubmitCallCount: input.submitCalls.length,
-      schemaRepairUsed: input.schemaRepairUsed,
-      schemaInvalidKind: classification
-    }
-  });
+  if (input.submitTool !== "submit_composition") return undefined;
+  const summary = input.submitCalls[0]?.arguments.summary;
+  if (typeof summary !== "string") return undefined;
+  // Keep the legacy XML salvage separate from validation telemetry.
+  const marker = summary.match(/<\s*parameter\b[^>]*\bname\s*=\s*["']composedFindings["'][^>]*>/iu);
+  if (marker?.index === undefined) return undefined;
 
-  if (input.submitTool !== "submit_composition" || input.submitCalls.length === 0 || classification !== "xml_parameter_bleed") {
-    return undefined;
-  }
-
+  const classification = "xml_parameter_bleed";
   telemetry.event({
     stage: 10,
     level: "warn",
     message: "composer_payload_salvage_attempted",
     data: { schemaInvalidKind: classification, invalidSubmitCallCount: input.submitCalls.length }
   });
-
-  const args = input.submitCalls[0]?.arguments;
-  const summary = typeof args?.summary === "string" ? args.summary : undefined;
-  if (summary === undefined) {
-    telemetry.event({
-      stage: 10,
-      level: "warn",
-      message: "composer_payload_salvage_failed",
-      data: { reason: "missing_summary", schemaInvalidKind: classification }
-    });
-    return undefined;
-  }
-
-  const marker = summary.match(/<\s*parameter\b[^>]*\bname\s*=\s*["']composedFindings["'][^>]*>/iu);
-  if (!marker || marker.index === undefined) {
-    telemetry.event({
-      stage: 10,
-      level: "warn",
-      message: "composer_payload_salvage_failed",
-      data: { reason: "missing_composed_findings_parameter", schemaInvalidKind: classification }
-    });
-    return undefined;
-  }
 
   const jsonText = extractFirstJsonArray(summary.slice(marker.index + marker[0].length));
   if (jsonText === undefined) {
@@ -711,20 +700,28 @@ function recoverComposerInvalidSubmit(
   return recovered;
 }
 
-function classifyComposerSchemaInvalid(input: LlmSchemaInvalidSubmitRecoveryInput): ComposerSchemaInvalidKind {
-  if (input.submitCalls.length === 0) {
-    return "missing_submit_call";
-  }
-  const argsText = input.submitCalls.map((call) => safeComposerJson(call.arguments)).join("\n");
-  const text = `${input.error}\n${argsText}`.toLowerCase();
-  if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
-    return "xml_parameter_bleed";
-  }
-  if (/\bcomposedfindings\b/u.test(text) && /\b(required|missing|expected)\b/u.test(text)) {
+function classifyComposerSchemaInvalid(
+  input: LlmSchemaInvalidSubmitRecoveryInput,
+  schema: typeof SubmitCompositionSchema,
+  findings: CandidateFinding[],
+  normalizeSubmit: (value: unknown) => ReturnType<typeof normalizeCompositionReferences>
+): ComposerSchemaInvalidKind {
+  if (!input.submitCalls.length) return "missing_submit_call";
+  if (input.classification === "xml_parameter_bleed") return input.classification;
+  const values = input.submitCalls.map(({ arguments: args }) =>
+    cleanupSubmitShape(schema, normalizeSubmit(args)?.value ?? args).arguments);
+  const diagnostics = values.flatMap(value => Errors(schema, value));
+  if (diagnostics.some(issue => issue.instancePath === "" && issue.keyword === "required"
+    && issue.params.requiredProperties.includes("composedFindings"))) {
     return "missing_composed_findings";
   }
-  if (/\bsummary\b/u.test(text) && /\b(?:4000|max(?:imum)?|length|characters?)\b/u.test(text)) {
+  if (diagnostics.some(issue => issue.instancePath === "/summary" && issue.keyword === "maxLength")) {
     return "summary_overflow";
+  }
+  if (!diagnostics.length) {
+    const issues = values.flatMap(value => compositionAttributionIssues(value, findings));
+    if (issues.some(issue => issue.code === "wrong_section")) return "wrong_section";
+    if (issues.some(issue => issue.code === "missing_source")) return "missing_source";
   }
   return "invalid_tool_arguments";
 }

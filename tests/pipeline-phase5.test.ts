@@ -10777,6 +10777,51 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
+  it.each(["wrong_section", "summary_overflow", "invalid_tool_arguments", "missing_composed_findings"] as const)(
+    "classifies composer submit failures by structured diagnostics: %s", async expected => {
+      const { findings, sections, evidenceRefs } = authorizationComposition();
+      const valid = { summary: "A verified issue.", composedFindings: [{
+        findingIds: [findings[0]!.id], sections, evidenceRefs, publication: "summary-only"
+      }] };
+      const draft: Partial<typeof valid> = structuredClone(valid);
+      const draftSections = draft.composedFindings![0]!.sections;
+      if (expected === "wrong_section") {
+        // Keep established proof visible, but move the ordinary verification citation into Test.
+        const verification = draftSections.find(section => section.kind === "verification")!;
+        const misplaced = verification.sourceRefs.shift()!;
+        draftSections.find(section => section.kind === "test")!.sourceRefs.push(misplaced);
+      }
+      if (expected === "summary_overflow") draft.summary = "x".repeat(4_001);
+      if (expected === "invalid_tool_arguments") draftSections[0]!.text = "x".repeat(12_001);
+      if (expected === "missing_composed_findings") delete draft.composedFindings;
+      const telemetry = { ...nullTelemetry(), event: vi.fn() };
+      const runner: LlmRunner = {
+        runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const before = structuredClone(draft);
+          expect(request.schemaRepair?.recoverInvalidSubmit?.({
+            stage: 10,
+            submitTool: "submit_composition",
+            error: "A section has a 4000-character limit. Do not echo the summary.",
+            submitCalls: [{ id: "bad-composition", arguments: draft }],
+            extraToolNames: [],
+            schemaRepairUsed: false
+          })).toBeUndefined();
+          expect(draft).toEqual(before);
+          return valid as T;
+        }
+      };
+      await dedupeRankAndComposeReview(
+        { verified: findings, verdicts: [] }, fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        fakeCoverage(), config(), telemetry, { runner, promptBuilder: fakePromptBuilder() }
+      );
+      expect(telemetry.event).toHaveBeenCalledWith(expect.objectContaining({
+        message: "composer_schema_invalid_classified",
+        data: expect.objectContaining({ schemaInvalidKind: expected })
+      }));
+    }
+  );
+
   it("salvages composer XML parameter bleed when embedded composed findings are valid", async () => {
     const finding = fakeFinding();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
