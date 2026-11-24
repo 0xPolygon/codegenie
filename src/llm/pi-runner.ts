@@ -8,7 +8,7 @@ import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
-import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice, responsesWireProtocol } from "../provider/models-override.js";
+import { applyModelOverrides, effortWireProtocol, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
 import { createToolArgumentStreamGuard, type ToolArgumentStreamLimit } from "./tool-argument-stream-limit.js";
 import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
@@ -1517,13 +1517,13 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
-  const responsesProtocol = responsesWireProtocol(model.raw, reasoning, tools.length);
+  const wireProtocol = effortWireProtocol(model.raw, forcedSubmitThinkingOff ? undefined : reasoning, tools.length);
   const protocol = { ...describeProviderProtocol(
     model,
     toolChoice,
     forcedSubmitThinkingOff ? undefined : reasoning,
     forceSubmit
-  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy, ...responsesProtocol };
+  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy, ...wireProtocol };
   if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
     input.protocolFlags.downgradeWarned = true;
     opts.telemetry.event({
@@ -1550,7 +1550,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     // disabled (plan 86 step 3), which is a different request than the same
     // messages at the configured reasoning level.
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
-    ...responsesProtocol,
+    ...wireProtocol,
     stage: request.stage,
     ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
@@ -1614,6 +1614,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           tools,
           toolChoice,
           providerPromptCache,
+          wireProtocol,
           finalizeMode,
           finalizeTarget
         });
@@ -1681,6 +1682,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       tools,
       toolChoice,
       providerPromptCache,
+      wireProtocol,
       finalizeMode,
       finalizeTarget
     });
@@ -2115,12 +2117,10 @@ function canonicalModelRequest(input: {
     model: input.model,
     ...(input.providerRouting !== undefined ? { providerRouting: input.providerRouting } : {}),
     reasoning: input.reasoning,
-    // Keep Codex responses from the earlier tool and effort framing out of this cache.
-    ...(input.toolPlacement === undefined ? {} : {
-      ...(input.wireEffort === undefined ? {} : { wireEffort: input.wireEffort }),
-      toolPlacement: input.toolPlacement,
-      configurationUpdate: input.configurationUpdate
-    }),
+    // Keep responses from the earlier tool and effort framing out of this cache.
+    ...(input.wireEffort === undefined ? {} : { wireEffort: input.wireEffort }),
+    ...(input.toolPlacement === undefined ? {} : { toolPlacement: input.toolPlacement }),
+    ...(input.configurationUpdate === undefined ? {} : { configurationUpdate: input.configurationUpdate }),
     stage: input.stage,
     ...(input.cacheDraw !== undefined ? { cacheDraw: input.cacheDraw } : {}),
     templateVersion: input.templateVersion,
@@ -3351,6 +3351,7 @@ function writeModelCallRequestDebug(
     tools: ToolDefinition[];
     toolChoice: ToolChoiceMode;
     providerPromptCache: ProviderPromptCacheOptions;
+    wireProtocol: ReturnType<typeof effortWireProtocol>;
   }
 ): void {
   const schemaName = submitToolNameForStage(request.stage);
@@ -3377,7 +3378,7 @@ function writeModelCallRequestDebug(
       reasoning,
       reasoningPolicy,
       reasoningConfigured,
-      ...responsesWireProtocol(model.raw, reasoning, meta.tools.length)
+      ...meta.wireProtocol
     },
     cache: definedRecord({
       enabled: Boolean(opts.cache),
