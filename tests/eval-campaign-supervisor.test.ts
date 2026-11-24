@@ -120,10 +120,10 @@ describe('campaign admission custody', () => {
       const evidence = (value: object) => { const text = JSON.stringify(value), hash = digest(text), name = path.join(dir, hash); writeFileSync(name, text); evidenceFiles[hash] = name; return hash; };
       const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       const fingerprint = ledger.fingerprint('synthetic-key');
-      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0, fingerprint }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1, fingerprint });
+      const baselineHash = evidence({ kind: 'key_baseline', usageNanos: 0, fingerprint }), snapshotHash = evidence({ kind: 'key_snapshot', usageNanos: 0, observedMs: 1, fingerprint, boundaryId: 'one' });
       const healthHash = evidence({ kind: 'health', purpose: 'admission', physicalId: 'health', boundaryId: 'one', provider: 'openrouter', outcome: 'clean', observedMs: 1 });
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baselineHash });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshotHash });
+      ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshotHash });
       const scheduleBytes = Buffer.from(JSON.stringify({ pauseAfterSlot: 'one', slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }, { id: 'two', boundaryId: 'two', provider: 'openrouter' }] }));
       const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) };
       let supervisor = new CampaignSupervisor(file, binding);
@@ -152,7 +152,7 @@ describe('campaign admission custody', () => {
       expect(supervisor.begin('two', args)).toMatchObject({ action: 'paused' });
       supervisor.db.prepare('UPDATE outcome SET receipt_sha256=? WHERE slot_id=?').run(digest('receipt'), 'one');
       supervisor.db.prepare('UPDATE attempt SET receipt_sha256=? WHERE slot_id=? AND attempt_no=2').run(digest('receipt'), 'one');
-      expect(supervisor.begin('two', args)).toMatchObject({ action: 'probe' });
+      expect(supervisor.begin('two', args)).toMatchObject({ action: 'snapshot' });
       expect(verifyReceipt).toHaveBeenCalledWith('one', 2, digest('receipt'));
       supervisor.close();
       const changed = Buffer.from(scheduleBytes.toString().replace('two', 'new'));

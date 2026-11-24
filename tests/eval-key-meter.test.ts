@@ -15,7 +15,7 @@ describe('OpenRouter key meter', () => {
     try {
       const campaign = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
       const sealReceipt = vi.fn(() => true);
-      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', reading: { status: 'malformed' }, sealReceipt })).toEqual({ action: 'stop' });
+      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', boundaryId: 'one', reading: { status: 'malformed' }, sealReceipt })).toEqual({ action: 'stop' });
       expect(campaign.totals().stopped).toBe('accounting_failed'); expect(sealReceipt).not.toHaveBeenCalled(); campaign.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -27,13 +27,13 @@ describe('OpenRouter key meter', () => {
       const sealReceipt = (bytes: Buffer, hash: string) => { expect(bytes.toString()).not.toContain(key); writeFileSync(path.join(dir, hash), bytes); return true; };
       const reading = { status: 'ok', usageNanos: 0, observedMs: 1, fingerprint: campaign.fingerprint(key) };
       expect(applyKeyObservation({ ledger: campaign, kind: 'baseline', reading, sealReceipt })).toMatchObject({ action: 'recorded' });
-      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', reading, sealReceipt })).toMatchObject({ action: 'recorded' });
+      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', boundaryId: 'one', reading, sealReceipt })).toMatchObject({ action: 'recorded' });
       expect(campaign.keyDecision({ verifyEvidence: () => true })).toEqual({ action: 'admit' });
-      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', reading: { status: 'stale' }, sealReceipt })).toEqual({ action: 'wait' });
+      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', boundaryId: 'one', reading: { status: 'stale' }, sealReceipt })).toEqual({ action: 'wait' });
       campaign.close(); campaign = new CampaignLedger(db, config);
       expect(campaign.keyDecision({ verifyEvidence: () => true })).toEqual({ action: 'wait' });
       expect(campaign.reservePhysical({ id: 'blocked', logicalId: 'blocked', kind: 'initial' })).toEqual({ admitted: false, reason: 'key_usage_stale' });
-      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', reading: { ...reading, observedMs: 2 }, sealReceipt })).toMatchObject({ action: 'recorded' });
+      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', boundaryId: 'one', reading: { ...reading, observedMs: 2 }, sealReceipt })).toMatchObject({ action: 'recorded' });
       expect(campaign.keyDecision({ verifyEvidence: () => true })).toEqual({ action: 'admit' }); campaign.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

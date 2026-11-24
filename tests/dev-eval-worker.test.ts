@@ -31,18 +31,18 @@ describe("development eval worker", () => {
       const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
       const fingerprint = ledger.fingerprint('synthetic-key');
       const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
-      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint });
+      const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "one" });
       const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash });
       const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file }, nowMs: 2 };
       expect(boundaryDecision(args)).toMatchObject({ source: "key", action: "snapshot" });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
+      ledger.recordKeySnapshot({ boundaryId: "one", usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
       expect(boundaryDecision(args)).toMatchObject({ source: "health", action: "probe" });
       ledger.reservePhysical({ id: "health", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "one" });
       ledger.settlePhysical({ id: "health", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
       ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash });
       expect(boundaryDecision(args)).toMatchObject({ action: "admit" });
-      expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "probe" });
+      expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "snapshot" });
       const wrongHealth = evidence(dir, { kind: "health", purpose: "admission", physicalId: "other", boundaryId: "one", provider: "openrouter", outcome: "clean", observedMs: 1 });
       ledger.db.prepare('UPDATE health_receipt SET evidence_sha256=?').run(wrongHealth.hash);
       expect(() => boundaryDecision({ ...args, evidenceFiles: { ...args.evidenceFiles, [wrongHealth.hash]: wrongHealth.file } })).toThrow(BoundaryBindingError);
@@ -95,7 +95,7 @@ describe("development eval worker", () => {
     const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
     const fingerprint = ledger.fingerprint('synthetic-key');
     const baseline = evidence(dir, { kind: "key_baseline", usageNanos: 0, fingerprint });
-    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint });
+    const snapshot = evidence(dir, { kind: "key_snapshot", usageNanos: 0, observedMs: 1, fingerprint, boundaryId: "boundary-1" });
     const health = evidence(dir, { kind: "health", purpose: "admission", physicalId: "health-1", boundaryId: "boundary-1", provider: "openrouter", outcome: "clean", observedMs: 1 });
     const evidenceFiles = { [baseline.hash]: baseline.file, [snapshot.hash]: snapshot.file, [health.hash]: health.file };
     vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key"); vi.stubEnv("CODEGENIE_HOME", path.join(dir, "home"));
@@ -106,7 +106,7 @@ describe("development eval worker", () => {
       const source = readFileSync(path.join(checkout, "evals/fixtures/core.yml"), "utf8").replace("provider: fake", "provider: openrouter").replace("model: fake-model", "model: openai/gpt-6-luna");
       writeFileSync(path.join(suite, "core.yml"), source);
       const caseFile = path.join(dir, "case.json"); writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
-      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: baseline.hash }); ledger.recordKeySnapshot({ boundaryId: "boundary-1", usageMicros: 0, observedMs: 1, keyFingerprint: fingerprint, evidenceSHA256: snapshot.hash });
       ledger.reservePhysical({ id: "health-1", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "boundary-1" });
       ledger.settlePhysical({ id: "health-1", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
       ledger.recordHealth({ physicalId: "health-1", outcome: "clean", observedMs: 1, evidenceSHA256: health.hash }); ledger.close();
@@ -119,7 +119,7 @@ describe("development eval worker", () => {
       expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
       const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
-      expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "health_probe" }); afterRejection.close();
+      expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "key_snapshot" }); afterRejection.close();
       const result = await runWorker({ caseConfig: caseFile, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl });
       expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();

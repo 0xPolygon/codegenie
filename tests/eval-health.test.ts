@@ -27,7 +27,7 @@ describe('native campaign health probe', () => {
       const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'health', limitMicros: 2_000_000 });
       const keyFingerprint = ledger.fingerprint('synthetic-key');
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
       const event = { error: { message: 'The request exceeds the maximum usage size allowed during peak load.', code: 500 } };
       const fetchImpl = vi.fn(async () => new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } }));
       const result = await runHealthProbe({ ledger, boundaryId: 'boundary', purpose: 'admission', attemptPrefix: 'health/attempt-01', expected,
@@ -44,7 +44,7 @@ describe('native campaign health probe', () => {
       const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'health', limitMicros: 2_000_000 });
       const keyFingerprint = ledger.fingerprint('synthetic-key');
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
       const fetchImpl = vi.fn(async () => {
         if (failure === 'timeout') { const error = new Error('synthetic timeout'); error.name = 'TimeoutError'; throw error; }
         const chunk = { id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'openai/gpt-6-luna', choices: [{ index: 0, delta: { role: 'assistant', content: 'no submit' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0, is_byok: false } };
@@ -66,7 +66,7 @@ describe('native campaign health probe', () => {
       const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'health', limitMicros: 2_000_000 });
       const keyFingerprint = ledger.fingerprint('synthetic-key');
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
       const fetchImpl = vi.fn(async () => response(usage)); const sealReceipt = vi.fn(() => true);
       const result = await runHealthProbe({ ledger, boundaryId: 'boundary', purpose: 'admission', attemptPrefix: 'health/attempt-01', expected,
         llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl, sealReceipt });
@@ -82,7 +82,7 @@ describe('native campaign health probe', () => {
       const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'health', limitMicros: 2_000_000 });
       const keyFingerprint = ledger.fingerprint('synthetic-key');
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
       const fetchImpl = vi.fn(async () => scenario === 'clean' ? response() : scenario === 'zero'
         ? response({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost: 0, is_byok: false })
         : new Response('unavailable', { status: scenario === 'denied' ? 429 : 500 }));

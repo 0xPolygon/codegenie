@@ -15,7 +15,7 @@ export class CampaignLedger {
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT);
       CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
       CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, key_fingerprint TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL, boundary_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS health_receipt(physical_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
@@ -131,8 +131,8 @@ export class CampaignLedger {
       } else this.db.prepare('INSERT INTO key_baseline VALUES(?,?,?,?)').run(usageMicros, usageNanos, evidenceSHA256, keyFingerprint);
     });
   }
-  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256, keyFingerprint }) {
-    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.ceil(usageNanos / 1000) !== usageMicros || !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '')) throw new TypeError('invalid key snapshot');
+  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256, keyFingerprint, boundaryId }) {
+    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.ceil(usageNanos / 1000) !== usageMicros || !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '') || typeof boundaryId !== 'string' || !boundaryId) throw new TypeError('invalid key snapshot');
     return this.transaction(() => {
       const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,key_fingerprint FROM key_baseline').get();
       if (!baseline) throw new Error('key baseline missing');
@@ -145,21 +145,22 @@ export class CampaignLedger {
         lastFresh ? lastFresh.usage_nanos + Math.max(0, priced.nanos - lastFresh.priced_floor_nanos) : 0);
       if (!Number.isSafeInteger(expectedNanos)) throw new RangeError('key watermark exceeds safe precision');
       const fresh = usageNanos >= expectedNanos;
-      this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, priced.nanos, observedMs, evidenceSHA256, fresh ? 1 : 0);
+      this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, priced.nanos, observedMs, evidenceSHA256, fresh ? 1 : 0, boundaryId);
       this.db.prepare('UPDATE campaign SET meter_stale=?').run(fresh ? 0 : 1);
       if (usageMicros - baseline.usage_micros >= this.limit) this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'budget_limit')").run();
       return { fresh, actualMicros: Math.max(0, usageMicros - baseline.usage_micros) };
     });
   }
-  keyDecision({ verifyEvidence }) {
+  keyDecision({ verifyEvidence, boundaryId }) {
     if (typeof verifyEvidence !== 'function') throw new TypeError('snapshot evidence verifier required');
     const state = this.db.prepare('SELECT stopped,meter_stale FROM campaign').get();
     if (state.stopped) return { action: 'stop', reason: state.stopped };
     const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256,key_fingerprint FROM key_baseline').get();
     if (!baseline || verifyEvidence('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos, fingerprint: baseline.key_fingerprint }) !== true) throw new Error('key baseline evidence missing or changed');
-    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,observed_ms,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
+    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,observed_ms,evidence_sha256,fresh,boundary_id FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
     if (!snapshot) return { action: 'snapshot' };
-    if (verifyEvidence('snapshot', snapshot.evidence_sha256, { kind: 'key_snapshot', usageNanos: snapshot.usage_nanos, observedMs: snapshot.observed_ms, fingerprint: baseline.key_fingerprint }) !== true) throw new Error('key snapshot evidence changed');
+    if (verifyEvidence('snapshot', snapshot.evidence_sha256, { kind: 'key_snapshot', usageNanos: snapshot.usage_nanos, observedMs: snapshot.observed_ms, fingerprint: baseline.key_fingerprint, boundaryId: snapshot.boundary_id }) !== true) throw new Error('key snapshot evidence changed');
+    if (boundaryId !== undefined && snapshot.boundary_id !== boundaryId) return { action: 'snapshot' };
     if (state.meter_stale) return { action: 'wait' };
     const priced = this.db.prepare("SELECT COALESCE(SUM(provider_cost_nanos),0) AS total FROM physical WHERE state='priced'").get().total;
     return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced && priced <= snapshot.priced_floor_nanos ? 'admit' : 'wait' };

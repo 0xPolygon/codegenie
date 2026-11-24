@@ -56,7 +56,7 @@ export async function readConfiguredKeyUsage({ ledger, fetchImpl = globalThis.fe
 
 // The caller persists the supplied sanitized bytes outside the checkout and
 // confirms the exact hash. No live reading can advance the ledger without it.
-export function applyKeyObservation({ ledger, kind, reading, sealReceipt }) {
+export function applyKeyObservation({ ledger, kind, reading, sealReceipt, boundaryId }) {
   if (!['baseline', 'snapshot'].includes(kind) || !reading || typeof sealReceipt !== 'function') throw new TypeError('invalid key observation');
   if (reading.status === 'stale') { ledger.markKeyStale(); return { action: 'wait' }; }
   if (reading.status === 'denied' || reading.status === 'malformed') {
@@ -67,13 +67,14 @@ export function applyKeyObservation({ ledger, kind, reading, sealReceipt }) {
       !Number.isSafeInteger(reading.observedMs) || reading.observedMs < 0 || !/^[a-f0-9]{64}$/u.test(reading.fingerprint ?? '')) {
     ledger.markKeyStale(); ledger.stop('accounting_failed'); return { action: 'stop' };
   }
-  const receipt = { kind: `key_${kind}`, usageNanos: reading.usageNanos, fingerprint: reading.fingerprint, ...(kind === 'snapshot' ? { observedMs: reading.observedMs } : {}) };
+  if (kind === 'snapshot' && (typeof boundaryId !== 'string' || !boundaryId)) throw new TypeError('snapshot boundary required');
+  const receipt = { kind: `key_${kind}`, usageNanos: reading.usageNanos, fingerprint: reading.fingerprint, ...(kind === 'snapshot' ? { observedMs: reading.observedMs, boundaryId } : {}) };
   const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`), hash = createHash('sha256').update(bytes).digest('hex');
   try {
     if (sealReceipt(bytes, hash) !== true) throw new Error('receipt not sealed');
     if (kind === 'baseline') ledger.bindKeyBaseline({ usageMicros: Math.floor(reading.usageNanos / 1000), usageNanos: reading.usageNanos, keyFingerprint: reading.fingerprint, evidenceSHA256: hash });
     else {
-      const result = ledger.recordKeySnapshot({ usageMicros: Math.ceil(reading.usageNanos / 1000), usageNanos: reading.usageNanos, observedMs: reading.observedMs, keyFingerprint: reading.fingerprint, evidenceSHA256: hash });
+      const result = ledger.recordKeySnapshot({ usageMicros: Math.ceil(reading.usageNanos / 1000), usageNanos: reading.usageNanos, observedMs: reading.observedMs, keyFingerprint: reading.fingerprint, evidenceSHA256: hash, boundaryId });
       if (result.bindingMismatch) return { action: 'stop' };
       if (!result.fresh) return { action: 'wait', receiptSHA256: hash };
     }

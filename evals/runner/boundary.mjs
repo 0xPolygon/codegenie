@@ -32,7 +32,7 @@ export function boundaryDecision({ ledger, boundaryId, provider, evidenceFiles, 
     if (!valid || Object.entries(values).some(([key, value]) => receipt[key] !== value)) throw new BoundaryBindingError('evidence identity mismatch');
     return true;
   };
-  const key = ledger.keyDecision({ verifyEvidence });
+  const key = ledger.keyDecision({ verifyEvidence, boundaryId });
   if (key.action !== 'admit') return { source: 'key', ...key };
   const health = ledger.healthDecision({ boundaryId, provider, nowMs, verifyEvidence });
   return { source: 'health', ...health };

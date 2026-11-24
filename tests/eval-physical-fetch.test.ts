@@ -19,7 +19,7 @@ function testLedger(file: string, config: { binding: string; limitMicros: number
   if (!ledger.db.prepare("SELECT 1 FROM key_baseline").get()) {
     const keyFingerprint = ledger.fingerprint("test-key");
     ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
-    ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+    ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
   }
   return ledger;
 }

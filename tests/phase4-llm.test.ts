@@ -777,7 +777,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     try {
       const keyFingerprint = ledger.fingerprint("synthetic-key");
       ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
-      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
       const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
         telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
         fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
