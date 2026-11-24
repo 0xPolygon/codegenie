@@ -29,6 +29,15 @@ function processNamespace() {
   if (process.platform !== 'linux') return null;
   try { return readlinkSync('/proc/self/ns/pid'); } catch { return null; }
 }
+function definitelyExited(row) {
+  if (row.host !== hostname() || !Number.isSafeInteger(row.pid) || row.pid <= 0) return false;
+  if (process.platform === 'linux' && (!row.pid_namespace || row.pid_namespace !== processNamespace())) return false;
+  try {
+    process.kill(row.pid, 0);
+    const observed = processStart(row.pid);
+    return typeof row.process_start === 'string' && observed !== null && row.process_start !== observed;
+  } catch (error) { return error?.code === 'ESRCH'; }
+}
 
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
@@ -57,6 +66,7 @@ export class CampaignSupervisor {
       CREATE TABLE IF NOT EXISTS retry_authorization(slot_id TEXT PRIMARY KEY, attempt_no INTEGER NOT NULL, failure_sha256 TEXT NOT NULL, proof_sha256 TEXT NOT NULL, probe_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS case_reset_event(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, case_id TEXT NOT NULL, receipt_sha256 TEXT NOT NULL, resets INTEGER NOT NULL, PRIMARY KEY(slot_id,attempt_no));
+      CREATE TABLE IF NOT EXISTS driver_claim(id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL, host TEXT NOT NULL, process_start TEXT, pid_namespace TEXT, token_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS release(prefix_sha256 TEXT NOT NULL);`);
     try {
       const columns = this.db.prepare('PRAGMA table_info(campaign)').all().map((column) => column.name);
@@ -108,14 +118,25 @@ export class CampaignSupervisor {
     const row = this.db.prepare('SELECT spawn_state,pid,host,process_start,pid_namespace FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
     if (!row) return false; // Missing custody needs explicit reconciliation.
     if (['failed', 'exited'].includes(row.spawn_state)) return true;
-    if (row.spawn_state !== 'started' || row.host !== hostname() || !Number.isSafeInteger(row.pid) || row.pid <= 0) return false;
-    if (process.platform === 'linux' && (!row.pid_namespace || row.pid_namespace !== processNamespace())) return false;
-    try {
-      process.kill(row.pid, 0);
-      const observed = processStart(row.pid);
-      return typeof row.process_start === 'string' && observed !== null && row.process_start !== observed;
-    }
-    catch (error) { return error?.code === 'ESRCH'; }
+    return row.spawn_state === 'started' && definitelyExited(row);
+  }
+  claimDriver() {
+    return this.transaction(() => {
+      const old = this.db.prepare('SELECT * FROM driver_claim WHERE id=1').get();
+      if (old) {
+        if (!definitelyExited(old)) throw new Error('campaign driver already active or requires reconciliation');
+        this.db.prepare('DELETE FROM driver_claim WHERE id=1').run();
+      }
+      const token = randomBytes(32).toString('hex');
+      this.db.prepare('INSERT INTO driver_claim VALUES(1,?,?,?,?,?)').run(process.pid, hostname(), processStart(process.pid), processNamespace(), sha(token));
+      return token;
+    });
+  }
+  releaseDriver(token) {
+    if (typeof token !== 'string' || !/^[a-f0-9]{64}$/u.test(token)) throw new Error('invalid campaign driver claim');
+    this.transaction(() => {
+      if (this.db.prepare('DELETE FROM driver_claim WHERE id=1 AND token_sha256=?').run(sha(token)).changes !== 1) throw new Error('campaign driver claim mismatch');
+    });
   }
   noStartCount(slotId) {
     if (!this.slots.some((slot) => slot.id === slotId)) throw new Error('unregistered slot');
@@ -192,6 +213,7 @@ export class CampaignSupervisor {
         this.assertRetryProbe(ledger, slot.id, auth.attempt_no, auth.failure_sha256, auth.probe_id);
       }
       if (row.state === 'selected' && attempt.state !== 'sealed') throw new Error('selected attempt missing');
+      if (row.state === 'selected' && this.receipts && !['pass', 'fail'].includes(this.receipts.find(row.slot_id, row.attempt_no)?.receipt.status)) throw new Error('selected receipt is not gradable');
       if (row.state === 'excluded') {
         const excluded = this.db.prepare('SELECT * FROM exclusion WHERE slot_id=?').get(slot.id);
         const first = excluded && this.db.prepare('SELECT state,receipt_sha256 FROM attempt WHERE slot_id=? AND attempt_no=?').get(slot.id, excluded.first_attempt_no);
@@ -313,6 +335,8 @@ export class CampaignSupervisor {
       if (this.receipts) {
         const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
         if (!event || event.receipt_sha256 !== receiptSHA256 || !this.receipts.verify(slotId, attemptNo, receiptSHA256) || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset accounting requires stop');
+        const receipt = this.receipts.find(slotId, attemptNo)?.receipt;
+        if (receipt?.status !== 'error' || receipt.error !== 'provider_failure' || typeof receipt.failureCallId !== 'string') throw new Error('infrastructure failure receipt required');
       }
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length > 1) throw new Error('retry limit exhausted');
@@ -339,6 +363,7 @@ export class CampaignSupervisor {
       if (this.receipts) {
         const event = this.db.prepare('SELECT case_id,receipt_sha256 FROM case_reset_event WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
         if (!event || event.receipt_sha256 !== receiptSHA256 || !this.receipts.verify(slotId, attemptNo, receiptSHA256) || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset accounting requires stop');
+        if (!['pass', 'fail'].includes(this.receipts.find(slotId, attemptNo)?.receipt.status)) throw new Error('selected receipt is not gradable');
       }
       const failures = this.db.prepare("SELECT attempt_no,receipt_sha256 FROM attempt WHERE slot_id=? AND state IN ('interrupted','infrastructure_failure') ORDER BY attempt_no").all(slotId);
       if (failures.length) {

@@ -76,9 +76,9 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
       nextStart && nextStart.http_status >= 200 && nextStart.http_status < 300 && nextUsage?.usagePresent === true &&
       ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => count(nextUsage[key]) && nextUsage[key] === next[key]);
     if (reset) recoveredResets++;
-    if (!abort && !reset && !(failureMode && row.callId === failureCallId) && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
+    if (!abort && !reset && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
     for (const start of starts) {
-      if (start.http_status >= 200 && start.http_status < 300) {
+      if ((start.http_status >= 200 && start.http_status < 300) || (start === last && start.http_status >= 500 && start.http_status < 600)) {
         const usage = start.evidence_json ? JSON.parse(start.evidence_json) : null;
         const complete = usage && usage.usagePresent === true && [usage.inputTokens, usage.outputTokens, usage.totalTokens].every(count);
         if (!complete && !(abort && start === last) && !reset) throw new Error('physical usage missing');
