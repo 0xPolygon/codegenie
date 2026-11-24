@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,12 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { createReceiptStore } from '../evals/runner/receipt.mjs';
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
+function makeWritable(dir: string) {
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink()) return;
+  chmodSync(dir, stat.isDirectory() ? 0o700 : 0o600);
+  if (stat.isDirectory()) for (const name of readdirSync(dir)) makeWritable(path.join(dir, name));
+}
 
 describe('campaign worker spawn', () => {
   it.each(['typed-failure', 'operational-error', 'foreign-output', 'wrong-case', 'timeout', 'spawn-error', 'custody-error'])('handles %s without accepting foreign artifacts', async (scenario) => {
@@ -98,7 +104,7 @@ describe('campaign worker spawn', () => {
       expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM outcome').get()).toEqual({ total: 1 });
       expect(supervisor.db.prepare('SELECT COUNT(*) AS total FROM attempt').get()).toEqual({ total: 1 });
       expect(supervisor.checkedOutcomes(receipts.verify)).toHaveLength(1);
-      writeFileSync(path.join(result.runDir, 'run.json'), 'tampered');
+      makeWritable(result.runDir); writeFileSync(path.join(result.runDir, 'run.json'), 'tampered');
       expect(() => supervisor.checkedOutcomes(receipts.verify)).toThrow('receipt missing or changed');
       const campaign = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'b', limitMicros: 2_000_000 });
       expect(campaign.totals().starts).toBe(0); campaign.close(); supervisor.close();
