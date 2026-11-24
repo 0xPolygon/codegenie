@@ -1,6 +1,6 @@
 import { CodegenieError } from "../util/errors.js";
 
-export type TransportAdmissionReason = "campaign_budget" | "binding_mismatch" | "provider_denied" | "accounting_failed" | "campaign_stopped";
+export type TransportAdmissionReason = "campaign_budget" | "binding_mismatch" | "provider_denied" | "accounting_failed" | "campaign_stopped" | "boundary_not_admitted";
 
 /** Internal campaign admission decision made before a physical provider start. */
 export class TransportAdmissionError extends CodegenieError {

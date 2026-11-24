@@ -9,12 +9,18 @@ import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { runWorker } from "../evals/runner/worker.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
-import { boundaryDecision } from "../evals/runner/boundary.mjs";
+import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from "../evals/runner/boundary.mjs";
 
 const checkout = process.cwd();
 beforeAll(() => { execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" }); }, 60_000);
 
 describe("development eval worker", () => {
+  it("keeps unadmitted boundaries and accounting failures distinct from a campaign stop", () => {
+    for (const reason of ["key_wait", "health_probe", "health_reconcile"]) expect(boundaryRefusalReason(reason)).toBe("boundary_not_admitted");
+    expect(boundaryRefusalReason("accounting_failed")).toBe("accounting_failed");
+    expect(boundaryRefusalReason("binding_mismatch")).toBe("binding_mismatch");
+    expect(boundaryRefusalReason("provider_429")).toBe("provider_denied");
+  });
   it("does not admit a boundary with missing or changed meter and health evidence", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-boundary-"));
     try {
@@ -31,8 +37,10 @@ describe("development eval worker", () => {
       ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: digest });
       expect(boundaryDecision(args)).toMatchObject({ action: "admit" });
       expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "probe" });
+      expect(() => boundaryDecision({ ...args, evidenceFiles: { [digest]: path.join(checkout, "package.json") } })).toThrow(BoundaryBindingError);
+      expect(() => boundaryDecision({ ...args, evidenceFiles: { [digest]: path.join(dir, "missing") } })).toThrowError(expect.objectContaining({ code: "ENOENT" }));
       writeFileSync(evidence, "changed");
-      expect(() => boundaryDecision(args)).toThrow("evidence"); ledger.close();
+      expect(() => boundaryDecision(args)).toThrow(BoundaryBindingError); ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -80,7 +88,7 @@ describe("development eval worker", () => {
       const source = readFileSync(path.join(checkout, "evals/fixtures/core.yml"), "utf8").replace("provider: fake", "provider: openrouter").replace("model: fake-model", "model: openai/gpt-6-luna");
       writeFileSync(path.join(suite, "core.yml"), source); writeFileSync(evidenceFile, evidenceText);
       const caseFile = path.join(dir, "case.json"); writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
-      const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000 });
+      const ledger = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: digest }); ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: digest });
       ledger.reservePhysical({ id: "health-1", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "boundary-1" });
       ledger.settlePhysical({ id: "health-1", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
@@ -89,16 +97,17 @@ describe("development eval worker", () => {
       const fetchImpl = vi.fn(async () => new Response("synthetic failure", { status: 400 }));
       const rejectedCase = path.join(dir, "rejected-case.json");
       writeFileSync(rejectedCase, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "rejected-output") }));
-      const rejected = await runWorker({ caseConfig: rejectedCase, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000,
+      const rejected = await runWorker({ caseConfig: rejectedCase, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles: { [digest]: evidenceFile } }, { fetchImpl });
       expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
-      const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000 });
-      expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 }); afterRejection.close();
-      const result = await runWorker({ caseConfig: caseFile, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000,
+      const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
+      expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
+      expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "health_probe" }); afterRejection.close();
+      const result = await runWorker({ caseConfig: caseFile, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles: { [digest]: evidenceFile } }, { fetchImpl });
       expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
-      const reopened = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000 });
-      expect(reopened.totals()).toMatchObject({ starts: 2, unknown: 1, chargedMicros: 400_000 }); reopened.close();
+      const reopened = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
+      expect(reopened.totals()).toMatchObject({ starts: 2, unknown: 1, chargedMicros: 300_000 }); reopened.close();
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 

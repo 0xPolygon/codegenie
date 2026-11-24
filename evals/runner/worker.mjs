@@ -2,17 +2,17 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { CampaignLedger } from './ledger.mjs';
-import { boundaryDecision } from './boundary.mjs';
+import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from './boundary.mjs';
 import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase } from './case.mjs';
 
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) {
-  const { caseConfig, ledgerPath, ledgerBinding, limitMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
+  const { caseConfig, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const { TransportAdmissionError } = await import('../../dist/llm/transport-admission.js');
-  const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros });
+  const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
   try {
     // The campaign supervisor runs one review attempt at a time. An open row
     // at worker startup belongs to an interrupted attempt and requires custody
@@ -30,16 +30,14 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) 
         try {
           const decision = boundaryDecision({ ledger, boundaryId, provider: call.provider, evidenceFiles });
           if (decision.action !== 'admit') reason = decision.reason ?? `${decision.source}_${decision.action}`;
-        } catch { reason = 'binding_mismatch'; }
+        } catch (error) { reason = error instanceof BoundaryBindingError ? 'binding_mismatch' : 'accounting_failed'; }
         if (reason !== undefined) {
-          try { ledger.recordRefusal({ id, logicalId: `${attemptPrefix}/${call.callId}`, reason }); }
+          try {
+            ledger.recordRefusal({ id, logicalId: `${attemptPrefix}/${call.callId}`, reason });
+            if (reason === 'accounting_failed') ledger.stop(reason);
+          }
           catch { try { ledger.stop('accounting_failed'); } catch {} throw new TransportAdmissionError('accounting_failed'); }
-          const mapped = reason === 'binding_mismatch' ? 'binding_mismatch'
-            : ['budget_limit', 'campaign_budget'].includes(reason) ? 'campaign_budget'
-            : reason.startsWith('provider_') ? 'provider_denied'
-            : ['accounting_failed', 'unpriced_lower_bound', 'charge_above_reservation'].includes(reason) ? 'accounting_failed'
-            : 'campaign_stopped';
-          throw new TransportAdmissionError(mapped);
+          throw new TransportAdmissionError(boundaryRefusalReason(reason));
         }
         boundaryVerified = true;
       };
