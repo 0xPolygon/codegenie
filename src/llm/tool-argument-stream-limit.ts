@@ -8,6 +8,9 @@ const TOOL_ARGUMENT_LIMIT_CHARS: Partial<Record<ReviewStage, number>> = {
 };
 const CONSECUTIVE_WHITESPACE_LIMIT_CHARS = 4_096;
 
+type WhitespacePositions = { insideString: number; insideStringRawControl: number; outsideString: number; indeterminate: number };
+const emptyPositions = (): WhitespacePositions => ({ insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
+
 export type ToolArgumentStreamLimit = {
   trigger: "whitespace_run" | "total_chars";
   limitChars: number;
@@ -15,8 +18,8 @@ export type ToolArgumentStreamLimit = {
   toolArgumentChars: number;
   contentIndex: number;
   toolName?: string;
-  // Positions describe only the observed triggering run, not a final snapshot.
-  whitespacePositions?: { insideString: number; outsideString: number; indeterminate: number };
+  // Observed lexical positions for the triggering run; not JSON validation.
+  whitespacePositions?: WhitespacePositions;
 };
 
 export function createToolArgumentStreamGuard(
@@ -29,7 +32,7 @@ export function createToolArgumentStreamGuard(
   // a run within a single argument string, but the total is per response.
   type State = {
     whitespace: number;
-    positions: { insideString: number; outsideString: number; indeterminate: number };
+    positions: WhitespacePositions;
     inString: boolean;
     escape: boolean;
     unicodeDigits: number;
@@ -38,7 +41,7 @@ export function createToolArgumentStreamGuard(
   const states = new Map<number, State>();
   return (contentIndex, delta, toolArgumentChars, startObserved = false) => {
     const state = states.get(contentIndex) ?? {
-      whitespace: 0, positions: { insideString: 0, outsideString: 0, indeterminate: 0 },
+      whitespace: 0, positions: emptyPositions(),
       inString: false, escape: false, unicodeDigits: 0, indeterminate: false
     };
     if (!startObserved) state.indeterminate = true;
@@ -64,11 +67,12 @@ export function createToolArgumentStreamGuard(
       }
       if (isWhitespace) {
         state.whitespace++;
-        const position = state.indeterminate ? "indeterminate" : state.inString ? "insideString" : "outsideString";
+        const position = state.indeterminate ? "indeterminate" : !state.inString ? "outsideString"
+          : char === " " ? "insideString" : "insideStringRawControl";
         state.positions[position]++;
       } else {
         state.whitespace = 0;
-        state.positions = { insideString: 0, outsideString: 0, indeterminate: 0 };
+        state.positions = emptyPositions();
       }
       if (state.whitespace > CONSECUTIVE_WHITESPACE_LIMIT_CHARS) {
         return {

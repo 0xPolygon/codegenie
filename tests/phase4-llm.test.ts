@@ -8753,7 +8753,7 @@ describe("Pi tool argument stream limits", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     const limit = { toolName: "search_files", contentIndex: 2, trigger: "whitespace_run",
       limitChars: 4_096, observedChars: 4_097, toolArgumentChars: argumentChars,
-      whitespacePositions: { insideString: 0, outsideString: 0, indeterminate: 4_097 } };
+      whitespacePositions: { insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 4_097 } };
     const progress = { partial: true, toolArgumentChars: argumentChars, toolArgumentChunks: 4,
       thinkingChars: 4, thinkingChunks: 1 };
     const abortEvent = telemetry.events.find(event => event.message === "model_tool_argument_stream_limit");
@@ -8966,8 +8966,8 @@ describe("Pi tool argument stream limits", () => {
     const limits = telemetry.modelCalls.filter(row => row.retryReason === "tool_argument_stream_limit");
     expect(limits).toHaveLength(2);
     for (const row of limits) expect(row.toolArgumentStreamLimit?.whitespacePositions).toEqual(hiddenPrefix
-      ? { insideString: 0, outsideString: 0, indeterminate: 4_097 }
-      : { insideString: 4_097, outsideString: 0, indeterminate: 0 });
+      ? { insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 4_097 }
+      : { insideString: 4_097, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
     expect(JSON.stringify([limits, telemetry.events])).not.toContain("private-prefix");
   });
 
@@ -8989,7 +8989,7 @@ describe("Pi tool argument stream limits", () => {
     const outsidePrefix = '{"text":';
     expect(JSON.parse(`${outsidePrefix}${spaces}"value"}`).text).toBe("value");
     expect(outside(0, outsidePrefix + spaces, outsidePrefix.length + spaces.length, true)?.whitespacePositions)
-      .toEqual({ insideString: 0, outsideString: 4_097, indeterminate: 0 });
+      .toEqual({ insideString: 0, insideStringRawControl: 0, outsideString: 4_097, indeterminate: 0 });
 
     const inside = createToolArgumentStreamGuard(9)!;
     const insidePrefix = '{"text":"quoted \\\" value';
@@ -8997,26 +8997,30 @@ describe("Pi tool argument stream limits", () => {
     expect(inside(0, insidePrefix.slice(0, -1), insidePrefix.length - 1, true)).toBeUndefined();
     expect(inside(1, '{"other":"', insidePrefix.length + 9, true)).toBeUndefined();
     expect(inside(0, insidePrefix.slice(-1) + spaces, insidePrefix.length + spaces.length + 9, true)?.whitespacePositions)
-      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+      .toEqual({ insideString: 4_097, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
 
     const escaped = createToolArgumentStreamGuard(9)!;
     expect(escaped(0, '{"text":"\\u00', 13, true)).toBeUndefined();
     expect(escaped(0, '22' + spaces, 4_112, true)?.whitespacePositions)
-      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+      .toEqual({ insideString: 4_097, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
 
     const rawNewlines = createToolArgumentStreamGuard(9)!;
     const rawPrefix = '{"text":"value';
     expect(rawNewlines(0, rawPrefix + "\n".repeat(5_000), rawPrefix.length + 5_000, true)?.whitespacePositions)
-      .toEqual({ insideString: 4_097, outsideString: 0, indeterminate: 0 });
+      .toEqual({ insideString: 0, insideStringRawControl: 4_097, outsideString: 0, indeterminate: 0 });
+    const mixed = createToolArgumentStreamGuard(9)!;
+    const mixedRun = " ".repeat(2_000) + "\t\r\n".repeat(699);
+    expect(mixed(0, rawPrefix + mixedRun, rawPrefix.length + mixedRun.length, true)?.whitespacePositions)
+      .toEqual({ insideString: 2_000, insideStringRawControl: 2_097, outsideString: 0, indeterminate: 0 });
 
     for (const invalid of ['{"text":"\\q', '{"text":"\\u0', '{"text":"\u0001']) {
       const guard = createToolArgumentStreamGuard(9)!;
       const result = guard(0, invalid + spaces, invalid.length + spaces.length, true);
-      expect(result?.whitespacePositions).toEqual({ insideString: 0, outsideString: 0, indeterminate: 4_097 });
+      expect(result?.whitespacePositions).toEqual({ insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 4_097 });
     }
     const missingStart = createToolArgumentStreamGuard(9)!;
     expect(missingStart(0, spaces, spaces.length, false)?.whitespacePositions)
-      .toEqual({ insideString: 0, outsideString: 0, indeterminate: 4_097 });
+      .toEqual({ insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 4_097 });
   });
 });
 
