@@ -49,13 +49,19 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
   if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) current = { source: 'key', action: 'snapshot' };
   else current = decision();
   if (current.source === 'key' && ['snapshot', 'wait'].includes(current.action)) {
+    const poll = ledger.beginMeterPoll(boundaryId, Date.now());
+    if (poll.action !== 'read') return poll;
     const reading = await readConfiguredKeyUsage({ ledger, fetchImpl, models });
     if (!ledger.db.prepare('SELECT 1 FROM key_baseline').get()) {
       const baseline = applyKeyObservation({ ledger, kind: 'baseline', reading, sealReceipt: store.seal });
-      if (baseline.action !== 'recorded') return baseline;
+      if (baseline.action !== 'recorded') {
+        const finished = ledger.finishMeterPoll(boundaryId, Date.now(), false);
+        return baseline.action === 'stop' ? baseline : finished;
+      }
     }
     const snapshot = applyKeyObservation({ ledger, kind: 'snapshot', reading, sealReceipt: store.seal, boundaryId });
-    if (snapshot.action !== 'recorded') return snapshot;
+    const finished = ledger.finishMeterPoll(boundaryId, Date.now(), snapshot.action === 'recorded');
+    if (snapshot.action !== 'recorded') return snapshot.action === 'stop' ? snapshot : finished;
     current = decision();
   }
   if (current.action === 'stop' || current.action === 'wait' || current.action === 'reconcile' || current.action === 'snapshot') return current;

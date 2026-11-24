@@ -8,6 +8,21 @@ import { describe, expect, it } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it("does not repeat an interrupted meter read without verified reader exit", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-meter-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      expect(ledger.beginMeterPoll("one", 1)).toEqual({ action: "read" }); ledger.close();
+      ledger = new CampaignLedger(file, config);
+      expect(ledger.beginMeterPoll("one", 2)).toEqual({ action: "reconcile" });
+      expect(() => ledger.reconcileMeterPoll("one", 2, async () => false)).toThrow("exit not verified");
+      expect(ledger.reconcileMeterPoll("one", 2, () => true)).toEqual({ action: "wait", untilMs: 15002 });
+      expect(ledger.beginMeterPoll("one", 15001)).toMatchObject({ action: "wait" });
+      expect(ledger.beginMeterPoll("one", 15002)).toEqual({ action: "read" });
+      expect(ledger.meterPollCount("one")).toBe(2); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("keeps key fingerprints campaign-specific and stops on snapshot key drift", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-key-"));
     try {

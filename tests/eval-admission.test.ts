@@ -19,6 +19,27 @@ function response() {
   return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
 }
 describe('campaign boundary preparation', () => {
+  it('bounds stale key reads across restart and reports their count', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-stale-'));
+    let now = 1000; const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const db = path.join(dir, 'ledger'), config = { binding: 'campaign', limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(db, config);
+      const fetchImpl = vi.fn(async () => new Response('unavailable', { status: 503 }));
+      const args = { boundaryId: 'one', receiptDirectory: path.join(dir, 'receipts'), attemptPrefix: 'health/one', expected,
+        llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl,
+        models: { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) } };
+      for (let attempt = 1; attempt <= 20; attempt++) {
+        const result = await prepareAdmission({ ...args, ledger });
+        expect(result.action).toBe(attempt === 20 ? 'stop' : 'wait');
+        expect(ledger.meterPollCount('one')).toBe(attempt);
+        if (attempt === 1) { ledger.close(); ledger = new CampaignLedger(db, config); }
+        if (attempt < 20) { expect((await prepareAdmission({ ...args, ledger })).action).toBe('wait'); expect(fetchImpl).toHaveBeenCalledTimes(attempt); now += 15_000; }
+      }
+      expect(ledger.totals().stopped).toBe('meter_stale');
+      expect((await prepareAdmission({ ...args, ledger })).action).toBe('stop'); expect(fetchImpl).toHaveBeenCalledTimes(20); ledger.close();
+    } finally { clock.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('reuses the bound post-failure retry probe after restart', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-retry-'));
     vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
@@ -76,7 +97,7 @@ describe('campaign boundary preparation', () => {
         models: { getAuth: async () => ({ auth: { apiKey: 'key-a' } }) } });
       expect(posts).toBe(0); expect(ledger.totals().starts).toBe(0);
       if (scenario === 'key-drift') { expect(result).toEqual({ status: 'failed' }); expect(ledger.totals().stopped).toBe('binding_mismatch'); }
-      else { expect(result).toEqual({ action: 'wait' }); expect(ledger.totals().stopped).toBeNull(); }
+      else { expect(result).toMatchObject({ action: 'wait' }); expect(ledger.totals().stopped).toBeNull(); }
       ledger.close();
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
