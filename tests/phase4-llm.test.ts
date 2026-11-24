@@ -18,6 +18,10 @@ import { describe, expect, it, vi } from "vitest";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { textRepository } from "./helpers/text-repository.js";
 import { TransportAdmissionError } from "../src/llm/transport-admission.js";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { CampaignLedger } from "../evals/runner/ledger.mjs";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { makePhysicalTransport } from "../evals/runner/physical-fetch.mjs";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
@@ -764,6 +768,26 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(telemetry.events.filter((event) => event.message === "transport_accounting_failed")).toMatchObject([{ data: { callId: "mc-000001", physicalId: "mc-000001/physical-1" } }]);
       expect(telemetry.events.filter((event) => event.message === "transport_admission_denied")).toHaveLength(0);
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it("settles an HTTP-200 stream failure as an unknown physical hold", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-stream-ledger-"));
+    const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+    try {
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
+          expected: { ...call, api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "low" },
+          fetchImpl: async () => new Response(new ReadableStream({ start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }] })}\n\n`));
+            setTimeout(() => controller.error(new Error("synthetic stream failure")), 1);
+          } }), { status: 200, headers: { "content-type": "text/event-stream" } }), AdmissionError: TransportAdmissionError }),
+        hooks: { checkpoint: () => "ok", onUsage() {} } });
+      await expect(runner.runStructured({ ...submitReviewRequest("stream-error"), purpose: "location_clarification" })).rejects.toThrow();
+      expect(ledger.db.prepare("SELECT state,charge,http_status FROM physical").all()).toEqual([{ state: "unknown", charge: 400_000, http_status: 200 }]);
+      ledger.assertRestartSafe();
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); }
   });
 
   it("keeps overlapping logical calls bound to their own fetch closures", async () => {

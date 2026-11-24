@@ -14,7 +14,7 @@ describe("development campaign physical ledger", () => {
       const file = path.join(dir, "calls.sqlite");
       const config = { binding: "fixture", limitMicros: 800_000 };
       let ledger = new CampaignLedger(file, config);
-      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toBe(true);
+      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: true });
       ledger.settlePhysical({ id: "p1", httpStatus: 500 });
       ledger.recordCacheHit("mc-cache");
       expect(() => ledger.reservePhysical({ id: "cache-post", logicalId: "mc-cache", kind: "review" })).toThrow("cache hit");
@@ -22,8 +22,8 @@ describe("development campaign physical ledger", () => {
       ledger.close();
       ledger = new CampaignLedger(file, config);
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, unknown: 1 });
-      expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toBe(true);
-      expect(ledger.reservePhysical({ id: "p3", logicalId: "mc3", kind: "review" })).toBe(false);
+      expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toEqual({ admitted: true });
+      expect(ledger.reservePhysical({ id: "p3", logicalId: "mc3", kind: "review" })).toMatchObject({ admitted: false });
       expect(ledger.db.prepare("SELECT id,logical_id,reason FROM local_refusal").all()).toEqual([{ id: "p3", logical_id: "mc3", reason: "campaign_budget" }]);
       expect(ledger.totals()).toMatchObject({ starts: 2, chargedMicros: 800_000, open: 1 });
       expect(() => ledger.reservePhysical({ id: "p3", logicalId: "mc3", kind: "review" })).toThrow("duplicate attempt identity");
@@ -40,12 +40,12 @@ describe("development campaign physical ledger", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
       const ledger = new CampaignLedger(path.join(dir, "calls.sqlite"), { binding: "fixture", limitMicros: 2_000_000 });
-      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "probe" })).toBe(true);
+      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "probe" })).toEqual({ admitted: true });
       expect(() => ledger.settlePhysical({ id: "p1", httpStatus: 200, providerCostMicros: 0 })).toThrow();
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, open: 1 });
       ledger.settlePhysical({ id: "p1", httpStatus: 200, quotaDenied: true });
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 400_000, unknown: 1, stopped: "provider_quota" });
-      expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toBe(false);
+      expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toMatchObject({ admitted: false });
       ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -57,7 +57,7 @@ describe("development campaign physical ledger", () => {
       const config = { binding: "fixture", limitMicros: 800_000 };
       const initial = new CampaignLedger(file, config); initial.close();
       const moduleUrl = pathToFileURL(path.resolve("evals/runner/ledger.mjs")).href;
-      const source = `const { parentPort, workerData } = require("node:worker_threads"); import(workerData.moduleUrl).then(({CampaignLedger}) => { const l = new CampaignLedger(workerData.file, workerData.config); const accepted = l.reservePhysical({id: workerData.id, logicalId: workerData.id, kind: "review"}); l.close(); parentPort.postMessage(accepted); }).catch(e => { throw e; });`;
+      const source = `const { parentPort, workerData } = require("node:worker_threads"); import(workerData.moduleUrl).then(({CampaignLedger}) => { const l = new CampaignLedger(workerData.file, workerData.config); const accepted = l.reservePhysical({id: workerData.id, logicalId: workerData.id, kind: "review"}).admitted; l.close(); parentPort.postMessage(accepted); }).catch(e => { throw e; });`;
       const invoke = (id: string) => new Promise<boolean>((resolve, reject) => {
         const worker = new Worker(source, { eval: true, workerData: { file, config, id, moduleUrl } });
         worker.once("message", (value: boolean) => resolve(value)); worker.once("error", reject);
@@ -75,9 +75,9 @@ describe("development campaign physical ledger", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
       const ledger = new CampaignLedger(path.join(dir, "calls.sqlite"), { binding: "fixture", limitMicros: 1_000_000 });
-      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toBe(true);
-      expect(() => ledger.settlePhysical({ id: "p1", httpStatus: 200, noUsageErrorEvidence: { terminal: "error", providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 1 } })).toThrow();
-      ledger.settlePhysical({ id: "p1", httpStatus: 200, noUsageErrorEvidence: { terminal: "error", providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
+      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: true });
+      expect(() => ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 1 } })).toThrow();
+      ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 50_000 });
       ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }

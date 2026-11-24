@@ -49,7 +49,9 @@ export type ProviderUsageObservation = {
   totalTokens?: number;
   reasoningTokens?: number;
   providerCost?: number;
-  terminal?: "done" | "error";
+  providerBilledCost?: number;
+  isByok?: boolean;
+  terminal?: "done" | "error" | "aborted";
   costFromProvider?: boolean;
 };
 
@@ -70,6 +72,19 @@ export function projectProviderUsage(chunk: unknown): ProviderUsageObservation |
   const totalTokens = numberValue(usage?.total_tokens);
   const reasoningTokens = numberValue(details?.reasoning_tokens);
   const providerCost = numberValue(usage?.cost);
+  const isByok = typeof usage?.is_byok === "boolean" ? usage.is_byok : undefined;
+  const costDetails = asRecord(usage?.cost_details);
+  let providerBilledCost: number | undefined;
+  if (providerCost !== undefined && isByok === false) providerBilledCost = providerCost;
+  if (providerCost !== undefined && isByok === true && costDetails !== undefined) {
+    let upstream = numberValue(costDetails.upstream_inference_cost);
+    if (costDetails.upstream_inference_cost === null) {
+      const prompt = numberValue(costDetails.upstream_inference_prompt_cost);
+      const completion = numberValue(costDetails.upstream_inference_completions_cost);
+      if (prompt !== undefined && completion !== undefined) upstream = prompt + completion;
+    }
+    if (upstream !== undefined && Number.isFinite(providerCost + upstream)) providerBilledCost = providerCost + upstream;
+  }
   return {
     source: "provider_chunk", usagePresent: true,
     costPresent: usage !== undefined && Object.hasOwn(usage, "cost"),
@@ -78,6 +93,8 @@ export function projectProviderUsage(chunk: unknown): ProviderUsageObservation |
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
-    ...(providerCost !== undefined ? { providerCost } : {})
+    ...(providerCost !== undefined ? { providerCost } : {}),
+    ...(providerBilledCost !== undefined ? { providerBilledCost } : {}),
+    ...(isByok !== undefined ? { isByok } : {})
   };
 }

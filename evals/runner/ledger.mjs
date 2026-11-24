@@ -12,7 +12,7 @@ export class CampaignLedger {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, stopped TEXT);
-      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER);
+      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT);
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
     this.transaction(() => {
@@ -35,10 +35,10 @@ export class CampaignLedger {
       const total = this.db.prepare('SELECT COALESCE(SUM(charge),0) AS total FROM physical').get().total;
       if (campaign.stopped || total + this.reserve > this.limit) {
         this.db.prepare('INSERT INTO local_refusal(id,logical_id,reason) VALUES(?,?,?)').run(id, logicalId, campaign.stopped ?? 'campaign_budget');
-        return false;
+        return { admitted: false, reason: campaign.stopped ?? 'campaign_budget' };
       }
       this.db.prepare("INSERT INTO physical(id,logical_id,kind,state,charge) VALUES(?,?,?,'open',?)").run(id, logicalId, kind, this.reserve);
-      return true;
+      return { admitted: true };
     });
   }
   recordRefusal({ id, logicalId, reason }) {
@@ -55,22 +55,24 @@ export class CampaignLedger {
       this.db.prepare("INSERT INTO logical(id,status) VALUES(?,'cache_hit')").run(id);
     });
   }
-  settlePhysical({ id, httpStatus = null, providerCostMicros = null, costConfirmed = false, noUsageErrorEvidence = null, quotaDenied = false }) {
+  settlePhysical({ id, httpStatus = null, providerCostMicros = null, costConfirmed = false, noUsageErrorEvidence = null, unconfirmedCostLowerBoundMicros = null, usageEvidence = null, quotaDenied = false }) {
     if (typeof id !== 'string' || !id || (httpStatus !== null && (!Number.isInteger(httpStatus) || httpStatus < 100 || httpStatus > 599)) ||
         (providerCostMicros !== null && (!Number.isSafeInteger(providerCostMicros) || providerCostMicros < 0)) ||
         typeof costConfirmed !== 'boolean' || typeof quotaDenied !== 'boolean' ||
+        (unconfirmedCostLowerBoundMicros !== null && (!Number.isSafeInteger(unconfirmedCostLowerBoundMicros) || unconfirmedCostLowerBoundMicros < 0 || providerCostMicros !== null || noUsageErrorEvidence !== null)) ||
+        (usageEvidence !== null && (typeof usageEvidence.usagePresent !== 'boolean' || typeof usageEvidence.costPresent !== 'boolean' || (usageEvidence.isByok !== undefined && typeof usageEvidence.isByok !== 'boolean'))) ||
         (providerCostMicros === null ? costConfirmed : !costConfirmed)) throw new TypeError('invalid settlement');
     if (noUsageErrorEvidence !== null && (providerCostMicros !== null || httpStatus === null ||
-        noUsageErrorEvidence.terminal !== 'error' || noUsageErrorEvidence.providerCostReported !== false ||
+        (usageEvidence === null || usageEvidence.usagePresent !== true || usageEvidence.costPresent !== false) || noUsageErrorEvidence.terminal !== 'error' || noUsageErrorEvidence.usagePresent !== true || noUsageErrorEvidence.costPresent !== false || noUsageErrorEvidence.providerCostReported !== false ||
         noUsageErrorEvidence.inputTokens !== 0 || noUsageErrorEvidence.outputTokens !== 0 || noUsageErrorEvidence.totalTokens !== 0)) throw new TypeError('invalid no-usage error evidence');
     const state = providerCostMicros !== null ? 'priced' : noUsageErrorEvidence !== null ? 'qualified_error' : 'unknown';
-    const charge = providerCostMicros ?? (noUsageErrorEvidence !== null ? this.errorHold : this.reserve);
+    const charge = providerCostMicros ?? (noUsageErrorEvidence !== null ? this.errorHold : Math.max(this.reserve, unconfirmedCostLowerBoundMicros ?? 0));
     this.transaction(() => {
-      const result = this.db.prepare("UPDATE physical SET state=?,charge=?,http_status=? WHERE id=? AND state='open'").run(state, charge, httpStatus, id);
+      const result = this.db.prepare("UPDATE physical SET state=?,charge=?,http_status=?,evidence_json=? WHERE id=? AND state='open'").run(state, charge, httpStatus, usageEvidence === null ? null : JSON.stringify(usageEvidence), id);
       if (result.changes !== 1) throw new Error('missing or already settled physical start');
       const total = this.db.prepare('SELECT COALESCE(SUM(charge),0) AS total FROM physical').get().total;
       const priced = this.db.prepare("SELECT COALESCE(SUM(charge),0) AS total FROM physical WHERE state='priced'").get().total;
-      if (quotaDenied || [401, 402, 429].includes(httpStatus) || priced >= this.limit || total > this.limit) this.db.prepare('UPDATE campaign SET stopped=?').run(priced >= this.limit || total > this.limit ? 'budget_limit' : quotaDenied ? 'provider_quota' : `provider_${httpStatus}`);
+      if (quotaDenied || [401, 402, 429].includes(httpStatus) || priced >= this.limit || total > this.limit || (unconfirmedCostLowerBoundMicros ?? 0) > this.reserve || (providerCostMicros ?? 0) > this.reserve) this.db.prepare('UPDATE campaign SET stopped=COALESCE(stopped,?)').run(priced >= this.limit || total > this.limit ? 'budget_limit' : (unconfirmedCostLowerBoundMicros ?? 0) > this.reserve ? 'unpriced_lower_bound' : (providerCostMicros ?? 0) > this.reserve ? 'charge_above_reservation' : quotaDenied ? 'provider_quota' : `provider_${httpStatus}`);
     });
   }
   stop(reason) {

@@ -1644,6 +1644,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     const responseCapture: ProviderResponseCapture = {};
     let admission: ReturnType<typeof captureTransportAdmission> | undefined;
     let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
+    let terminalUsageSent = false;
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1793,8 +1794,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       if (onTransportUsage !== undefined && (rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" || rawMessage.stopReason === "stop" || rawMessage.stopReason === "length" || rawMessage.stopReason === "toolUse" || rawMessage.stopReason === "deferred")) {
         const usage = rawMessage.usage;
         const cost = usage?.cost as { total?: number; totalFromProvider?: boolean } | undefined;
+        terminalUsageSent = true;
         await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: cost?.totalFromProvider === true,
-          reasoningTokensPresent: false, terminal: rawMessage.stopReason === "error" || rawMessage.stopReason === "aborted" ? "error" : "done",
+          reasoningTokensPresent: false, terminal: rawMessage.stopReason === "aborted" ? "aborted" : rawMessage.stopReason === "error" ? "error" : "done",
           costFromProvider: cost?.totalFromProvider === true,
           ...(cost?.totalFromProvider === true && typeof cost.total === "number" && Number.isFinite(cost.total) && cost.total >= 0 ? { providerCost: cost.total } : {}) });
       }
@@ -1890,7 +1892,16 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode; errorMessage?: string });
       return { source: "provider", message, callId };
     } catch (cause) {
-      const denial = admission?.denial() ?? (cause instanceof TransportAdmissionError ? cause : undefined);
+      let denial = admission?.denial() ?? (cause instanceof TransportAdmissionError ? cause : undefined);
+      if (denial === undefined && onTransportUsage !== undefined && !terminalUsageSent) {
+        terminalUsageSent = true;
+        try {
+          await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false,
+            reasoningTokensPresent: false, terminal: cause instanceof ToolArgumentStreamLimitError || taskSignal.aborted || taskTimedOut() ? "aborted" : "error",
+            costFromProvider: false });
+        } catch { /* The call-local carrier preserves the fatal accounting error. */ }
+        denial = admission?.denial();
+      }
       if (denial !== undefined) {
         releaseReservation();
         recordErroredModelCall(opts, request, model, {
