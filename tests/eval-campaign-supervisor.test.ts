@@ -141,6 +141,8 @@ describe('campaign admission custody', () => {
       expect(supervisor.db.prepare('SELECT state,receipt_sha256 FROM outcome').get()).toEqual({ state: 'excluded', receipt_sha256: second });
       supervisor.releaseDriver(driver); supervisor.close(); supervisor = new CampaignSupervisor(db, binding); driver = supervisor.claimDriver();
       expect(supervisor.checkedOutcomes(supervisor.receipts.verify, yes, ledger)).toHaveLength(1);
+      ledger.db.prepare("UPDATE physical SET http_status=200 WHERE logical_id='one/attempt-01/mc-1'").run();
+      expect(() => supervisor.checkedOutcomes(supervisor.receipts.verify, yes, ledger)).toThrow('transient failure evidence');
       expect(ledger.totals().starts).toBe(3); supervisor.releaseDriver(driver); supervisor.close(); ledger.close();
     } finally { for (const run of runs) makeWritable(run); rmSync(dir, { recursive: true, force: true }); }
   });

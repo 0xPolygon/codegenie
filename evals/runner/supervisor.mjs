@@ -208,6 +208,9 @@ export class CampaignSupervisor {
         const attempt = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(event.slot_id, event.attempt_no);
         const found = this.receipts.find(event.slot_id, event.attempt_no);
         if (!slot || slot.caseId !== event.case_id || !attempt || !found || found.hash !== event.receipt_sha256 || found.receipt.caseId !== event.case_id || found.receipt.recoveredResets !== event.resets) throw new Error('case reset evidence missing or changed');
+        const terminal = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(event.slot_id, event.attempt_no), ledger,
+          expectedPacketIds: slot.expectedPacketIds, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) });
+        if (terminal.recoveredResets !== event.resets || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset evidence missing or changed');
       }
     }
     const rows = this.db.prepare('SELECT slot_id,state,attempt_no,receipt_sha256 FROM outcome').all();
