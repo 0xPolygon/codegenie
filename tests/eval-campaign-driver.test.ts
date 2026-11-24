@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, copyFileSync, lstatSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { openCampaign } from '../evals/runner/campaign.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { buildDigest, treeDigest } from '../evals/runner/integrity.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { runCase } from '../evals/runner/case.mjs';
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 function makeWritable(dir: string) {
   const stat = lstatSync(dir); if (stat.isSymbolicLink()) return;
@@ -95,4 +97,61 @@ describe('campaign driver', () => {
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
+  it('completes and reconciles a synthetic campaign through the real adapter and child', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-success-'));
+    vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
+    try {
+      const suiteDir = path.join(dir, 'suite'); cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
+      const baselineCase = path.join(dir, 'baseline.json');
+      writeFileSync(baselineCase, JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'baseline') }));
+      const baseline = await runCase(baselineCase);
+      const packetDir = path.join(baseline.runDir, 'telemetry/stages/06-packets/packets');
+      const packetIds = readdirSync(packetDir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(path.join(packetDir, name), 'utf8')).id);
+      expect(packetIds.length).toBeGreaterThan(0);
+      const yaml = path.join(suiteDir, 'core.yml');
+      writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna\n  reasoning: high\n  compositionReasoningStepDown: false\n  debug: true').replace('verify: true', 'verify: false'));
+      const preload = path.join(dir, 'synthetic.mjs');
+      writeFileSync(preload, `globalThis.fetch = async (input, init) => {
+        if (String(input) !== 'https://openrouter.ai/api/v1/chat/completions') throw new Error('network blocked');
+        const body = JSON.parse(init.body); const names = body.tools.map(x => x.function.name);
+        const name = ['submit_plan','submit_review','submit_composition'].find(x => names.includes(x));
+        if (!name) throw new Error('unexpected submit tool');
+        const value = name === 'submit_plan' ? {diffUnderstanding:{declaredIntent:'fixture',inferredBehavior:'fixture'},coverage:[]} : name === 'submit_review' ? {reviewStatus:'no_findings',noFindingReason:'No issue found.',findings:[],followUpHints:[],uncertainties:[]} : {summary:'No findings.',composedFindings:[],attentionResolutions:[]};
+        const base = {id:'fixture',object:'chat.completion.chunk',created:1,model:body.model};
+        const chunks = [{...base,choices:[{index:0,delta:{role:'assistant',tool_calls:[{index:0,id:'submit',type:'function',function:{name,arguments:JSON.stringify(value)}}]},finish_reason:null}]},{...base,choices:[{index:0,delta:{},finish_reason:'tool_calls'}],usage:{prompt_tokens:10,completion_tokens:5,total_tokens:15,cost:0.0001,is_byok:false}}];
+        return new Response(chunks.map(x => 'data: '+JSON.stringify(x)+'\\n\\n').join('')+'data: [DONE]\\n\\n',{headers:{'content-type':'text/event-stream'}});
+      };`);
+      vi.stubEnv('NODE_OPTIONS', `--import=${preload}`);
+      const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
+      writeFileSync(caseFile, caseBytes);
+      const build = buildDigest(), expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', wireEffort: 'high' };
+      const calls = [[5, 'p5.9'], [7, 'p7.16'], [10, 'p10.25']].map(([stage, templateVersion]) => ({ ...expected, stage, kind: 'initial', templateVersion }));
+      const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'one', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls: calls, integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
+      const schedule = Buffer.from(JSON.stringify({ slots: [{ id: 'one', caseId: 'fixture', boundaryId: 'one', provider: 'openrouter', expectedPacketIds: packetIds, workerConfig: base }] }));
+      const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
+      const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: base.supervisorPath, ledgerPath: base.ledgerPath, evidenceDirectory: base.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: base.limitMicros, reserveMicros: base.reserveMicros, errorHoldMicros: base.errorHoldMicros, build, health: { expected: { ...expected, templateVersion: 'campaign-health.1' }, llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 } } }));
+      const file = path.join(dir, 'campaign.json'); writeFileSync(file, config);
+      let gets = 0, healthPosts = 0;
+      const fetchImpl = vi.fn(async (input: string) => {
+        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : gets === 2 ? 0.0001 : 0.1}}}`); }
+        healthPosts++; return healthResponse();
+      });
+      const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
+      const campaign = await openCampaign(file, sha(config), { fetchImpl, models });
+      expect(await campaign.step()).toMatchObject({ action: 'health', status: 'clean' });
+      const selected = await campaign.step();
+      expect(selected).toMatchObject({ action: 'selected' });
+      expect(campaign.supervisor.receipts.find('one', 1)).toMatchObject({ receipt: { status: 'fail', recoveredResets: 0 } });
+      expect(await campaign.step()).toMatchObject({ action: 'completed' });
+      const starts = campaign.ledger.totals().starts, reads = gets;
+      expect(starts).toBeGreaterThan(1);
+      expect(healthPosts).toBe(1); campaign.close();
+      const reopened = await openCampaign(file, sha(config), { fetchImpl, models });
+      expect(await reopened.step()).toMatchObject({ action: 'completed' });
+      expect(reopened.ledger.totals().starts).toBe(starts);
+      expect({ healthPosts, gets }).toEqual({ healthPosts: 1, gets: reads }); reopened.close();
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
+  }, 90_000);
+
 });
