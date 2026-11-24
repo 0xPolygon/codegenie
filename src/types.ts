@@ -56,7 +56,6 @@ export type CodegenieConfig = {
     // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
     // only) earn one additional independent review pass. Off by default.
     adaptiveSecondPass?: boolean;
-    assignedEffects?: boolean;
   };
   github: {
     summaryWhenNoFindings: boolean;

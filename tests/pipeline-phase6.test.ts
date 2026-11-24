@@ -45,9 +45,6 @@ describe("phase 6 live review path", () => {
     expect(reviewCacheFingerprint(changedOutputDirs, resolved, "registry")).toBe(fingerprint);
     expect(reviewCacheFingerprint({ ...baseConfig, review: { ...baseConfig.review, toolSurface: "current" } }, resolved, "registry")).toBe(fingerprint);
     expect(reviewCacheFingerprint({ ...baseConfig, review: { ...baseConfig.review, toolSurface: "six" } }, resolved, "registry")).not.toBe(fingerprint);
-    for (const assignedEffects of [false, true]) {
-      expect(reviewCacheFingerprint({ ...baseConfig, review: { ...baseConfig.review, assignedEffects } }, resolved, "registry")).toBe(fingerprint);
-    }
     expect(reviewCacheFingerprint({
       ...baseConfig,
       lenses: { ...baseConfig.lenses, extraSkillPaths: ["/worktree/skills"] },

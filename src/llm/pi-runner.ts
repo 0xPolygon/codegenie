@@ -489,7 +489,6 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
           throw cause;
         }
         fieldRepair = nextFieldRepair;
-        request.schemaRepair?.onRepairScheduled?.(fieldRepair?.paths);
         if (fieldRepair) recordFidelity("field_repair_scheduled", { paths: fieldRepair.paths, obligationId: obligation!.id });
         if (obligation && !fieldRepair) messages.push({ role: "user", timestamp: 0, content:
           `Schema-only repair: preserve every schema-defined existing item, array order, and valid field exactly. Omit unexpected keys; they have been discarded locally. Supply all missing required fields and correct remaining invalid fields; do not summarize, delete schema-defined evidence, or change existing decisions. Return the WHOLE submission, not a fragment.\nCheck spelling and case against the exact schema keys. Removed unexpected values are retained below as diagnostic context: check whether a misspelled or misplaced key supplies a missing required value. Do not reintroduce unsupported keys. Return complete schema-valid data; missing required fields cannot be omitted.\n${fenceUntrusted(stableJson(focusedRepairDiagnostics(request.schema, obligation.original)), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(cleanupSubmitShape(request.schema, obligation.original).arguments), "original-complete-submission")}` });
@@ -3210,7 +3209,7 @@ function queueSchemaRepair(input: {
     if (input.request.stage === 7) {
       const classification = isStage7SchemaInvalidKind(input.repairClassification)
         ? input.repairClassification
-        : classifyStage7SchemaInvalid(input.error, input.submitCalls.filter(isTrustedSubmitCall), input.request.schema);
+        : classifyStage7SchemaInvalid(input.error, input.submitCalls.filter(isTrustedSubmitCall));
       recordStage7SchemaRepairEvent({
         opts: input.opts,
         request: input.request,
@@ -3255,7 +3254,7 @@ function queueSchemaRepair(input: {
     input.replaceConversationOverride === true &&
     isStage7SchemaInvalidKind(input.repairClassification);
   const instructions = input.promptOverride ?? (stage7CompactRepair
-    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput, input.request.schema)
+    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput)
     : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
       defaultSchemaRepairPrompt(input.request, input.submitToolName, error));
   // Always include the latest rejection, including with custom prompts and
