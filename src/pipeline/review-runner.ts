@@ -394,7 +394,9 @@ export async function runReview(
       ...(finalReview.coverage.budgetStop !== undefined ? { budgetStop: finalReview.coverage.budgetStop } : {})
     });
     return finalReview;
-  } catch (error) {
+  } catch (cause) {
+    const reason: unknown = run.abort.signal.reason;
+    const error = isCodegenieError(reason) && reason.code === "provider_unavailable" ? reason : cause;
     const failure = reviewFailureRecord(error);
     const failureStage = run.currentStage;
     const diagnostic = reviewDiagnostic(failureStage, error);
@@ -941,7 +943,10 @@ function createRunner(
       checkpoint: (stage) => run.budget.checkpoint(stage),
       reserve: (stage, estimatedTokens) => run.budget.reserve(stage, estimatedTokens),
       releaseReservation: (stage, estimatedTokens) => run.budget.releaseReservation(stage, estimatedTokens),
-      onUsage: (usage) => run.budget.recordUsage(usage)
+      onUsage: (usage) => run.budget.recordUsage(usage),
+      onProviderUnavailable: error => {
+        if (!run.abort.signal.aborted) run.abort.abort(error);
+      }
     }
   });
 }

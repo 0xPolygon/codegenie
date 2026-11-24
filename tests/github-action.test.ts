@@ -879,15 +879,21 @@ describe("github-action entrypoint", () => {
     expect(output).toContain('"outcome":"review_failed"');
   });
 
-  it("surfaces the provider explanation in the comment, artifacts and log on a billing failure", async () => {
+  it.each(["llm_call_failed", "provider_unavailable"] as const)(
+    "surfaces the provider explanation in all Action failure outputs for %s", async code => {
     const fake = createFakeComments();
     const runDir = mkdtempSync(path.join(scratch, "usage-limit-run-"));
     const failurePath = path.join(scratch, "usage-limit-failure.json");
     const reportPath = path.join(scratch, "usage-limit-report.md");
     const summaryPath = path.join(scratch, "usage-limit-summary.md");
     const secret = "sk-ant-api03-MUSTNOTSURFACE1234567890";
-    const providerMessage =
-      "HTTP 400: You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.";
+    const outage = code === "provider_unavailable";
+    const providerMessage = outage
+      ? "Backend is restarting."
+      : "HTTP 400: You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.";
+    const headline = outage
+      ? "Review failed: Provider openai-codex (model gpt-6-luna) returned HTTP 503 after 4 attempts"
+      : "LLM provider usage limit reached";
     let output = "";
     await expect(
       executeGitHubActionCommand([], {
@@ -903,19 +909,19 @@ describe("github-action entrypoint", () => {
         },
         runReview: async (_argv, hooks) => {
           hooks.onRunStart({ runId: "usage-limit", runDir });
-          throw new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
+          throw new CodegenieError(code, headline, {
             recoverable: false,
             // The key rides along as a provider would echo it, to prove the
             // publish-time scrub holds on every world-readable surface.
-            context: { reason: "usage_limit", providerMessage: `${providerMessage} x-api-key: ${secret}` }
+            context: { reason: outage ? "server_error" : "usage_limit", providerMessage: `${providerMessage} x-api-key: ${secret}` }
           });
         }
       })
-    ).rejects.toMatchObject({ code: "llm_call_failed" });
+    ).rejects.toMatchObject({ code });
 
-    // The operator must learn it is billing without opening run artifacts.
+    // Status comments, artifacts and logs carry the same bounded explanation.
     const terminal = fake.calls.at(-1) as { kind: string; body: string };
-    expect(terminal.body).toContain("`llm_call_failed`");
+    expect(terminal.body).toContain(`\`${code}\``);
     for (const surface of [
       terminal.body,
       readFileSync(failurePath, "utf8"),
@@ -924,10 +930,11 @@ describe("github-action entrypoint", () => {
       output
     ]) {
       expect(surface).toContain(providerMessage);
+      if (outage) expect(surface).toContain(headline);
       expect(surface).not.toContain(secret);
     }
     expect(JSON.parse(readFileSync(failurePath, "utf8"))).toMatchObject({
-      errorCode: "llm_call_failed",
+      errorCode: code,
       providerMessage: expect.stringContaining(providerMessage)
     });
   });
