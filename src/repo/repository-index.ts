@@ -1042,7 +1042,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       }
       return measurement.value;
     } catch (error) {
-      const isRejected = error instanceof CodegenieError && error.code === "path_outside_repo";
+      const isRejected = error instanceof CodegenieError && (error.code === "path_outside_repo" || error.code === "budget_exhausted");
       const searchBudgetRefusal = tool === "search_files" && error instanceof CodegenieError && error.code === "budget_exhausted";
       if (context?.record !== false) {
         this.opts.telemetry.recordToolCall({
