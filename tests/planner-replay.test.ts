@@ -9,7 +9,7 @@ import { createFakeRunner } from '../src/llm/fake-runner.js';
 import { createGitClient } from '../src/git/git-client.js';
 import { runReview } from '../src/pipeline/review-runner.js';
 import { commitAll, initRepo, writeRepoFile } from './helpers/git.js';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -54,6 +54,22 @@ describe('planner replay', () => {
       await expect(runReview({ mode: 'head', baseRef: base, headRef: head }, cfg, { repoRoot: repo, runArtifactDir: path.join(root, 'bad'), plannerReplay: { ...replay, diffSHA256: '0'.repeat(64) },
         runner: { runStructured: calls } })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'binding_mismatch' } });
       expect(calls).not.toHaveBeenCalled();
+      const invalidPlan = { ...actualPlan, intentSignals: {} };
+      const invalidCapture = JSON.stringify({ result: { plan: invalidPlan, plannerCoverage: { submittedEntries: 0, acceptedEntries: 0, acceptedUniqueHunks: 0, rejectedUnknownHunk: 0 }, degradedPlanning: false, chunked: false },
+        telemetry: [{ kind: 'artifact', name: 'review-plan.json', data: invalidPlan }] });
+      const invalidDir = path.join(root, 'invalid-intent');
+      await expect(runReview({ mode: 'head', baseRef: base, headRef: head }, cfg, { repoRoot: repo, runArtifactDir: invalidDir,
+        plannerReplay: { ...replay, capture: invalidCapture, captureSHA256: sha256Hex(invalidCapture) }, runner: { runStructured: calls } }))
+        .rejects.toMatchObject({ code: 'config_error', context: { reason: 'binding_mismatch' } });
+      expect(calls).not.toHaveBeenCalled();
+      expect(existsSync(path.join(invalidDir, 'stages/06-packets/packets'))).toBe(false);
+      expect(existsSync(path.join(invalidDir, 'stages/05-planner/review-plan.json'))).toBe(false);
+      const emptyDir = path.join(root, 'empty');
+      await expect(runReview({ mode: 'head', baseRef: head, headRef: head }, cfg, { repoRoot: repo, runArtifactDir: emptyDir, plannerReplay: replay,
+        runner: { runStructured: calls } })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'binding_mismatch' } });
+      expect(calls).not.toHaveBeenCalled(); expect(existsSync(path.join(emptyDir, 'final-review.json'))).toBe(false);
+      const normal = await runReview({ mode: 'head', baseRef: head, headRef: head }, cfg, { repoRoot: repo, runArtifactDir: path.join(root, 'normal-empty'), runner: createFakeRunner() });
+      expect(normal.noFindings).toBe(true);
     } finally { rmSync(repo, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
   }, 90_000);
   it('preserves the captured plan and omissions while marking only events as replayed', async () => {
@@ -72,9 +88,11 @@ describe('planner replay', () => {
     expect(sink.event).not.toHaveBeenCalled(); expect(sink.writeArtifact).not.toHaveBeenCalled();
   });
   it('refuses a coverage decision or embedded dossier digest that does not match', async () => {
+    const badPlan = { ...plan, intentSignals: {} };
     for (const change of [
       { result: { ...result, plan: { ...plan, coverage: [{ ...plan.coverage[0], path: 'wrong.ts' }] } }, telemetry: [] },
-      { result, telemetry: [{ kind: 'artifact', name: 'review-plan.json', data: plan }], dossierDigest: '0'.repeat(64) }
+      { result, telemetry: [{ kind: 'artifact', name: 'review-plan.json', data: plan }], dossierDigest: '0'.repeat(64) },
+      { result: { ...result, plan: badPlan }, telemetry: [{ kind: 'artifact', name: 'review-plan.json', data: badPlan }] }
     ]) {
       const text = JSON.stringify(change), sink = telemetry();
       await expect(replayPlanner(binding({ capture: text, captureSHA256: sha256Hex(text) }), dossier, 'diff', sink)).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });

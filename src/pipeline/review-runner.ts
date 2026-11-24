@@ -54,6 +54,7 @@ import type {
 import { CodegenieError, ReviewTargetUsageError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { replayPlanner, type PlannerReplay } from "./planner-replay.js";
+import { TransportAdmissionError } from "../llm/transport-admission.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
@@ -190,6 +191,7 @@ export async function runReview(
     });
     overrides.onInventory?.({ filesChanged: diff.files.length, keptFiles: kept.length });
     if (isZeroWork(diff.files, kept)) {
+      if (overrides.plannerReplay !== undefined) throw new TransportAdmissionError("binding_mismatch");
       await validateExplicitCliLensesForZeroWork(config, repoRoot, run);
     }
     const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
@@ -420,7 +422,8 @@ export async function runReview(
     });
     try {
       await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
-      if (usageError === undefined) {
+      const replayRefusal = overrides.plannerReplay !== undefined && error instanceof TransportAdmissionError && error.reason === "binding_mismatch" && failureStage <= 5;
+      if (usageError === undefined && !replayRefusal) {
         const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
           coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
           verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };

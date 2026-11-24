@@ -58,6 +58,7 @@ export async function replayPlanner(replay: PlannerReplay, dossier: PlannerDossi
     if (!record(parsed) || !Check(resultSchema, parsed.result) || !Array.isArray(parsed.telemetry) ||
         (parsed.dossierDigest !== undefined && parsed.dossierDigest !== replay.expectedDossierSHA256)) throw new Error("capture");
     result = parsed.result as unknown as PlannerRunResult;
+    if (result.plan.intentSignals !== undefined && stableJson(result.plan.intentSignals) !== stableJson(dossier.intentSignals)) throw new Error("intent signals");
     const known = new Set(inventory.map((hunk) => `${hunk.path}\0${hunk.hunkId}`));
     if (result.plan.coverage.some((entry) => !known.has(`${entry.path}\0${entry.hunkId}`))) throw new Error("coverage");
     let planArtifacts = 0;
@@ -78,6 +79,7 @@ export async function replayPlanner(replay: PlannerReplay, dossier: PlannerDossi
     events = parsed.telemetry as CaptureEvent[];
   } catch (error) {
     if (error instanceof TransportAdmissionError) throw error;
+    // Reuse the campaign's fatal, typed binding-refusal path before transport.
     throw new TransportAdmissionError("binding_mismatch");
   }
   for (const item of events) {
