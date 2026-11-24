@@ -22,6 +22,8 @@ import { TransportAdmissionError } from "../src/llm/transport-admission.js";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { makePhysicalTransport } from "../evals/runner/physical-fetch.mjs";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { operationalError } from "../evals/runner/worker.mjs";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import type {
@@ -791,6 +793,36 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(ledger.db.prepare("SELECT state,charge,http_status FROM physical").all()).toEqual([{ state: "unknown", charge: 400_000, http_status: 200 }]);
       ledger.assertRestartSafe();
     } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); }
+  });
+
+  it("does not attribute a completed 200 stream followed by a local telemetry error to the provider", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-local-after-done-"));
+    const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: 2_000_000 });
+    const globalFetch = vi.fn(async () => { throw new Error("unexpected network"); }); vi.stubGlobal("fetch", globalFetch);
+    try {
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: "boundary", usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+      const telemetry = fakeTelemetry(); let throws = 0;
+      const original = telemetry.recorder.recordModelCall;
+      telemetry.recorder.recordModelCall = (record) => { if (throws++ === 0) throw new Error("synthetic local write failure"); original(record); };
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
+          expected: { ...call, api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "low" },
+          fetchImpl: async () => {
+            const chunk = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna", choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }] };
+            return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+          }, AdmissionError: TransportAdmissionError }), hooks: { checkpoint: () => "ok", onUsage() {} } });
+      let failure: unknown;
+      try { await runner.runStructured({ ...submitReviewRequest("local-after-done"), purpose: "location_clarification" }); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: "llm_call_failed", context: { callId: "mc-000001" } });
+      const typed = failure as { code: string; context: { reason?: string; callId?: string } };
+      expect(ledger.db.prepare('SELECT state,http_status,charge FROM physical').get()).toEqual({ state: 'unknown', http_status: 200, charge: 400_000 });
+      expect(operationalError(ledger, 'slot/attempt-01', { code: typed.code, reason: typed.context.reason, callId: typed.context.callId })).toBe('unclassified');
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
   });
 
   it("keeps overlapping logical calls bound to their own fetch closures", async () => {

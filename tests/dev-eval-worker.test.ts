@@ -27,8 +27,11 @@ describe("development eval worker", () => {
       ledger.reservePhysical({ id: 'slot/attempt-01/mc-1/physical-1', logicalId: 'slot/attempt-01/mc-1', kind: 'initial', provider: 'openrouter' });
       ledger.reservePhysical({ id: 'slot/attempt-01/mc-2/physical-1', logicalId: 'slot/attempt-01/mc-2', kind: 'initial', provider: 'openrouter' });
       ledger.settlePhysical({ id: 'slot/attempt-01/mc-2/physical-1', httpStatus: 200, providerCostMicros: 1, costConfirmed: true });
-      ledger.settlePhysical({ id: 'slot/attempt-01/mc-1/physical-1', httpStatus: 200 });
+      ledger.settlePhysical({ id: 'slot/attempt-01/mc-1/physical-1', httpStatus: 503 });
       expect(operationalError(ledger, 'slot/attempt-01', { code: 'llm_call_failed', reason: 'transient_error', callId: 'mc-1' })).toBe('provider_failure');
+      ledger.reservePhysical({ id: 'slot/attempt-01/mc-3/physical-1', logicalId: 'slot/attempt-01/mc-3', kind: 'initial', provider: 'openrouter' });
+      ledger.settlePhysical({ id: 'slot/attempt-01/mc-3/physical-1', httpStatus: 200 });
+      expect(operationalError(ledger, 'slot/attempt-01', { code: 'llm_call_failed', reason: 'transient_error', callId: 'mc-3' })).toBe('unclassified');
       expect(operationalError(ledger, 'slot/attempt-01', { code: 'invalid_args' })).toBe('unclassified');
       ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
