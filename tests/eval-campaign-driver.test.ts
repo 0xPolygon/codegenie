@@ -223,7 +223,8 @@ describe('campaign driver', () => {
         const arm = scenario === 'treatment' || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
         const blinded = ['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario);
         const expectedCalls = calls.map((call) => call.stage === 7 && !('purpose' in call) ? { ...call, templateVersion: arm === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16' } : call);
-        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { assignedEffects: arm === 'treatment', expectedCalls } : {}) } };
+        const packetTemplates = packetIds.map((packetId: string) => ({ packetId, templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, arm === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16'])) }));
+        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { assignedEffects: arm === 'treatment', expectedCalls, packetTemplates } : {}) } };
       });
       const schedule = Buffer.from(JSON.stringify({ ...(scenario === 'checkpoint' ? { pauseAfterSlot: 'slot-08' } : {}), slots }));
       const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
@@ -242,11 +243,11 @@ describe('campaign driver', () => {
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       if (scenario === 'treatment') {
         const swappedSchedule = JSON.parse(schedule.toString('utf8'));
-        swappedSchedule.slots[0].workerConfig.expectedCalls.find((call: { stage: number; purpose?: string }) => call.stage === 7 && !call.purpose).templateVersion = 'p7.16';
+        swappedSchedule.slots[0].workerConfig.packetTemplates[0].templates.initial = 'p7.16';
         const swappedBytes = Buffer.from(JSON.stringify(swappedSchedule)), swappedPath = path.join(dir, 'swapped-schedule.json'); writeFileSync(swappedPath, swappedBytes);
         const swappedConfig = { ...JSON.parse(config.toString('utf8')), schedulePath: swappedPath, scheduleSHA256: sha(swappedBytes) };
         const swappedConfigBytes = Buffer.from(JSON.stringify(swappedConfig)), swappedFile = path.join(dir, 'swapped-campaign.json'); writeFileSync(swappedFile, swappedConfigBytes);
-        await expect(openCampaign(swappedFile, sha(swappedConfigBytes), { fetchImpl, models })).rejects.toThrow('arm binding');
+        await expect(openCampaign(swappedFile, sha(swappedConfigBytes), { fetchImpl, models })).rejects.toThrow('packet template binding');
         expect({ gets, healthPosts }).toEqual({ gets: 0, healthPosts: 0 });
       }
       let campaign = await openCampaign(file, sha(config), { fetchImpl, models });
@@ -390,7 +391,7 @@ describe('campaign driver', () => {
         expect(manifest).toMatchObject({ campaignState: ['stopped', 'worker-stop'].includes(scenario) ? 'stopped' : 'completed', selectedCount: 1 });
         if (scenario === 'treatment') {
           const receipt = reopened.supervisor.receipts.find('slot-01', 1).receipt;
-          expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toMatchObject({ declaredArm: 'treatment', assignedEffects: true, packetTemplates: ['p7.16-assigned-effects.1'] });
+          expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toMatchObject({ declaredArm: 'treatment', assignedEffects: true, packetCalls: [{ templateVersion: 'p7.16-assigned-effects.1' }] });
           const telemetry = path.join(receipt.runDir, 'telemetry');
           const effects = JSON.parse(readFileSync(path.join(telemetry, 'stages/07-review/assigned-effects.json'), 'utf8'));
           const packetRoot = path.join(telemetry, 'stages/06-packets/packets');
@@ -422,7 +423,7 @@ describe('campaign driver', () => {
           expect((await reopened.reveal({ ...reveal, coding })).reviewCount).toBe(1);
         } else {
           const receipt = reopened.supervisor.receipts.find('slot-01', 1).receipt;
-          expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toMatchObject({ declaredArm: 'control', assignedEffects: false, packetTemplates: ['p7.16'] });
+          expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toMatchObject({ declaredArm: 'control', assignedEffects: false, packetCalls: [{ templateVersion: 'p7.16' }] });
         }
         const alternate = { outputDirectory: path.join(dir, 'other-output'), mappingFile: path.join(dir, 'other', 'mapping.json') };
         expect(() => reopened.exportBlind(alternate)).toThrow('mapping path');

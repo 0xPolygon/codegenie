@@ -13,6 +13,8 @@ import { verifyAllEvidence } from './boundary.mjs';
 import { exportFirstLock, exportMechanism, revealPairing } from './blind-export.mjs';
 import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
 import { ASSIGNED_EFFECTS_PLAN_SHA256, ASSIGNED_EFFECTS_SEED, generate405Order, validate405Schedule } from './qualification-405.mjs';
+import { derivePacketTemplates, validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
+import { readCheckedFile } from './safe-read.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -109,6 +111,19 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     registered405 = order;
   }
 
+  let packetQualification;
+  if (registered405) {
+    const q = config.qualification405;
+    if (typeof q.packetReceiptFile !== 'string' || outsideCheckout(q.packetReceiptFile) !== q.packetReceiptFile || !hash(q.packetReceiptSHA256)) throw new Error('405 packet qualification missing');
+    const receiptBytes = readCheckedFile(q.packetReceiptFile);
+    if (sha(receiptBytes) !== q.packetReceiptSHA256) throw new Error('405 packet qualification mismatch');
+    const receipt = JSON.parse(receiptBytes.toString('utf8'));
+    if (receipt.productDist !== config.build?.dist || receipt.runner !== config.build?.runner || receipt.total !== 40 || receipt.passed !== 40 || receipt.providerAttempts !== 0 || typeof receipt.inventoryFile !== 'string' || outsideCheckout(receipt.inventoryFile) !== receipt.inventoryFile || !hash(receipt.inventorySHA256)) throw new Error('405 packet qualification mismatch');
+    const inventoryBytes = readCheckedFile(receipt.inventoryFile);
+    if (sha(inventoryBytes) !== receipt.inventorySHA256) throw new Error('405 packet qualification mismatch');
+    packetQualification = JSON.parse(inventoryBytes.toString('utf8'));
+    if (!Array.isArray(packetQualification.results) || packetQualification.results.length !== 40) throw new Error('405 packet qualification mismatch');
+  }
   const roots = new Map(), reviewInputRoots = [];
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
@@ -122,11 +137,37 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     }
     if (slot.blind !== undefined) {
       const expectedEffects = slot.blind.arm === 'treatment';
-      const packetTemplate = expectedEffects ? 'p7.16-assigned-effects.1' : 'p7.16';
       const packetCalls = wc?.expectedCalls?.filter((call) => call.stage === 7 && call.purpose !== 'location_clarification');
       if (!['control', 'treatment'].includes(slot.blind.arm) || typeof wc?.assignedEffects !== 'boolean' || wc.assignedEffects !== expectedEffects ||
-          !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') || packetCalls.some((call) => call.templateVersion !== packetTemplate) ||
+          !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') ||
           wc.expectedCalls.some((call) => call.stage === 7 && call.purpose === 'location_clarification' && call.templateVersion !== 'location-clarification-v1')) throw new Error('campaign arm binding mismatch');
+      if (registered405 && (packetCalls.some((call) => call.purpose != null || !['initial', 'tool-continuation', 'repair', 'finalize'].includes(call.kind)) ||
+          ['initial', 'tool-continuation', 'repair', 'finalize'].some((kind) => packetCalls.filter((call) => call.kind === kind).length !== 1 ||
+          wc.expectedCalls.filter((call) => call.stage === 7 && call.kind === kind && call.purpose === 'location_clarification').length !== 1))) throw new Error('campaign arm binding mismatch');
+      validatePacketTemplates(wc.packetTemplates, slot.expectedPacketIds, expectedEffects);
+      if (registered405) {
+        const qualified = packetQualification.results.filter((entry) => entry.case === slot.caseId && entry.mode === slot.blind.arm);
+        if (qualified.length !== 1 || qualified[0].exitCode !== 0 || qualified[0].providerAttempts !== 0 || qualified[0].stage7Boundary !== true ||
+            !['targetBound', 'expectedParsed', 'capture', 'rawDiff', 'dossier', 'head', 'base', 'hunks', 'replayEvent'].every((key) => qualified[0][key] === true) ||
+            qualified[0].actualDossierSHA256 !== wc.plannerReplayBinding.expectedDossierSHA256 || qualified[0].rawDiffSHA256 !== wc.plannerReplayBinding.diffSHA256 ||
+            qualified[0].captureSHA256 !== wc.plannerReplayBinding.captureSHA256 || qualified[0].baseSHA !== wc.plannerReplayBinding.baseSHA || qualified[0].headSHA !== wc.plannerReplayBinding.headSHA ||
+            qualified[0].hunkInventorySHA256 !== sha(JSON.stringify(wc.plannerReplayBinding.hunks.map(({ hunkId, path }) => ({ hunkId, path })))) || !Array.isArray(qualified[0].packetInventory)) throw new Error('405 packet qualification mismatch');
+        const packets = qualified[0].packetInventory.map((item) => {
+          if (!item || typeof item.path !== 'string' || outsideCheckout(item.path) !== item.path || !hash(item.sha256)) throw new Error('405 packet qualification mismatch');
+          const bytes = readCheckedFile(item.path);
+          if (sha(bytes) !== item.sha256) throw new Error('405 packet qualification mismatch');
+          const packet = JSON.parse(bytes.toString('utf8'));
+          if (packet.id !== item.id) throw new Error('405 packet qualification mismatch');
+          return packet;
+        });
+        const expected = derivePacketTemplates(packets, expectedEffects);
+        validatePacketTemplates(expected, slot.expectedPacketIds, expectedEffects);
+        if (expected.length !== wc.packetTemplates.length || expected.some((entry) => {
+          const bound = wc.packetTemplates.find((item) => item.packetId === entry.packetId);
+          const qualifiedPacket = qualified[0].packetInventory.find((item) => item.id === entry.packetId);
+          return !bound || qualifiedPacket?.observedTemplate !== entry.templates.initial || Object.keys(entry.templates).some((kind) => entry.templates[kind] !== bound.templates[kind]);
+        })) throw new Error('405 packet qualification mismatch');
+      }
     } else if (wc?.assignedEffects !== undefined) throw new Error('unbound campaign arm');
     if (!wc || slot.boundaryId === `final-${sha(config.binding)}` || typeof slot.caseId !== 'string' || !slot.caseId || !Array.isArray(slot.expectedPacketIds) || slot.provider !== 'openrouter' ||
         wc.supervisorPath !== config.supervisorPath || wc.ledgerPath !== config.ledgerPath || wc.ledgerBinding !== config.binding || wc.boundaryId !== slot.boundaryId ||
@@ -333,9 +374,14 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         return [packet.id, ...(Array.isArray(packet.hunks) ? packet.hunks.map((hunk) => hunk.hunkId) : [])];
       });
       const armBinding = JSON.parse(readBytes(path.join(found.receipt.runDir, 'arm-binding.json')).toString('utf8'));
-      const expectedTemplate = slot.blind.arm === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16';
       if (resolved.headSha !== location.sourceRevision) throw new Error('blind source revision mismatch');
-      if (armBinding.declaredArm !== slot.blind.arm || armBinding.assignedEffects !== (slot.blind.arm === 'treatment') || !Array.isArray(armBinding.packetTemplates) || !armBinding.packetTemplates.length || armBinding.packetTemplates.some((value) => value !== expectedTemplate)) throw new Error('blind effective arm mismatch');
+      if (armBinding.declaredArm !== slot.blind.arm || armBinding.assignedEffects !== (slot.blind.arm === 'treatment')) throw new Error('blind effective arm mismatch');
+      const modelCalls = readBytes(path.join(root, 'model-calls.jsonl')).toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      verifyPacketCalls({ bindings: slot.workerConfig.packetTemplates, packetIds: slot.expectedPacketIds, assignedEffects: armBinding.assignedEffects, calls: armBinding.packetCalls, modelCalls,
+        readDebug: (callId) => {
+          if (!/^mc-[A-Za-z0-9_-]+$/u.test(callId)) throw new Error('invalid model call id');
+          return read(`debug/llm-calls/${callId}.request.json`);
+        } });
       return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
         caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator, causes: oracles.cases.find((item) => item.caseId === slot.caseId).causes,
         anchorMappings: registered405?.cases.find((item) => item.caseId === slot.caseId)?.causes ?? oracles.cases.find((item) => item.caseId === slot.caseId).causes.map(({ id, optional }) => ({ id, optional, hunkIds: [], unmapped: false, unavailable: true })),

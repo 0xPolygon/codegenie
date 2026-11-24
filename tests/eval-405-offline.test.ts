@@ -51,11 +51,14 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
     const slots = order.slots.map((item: { caseId: string; arm: string; draw: number }, index: number) => {
       const id = `slot-${String(index + 1).padStart(2, '0')}`, assignedEffects = item.arm === 'treatment';
       return { id, caseId: item.caseId, boundaryId: item.caseId, provider: 'openrouter', expectedPacketIds: ['packet'], blind: { arm: item.arm, draw: item.draw },
-        workerConfig: { ...base, boundaryId: item.caseId, assignedEffects, plannerReplayBinding, expectedCalls: [{ ...expected, stage: 7, kind: 'initial', templateVersion: assignedEffects ? 'p7.16-assigned-effects.1' : 'p7.16' }] } };
+        workerConfig: { ...base, boundaryId: item.caseId, assignedEffects, plannerReplayBinding, packetTemplates: [{ packetId: 'packet', templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, assignedEffects ? 'p7.16-assigned-effects.1' : 'p7.16'])) }], expectedCalls: ['initial', 'tool-continuation', 'repair', 'finalize'].flatMap((kind) => [{ ...expected, stage: 7, kind, templateVersion: assignedEffects ? 'p7.16-assigned-effects.1' : 'p7.16' }, { ...expected, stage: 7, kind, purpose: 'location_clarification', templateVersion: 'location-clarification-v1' }]) } };
     });
     const schedule = Buffer.from(JSON.stringify({ seed: ASSIGNED_EFFECTS_SEED, verifierConcurrency: 'native', pauseAfterSlot: slots[7].id, slots })), schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
+    const packetPath = path.join(dir, 'qualified-packet.json'), packetBytes = Buffer.from(JSON.stringify({ id: 'packet', hunks: [{ hunkId: 'h', lines: [], truncated: false }], prSummary: '', path: 'a', language: 'javascript', lenses: [], labels: [], contextText: '', relevantTests: [], toolBudget: 3 })); writeFileSync(packetPath, packetBytes);
+    const inventoryFile = path.join(dir, 'qualified-packets.json'), inventoryBytes = Buffer.from(JSON.stringify({ results: caseIds.flatMap((caseId) => ['control', 'treatment'].map((mode) => ({ case: caseId, mode, exitCode: 0, providerAttempts: 0, stage7Boundary: true, targetBound: true, expectedParsed: true, capture: true, rawDiff: true, dossier: true, head: true, base: true, hunks: true, replayEvent: true, actualDossierSHA256: plannerReplayBinding.expectedDossierSHA256, rawDiffSHA256: plannerReplayBinding.diffSHA256, captureSHA256: plannerReplayBinding.captureSHA256, baseSHA: plannerReplayBinding.baseSHA, headSHA: plannerReplayBinding.headSHA, hunkInventorySHA256: sha('[]'), packetInventory: [{ id: 'packet', path: packetPath, sha256: sha(packetBytes), observedTemplate: mode === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16' }] }))) })); writeFileSync(inventoryFile, inventoryBytes);
+    const packetReceiptFile = path.join(dir, 'packet-receipt.json'), packetReceiptBytes = Buffer.from(JSON.stringify({ productDist: build.dist, runner: build.runner, total: 40, passed: 40, providerAttempts: 0, inventoryFile, inventorySHA256: sha(inventoryBytes) })); writeFileSync(packetReceiptFile, packetReceiptBytes);
     const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: base.supervisorPath, ledgerPath: base.ledgerPath, evidenceDirectory: base.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: base.limitMicros, reserveMicros: base.reserveMicros, errorHoldMicros: base.errorHoldMicros, build,
-      qualification405: { registrationFile, registrationSHA256, verifierConcurrency: 'native' }, blind: { oracleManifestPath: oraclePath, oracleManifestSHA256: sha(oracleBytes), locatorManifestPath: locatorPath, locatorManifestSHA256: sha(locatorBytes), mappingFile: path.join(dir, 'sealed', 'mapping.json') },
+      qualification405: { registrationFile, registrationSHA256, verifierConcurrency: 'native', packetReceiptFile, packetReceiptSHA256: sha(packetReceiptBytes) }, blind: { oracleManifestPath: oraclePath, oracleManifestSHA256: sha(oracleBytes), locatorManifestPath: locatorPath, locatorManifestSHA256: sha(locatorBytes), mappingFile: path.join(dir, 'sealed', 'mapping.json') },
       health: { expected: { ...expected, templateVersion: 'campaign-health.1' }, llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 } } }));
     const configFile = path.join(dir, 'campaign.json'); writeFileSync(configFile, config);
     let gets = 0, probes = 0, dispatches = 0;
@@ -79,6 +82,49 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       supervisor.recordWorkerExit(slotId, attemptNo); return { caseName: 'fixture-core-lens', status: 'fail', runDir };
     };
     const dependencies = { fetchImpl, models, spawnWorker };
+    for (const variant of ['missing', 'duplicate']) {
+      const badKinds = JSON.parse(schedule.toString('utf8'));
+      const calls = badKinds.slots[0].workerConfig.expectedCalls;
+      const index = calls.findIndex((call: { kind: string; purpose?: string }) => call.kind === 'repair' && !call.purpose);
+      if (variant === 'missing') calls.splice(index, 1); else calls.push({ ...calls[index] });
+      const bytes = Buffer.from(JSON.stringify(badKinds)), file = path.join(dir, `${variant}-kind.json`); writeFileSync(file, bytes);
+      const changed = { ...JSON.parse(config.toString('utf8')), schedulePath: file, scheduleSHA256: sha(bytes) };
+      const changedBytes = Buffer.from(JSON.stringify(changed)), changedPath = path.join(dir, `${variant}-kind-config.json`); writeFileSync(changedPath, changedBytes);
+      await expect(openCampaign(changedPath, sha(changedBytes), dependencies)).rejects.toThrow('campaign arm binding');
+      expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
+      expect(() => readFileSync(base.supervisorPath)).toThrow();
+    }
+    const wrongMap = JSON.parse(schedule.toString('utf8'));
+    wrongMap.slots[0].workerConfig.packetTemplates[0].templates.initial = wrongMap.slots[0].blind.arm === 'control' ? 'p7.17' : 'p7.17-assigned-effects.1';
+    const wrongMapBytes = Buffer.from(JSON.stringify(wrongMap)), wrongMapPath = path.join(dir, 'wrong-map.json'); writeFileSync(wrongMapPath, wrongMapBytes);
+    const wrongMapConfig = { ...JSON.parse(config.toString('utf8')), schedulePath: wrongMapPath, scheduleSHA256: sha(wrongMapBytes) };
+    const wrongMapConfigBytes = Buffer.from(JSON.stringify(wrongMapConfig)), wrongMapConfigPath = path.join(dir, 'wrong-map-config.json'); writeFileSync(wrongMapConfigPath, wrongMapConfigBytes);
+    await expect(openCampaign(wrongMapConfigPath, sha(wrongMapConfigBytes), dependencies)).rejects.toThrow('405 packet qualification mismatch');
+    expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
+    expect(() => readFileSync(base.supervisorPath)).toThrow();
+    writeFileSync(packetPath, Buffer.from(JSON.stringify({ ...JSON.parse(packetBytes.toString('utf8')), substituted: true })));
+    await expect(openCampaign(configFile, sha(config), dependencies)).rejects.toThrow('405 packet qualification mismatch');
+    expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
+    expect(() => readFileSync(base.supervisorPath)).toThrow();
+    writeFileSync(packetPath, packetBytes);
+    const duplicateSchedule = JSON.parse(schedule.toString('utf8'));
+    for (const slot of duplicateSchedule.slots.slice(0, 4)) {
+      slot.expectedPacketIds = ['packet', 'second'];
+      slot.workerConfig.packetTemplates.push({ ...slot.workerConfig.packetTemplates[0], packetId: 'second' });
+    }
+    const duplicateScheduleBytes = Buffer.from(JSON.stringify(duplicateSchedule)), duplicateSchedulePath = path.join(dir, 'duplicate-schedule.json'); writeFileSync(duplicateSchedulePath, duplicateScheduleBytes);
+    const duplicateInventory = JSON.parse(inventoryBytes.toString('utf8'));
+    const duplicateRow = duplicateInventory.results.find((item: { case: string; mode: string }) => item.case === duplicateSchedule.slots[0].caseId && item.mode === duplicateSchedule.slots[0].blind.arm);
+    duplicateRow.packetInventory.push({ ...duplicateRow.packetInventory[0] });
+    const duplicateInventoryBytes = Buffer.from(JSON.stringify(duplicateInventory)), duplicateInventoryPath = path.join(dir, 'duplicate-inventory.json'); writeFileSync(duplicateInventoryPath, duplicateInventoryBytes);
+    const duplicateReceiptBytes = Buffer.from(JSON.stringify({ ...JSON.parse(packetReceiptBytes.toString('utf8')), inventoryFile: duplicateInventoryPath, inventorySHA256: sha(duplicateInventoryBytes) })), duplicateReceiptPath = path.join(dir, 'duplicate-receipt.json'); writeFileSync(duplicateReceiptPath, duplicateReceiptBytes);
+    const duplicateConfig = JSON.parse(config.toString('utf8'));
+    Object.assign(duplicateConfig, { schedulePath: duplicateSchedulePath, scheduleSHA256: sha(duplicateScheduleBytes) });
+    Object.assign(duplicateConfig.qualification405, { packetReceiptFile: duplicateReceiptPath, packetReceiptSHA256: sha(duplicateReceiptBytes) });
+    const duplicateConfigBytes = Buffer.from(JSON.stringify(duplicateConfig)), duplicateConfigPath = path.join(dir, 'duplicate-config.json'); writeFileSync(duplicateConfigPath, duplicateConfigBytes);
+    await expect(openCampaign(duplicateConfigPath, sha(duplicateConfigBytes), dependencies)).rejects.toThrow('packet template binding');
+    expect({ gets, probes, dispatches }).toEqual({ gets: 0, probes: 0, dispatches: 0 });
+    expect(() => readFileSync(base.supervisorPath)).toThrow();
     const changedCapture = JSON.parse(captureBytes.toString('utf8'));
     changedCapture.result.plan.diffUnderstanding.declaredIntent = 'different captured plan';
     changedCapture.telemetry[0].data = changedCapture.result.plan;
