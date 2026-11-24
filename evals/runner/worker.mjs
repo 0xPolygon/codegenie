@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { CampaignLedger } from './ledger.mjs';
+import { boundaryDecision } from './boundary.mjs';
 import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase } from './case.mjs';
 
@@ -25,26 +26,20 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) 
       const preflight = () => {
         if (boundaryVerified) return;
         const id = `${attemptPrefix}/${call.callId}/preflight`;
-        const verifyEvidence = (_kind, hash) => {
-          const file = evidenceFiles?.[hash];
-          if (typeof file !== 'string') return false;
-          try { return createHash('sha256').update(readFileSync(file)).digest('hex') === hash; }
-          catch { return false; }
-        };
         let reason;
         try {
-          if (typeof boundaryId !== 'string' || !boundaryId) reason = 'binding_mismatch';
-          else {
-            const key = ledger.keyDecision({ verifyEvidence });
-            const health = ledger.healthDecision({ boundaryId, provider: call.provider, nowMs: Date.now(), verifyEvidence });
-            if (key.action !== 'admit') reason = key.reason ?? `key_${key.action}`;
-            else if (health.action !== 'admit') reason = health.reason ?? `health_${health.action}`;
-          }
+          const decision = boundaryDecision({ ledger, boundaryId, provider: call.provider, evidenceFiles });
+          if (decision.action !== 'admit') reason = decision.reason ?? `${decision.source}_${decision.action}`;
         } catch { reason = 'binding_mismatch'; }
         if (reason !== undefined) {
           try { ledger.recordRefusal({ id, logicalId: `${attemptPrefix}/${call.callId}`, reason }); }
           catch { try { ledger.stop('accounting_failed'); } catch {} throw new TransportAdmissionError('accounting_failed'); }
-          throw new TransportAdmissionError(reason === 'binding_mismatch' ? 'binding_mismatch' : reason === 'budget_limit' ? 'campaign_budget' : 'campaign_stopped');
+          const mapped = reason === 'binding_mismatch' ? 'binding_mismatch'
+            : ['budget_limit', 'campaign_budget'].includes(reason) ? 'campaign_budget'
+            : reason.startsWith('provider_') ? 'provider_denied'
+            : ['accounting_failed', 'unpriced_lower_bound', 'charge_above_reservation'].includes(reason) ? 'accounting_failed'
+            : 'campaign_stopped';
+          throw new TransportAdmissionError(mapped);
         }
         boundaryVerified = true;
       };

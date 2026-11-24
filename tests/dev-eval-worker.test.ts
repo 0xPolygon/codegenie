@@ -8,11 +8,34 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Development-only ESM has no emitted types.
 import { runWorker } from "../evals/runner/worker.mjs";
+// @ts-expect-error Development-only ESM has no emitted types.
+import { boundaryDecision } from "../evals/runner/boundary.mjs";
 
 const checkout = process.cwd();
 beforeAll(() => { execFileSync("pnpm", ["build"], { cwd: checkout, stdio: "pipe" }); }, 60_000);
 
 describe("development eval worker", () => {
+  it("does not admit a boundary with missing or changed meter and health evidence", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-boundary-"));
+    try {
+      const evidence = path.join(dir, "receipt"), digest = createHash("sha256").update("sealed").digest("hex");
+      writeFileSync(evidence, "sealed");
+      const ledger = new CampaignLedger(path.join(dir, "ledger.sqlite"), { binding: "synthetic", limitMicros: 15_000_000 });
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: digest });
+      const args = { ledger, boundaryId: "one", provider: "openrouter", evidenceFiles: { [digest]: evidence }, nowMs: 2 };
+      expect(boundaryDecision(args)).toMatchObject({ source: "key", action: "snapshot" });
+      ledger.recordKeySnapshot({ usageMicros: 0, observedMs: 1, evidenceSHA256: digest });
+      expect(boundaryDecision(args)).toMatchObject({ source: "health", action: "probe" });
+      ledger.reservePhysical({ id: "health", logicalId: "health", kind: "health", provider: "openrouter", healthBoundary: "one" });
+      ledger.settlePhysical({ id: "health", httpStatus: 200, providerCostMicros: 0, costConfirmed: true });
+      ledger.recordHealth({ physicalId: "health", outcome: "clean", observedMs: 1, evidenceSHA256: digest });
+      expect(boundaryDecision(args)).toMatchObject({ action: "admit" });
+      expect(boundaryDecision({ ...args, boundaryId: "two" })).toMatchObject({ action: "probe" });
+      writeFileSync(evidence, "changed");
+      expect(() => boundaryDecision(args)).toThrow("evidence"); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("requires reconciliation of an interrupted physical start before running an attempt", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-restart-"));
     try {
