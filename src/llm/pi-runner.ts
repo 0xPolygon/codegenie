@@ -4162,7 +4162,9 @@ function toLlmError(
     providerUnavailableSummary,
     providerErrorCode: nestedProviderErrorCode(body)
   };
-  if (!timedOut && status !== "aborted" && isUsageLimitError(cause, httpStatus)) {
+  const retry = !timedOut && status !== "aborted"
+    ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS, observation) : undefined;
+  if (retry?.reason === "usage_limit") {
     return new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
       recoverable: false,
       context: definedRecord({ reason: "usage_limit", ...details }),
@@ -4177,7 +4179,6 @@ function toLlmError(
     });
   }
   const reason = timedOut ? "timeout" : requestErrorReason(httpStatus, status);
-  const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS, observation) : undefined;
   const headline = timedOut
     ? "LLM provider call timed out"
     : status === "aborted"
@@ -4185,7 +4186,7 @@ function toLlmError(
       : "LLM provider call failed";
   return new CodegenieError("llm_call_failed", headline, {
     recoverable: true,
-    context: definedRecord({ reason, retryReason: retry?.reason, ...details }),
+    context: definedRecord({ reason, retryReason: status === "transient_error" ? retry?.reason : undefined, ...details }),
     cause
   });
 }
@@ -4362,7 +4363,7 @@ const USAGE_LIMIT_PATTERN =
 
 const USAGE_LIMIT_STATUSES: ReadonlySet<number> = new Set([400, 402, 403, 429]);
 
-function isUsageLimitError(cause: unknown, status = errorHttpStatus(cause)): boolean {
+function isUsageLimitError(cause: unknown, status: number | undefined): boolean {
   if (status === 402) {
     return true;
   }

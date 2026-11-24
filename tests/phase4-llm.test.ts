@@ -8131,7 +8131,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it.each(["http_exhausted", "stream_exhausted", "http_recovered"] as const)(
+  it.each(["http_exhausted", "stream_exhausted", "http_recovered", "composition_stream_outage"] as const)(
     "uses native Codex outage evidence for %s",
     async mode => {
       const random = vi.spyOn(Math, "random").mockReturnValue(0);
@@ -8162,10 +8162,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       const sse = (events: unknown[]) => new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""),
         { headers: { "content-type": "text/event-stream" } });
       let physical = 0;
-      const providerMessage = `Fixture backend asleep. x-api-key: ${secret}`;
+      const streamOutage = mode === "stream_exhausted" || mode === "composition_stream_outage";
+      // Pi flattens the message and Codegenie can parse a status from it. The
+      // typed stream event on HTTP 200 is the authoritative failure instead.
+      const providerMessage = `${streamOutage ? "HTTP 402: " : ""}Fixture backend asleep. x-api-key: ${secret}`;
       vi.stubGlobal("fetch", vi.fn(async () => {
         physical += 1;
-        if (mode === "stream_exhausted") {
+        if (streamOutage) {
           return sse([{ type: "response.failed", response: { status: "failed",
             error: { code: "temporarily_unavailable", message: providerMessage } } }]);
         }
@@ -8182,8 +8185,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         return Response.json({ error: { message: providerMessage } }, { status: 503 });
       }));
       try {
-        const pending = runner.runStructured({ ...submitReviewRequest("provider-outage"), timeoutMs: 10_000 });
-        if (mode === "http_recovered") {
+        const pending = runner.runStructured(mode === "composition_stream_outage"
+          ? { stage: 10, prompt: "compose", schema: SubmitCompositionSchema, templateVersion: "test", timeoutMs: 10_000 }
+          : { ...submitReviewRequest("provider-outage"), timeoutMs: 10_000 });
+        if (mode === "composition_stream_outage") {
+          await expect(pending).rejects.toMatchObject({
+            code: "llm_call_failed", recoverable: true,
+            context: {
+              reason: "transient_error", retryReason: "temporarily_unavailable",
+              providerUnavailableSummary: "Provider openai-codex (model gpt-6-luna) returned temporarily unavailable"
+            }
+          });
+          expect(onProviderUnavailable).not.toHaveBeenCalled();
+        } else if (mode === "http_recovered") {
           await expect(pending).resolves.toMatchObject({ findings: [] });
           expect(onProviderUnavailable).not.toHaveBeenCalled();
         } else {
@@ -8197,10 +8211,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           expect(stderr).not.toContain(secret);
           expect(onProviderUnavailable).toHaveBeenCalledExactlyOnceWith(error);
         }
-        expect(physical).toBe(4);
-        expect(telemetry.modelCalls).toHaveLength(4);
-        const classified = mode === "stream_exhausted" ? "temporarily_unavailable" : "server_error";
-        expect(telemetry.modelCalls.slice(0, 3).map(row => row.retryReason)).toEqual([classified, classified, classified]);
+        const attempts = mode === "composition_stream_outage" ? 2 : 4;
+        expect(physical).toBe(attempts);
+        expect(telemetry.modelCalls).toHaveLength(attempts);
+        const classified = streamOutage ? "temporarily_unavailable" : "server_error";
+        for (const row of telemetry.modelCalls.slice(0, -1)) {
+          expect(row).toMatchObject({ retryable: true, retryReason: classified, providerHttpStatus: streamOutage ? 200 : 503 });
+        }
       } finally {
         vi.unstubAllGlobals();
         random.mockRestore();
