@@ -68,7 +68,7 @@ describe('campaign admission custody', () => {
   it('allows one authenticated retry and preserves both failures on exclusion', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-retry-'));
     try {
-      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }, { id: 'paired', boundaryId: 'paired', provider: 'openrouter' }] }));
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter', workerConfig: { ledgerBinding: 'b' } }, { id: 'paired', boundaryId: 'paired', provider: 'openrouter' }] }));
       const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes) });
       const realLedger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 15_000_000 });
       const ledger = { db: realLedger.db, assertRestartSafe: () => realLedger.assertRestartSafe(), keyDecision: () => ({ action: 'admit' }), healthDecision: () => ({ action: 'admit' }) };

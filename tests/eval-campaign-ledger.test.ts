@@ -8,6 +8,25 @@ import { describe, expect, it } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it("never admits a pending meter read even if a covering snapshot exists", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-meter-crash-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(file, config), fingerprint = ledger.fingerprint('synthetic-key');
+      ledger.beginMeterPoll('one', 1);
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint: fingerprint, evidenceSHA256: 'a'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 2, keyFingerprint: fingerprint, evidenceSHA256: 'b'.repeat(64) });
+      ledger.close(); ledger = new CampaignLedger(file, config); fingerprint = ledger.fingerprint('synthetic-key');
+      expect(ledger.keyDecision({ boundaryId: 'one', verifyEvidence: () => true })).toEqual({ action: 'reconcile' });
+      expect(ledger.reservePhysical({ id: 'blocked', logicalId: 'blocked', kind: 'initial' })).toEqual({ admitted: false, reason: 'key_usage_reconcile' });
+      expect(ledger.reconcileMeterPoll('one', 3, () => true)).toMatchObject({ action: 'wait' });
+      expect(ledger.beginMeterPoll('one', 15003)).toEqual({ action: 'read' });
+      expect(ledger.recordKeySnapshot({ boundaryId: 'one', usageMicros: 0, observedMs: 15003, keyFingerprint: fingerprint, evidenceSHA256: 'c'.repeat(64), completePoll: true })).toMatchObject({ fresh: true, pollCompleted: true });
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.hasPendingMeter()).toBe(false);
+      expect(ledger.keyDecision({ boundaryId: 'one', verifyEvidence: () => true })).toEqual({ action: 'admit' }); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("does not repeat an interrupted meter read without verified reader exit", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-meter-"));
     try {

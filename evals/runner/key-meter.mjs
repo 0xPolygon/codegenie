@@ -56,7 +56,7 @@ export async function readConfiguredKeyUsage({ ledger, fetchImpl = globalThis.fe
 
 // The caller persists the supplied sanitized bytes outside the checkout and
 // confirms the exact hash. No live reading can advance the ledger without it.
-export function applyKeyObservation({ ledger, kind, reading, sealReceipt, boundaryId }) {
+export function applyKeyObservation({ ledger, kind, reading, sealReceipt, boundaryId, completePoll = false }) {
   if (!['baseline', 'snapshot'].includes(kind) || !reading || typeof sealReceipt !== 'function') throw new TypeError('invalid key observation');
   if (reading.status === 'stale') { ledger.markKeyStale(); return { action: 'wait' }; }
   if (reading.status === 'denied' || reading.status === 'malformed') {
@@ -74,9 +74,11 @@ export function applyKeyObservation({ ledger, kind, reading, sealReceipt, bounda
     if (sealReceipt(bytes, hash) !== true) throw new Error('receipt not sealed');
     if (kind === 'baseline') ledger.bindKeyBaseline({ usageMicros: Math.floor(reading.usageNanos / 1000), usageNanos: reading.usageNanos, keyFingerprint: reading.fingerprint, evidenceSHA256: hash });
     else {
-      const result = ledger.recordKeySnapshot({ usageMicros: Math.ceil(reading.usageNanos / 1000), usageNanos: reading.usageNanos, observedMs: reading.observedMs, keyFingerprint: reading.fingerprint, evidenceSHA256: hash, boundaryId });
+      const result = ledger.recordKeySnapshot({ usageMicros: Math.ceil(reading.usageNanos / 1000), usageNanos: reading.usageNanos, observedMs: reading.observedMs, keyFingerprint: reading.fingerprint, evidenceSHA256: hash, boundaryId, completePoll });
       if (result.bindingMismatch) return { action: 'stop' };
-      if (!result.fresh) return { action: 'wait', receiptSHA256: hash };
+      if (result.pollStop) return { action: 'stop', reason: 'meter_stale', pollCompleted: true };
+      if (!result.fresh) return { action: 'wait', receiptSHA256: hash, ...(result.pollCompleted ? { pollCompleted: true } : {}) };
+      if (result.pollCompleted) return { action: 'recorded', receiptSHA256: hash, pollCompleted: true };
     }
     return { action: 'recorded', receiptSHA256: hash };
   } catch { ledger.markKeyStale(); ledger.stop('accounting_failed'); return { action: 'stop' }; }

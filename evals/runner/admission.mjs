@@ -35,6 +35,7 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
   ledger.assertRestartSafe();
   const stop = ledger.totals().stopped;
   if (stop) return { action: 'stop', reason: stop };
+  if (ledger.hasPendingMeter()) return { action: 'reconcile' };
   let failureEnd;
   if (purpose === 'retry') {
     if (typeof retryFor !== 'string' || !retryFor || !/^[a-f0-9]{64}$/u.test(failureReceiptSHA256 ?? '')) throw new Error('invalid retry binding');
@@ -59,8 +60,8 @@ export async function prepareAdmission({ ledger, boundaryId, receiptDirectory, a
         return baseline.action === 'stop' ? baseline : finished;
       }
     }
-    const snapshot = applyKeyObservation({ ledger, kind: 'snapshot', reading, sealReceipt: store.seal, boundaryId });
-    const finished = ledger.finishMeterPoll(boundaryId, Date.now(), snapshot.action === 'recorded');
+    const snapshot = applyKeyObservation({ ledger, kind: 'snapshot', reading, sealReceipt: store.seal, boundaryId, completePoll: true });
+    const finished = snapshot.pollCompleted ? snapshot : ledger.finishMeterPoll(boundaryId, Date.now(), false);
     if (snapshot.action !== 'recorded') return snapshot.action === 'stop' ? snapshot : finished;
     current = decision();
   }

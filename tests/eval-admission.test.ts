@@ -19,6 +19,17 @@ function response() {
   return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
 }
 describe('campaign boundary preparation', () => {
+  it('stops before auth or GET when a prior meter reader is still unresolved', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-pending-'));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
+      ledger.beginMeterPoll('one', Date.now());
+      const getAuth = vi.fn(), fetchImpl = vi.fn();
+      const result = await prepareAdmission({ ledger, boundaryId: 'one', receiptDirectory: path.join(dir, 'receipts'), attemptPrefix: 'health/one', expected,
+        llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl, models: { getAuth } });
+      expect(result).toEqual({ action: 'reconcile' }); expect(getAuth).not.toHaveBeenCalled(); expect(fetchImpl).not.toHaveBeenCalled(); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('bounds stale key reads across restart and reports their count', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-stale-'));
     let now = 1000; const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);

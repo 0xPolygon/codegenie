@@ -6,6 +6,8 @@ import { boundaryDecision } from './boundary.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const isHash = (value) => /^[a-f0-9]{64}$/u.test(value ?? '');
 const prefixFor = (slot, number) => `${slot}/attempt-${String(number).padStart(2, '0')}`;
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 
 // Receipt and process verification are supplied by the campaign integration;
 // this state machine never infers a stopped process from a timeout.
@@ -40,7 +42,9 @@ export class CampaignSupervisor {
     if (!Buffer.isBuffer(configBytes) || !isHash(configSHA256) || sha(configBytes) !== configSHA256) throw new Error('worker config digest mismatch');
     const config = JSON.parse(configBytes.toString('utf8'));
     const row = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
-    if (!row || row.state !== 'started' || config.attemptPrefix !== prefixFor(slotId, attemptNo) || config.ledgerBinding !== this.binding) throw new Error('worker attempt binding mismatch');
+    const slot = this.slots.find((item) => item.id === slotId);
+    if (!row || row.state !== 'started' || !slot?.workerConfig || typeof slot.workerConfig !== 'object' || Array.isArray(slot.workerConfig) ||
+        config.ledgerBinding !== this.binding || JSON.stringify(canonical(config)) !== JSON.stringify(canonical({ ...slot.workerConfig, attemptPrefix: prefixFor(slotId, attemptNo) }))) throw new Error('worker attempt binding mismatch');
     return true;
   }
   noStartCount(slotId) {

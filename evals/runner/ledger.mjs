@@ -60,6 +60,7 @@ export class CampaignLedger {
           keyGuard = Math.max(0, snapshot.usage_micros - baseline.usage_micros, snapshot.priced_floor_micros) + Math.max(0, sums.priced - snapshot.priced_floor_micros) + sums.held;
         }
       }
+      if (this.db.prepare('SELECT 1 FROM meter_poll WHERE pending=1 LIMIT 1').get()) freshnessReason = 'key_usage_reconcile';
       const reason = campaign.stopped ?? (Math.max(total, keyGuard) + this.reserve > this.limit ? 'campaign_budget' : freshnessReason);
       if (reason !== undefined) {
         this.db.prepare('INSERT INTO local_refusal(id,logical_id,reason) VALUES(?,?,?)').run(id, logicalId, reason);
@@ -133,8 +134,8 @@ export class CampaignLedger {
       } else this.db.prepare('INSERT INTO key_baseline VALUES(?,?,?,?)').run(usageMicros, usageNanos, evidenceSHA256, keyFingerprint);
     });
   }
-  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256, keyFingerprint, boundaryId }) {
-    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.ceil(usageNanos / 1000) !== usageMicros || !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '') || typeof boundaryId !== 'string' || !boundaryId) throw new TypeError('invalid key snapshot');
+  recordKeySnapshot({ usageMicros, usageNanos = usageMicros * 1000, observedMs, evidenceSHA256, keyFingerprint, boundaryId, completePoll = false }) {
+    if (!Number.isSafeInteger(usageMicros) || usageMicros < 0 || !Number.isSafeInteger(usageNanos) || usageNanos < 0 || Math.ceil(usageNanos / 1000) !== usageMicros || !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '') || typeof boundaryId !== 'string' || !boundaryId || typeof completePoll !== 'boolean') throw new TypeError('invalid key snapshot');
     return this.transaction(() => {
       const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,key_fingerprint FROM key_baseline').get();
       if (!baseline) throw new Error('key baseline missing');
@@ -147,16 +148,25 @@ export class CampaignLedger {
         lastFresh ? lastFresh.usage_nanos + Math.max(0, priced.nanos - lastFresh.priced_floor_nanos) : 0);
       if (!Number.isSafeInteger(expectedNanos)) throw new RangeError('key watermark exceeds safe precision');
       const fresh = usageNanos >= expectedNanos;
+      let pollStop = false;
+      if (completePoll) {
+        const poll = this.db.prepare('SELECT stale_count,pending FROM meter_poll WHERE boundary_id=?').get(boundaryId);
+        if (!poll || poll.pending !== 1) throw new Error('meter read is not pending');
+        const stale = fresh ? 0 : poll.stale_count + 1;
+        this.db.prepare('UPDATE meter_poll SET pending=0,stale_count=?,next_ms=? WHERE boundary_id=?').run(stale, fresh ? 0 : observedMs + 15_000, boundaryId);
+        if (stale >= 20) { this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'meter_stale')").run(); pollStop = true; }
+      }
       this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, priced.nanos, observedMs, evidenceSHA256, fresh ? 1 : 0, boundaryId);
       this.db.prepare('UPDATE campaign SET meter_stale=?').run(fresh ? 0 : 1);
       if (usageMicros - baseline.usage_micros >= this.limit) this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'budget_limit')").run();
-      return { fresh, actualMicros: Math.max(0, usageMicros - baseline.usage_micros) };
+      return { fresh, actualMicros: Math.max(0, usageMicros - baseline.usage_micros), ...(completePoll ? { pollCompleted: true, pollStop } : {}) };
     });
   }
   keyDecision({ verifyEvidence, boundaryId }) {
     if (typeof verifyEvidence !== 'function') throw new TypeError('snapshot evidence verifier required');
     const state = this.db.prepare('SELECT stopped,meter_stale FROM campaign').get();
     if (state.stopped) return { action: 'stop', reason: state.stopped };
+    if (this.hasPendingMeter()) return { action: 'reconcile' };
     const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256,key_fingerprint FROM key_baseline').get();
     if (!baseline || verifyEvidence('baseline', baseline.evidence_sha256, { kind: 'key_baseline', usageNanos: baseline.usage_nanos, fingerprint: baseline.key_fingerprint }) !== true) throw new Error('key baseline evidence missing or changed');
     const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,observed_ms,evidence_sha256,fresh,boundary_id FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
@@ -168,14 +178,15 @@ export class CampaignLedger {
     return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced && priced <= snapshot.priced_floor_nanos ? 'admit' : 'wait' };
   }
   markKeyStale() { this.transaction(() => this.db.prepare('UPDATE campaign SET meter_stale=1').run()); }
+  hasPendingMeter() { return Boolean(this.db.prepare('SELECT 1 FROM meter_poll WHERE pending=1 LIMIT 1').get()); }
   beginMeterPoll(boundaryId, nowMs) {
     if (typeof boundaryId !== 'string' || !boundaryId || !Number.isSafeInteger(nowMs) || nowMs < 0) throw new TypeError('invalid meter boundary');
     return this.transaction(() => {
       const stopped = this.db.prepare('SELECT stopped FROM campaign').get().stopped;
       if (stopped) return { action: 'stop', reason: stopped };
+      if (this.db.prepare('SELECT 1 FROM meter_poll WHERE pending=1 LIMIT 1').get()) return { action: 'reconcile' };
       let row = this.db.prepare('SELECT * FROM meter_poll WHERE boundary_id=?').get(boundaryId);
       if (!row) { this.db.prepare('INSERT INTO meter_poll VALUES(?,0,0,0,0)').run(boundaryId); row = this.db.prepare('SELECT * FROM meter_poll WHERE boundary_id=?').get(boundaryId); }
-      if (row.pending) return { action: 'reconcile' };
       if (nowMs < row.next_ms) return { action: 'wait', untilMs: row.next_ms };
       this.db.prepare('UPDATE meter_poll SET attempts=attempts+1,pending=1 WHERE boundary_id=?').run(boundaryId);
       return { action: 'read' };
