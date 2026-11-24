@@ -4,6 +4,7 @@ import { SubmitCompositionSchema } from "../src/llm/schemas.js";
 import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, MAX_ATTENTION_RECONCILIATION_CHARS, reconcileAttention } from "../src/pipeline/attention-reconciliation.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { compositionSources, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import type { PacketReviewResult, VerificationVerdict } from "../src/types.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { portableSchemaIssues } from "./helpers/portable-schema.js";
@@ -31,6 +32,24 @@ function fixture(questions = ["Does head include a revoked-session test?", "Is t
 }
 
 describe("evidence-backed attention reconciliation", () => {
+  it("removes unavailable attention refs only with an independent citable ref remaining", () => {
+    const f = fixture(["Does head include a revoked-session test?"]);
+    const input = f.build();
+    const original = { summary: "Review completed.", composedFindings: [], attentionResolutions: [f.proposal] };
+    const draft = structuredClone(original);
+    draft.attentionResolutions[0]!.supportingRefs.unshift("not-supplied");
+    const normalized = normalizeCompositionReferences(draft, [], input)!;
+    expect(normalized.value).toEqual(original);
+    expect(normalized.removedFields).toEqual(["attentionResolutions.0.supportingRefs.0"]);
+    expect(normalized.attentionRefsRemoved).toBe(1);
+    expect(normalized.addedFields).toEqual([]);
+    expect(attentionResolutionErrors(input, original.attentionResolutions)).toEqual([]);
+    expect(normalizeCompositionReferences(original, [], input)).toBeUndefined();
+    input.groups[0]!.concerns[0]!.candidateId = f.candidate.id;
+    expect(normalizeCompositionReferences(draft, [], input)).toBeUndefined();
+    expect(attentionResolutionErrors(input, draft.attentionResolutions)[0]).toContain("unknown_or_omitted_evidence");
+  });
+
   it("accepts evidence already delivered in finding components when its duplicate inventory entry was omitted", () => {
     const f = fixture();
     const input = buildAttentionReconciliation(f.verdicts, [f.candidate], [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });

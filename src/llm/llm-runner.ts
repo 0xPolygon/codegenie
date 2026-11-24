@@ -163,7 +163,7 @@ export type LlmStructuredRequest<T> = {
     toolSurface?: ReviewToolSurface;
   };
   /** Pure stage-specific normalization of trusted, assembled arguments. Raw input remains auditable. */
-  normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; reason: string } | undefined;
+  normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; attentionRefsRemoved?: number; reason: string } | undefined;
   validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
     /** Top-level alternative encodings: explicitly supplying one replaces retained siblings. */

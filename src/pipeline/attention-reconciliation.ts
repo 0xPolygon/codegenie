@@ -383,6 +383,31 @@ function citableEvidence(input: AttentionReconciliation) {
     ...input.inventory.evidence].map(source => [source.id, source]));
 }
 
+/** Drop only unavailable refs from a cloned draft with independent evidence remaining. */
+export function removeUnavailableAttentionReferences(proposals: unknown, input: AttentionReconciliation): string[] {
+  if (!Array.isArray(proposals) || !proposals.length) return [];
+  const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
+  const concerns = new Map(input.groups.flatMap(group => group.concerns)
+    .filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern.candidateId]));
+  const evidence = citableEvidence(input);
+  const removed: string[] = [];
+  for (const [index, proposal] of proposals.entries()) {
+    const candidate = concerns.get(proposal?.concernId);
+    const refs: unknown = proposal?.supportingRefs;
+    if (candidate === undefined || !Array.isArray(refs) || !refs.every(ref => typeof ref === "string")) continue;
+    if (!refs.some(ref => {
+      const item = evidence.get(ref);
+      return item !== undefined && item.candidateId !== candidate;
+    })) continue;
+    proposal.supportingRefs = refs.filter((ref, item) => {
+      if (evidence.has(ref)) return true;
+      removed.push(`attentionResolutions.${index}.supportingRefs.${item}`);
+      return false;
+    });
+  }
+  return removed;
+}
+
 export type ReconcileAttentionOptions = {
   /** Candidate ids represented by a published (inline or summary-only) final finding. */
   publishedCandidateIds?: ReadonlySet<string>;

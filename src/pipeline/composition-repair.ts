@@ -4,6 +4,7 @@ import type { FieldRepair } from "../llm/field-repair.js";
 import { focusedRepairDiagnostics, submissionIssues } from "../llm/submit-preservation.js";
 import type { CandidateFinding } from "../types.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
+import { removeUnavailableAttentionReferences, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { compatibleCompositionPlacement, eligibleCompositionPlacement, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
 
 type Group = CompositionPresentation & { findingIds: string[]; sections: CompositionSection[]; evidenceRefs: string[] };
@@ -24,7 +25,7 @@ const SOURCE_COMPONENT = /^(?:failureMode|whyThisMatters|verification|suggestedF
 // components a supplied finding does not have (they retain nothing), and retain
 // omitted sources belonging to explicitly, uniquely assigned findings. Never
 // infer prose links.
-export function normalizeCompositionReferences(value: unknown, findings: CandidateFinding[]) {
+export function normalizeCompositionReferences(value: unknown, findings: CandidateFinding[], attention?: AttentionReconciliation) {
   const draft = structuredClone(value);
   const entries = groups(draft);
   if (!entries) return;
@@ -33,31 +34,56 @@ export function normalizeCompositionReferences(value: unknown, findings: Candida
     ref.startsWith(finding.id + "/") && SOURCE_COMPONENT.test(ref.slice(finding.id.length + 1)));
   const removedFields: string[] = [];
   const addedFields: string[] = [];
+  // Dedupe cannot create permission to auto-fill provenance.
   const assignments = entries.flatMap(group => group.findingIds);
   const unambiguous = assignments.length === new Set(assignments).size
     && assignments.every(id => findings.some(finding => finding.id === id));
   entries.forEach((group, index) => {
+    const prefix = `composedFindings.${index}.`;
+    const owned = new Set<string>();
+    group.findingIds = group.findingIds.filter((id, item) => {
+      if (owned.has(id)) {
+        removedFields.push(`${prefix}findingIds.${item}`);
+        return false;
+      }
+      owned.add(id);
+      return true;
+    });
     const sources = compositionSources(findings.filter(finding => group.findingIds.includes(finding.id)), findings);
     const byId = new Map(sources.map(source => [source.id, source]));
-    const lists = compositionReferenceLists(group.sections, group.evidenceRefs, group, `composedFindings.${index}.`);
+    const lists = compositionReferenceLists(group.sections, group.evidenceRefs, group, prefix);
     for (const list of lists) {
       const seen = new Set<string>();
+      const hasSupport = list.kind !== undefined && list.refs.some(ref => {
+        const source = byId.get(ref);
+        return source !== undefined && eligibleCompositionPlacement(source, list.kind);
+      });
       const kept = list.refs.filter((ref, item) => {
         const source = byId.get(ref);
-        // Only provenance may shed such a reference; in a section or evidenceRefs
-        // it stands behind published prose and still needs repair.
-        if (!source && list.kind === undefined && absentComponent(ref)) {
+        if (!source && (list.kind === undefined ? absentComponent(ref) : hasSupport && !supplied.has(ref))) {
           removedFields.push(`${list.path}.${item}`);
           return false;
         }
         if (!source) return true;
-        const redundant = seen.has(ref) || (list.kind !== undefined && !compatibleCompositionPlacement(source, list.kind)
+        const redundant = seen.has(ref) || (list.kind === undefined && source.kind === "evidence" && group.evidenceRefs.includes(ref))
+          || (list.kind !== undefined && !compatibleCompositionPlacement(source, list.kind)
           && lists.some(other => other !== list && compatibleCompositionPlacement(source, other.kind) && other.refs.includes(ref)));
         seen.add(ref);
         if (redundant) removedFields.push(`${list.path}.${item}`);
         return !redundant;
       });
       list.refs.splice(0, list.refs.length, ...kept);
+    }
+    if (strings(group.primaryEvidenceRefs)) {
+      const seen = new Set<string>();
+      const visible = new Set(group.evidenceRefs.filter(ref => byId.get(ref)?.kind === "evidence"));
+      const hasPrimary = group.primaryEvidenceRefs.some(ref => visible.has(ref));
+      group.primaryEvidenceRefs = group.primaryEvidenceRefs.filter((ref, item) => {
+        const redundant = seen.has(ref) || (hasPrimary && !visible.has(ref));
+        seen.add(ref);
+        if (redundant) removedFields.push(`${prefix}primaryEvidenceRefs.${item}`);
+        return !redundant;
+      });
     }
     if (unambiguous) {
       // A misplaced occurrence still needs repair; do not duplicate it into
@@ -73,8 +99,11 @@ export function normalizeCompositionReferences(value: unknown, findings: Candida
       }
     }
   });
+  const attentionFields = attention && object(draft) ? removeUnavailableAttentionReferences(draft.attentionResolutions, attention) : [];
+  removedFields.push(...attentionFields);
   return removedFields.length || addedFields.length ? { value: draft, removedFields, addedFields,
-    reason: "Removed redundant references and provenance references to components the finding does not have, and retained omitted sources under their explicit finding ownership, without changing prose. Full validation is still required." } : undefined;
+    ...(attentionFields.length ? { attentionRefsRemoved: attentionFields.length } : {}),
+    reason: "Removed redundant IDs and unavailable references with eligible support remaining; existing provenance accounting retains omitted sources under explicit finding ownership. Prose is unchanged. Full validation is still required." } : undefined;
 }
 
 // Literal path patches replace reference lists. Unsupported recommendation
@@ -167,8 +196,10 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
         // Accept section replacements atomically. Generic recovery progress
         // merges object arrays by index and would otherwise restore removed
         // sections after a partially valid advice patch.
-        if (submissionIssues(schema, result).length) throw new Error("Advice repair must produce a schema-valid submission");
-        validateCompositionSubmission(result as unknown as { composedFindings: Group[] }, findings);
+        const normalized = normalizeCompositionReferences(result, findings);
+        const checked = normalized && !normalized.addedFields.length ? normalized.value : result;
+        if (submissionIssues(schema, checked).length) throw new Error("Advice repair must produce a schema-valid submission");
+        validateCompositionSubmission(checked as { composedFindings: Group[] }, findings);
       }
       return result;
     }
