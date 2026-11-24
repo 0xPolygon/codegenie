@@ -14,7 +14,7 @@ export class CampaignLedger {
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, stopped TEXT);
       CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
       CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS health_receipt(physical_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS local_refusal(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logical(id TEXT PRIMARY KEY, status TEXT NOT NULL);`);
@@ -40,7 +40,7 @@ export class CampaignLedger {
       const baseline = this.db.prepare('SELECT usage_micros FROM key_baseline').get();
       let keyGuard = 0, freshnessReason;
       if (baseline) {
-        const snapshot = this.db.prepare('SELECT usage_micros,priced_floor_micros,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
+        const snapshot = this.db.prepare('SELECT usage_micros,priced_floor_micros,fresh FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get();
         if (!snapshot) freshnessReason = 'key_usage_unavailable';
         else if (snapshot.fresh !== 1) freshnessReason = 'key_usage_stale';
         else {
@@ -126,11 +126,14 @@ export class CampaignLedger {
       const baseline = this.db.prepare('SELECT usage_micros,usage_nanos FROM key_baseline').get();
       if (!baseline) throw new Error('key baseline missing');
       const last = this.db.prepare('SELECT usage_micros,observed_ms FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
-      const lastFresh = this.db.prepare('SELECT usage_nanos FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get();
+      const lastFresh = this.db.prepare('SELECT usage_nanos,priced_floor_nanos FROM key_snapshot WHERE fresh=1 ORDER BY rowid DESC LIMIT 1').get();
       if (last && observedMs < last.observed_ms) throw new Error('key snapshot time reversed');
       const priced = this.db.prepare("SELECT COALESCE(SUM(charge),0) AS micros, COALESCE(SUM(provider_cost_nanos),0) AS nanos FROM physical WHERE state='priced'").get();
-      const fresh = usageNanos >= baseline.usage_nanos + priced.nanos && (!lastFresh || usageNanos >= lastFresh.usage_nanos);
-      this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, observedMs, evidenceSHA256, fresh ? 1 : 0);
+      const expectedNanos = Math.max(baseline.usage_nanos + priced.nanos,
+        lastFresh ? lastFresh.usage_nanos + Math.max(0, priced.nanos - lastFresh.priced_floor_nanos) : 0);
+      if (!Number.isSafeInteger(expectedNanos)) throw new RangeError('key watermark exceeds safe precision');
+      const fresh = usageNanos >= expectedNanos;
+      this.db.prepare('INSERT INTO key_snapshot VALUES(?,?,?,?,?,?,?)').run(usageMicros, usageNanos, priced.micros, priced.nanos, observedMs, evidenceSHA256, fresh ? 1 : 0);
       if (usageMicros - baseline.usage_micros >= this.limit) this.db.prepare("UPDATE campaign SET stopped=COALESCE(stopped,'budget_limit')").run();
       return { fresh, actualMicros: Math.max(0, usageMicros - baseline.usage_micros) };
     });
@@ -141,19 +144,22 @@ export class CampaignLedger {
     if (stopped) return { action: 'stop', reason: stopped };
     const baseline = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256 FROM key_baseline').get();
     if (!baseline || !verifyEvidence('baseline', baseline.evidence_sha256)) throw new Error('key baseline evidence missing or changed');
-    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
+    const snapshot = this.db.prepare('SELECT usage_micros,usage_nanos,priced_floor_nanos,evidence_sha256,fresh FROM key_snapshot ORDER BY rowid DESC LIMIT 1').get();
     if (!snapshot) return { action: 'snapshot' };
     if (!verifyEvidence('snapshot', snapshot.evidence_sha256)) throw new Error('key snapshot evidence changed');
     const priced = this.db.prepare("SELECT COALESCE(SUM(provider_cost_nanos),0) AS total FROM physical WHERE state='priced'").get().total;
-    return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced ? 'admit' : 'wait' };
+    return { action: snapshot.fresh === 1 && snapshot.usage_nanos >= baseline.usage_nanos + priced && priced <= snapshot.priced_floor_nanos ? 'admit' : 'wait' };
   }
   recordHealth({ physicalId, outcome, observedMs, evidenceSHA256 }) {
     if (typeof physicalId !== 'string' || !physicalId || !['clean', 'capacity'].includes(outcome) ||
         !Number.isSafeInteger(observedMs) || observedMs < 0 || !/^[a-f0-9]{64}$/u.test(evidenceSHA256 ?? '')) throw new TypeError('invalid health receipt');
     this.transaction(() => {
-      const row = this.db.prepare('SELECT kind,health_boundary,state,http_status FROM physical WHERE id=?').get(physicalId);
+      const row = this.db.prepare('SELECT kind,provider,health_boundary,state,http_status FROM physical WHERE id=?').get(physicalId);
       if (!row || row.kind !== 'health' || !row.health_boundary || row.state === 'open' || row.http_status === null ||
           (outcome === 'clean' && (row.http_status < 200 || row.http_status >= 300))) throw new Error('health probe is not a settled physical result');
+      const last = this.db.prepare(`SELECT h.observed_ms FROM health_receipt h JOIN physical p ON p.id=h.physical_id
+        WHERE p.health_boundary=? AND p.provider=? ORDER BY h.rowid DESC LIMIT 1`).get(row.health_boundary, row.provider);
+      if (last && observedMs < last.observed_ms) throw new Error('health receipt time reversed');
       this.db.prepare('INSERT INTO health_receipt VALUES(?,?,?,?)').run(physicalId, outcome, observedMs, evidenceSHA256);
     });
   }
@@ -164,7 +170,7 @@ export class CampaignLedger {
     if (stop) return { action: 'stop', reason: stop };
     const rows = this.db.prepare(`SELECT p.id,p.state,h.outcome,h.observed_ms,h.evidence_sha256
       FROM physical p LEFT JOIN health_receipt h ON h.physical_id=p.id
-      WHERE p.kind='health' AND p.health_boundary=? AND p.provider=? ORDER BY h.observed_ms,p.id`).all(boundaryId, provider);
+      WHERE p.kind='health' AND p.health_boundary=? AND p.provider=? ORDER BY h.rowid,p.id`).all(boundaryId, provider);
     if (rows.some((row) => row.state === 'open' || row.outcome === null)) return { action: 'reconcile' };
     let recovery = false, clean = 0, last = 0;
     for (const row of rows) {

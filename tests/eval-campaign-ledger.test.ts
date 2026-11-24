@@ -85,6 +85,29 @@ describe("development campaign physical ledger", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("does not let an old key delta cover later confirmed spend", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
+    try {
+      const file = path.join(dir, "db"), config = { binding: "fixture", limitMicros: 1_000_000 }, evidence = "a".repeat(64);
+      let ledger = new CampaignLedger(file, config);
+      ledger.bindKeyBaseline({ usageMicros: 0, evidenceSHA256: evidence });
+      expect(ledger.recordKeySnapshot({ usageMicros: 550_000, observedMs: 1, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: true });
+      ledger.settlePhysical({ id: "p1", httpStatus: 200, providerCostMicros: 200_000, costConfirmed: true });
+      for (const [usageMicros, observedMs] of [[550_000, 2], [650_000, 3]] as const) {
+        expect(ledger.recordKeySnapshot({ usageMicros, observedMs, evidenceSHA256: evidence }).fresh).toBe(false);
+        expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "wait" });
+      }
+      ledger.close(); ledger = new CampaignLedger(file, config);
+      expect(ledger.reservePhysical({ id: "p2", logicalId: "mc2", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
+      expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 200_000 });
+      expect(ledger.recordKeySnapshot({ usageMicros: 750_000, observedMs: 4, evidenceSHA256: evidence }).fresh).toBe(true);
+      expect(ledger.keyDecision({ verifyEvidence: () => true })).toEqual({ action: "admit" });
+      expect(ledger.reservePhysical({ id: "p3", logicalId: "mc3", kind: "review" })).toEqual({ admitted: false, reason: "campaign_budget" });
+      expect(ledger.totals().starts).toBe(1); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("uses finer provider precision for freshness while preserving rounded admission charges", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-ledger-"));
     try {
