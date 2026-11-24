@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
+import { readCheckedFile } from './safe-read.mjs';
 import { boundaryDecision } from './boundary.mjs';
 import { applyKeyObservation, readConfiguredKeyUsage } from './key-meter.mjs';
 import { runHealthProbe } from './health.mjs';
@@ -33,7 +34,7 @@ function receiptStore(directory) {
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       const stat = lstatSync(file);
-      return stat.isFile() && !stat.isSymbolicLink() && readFileSync(file).equals(bytes);
+      return stat.isFile() && !stat.isSymbolicLink() && readCheckedFile(file, stat).equals(bytes);
     }
   };
   return { files, seal };

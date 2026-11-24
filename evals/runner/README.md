@@ -30,3 +30,5 @@ An HTTP-200 stream with unknown billing is not by itself evidence of a provider 
 Worker recovery is local to the recorded host. On Linux, PID-based recovery also requires the recorded PID namespace to match; on macOS it assumes a single host. If process identity or exit cannot be verified, the attempt remains blocked for reconciliation.
 
 Sealed attempt trees are read-only to prevent accidental artifact changes. Exports must be written elsewhere; removing an attempt tree later requires restoring its owner's write permission first (for example, `chmod -R u+w`).
+
+Use a provider key dedicated to the campaign, or avoid all other use of that key while the campaign runs. Concurrent use counts against the cap, but spend between slot-boundary snapshots is not observed until the next snapshot.

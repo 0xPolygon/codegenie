@@ -12,7 +12,7 @@ import { openCampaign } from '../evals/runner/campaign.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { buildDigest, treeDigest } from '../evals/runner/integrity.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { runCase } from '../evals/runner/case.mjs';
+import { runCase, workerBounds } from '../evals/runner/case.mjs';
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 function makeWritable(dir: string) {
   const stat = lstatSync(dir); if (stat.isSymbolicLink()) return;
@@ -30,16 +30,18 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
-  it.each(['judge', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
+  it.each(['judge', 'timeout', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     const preload = path.join(dir, 'block.mjs'); writeFileSync(preload, 'globalThis.fetch = async () => { throw new Error("network blocked"); };\n');
     vi.stubEnv('NODE_OPTIONS', `--import=${preload}`); vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
     try {
-      const suiteDir = scenario === 'judge' ? path.join(dir, 'suite') : path.join(process.cwd(), 'evals/fixtures');
-      if (scenario === 'judge') {
+      const suiteDir = ['judge', 'timeout'].includes(scenario) ? path.join(dir, 'suite') : path.join(process.cwd(), 'evals/fixtures');
+      if (['judge', 'timeout'].includes(scenario)) {
         cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
-        appendFileSync(path.join(suiteDir, 'core.yml'), '\nrecommendationJudge:\n  provider: openrouter\n  model: openai/gpt-6-luna\n  reasoning: high\n  checks:\n    - id: safety\n      rubric: Test rubric.\n');
+        if (scenario === 'timeout') appendFileSync(path.join(suiteDir, 'core.yml'), '\n');
+        if (scenario === 'timeout') { const yaml = path.join(suiteDir, 'core.yml'); writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('review:\n', 'review:\n  maxTimeMinutes: 35787\n')); }
+        if (scenario === 'judge') appendFileSync(path.join(suiteDir, 'core.yml'), '\nrecommendationJudge:\n  provider: openrouter\n  model: openai/gpt-6-luna\n  reasoning: high\n  checks:\n    - id: safety\n      rubric: Test rubric.\n');
       }
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
       writeFileSync(caseFile, caseBytes);
@@ -62,10 +64,22 @@ describe('campaign driver', () => {
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       await expect(openCampaign(file, '0'.repeat(64), { fetchImpl, models })).rejects.toThrow('config digest');
       if (scenario === 'judge') {
-        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });
-        await expect(runCase(caseFile, { budgeted: true })).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'unsupported_case_config' } });
+        await expect(runCase(caseFile, { budgeted: true })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'unsupported_case_config' } });
+        const cli = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'run', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+        expect(cli.status).toBe(1); expect(cli.stderr).toContain('recommendationJudge is not supported');
         expect({ gets, posts }).toEqual({ gets: 0, posts: 0 });
         expect(existsSync(base.supervisorPath)).toBe(false); expect(existsSync(base.ledgerPath)).toBe(false); return;
+      }
+      if (scenario === 'timeout') {
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toMatchObject({ code: 'config_error', context: { reason: 'unsupported_case_config' } });
+        const yaml = path.join(suiteDir, 'core.yml');
+        const tooLong = readFileSync(yaml, 'utf8'); writeFileSync(yaml, tooLong.replace('35787', '35786'));
+        expect((await workerBounds(caseFile, caseBytes, 'one/attempt-01')).timeoutMs).toBe(35786 * 60_000);
+        writeFileSync(yaml, tooLong);
+        const cli = spawnSync(process.execPath, [path.join(process.cwd(), 'evals/runner/main.mjs'), 'run', '--campaign', file, '--sha256', sha(config)], { encoding: 'utf8' });
+        expect(cli.status).toBe(1); expect(cli.stderr).toContain('watchdog limit');
+        expect({ gets, posts }).toEqual({ gets: 0, posts: 0 }); expect(existsSync(base.supervisorPath)).toBe(false); return;
       }
       const campaign = await openCampaign(file, sha(config), { fetchImpl, models });
       if (scenario === 'case-before') {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readCheckedFile } from './safe-read.mjs';
 
 const checkout = realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -16,7 +17,7 @@ export function treeDigest(directory) {
       const relative = prefix ? `${prefix}/${name}` : name, file = path.join(dir, name), stat = lstatSync(file);
       if (stat.isSymbolicLink()) throw new Error('symlink in integrity tree');
       if (stat.isDirectory()) visit(file, relative);
-      else if (stat.isFile()) entries.push([relative, stat.size, digest(readFileSync(file))]);
+      else if (stat.isFile()) entries.push([relative, stat.size, digest(readCheckedFile(file, stat))]);
       else throw new Error('unsupported integrity entry');
     }
   };

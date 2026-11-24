@@ -8,7 +8,10 @@ const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const urls = { goinfer: 'https://github.com/townsendmerino/goinfer.git', pi: 'https://github.com/earendil-works/pi.git', codegenie: 'https://github.com/0xPolygon/codegenie.git' };
 const sha = /^[0-9a-f]{40}$/u;
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
-const rejectJudge = () => { throw Object.assign(new Error('recommendation judge is not supported in a budgeted campaign'), { context: { reason: 'binding_mismatch' } }); };
+export class CampaignConfigurationError extends Error {
+  constructor(reason, message) { super(message); this.name = 'CampaignConfigurationError'; this.code = 'config_error'; this.context = { reason }; }
+}
+const rejectJudge = () => { throw new CampaignConfigurationError('unsupported_case_config', 'recommendationJudge is not supported in a budgeted campaign'); };
 
 export function outsideCheckout(dir) {
   const target = path.resolve(dir);
@@ -78,7 +81,7 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   if (found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
   const base = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false }).config;
   const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('invalid review timeout');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs + 300_000 > 2_147_483_647) throw new CampaignConfigurationError('unsupported_case_config', 'review timeout exceeds the campaign worker watchdog limit');
   const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
   return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
 }

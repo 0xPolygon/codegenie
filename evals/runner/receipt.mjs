@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
+import { readCheckedFile } from './safe-read.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const safeSlot = (slot) => typeof slot === 'string' && /^[A-Za-z0-9._-]+$/u.test(slot) && !['.', '..'].includes(slot);
@@ -30,9 +31,7 @@ function inventory(directory) {
       if (stat.isSymbolicLink()) throw new Error('symlink in receipt artifacts');
       if (stat.isDirectory()) walk(file, relative);
       else if (stat.isFile()) {
-        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-        let bytes;
-        try { bytes = readFileSync(fd); } finally { closeSync(fd); }
+        const bytes = readCheckedFile(file, stat);
         files.push({ path: relative, bytes: bytes.length, sha256: digest(bytes) });
       } else throw new Error('invalid receipt artifact');
     }

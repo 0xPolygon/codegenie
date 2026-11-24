@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runCase } from './case.mjs';
+import { CampaignConfigurationError, runCase } from './case.mjs';
 import { openCampaign } from './campaign.mjs';
 
 const args = process.argv.slice(2);
@@ -35,8 +35,8 @@ if (args.length === 3 && ['run', 'run-case'].includes(args[0]) && args[1] === '-
         }
       }
     }
-  } catch {
-    console.error('Campaign could not start or requires custody reconciliation.');
+  } catch (error) {
+    console.error(error instanceof CampaignConfigurationError ? `Campaign configuration error: ${error.message}` : 'Campaign could not start or requires custody reconciliation.');
     process.exitCode = 1;
   } finally {
     if (campaign) {
