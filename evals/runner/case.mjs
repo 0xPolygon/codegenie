@@ -63,9 +63,9 @@ export function prepareTarget(target, url, base, head, pullRequest) {
   }
 }
 
-export async function runCase(configFile, { fetchForCall } = {}) {
+export async function runCase(configFile, { fetchForCall, caseConfigBytes } = {}) {
   const file = path.resolve(configFile);
-  const config = JSON.parse(readFileSync(file, 'utf8'));
+  const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
   const suiteDir = path.resolve(path.dirname(file), config.caseDir);
   const output = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));

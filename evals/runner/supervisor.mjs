@@ -26,6 +26,7 @@ export class CampaignSupervisor {
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT NOT NULL, schedule_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attempt(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, state TEXT NOT NULL, receipt_sha256 TEXT, PRIMARY KEY(slot_id,attempt_no));
+      CREATE TABLE IF NOT EXISTS worker_claim(slot_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, config_sha256 TEXT NOT NULL, PRIMARY KEY(slot_id,attempt_no));
       CREATE TABLE IF NOT EXISTS outcome(slot_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempt_no INTEGER NOT NULL, receipt_sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retry_authorization(slot_id TEXT PRIMARY KEY, attempt_no INTEGER NOT NULL, failure_sha256 TEXT NOT NULL, proof_sha256 TEXT NOT NULL, probe_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS exclusion(slot_id TEXT PRIMARY KEY, first_attempt_no INTEGER NOT NULL, first_sha256 TEXT NOT NULL, second_attempt_no INTEGER NOT NULL, second_sha256 TEXT NOT NULL);
@@ -46,6 +47,13 @@ export class CampaignSupervisor {
     if (!row || row.state !== 'started' || !slot?.workerConfig || typeof slot.workerConfig !== 'object' || Array.isArray(slot.workerConfig) ||
         config.ledgerBinding !== this.binding || JSON.stringify(canonical(config)) !== JSON.stringify(canonical({ ...slot.workerConfig, attemptPrefix: prefixFor(slotId, attemptNo) }))) throw new Error('worker attempt binding mismatch');
     return true;
+  }
+  claimWorker(slotId, attemptNo, configBytes, configSHA256) {
+    return this.transaction(() => {
+      this.verifyWorkerBinding(slotId, attemptNo, configBytes, configSHA256);
+      this.db.prepare('INSERT INTO worker_claim VALUES(?,?,?)').run(slotId, attemptNo, configSHA256);
+      return true;
+    });
   }
   noStartCount(slotId) {
     if (!this.slots.some((slot) => slot.id === slotId)) throw new Error('unregistered slot');

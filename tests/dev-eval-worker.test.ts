@@ -78,7 +78,7 @@ describe("development eval worker", () => {
     try {
       const caseFile = path.join(dir, "case.json"), workerFile = path.join(dir, "worker.json"), ledgerPath = path.join(dir, "ledger.sqlite");
       writeFileSync(caseFile, JSON.stringify({ caseDir: path.join(checkout, "evals/fixtures"), caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
-      const worker = JSON.stringify({ caseConfig: caseFile, ledgerPath, ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
+      const worker = JSON.stringify({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath, ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
       writeFileSync(workerFile, worker);
       const digest = createHash("sha256").update(worker).digest("hex");
       const command = [path.join(checkout, "evals/runner/worker.mjs"), workerFile, digest];
@@ -86,6 +86,8 @@ describe("development eval worker", () => {
       expect(JSON.parse(out)).toMatchObject({ caseName: "fixture-core-lens", status: "pass" });
       expect(readFileSync(ledgerPath).byteLength).toBeGreaterThan(0);
       expect(() => execFileSync("node", [command[0]!, workerFile, "0".repeat(64)], { stdio: "pipe" })).toThrow();
+      writeFileSync(caseFile, JSON.stringify({ caseDir: path.join(checkout, "evals/fixtures"), caseName: "different", outputDir: path.join(dir, "output") }));
+      expect(() => execFileSync("node", command, { stdio: "pipe" })).toThrow();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 
@@ -114,13 +116,13 @@ describe("development eval worker", () => {
       const fetchImpl = vi.fn(async () => new Response("synthetic failure", { status: 400 }));
       const rejectedCase = path.join(dir, "rejected-case.json");
       writeFileSync(rejectedCase, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "rejected-output") }));
-      const rejected = await runWorker({ caseConfig: rejectedCase, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+      const rejected = await runWorker({ caseConfig: rejectedCase, caseConfigSHA256: createHash("sha256").update(readFileSync(rejectedCase)).digest("hex"), ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "other-slot/attempt-01", expectedCalls: [expected], boundaryId: "unprobed-boundary", evidenceFiles }, { fetchImpl });
       expect(rejected.status).toBe("error"); expect(fetchImpl).not.toHaveBeenCalled();
       const afterRejection = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
       expect(afterRejection.totals()).toMatchObject({ starts: 1, unknown: 0 });
       expect(afterRejection.db.prepare("SELECT reason FROM local_refusal").get()).toEqual({ reason: "key_snapshot" }); afterRejection.close();
-      const result = await runWorker({ caseConfig: caseFile, ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
+      const result = await runWorker({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath: db, ledgerBinding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000,
         attemptPrefix: "slot/attempt-01", expectedCalls: [expected], boundaryId: "boundary-1", evidenceFiles }, { fetchImpl });
       expect(result.status).toBe("error"); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(originalFetch).not.toHaveBeenCalled();
       const reopened = new CampaignLedger(db, { binding: "synthetic", limitMicros: 15_000_000, reserveMicros: 300_000, errorHoldMicros: 25_000 });
@@ -137,7 +139,7 @@ describe("development eval worker", () => {
       writeFileSync(path.join(suite, "core.yml"), source);
       const caseFile = path.join(dir, "case.json"), workerFile = path.join(dir, "worker.json");
       writeFileSync(caseFile, JSON.stringify({ caseDir: suite, caseName: "fixture-core-lens", outputDir: path.join(dir, "output") }));
-      const worker = JSON.stringify({ caseConfig: caseFile, ledgerPath: path.join(dir, "ledger.sqlite"), ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
+      const worker = JSON.stringify({ caseConfig: caseFile, caseConfigSHA256: createHash("sha256").update(readFileSync(caseFile)).digest("hex"), ledgerPath: path.join(dir, "ledger.sqlite"), ledgerBinding: "synthetic", limitMicros: 15_000_000, attemptPrefix: "slot/attempt-01", expectedCalls: [] });
       writeFileSync(workerFile, worker); const digest = createHash("sha256").update(worker).digest("hex");
       const out = execFileSync("node", [path.join(checkout, "evals/runner/worker.mjs"), workerFile, digest], { encoding: "utf8", env: { ...process.env, CODEGENIE_HOME: path.join(dir, "home") }, timeout: 60_000 });
       expect(JSON.parse(out)).toMatchObject({ caseName: "fixture-core-lens", status: "fail" });

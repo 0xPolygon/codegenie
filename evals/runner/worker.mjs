@@ -9,7 +9,7 @@ import { outsideCheckout, runCase } from './case.mjs';
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) {
-  const { caseConfig, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
+  const { caseConfig, caseConfigSHA256, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const { TransportAdmissionError } = await import('../../dist/llm/transport-admission.js');
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
@@ -18,6 +18,8 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) 
     // at worker startup belongs to an interrupted attempt and requires custody
     // reconciliation before any new physical admission.
     ledger.assertRestartSafe();
+    const caseConfigBytes = readFileSync(outsideCheckout(caseConfig));
+    if (!/^[a-f0-9]{64}$/u.test(caseConfigSHA256 ?? '') || createHash('sha256').update(caseConfigBytes).digest('hex') !== caseConfigSHA256) throw new Error('case config binding mismatch');
     let boundaryVerified = false;
     const fetchForCall = (call) => {
       const matching = expectedCalls.filter((item) => item.stage === call.stage && item.kind === call.kind && (item.purpose ?? null) === (call.purpose ?? null));
@@ -43,7 +45,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch } = {}) 
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    return await runCase(caseConfig, { fetchForCall });
+    return await runCase(caseConfig, { fetchForCall, caseConfigBytes });
   } finally { ledger.close(); }
 }
 
