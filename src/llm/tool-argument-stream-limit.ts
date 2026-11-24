@@ -8,6 +8,9 @@ const TOOL_ARGUMENT_LIMIT_CHARS: Partial<Record<ReviewStage, number>> = {
 };
 const CONSECUTIVE_WHITESPACE_LIMIT_CHARS = 4_096;
 
+type WhitespacePositions = { insideString: number; insideStringRawControl: number; outsideString: number; indeterminate: number };
+const emptyPositions = (): WhitespacePositions => ({ insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
+
 export type ToolArgumentStreamLimit = {
   trigger: "whitespace_run" | "total_chars";
   limitChars: number;
@@ -15,28 +18,66 @@ export type ToolArgumentStreamLimit = {
   toolArgumentChars: number;
   contentIndex: number;
   toolName?: string;
+  // Observed lexical positions for the triggering run; not JSON validation.
+  whitespacePositions?: WhitespacePositions;
 };
 
 export function createToolArgumentStreamGuard(
   stage: ReviewStage
-): ((contentIndex: number, delta: string, toolArgumentChars: number) => ToolArgumentStreamLimit | undefined) | undefined {
+): ((contentIndex: number, delta: string, toolArgumentChars: number, startObserved?: boolean) => ToolArgumentStreamLimit | undefined) | undefined {
   const totalLimit = TOOL_ARGUMENT_LIMIT_CHARS[stage];
   if (totalLimit === undefined) return undefined;
 
   // Pi can interleave deltas for different tool calls. Whitespace only forms
   // a run within a single argument string, but the total is per response.
-  const trailingWhitespace = new Map<number, number>();
-  return (contentIndex, delta, toolArgumentChars) => {
-    let whitespace = trailingWhitespace.get(contentIndex) ?? 0;
+  type State = {
+    whitespace: number;
+    positions: WhitespacePositions;
+    inString: boolean;
+    escape: boolean;
+    unicodeDigits: number;
+    indeterminate: boolean;
+  };
+  const states = new Map<number, State>();
+  return (contentIndex, delta, toolArgumentChars, startObserved = false) => {
+    const state = states.get(contentIndex) ?? {
+      whitespace: 0, positions: emptyPositions(),
+      inString: false, escape: false, unicodeDigits: 0, indeterminate: false
+    };
+    if (!startObserved) state.indeterminate = true;
     // Scan only through the first character that exceeds the total limit.
     const scanChars = Math.min(delta.length, totalLimit - (toolArgumentChars - delta.length) + 1);
     for (let index = 0; index < scanChars; index++) {
-      const char = delta[index];
-      whitespace = char === " " || char === "\n" || char === "\t" || char === "\r" ? whitespace + 1 : 0;
-      if (whitespace > CONSECUTIVE_WHITESPACE_LIMIT_CHARS) {
+      const char = delta[index]!;
+      const isWhitespace = char === " " || char === "\n" || char === "\t" || char === "\r";
+      if (!state.indeterminate) {
+        if (state.unicodeDigits > 0) {
+          if (!/[0-9a-fA-F]/u.test(char)) state.indeterminate = true;
+          else state.unicodeDigits--;
+        } else if (state.escape) {
+          state.escape = false;
+          if (char === "u") state.unicodeDigits = 4;
+          else if (!'"\\/bfnrt'.includes(char)) state.indeterminate = true;
+        } else if (state.inString) {
+          if (char === "\\") state.escape = true;
+          else if (char === '"') state.inString = false;
+          else if (char.charCodeAt(0) < 0x20 && !isWhitespace) state.indeterminate = true;
+        } else if (char === '"') state.inString = true;
+        else if (char === "\\" || char.charCodeAt(0) < 0x20 && !isWhitespace) state.indeterminate = true;
+      }
+      if (isWhitespace) {
+        state.whitespace++;
+        const position = state.indeterminate ? "indeterminate" : !state.inString ? "outsideString"
+          : char === " " ? "insideString" : "insideStringRawControl";
+        state.positions[position]++;
+      } else {
+        state.whitespace = 0;
+        state.positions = emptyPositions();
+      }
+      if (state.whitespace > CONSECUTIVE_WHITESPACE_LIMIT_CHARS) {
         return {
           trigger: "whitespace_run", limitChars: CONSECUTIVE_WHITESPACE_LIMIT_CHARS,
-          observedChars: whitespace, toolArgumentChars, contentIndex
+          observedChars: state.whitespace, toolArgumentChars, contentIndex, whitespacePositions: state.positions
         };
       }
     }
@@ -46,8 +87,7 @@ export function createToolArgumentStreamGuard(
         observedChars: toolArgumentChars, toolArgumentChars, contentIndex
       };
     }
-    if (whitespace > 0) trailingWhitespace.set(contentIndex, whitespace);
-    else trailingWhitespace.delete(contentIndex);
+    if (delta.length > 0) states.set(contentIndex, state);
     return undefined;
   };
 }

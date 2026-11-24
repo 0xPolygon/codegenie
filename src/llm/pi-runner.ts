@@ -1722,6 +1722,11 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         });
         const argumentGuard = createToolArgumentStreamGuard(request.stage);
         const toolNames = new Map<number, string>();
+        const argumentStarts = new Set<number>();
+        const ambiguousArguments = new Set<number>();
+        const argumentIds = new Map<number, string>();
+        const emptyPrefixes = new Map<string, boolean>();
+        const responseSlots = new Map<number, string>();
         const streamController = argumentGuard === undefined ? undefined : new AbortController();
         const streamSignal = streamController === undefined ? taskSignal : AbortSignal.any([taskSignal, streamController.signal]);
         return awaitProviderCall(
@@ -1749,24 +1754,50 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                   }
                 };
                 return {
-                  fetch: admission.fetch,
-                  ...(onTransportUsage !== undefined ? { onProviderStreamEvent: async (chunk: unknown) => {
-                    const observation = projectProviderUsage(chunk);
-                    if (observation !== undefined) await onTransportUsage?.(observation);
-                  } } : {})
+                  fetch: admission.fetch
                 };
               })() : {}),
+              onProviderStreamEvent: async (chunk: unknown) => {
+                // Responses can include argument bytes in output_item.added without
+                // emitting a Pi delta. Keep only whether that prefix was empty.
+                if (chunk && typeof chunk === "object") {
+                  const event = chunk as { type?: unknown; output_index?: unknown; item?: { type?: unknown; id?: unknown; call_id?: unknown; arguments?: unknown } };
+                  if (event.type === "response.output_item.added" && event.item?.type === "function_call" &&
+                      typeof event.item.id === "string" && typeof event.item.call_id === "string" && typeof event.output_index === "number") {
+                    const id = `${event.item.call_id}|${event.item.id}`;
+                    const duplicate = emptyPrefixes.has(id) || responseSlots.has(event.output_index);
+                    const previous = responseSlots.get(event.output_index);
+                    if (previous) emptyPrefixes.set(previous, false);
+                    emptyPrefixes.set(id, !duplicate && event.item.arguments === "");
+                    responseSlots.set(event.output_index, id);
+                  } else if ((event.type === "response.function_call_arguments.done" || event.type === "response.output_item.done") && typeof event.output_index === "number") {
+                    const id = responseSlots.get(event.output_index);
+                    if (id) emptyPrefixes.set(id, false);
+                  }
+                }
+                if (onTransportUsage !== undefined) {
+                  const observation = projectProviderUsage(chunk);
+                  if (observation !== undefined) await onTransportUsage(observation);
+                }
+              },
               onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
                 if (streamSignal.aborted) return;
                 progress.observe(event);
                 if (!argumentGuard) return;
                 if (event.type === "toolcall_start") {
+                  if (argumentStarts.has(event.contentIndex)) ambiguousArguments.add(event.contentIndex);
+                  argumentStarts.add(event.contentIndex);
                   const content = event.partial.content[event.contentIndex];
-                  if (content?.type === "toolCall" && content.name) toolNames.set(event.contentIndex, content.name);
+                  if (content?.type === "toolCall") {
+                    if (content.name) toolNames.set(event.contentIndex, content.name);
+                    if (content.id) argumentIds.set(event.contentIndex, content.id);
+                  }
                   return;
                 }
                 if (event.type !== "toolcall_delta") return;
-                const limit = argumentGuard(event.contentIndex, event.delta, progress.toolArgumentChars);
+                const limit = argumentGuard(event.contentIndex, event.delta, progress.toolArgumentChars,
+                  argumentStarts.has(event.contentIndex) && !ambiguousArguments.has(event.contentIndex) &&
+                    emptyPrefixes.get(argumentIds.get(event.contentIndex) ?? "") === true);
                 if (limit === undefined) return;
                 const content = event.partial.content[event.contentIndex];
                 const toolName = (content?.type === "toolCall" && content.name) || toolNames.get(event.contentIndex);
