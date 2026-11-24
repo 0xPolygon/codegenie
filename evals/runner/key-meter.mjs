@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
+const numericUsage = Symbol('provider numeric usage');
 
 // Preserve the provider's decimal spelling instead of rounding a binary float
 // into evidence that a key reading covers more spending than it actually does.
@@ -29,9 +30,9 @@ export async function readKeyUsage({ key, ledger, fetchImpl = globalThis.fetch }
   try { text = await response.text(); } catch { return { status: 'stale' }; }
   try {
     const body = JSON.parse(text, (name, value, context) => name === 'usage' && typeof value === 'number'
-      ? { source: context?.source, value } : value);
+      ? { [numericUsage]: true, source: context?.source, value } : value);
     const usage = body?.data?.usage;
-    if (typeof usage?.value !== 'number' || !Number.isFinite(usage.value) || usage.value < 0 || typeof usage.source !== 'string') return { status: 'malformed' };
+    if (usage?.[numericUsage] !== true || typeof usage.value !== 'number' || !Number.isFinite(usage.value) || usage.value < 0 || typeof usage.source !== 'string') return { status: 'malformed' };
     const usageNanos = floorNanos(usage.source);
     return { status: 'ok', usageMicros: Math.floor(usageNanos / 1000), usageNanos, observedMs: Date.now(), fingerprint: ledger.fingerprint(key) };
   } catch { return { status: 'malformed' }; }

@@ -10,6 +10,15 @@ import { CampaignLedger } from '../evals/runner/ledger.mjs';
 const key = 'sk-synthetic-secret-1234567890';
 const ledger = { fingerprint: vi.fn(() => 'f'.repeat(64)) };
 describe('OpenRouter key meter', () => {
+  it('latches malformed observations without storing response data', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-meter-malformed-'));
+    try {
+      const campaign = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
+      const sealReceipt = vi.fn(() => true);
+      expect(applyKeyObservation({ ledger: campaign, kind: 'snapshot', reading: { status: 'malformed' }, sealReceipt })).toEqual({ action: 'stop' });
+      expect(campaign.totals().stopped).toBe('accounting_failed'); expect(sealReceipt).not.toHaveBeenCalled(); campaign.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('makes a failed meter stale across restart and only admits after fresh sealed evidence', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-meter-'));
     try {
@@ -55,6 +64,7 @@ describe('OpenRouter key meter', () => {
     expect(await readKeyUsage({ key, ledger, fetchImpl: async () => new Response(key, { status: 503 }) })).toEqual({ status: 'stale' });
     expect(await readKeyUsage({ key, ledger, fetchImpl: async () => new Response(key, { status: 401 }) })).toEqual({ status: 'denied', httpStatus: 401 });
     expect(await readKeyUsage({ key, ledger, fetchImpl: async () => new Response('{"data":{}}') })).toEqual({ status: 'malformed' });
+    expect(await readKeyUsage({ key, ledger, fetchImpl: async () => new Response('{"data":{"usage":{"value":1,"source":"0"}}}') })).toEqual({ status: 'malformed' });
     expect(await readKeyUsage({ key, ledger, fetchImpl: async () => new Response(`{"data":{"usage":"${key}"}}`) })).toEqual({ status: 'malformed' });
     expect(JSON.stringify(network)).not.toContain(key);
   });
