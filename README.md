@@ -82,6 +82,8 @@ codegenie review --format json                     # machine-readable review obj
 codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
 ```
 
+In one dev-20 draw, Codex Luna `:xhigh` approached OpenRouter `high` in Stage 7 reasoning tokens per call and took about 1.8× as much summed review time as Codex `high`. A recall gain remains unproven. [#442](https://github.com/0xPolygon/codegenie/issues/442)
+
 Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and only happens when you pass the flag. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
 
 For prose files (`.md`, `.mdx`, `.rst`, `.txt`), unchanged inline comment content is deduplicated across shifted anchors on the same file and diff side. Matching uses the complete sanitized body before truncation; changed wording remains eligible for posting. Executable examples under `docs/` retain code fingerprint matching. Separate findings are not merged merely because they occur in the same document.
@@ -112,7 +114,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.9.5
+      - uses: 0xPolygon/codegenie@v0.9.6
         with:
           # Works with any model!
           model: "openrouter/openai/gpt-6-luna:xhigh"
@@ -133,7 +135,7 @@ The `model` input is one spec: `provider/model[:reasoning]` — any model in [mo
 List named models once. `model` stays the default for automatic reviews and a bare `codegenie review`. A collaborator can comment `codegenie review opus` to run that one review with the `opus` entry instead.
 
 ```yaml
-      - uses: 0xPolygon/codegenie@v0.9.5
+      - uses: 0xPolygon/codegenie@v0.9.6
         env:
           # one credential env var per provider in the list (see Credentials below)
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
