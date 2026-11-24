@@ -9,6 +9,7 @@ import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase, workerBounds } from './case.mjs';
 import { listEvidenceFiles } from './admission.mjs';
 import { assertIntegrity } from './integrity.mjs';
+import { resolveExpectedCall } from './packet-templates.mjs';
 const bindingError = () => Object.assign(new Error('binding mismatch'), { context: { reason: 'binding_mismatch' } });
 function readWorkerToken() {
   const bytes = Buffer.alloc(65); let length = 0;
@@ -53,7 +54,7 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity, assignedEffects } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity, assignedEffects, packetTemplates: packetBindings } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, initialize: false });
@@ -79,11 +80,11 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       ? activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerConfigSHA256, workerToken }) : false;
     if ((workerToken !== undefined || supervisorPath !== undefined) && !authenticated) throw bindingError();
     let boundaryVerified = false;
-    const packetTemplates = new Set();
+    const packetCalls = [];
     const fetchForCall = (call) => {
-      if (assignedEffects !== undefined && call.stage === 7 && call.purpose !== 'location_clarification') packetTemplates.add(call.templateVersion);
-      const matching = expectedCalls.filter((item) => item.stage === call.stage && item.kind === call.kind && (item.purpose ?? null) === (call.purpose ?? null));
-      const expected = matching.length === 1 ? matching[0] : {};
+      const packetCall = assignedEffects !== undefined && call.stage === 7 && call.purpose !== 'location_clarification';
+      const expected = resolveExpectedCall(expectedCalls, call, packetBindings, assignedEffects);
+      if (packetCall) packetCalls.push({ callId: call.callId, packetId: call.packetId, kind: call.kind, templateVersion: call.templateVersion });
       const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError });
       const preflight = () => {
         if (integrity !== undefined) {
@@ -123,7 +124,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
     } });
     if (assignedEffects !== undefined) {
       if (typeof assignedEffects !== 'boolean') throw bindingError();
-      writeFileSync(path.join(result.runDir, 'arm-binding.json'), JSON.stringify({ declaredArm: assignedEffects ? 'treatment' : 'control', assignedEffects, packetTemplates: [...packetTemplates].sort() }) + '\n', { mode: 0o600 });
+      writeFileSync(path.join(result.runDir, 'arm-binding.json'), JSON.stringify({ declaredArm: assignedEffects ? 'treatment' : 'control', assignedEffects, packetCalls }) + '\n', { mode: 0o600 });
     }
     if (result.status !== 'error') return result;
     const operational = operationalError(ledger, attemptPrefix, failure);
