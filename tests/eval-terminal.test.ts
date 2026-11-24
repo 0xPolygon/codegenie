@@ -33,6 +33,7 @@ describe('campaign terminal evidence', () => {
     const f = fixture(dir);
     try {
       f.save(); expect(f.check()).toMatchObject({ packets: 1, physicalStarts: 1 });
+      f.models[0]!.retryReason = 'usage_limit'; f.save(); expect(() => f.check()).toThrow('provider quota denial'); delete f.models[0]!.retryReason;
       f.tools[0]!.errorCode = 'budget_exhausted'; f.save(); expect(f.check()).toMatchObject({ packets: 1 });
       f.tools[0]!.errorCode = 'unavailable'; f.save(); expect(f.check()).toMatchObject({ packets: 1 });
       rmSync(path.join(dir, 'telemetry/stages/06-packets/packets/packet.json'));

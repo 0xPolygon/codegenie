@@ -21,6 +21,8 @@ node evals/runner/main.mjs release --campaign /private/campaign.json --sha256 <c
 
 This campaign path is not yet qualified for #405: receipt-bound blind export and the complete #405 offline qualification are still required. The public example remains independent of it.
 
+Budgeted campaigns reject cases with `recommendationJudge`: that optional eval judge uses a separate provider adapter and is not covered by campaign accounting. It remains available in ordinary evals and the single-case entry point.
+
 The in-progress campaign admission primitives use a fixed 15-second interval after a stale OpenRouter key reading and stop after 20 consecutive stale readings at a boundary. They persist the number of initiated reads, an upper bound on actual GETs, and require reconciliation after an interrupted read. These primitives are not yet wired into the public example above.
 
 An HTTP-200 stream with unknown billing is not by itself evidence of a provider failure. Until the physical stream terminal is recorded separately, an associated failed review remains unclassified and needs receipt reconciliation before a retry.

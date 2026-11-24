@@ -116,7 +116,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, onFailure(error) {
+    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, budgeted: true, onFailure(error) {
       if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
     } });
     if (result.status !== 'error') return result;

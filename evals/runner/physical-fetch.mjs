@@ -103,6 +103,11 @@ export function makePhysicalTransport({ ledger, call, expected, attemptPrefix, f
       return response;
     },
     onUsage(observation) {
+      if (observation.quotaDenied === true) {
+        if (!current) return stopAccounting();
+        try { ledger.stop('provider_quota'); } catch { return stopAccounting(); }
+        return;
+      }
       if (!current || current.settled) return;
       try {
         if (observation.source === 'provider_chunk') {

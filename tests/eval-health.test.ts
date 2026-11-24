@@ -17,6 +17,24 @@ function response(usage: object = { prompt_tokens: 10, completion_tokens: 5, tot
   return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 describe('native campaign health probe', () => {
+  it('latches typed quota denial on an HTTP 400 and preserves its physical hold', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-health-quota-'));
+    vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'health', limitMicros: 2_000_000 });
+      const keyFingerprint = ledger.fingerprint('synthetic-key');
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: 'a'.repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: 'boundary', usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: 'b'.repeat(64) });
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: { message: 'quota exceeded', type: 'insufficient_quota' } }), { status: 400, headers: { 'content-type': 'application/json' } }));
+      expect(await runHealthProbe({ ledger, boundaryId: 'boundary', purpose: 'admission', attemptPrefix: 'health/attempt-01', expected,
+        llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl, sealReceipt: () => true })).toEqual({ status: 'failed' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(ledger.totals()).toMatchObject({ starts: 1, unknown: 1, chargedMicros: 400_000, stopped: 'provider_quota' });
+      expect(ledger.db.prepare('SELECT http_status FROM physical').get()).toEqual({ http_status: 400 });
+      expect(ledger.reservePhysical({ id: 'later', logicalId: 'later', kind: 'initial' })).toEqual({ admitted: false, reason: 'provider_quota' }); ledger.close();
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  }, 90_000);
   it('classifies a typed HTTP-200 peak-load failure as capacity', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-health-peak-'));
     vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));

@@ -54,6 +54,7 @@ export type ProviderUsageObservation = {
   isByok?: boolean;
   terminal?: "done" | "error" | "aborted";
   costFromProvider?: boolean;
+  quotaDenied?: boolean;
 };
 
 type UnknownRecord = Record<string, unknown>;

@@ -155,6 +155,8 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   };
   const stepInternal = async () => {
     supervisor.assertDriver();
+    try { ledger.assertAccounting(); }
+    catch { ledger.stop('accounting_failed'); return { action: 'stop', reason: 'accounting_failed' }; }
     const stopped = ledger.totals().stopped;
     if (stopped) return { action: 'stop', reason: stopped };
     const next = supervisor.nextSlot(verifyReceipt, verifyRetry, ledger);

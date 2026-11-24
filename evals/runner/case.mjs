@@ -8,6 +8,7 @@ const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const urls = { goinfer: 'https://github.com/townsendmerino/goinfer.git', pi: 'https://github.com/earendil-works/pi.git', codegenie: 'https://github.com/0xPolygon/codegenie.git' };
 const sha = /^[0-9a-f]{40}$/u;
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
+const rejectJudge = () => { throw Object.assign(new Error('recommendation judge is not supported in a budgeted campaign'), { context: { reason: 'binding_mismatch' } }); };
 
 export function outsideCheckout(dir) {
   const target = path.resolve(dir);
@@ -72,6 +73,9 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   const { loadConfig } = await import('../../dist/config/config-loader.js');
   const suite = await loadEvalSuite(suiteDir), found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
   if (found.length !== 1) throw new Error('campaign caseName must match one case');
+  // The optional eval judge uses a separate adapter and cannot be metered by
+  // the campaign transport. Ordinary single-case evals are unaffected.
+  if (found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
   const base = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false }).config;
   const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('invalid review timeout');
@@ -79,7 +83,7 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
 }
 
-export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride } = {}) {
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -90,6 +94,7 @@ export async function runCase(configFile, { fetchForCall, onFailure, plannerRepl
   const suite = await loadEvalSuite(suiteDir);
   const found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
   if (found.length !== 1) throw new Error('campaign caseName must match one case');
+  if (budgeted && found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
   const original = found[0];
   const selected = { ...original, evalCase: { ...original.evalCase, repeat: 1, logs: { dir: output } } };
   if (selected.evalCase.artifacts) throw new Error('artifact replay is not supported by this entry point');

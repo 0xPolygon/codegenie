@@ -52,6 +52,7 @@ export class CampaignLedger {
     if (!Number.isSafeInteger(startedAtMs) || startedAtMs < 0 || (kind === 'health' ? !['admission', 'retry'].includes(healthPurpose) : healthPurpose !== null)) throw new TypeError('invalid physical start metadata');
     if (healthPurpose === 'retry' ? (typeof retryFor !== 'string' || !retryFor || !/^[a-f0-9]{64}$/u.test(failureReceiptSHA256 ?? '')) : (retryFor !== null || failureReceiptSHA256 !== null)) throw new TypeError('invalid retry health binding');
     return this.transaction(() => {
+      this.assertAccounting();
       if (this.db.prepare('SELECT 1 FROM physical WHERE id=? UNION ALL SELECT 1 FROM local_refusal WHERE id=?').get(id, id)) throw new Error('duplicate attempt identity');
       if (this.db.prepare("SELECT 1 FROM logical WHERE id=? AND status='cache_hit'").get(logicalId)) throw new Error('cache hit cannot start a physical call');
       const campaign = this.db.prepare('SELECT stopped,meter_stale FROM campaign').get();
@@ -111,7 +112,7 @@ export class CampaignLedger {
     if (usageEvidence !== null && Object.keys(usageEvidence).some((key) => !evidenceKeys.has(key))) throw new TypeError('unsupported usage evidence');
     if (usageEvidence !== null && ['inputTokens', 'outputTokens', 'totalTokens'].some((key) => usageEvidence[key] !== undefined && (!Number.isSafeInteger(usageEvidence[key]) || usageEvidence[key] < 0))) throw new TypeError('invalid token evidence');
     if (noUsageErrorEvidence !== null && (providerCostMicros !== null || httpStatus === null ||
-        (usageEvidence === null || usageEvidence.usagePresent !== true || usageEvidence.costPresent !== false) || noUsageErrorEvidence.terminal !== 'error' || noUsageErrorEvidence.usagePresent !== true || noUsageErrorEvidence.costPresent !== false || noUsageErrorEvidence.providerCostReported !== false ||
+        (usageEvidence === null || usageEvidence.usagePresent !== true || usageEvidence.costPresent !== false || !['inputTokens', 'outputTokens', 'totalTokens'].every((key) => usageEvidence[key] === 0)) || noUsageErrorEvidence.terminal !== 'error' || noUsageErrorEvidence.usagePresent !== true || noUsageErrorEvidence.costPresent !== false || noUsageErrorEvidence.providerCostReported !== false ||
         noUsageErrorEvidence.inputTokens !== 0 || noUsageErrorEvidence.outputTokens !== 0 || noUsageErrorEvidence.totalTokens !== 0)) throw new TypeError('invalid no-usage error evidence');
     const state = providerCostMicros !== null ? 'priced' : noUsageErrorEvidence !== null ? 'qualified_error' : 'unknown';
     const charge = providerCostMicros ?? (noUsageErrorEvidence !== null ? this.errorHold : Math.max(this.reserve, unconfirmedCostLowerBoundMicros ?? 0));
@@ -262,7 +263,30 @@ export class CampaignLedger {
     if (typeof reason !== 'string' || !reason) throw new TypeError('invalid stop reason');
     this.transaction(() => this.db.prepare('UPDATE campaign SET stopped=COALESCE(stopped, ?)').run(reason));
   }
+  assertAccounting() {
+    for (const row of this.db.prepare('SELECT state,charge,lower_bound,provider_cost_nanos,started_at_ms,settled_at_ms,http_status,evidence_json FROM physical').all()) {
+      if (!Number.isSafeInteger(row.charge) || row.charge < 0 || !Number.isSafeInteger(row.lower_bound) || row.lower_bound < 0 ||
+          !Number.isSafeInteger(row.started_at_ms) || row.started_at_ms < 0 ||
+          (row.http_status !== null && (!Number.isInteger(row.http_status) || row.http_status < 100 || row.http_status > 599))) throw new Error('physical accounting requires reconciliation');
+      if (row.state === 'open') {
+        if (row.settled_at_ms !== null || row.provider_cost_nanos !== null || row.charge < Math.max(this.reserve, row.lower_bound)) throw new Error('physical accounting requires reconciliation');
+        continue;
+      }
+      if (!Number.isSafeInteger(row.settled_at_ms) || row.settled_at_ms < row.started_at_ms) throw new Error('physical accounting requires reconciliation');
+      if (row.state === 'priced') {
+        if (!Number.isSafeInteger(row.provider_cost_nanos) || row.provider_cost_nanos < 0 || row.charge !== Math.ceil(row.provider_cost_nanos / 1000) || row.charge < row.lower_bound) throw new Error('physical accounting requires reconciliation');
+      } else if (row.state === 'unknown') {
+        if (row.provider_cost_nanos !== null || row.charge < Math.max(this.reserve, row.lower_bound)) throw new Error('physical accounting requires reconciliation');
+      } else if (row.state === 'qualified_error') {
+        let evidence;
+        try { evidence = JSON.parse(row.evidence_json); } catch { throw new Error('physical accounting requires reconciliation'); }
+        if (row.provider_cost_nanos !== null || row.charge !== this.errorHold || row.lower_bound !== 0 || row.http_status === null ||
+            evidence?.usagePresent !== true || evidence.costPresent !== false || !['inputTokens', 'outputTokens', 'totalTokens'].every((key) => evidence[key] === 0)) throw new Error('physical accounting requires reconciliation');
+      } else throw new Error('physical accounting requires reconciliation');
+    }
+  }
   assertRestartSafe() {
+    this.assertAccounting();
     if (this.db.prepare("SELECT 1 FROM physical WHERE state='open' LIMIT 1").get()) throw new Error('unmatched physical start requires reconciliation');
   }
   totals() {

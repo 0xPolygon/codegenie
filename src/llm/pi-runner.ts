@@ -1838,6 +1838,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         const retry = taskTimedOut()
           ? { retryable: false, reason: "task_deadline_exhausted" }
           : classifyProviderRetry(providerFailure.cause, attempt);
+        if (retry.reason === "usage_limit" && onTransportUsage !== undefined) {
+          await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true });
+        }
         recordModelCall(opts, request, model, message, {
           callId,
           protocol,
@@ -1930,6 +1933,11 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             reasoningTokensPresent: false, terminal: cause instanceof ToolArgumentStreamLimitError || taskSignal.aborted || taskTimedOut() ? "aborted" : "error",
             costFromProvider: false });
         } catch { /* The call-local carrier preserves the fatal accounting error. */ }
+        denial = admission?.denial();
+      }
+      if (denial === undefined && onTransportUsage !== undefined && !taskTimedOut() && classifyProviderRetry(cause, attempt).reason === "usage_limit") {
+        try { await onTransportUsage({ source: "terminal", usagePresent: false, costPresent: false, reasoningTokensPresent: false, quotaDenied: true }); }
+        catch { /* The call-local carrier preserves the fatal accounting error. */ }
         denial = admission?.denial();
       }
       if (denial !== undefined) {

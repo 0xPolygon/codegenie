@@ -9,6 +9,42 @@ import { describe, expect, it } from "vitest";
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 
 describe("development campaign physical ledger", () => {
+  it('refuses drifted priced charges and unknown holds before another start', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-drift-'));
+    try {
+      const file = path.join(dir, 'db'), config = { binding: 'fixture', limitMicros: 1_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      ledger.reservePhysical({ id: 'priced', logicalId: 'p', kind: 'review' });
+      ledger.settlePhysical({ id: 'priced', httpStatus: 200, providerCostMicros: 100, providerCostNanos: 100_000, costConfirmed: true });
+      ledger.db.prepare("UPDATE physical SET charge=0 WHERE id='priced'").run(); ledger.close();
+      ledger = new CampaignLedger(file, config);
+      expect(() => ledger.assertRestartSafe()).toThrow('accounting requires reconciliation');
+      expect(() => ledger.reservePhysical({ id: 'next', logicalId: 'n', kind: 'review' })).toThrow('accounting requires reconciliation');
+      ledger.db.prepare("UPDATE physical SET charge=100 WHERE id='priced'").run();
+      ledger.reservePhysical({ id: 'unknown', logicalId: 'u', kind: 'review' }); ledger.settlePhysical({ id: 'unknown', httpStatus: 200 });
+      ledger.db.prepare("UPDATE physical SET charge=0 WHERE id='unknown'").run(); ledger.close();
+      ledger = new CampaignLedger(file, config);
+      expect(() => ledger.assertRestartSafe()).toThrow('accounting requires reconciliation');
+      expect(() => ledger.reservePhysical({ id: 'next', logicalId: 'n', kind: 'review' })).toThrow('accounting requires reconciliation');
+      expect(ledger.totals().starts).toBe(2); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('refuses a qualified-error charge or qualifying-evidence drift after reopen', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-qualified-'));
+    try {
+      const file = path.join(dir, 'db'), config = { binding: 'fixture', limitMicros: 1_000_000 };
+      let ledger = new CampaignLedger(file, config);
+      ledger.reservePhysical({ id: 'p', logicalId: 'p', kind: 'review' });
+      const evidence = { usagePresent: true, costPresent: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+      ledger.settlePhysical({ id: 'p', httpStatus: 200, usageEvidence: evidence, noUsageErrorEvidence: { ...evidence, terminal: 'error', providerCostReported: false } });
+      ledger.db.prepare("UPDATE physical SET charge=0 WHERE id='p'").run(); ledger.close();
+      ledger = new CampaignLedger(file, config); expect(() => ledger.assertRestartSafe()).toThrow('accounting requires reconciliation');
+      ledger.db.prepare("UPDATE physical SET charge=50000,evidence_json=? WHERE id='p'").run(JSON.stringify({ ...evidence, totalTokens: 1 })); ledger.close();
+      ledger = new CampaignLedger(file, config); expect(() => ledger.assertRestartSafe()).toThrow('accounting requires reconciliation');
+      expect(() => ledger.reservePhysical({ id: 'next', logicalId: 'next', kind: 'review' })).toThrow('accounting requires reconciliation');
+      expect(ledger.totals().starts).toBe(1); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('rejects an obsolete ledger schema with a clear error', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-ledger-schema-'));
     try {
@@ -273,7 +309,8 @@ describe("development campaign physical ledger", () => {
       const ledger = new CampaignLedger(path.join(dir, "calls.sqlite"), { binding: "fixture", limitMicros: 1_000_000 });
       expect(ledger.reservePhysical({ id: "p1", logicalId: "mc1", kind: "review" })).toEqual({ admitted: true });
       expect(() => ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 1 } })).toThrow();
-      ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
+      expect(() => ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 } })).toThrow();
+      ledger.settlePhysical({ id: "p1", httpStatus: 200, usageEvidence: { usagePresent: true, costPresent: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 }, noUsageErrorEvidence: { terminal: "error", usagePresent: true, costPresent: false, providerCostReported: false, inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
       expect(ledger.totals()).toMatchObject({ starts: 1, chargedMicros: 50_000 });
       ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }

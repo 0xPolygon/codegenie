@@ -31,6 +31,7 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
   if ([...events, ...models, ...tools].some((row) => row.runId !== run.runId)) throw new Error('telemetry run mismatch');
   if (new Set(events.map((row) => row.eventId)).size !== events.length || new Set(models.map((row) => row.callId)).size !== models.length || new Set(tools.map((row) => row.toolCallId)).size !== tools.length ||
       events.some((row) => typeof row.eventId !== 'string') || models.some((row) => typeof row.callId !== 'string') || tools.some((row) => typeof row.toolCallId !== 'string')) throw new Error('telemetry identity mismatch');
+  if (models.some((row) => row.retryReason === 'usage_limit')) throw new Error('provider quota denial');
   for (const row of tools) {
     if (['internal', 'timeout', 'unknown'].includes(row.errorCode)) throw new Error('tool failure requires stop');
     if (['error', 'rejected'].includes(row.status) && !guided.has(row.errorCode)) throw new Error('tool failure requires stop');

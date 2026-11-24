@@ -30,15 +30,20 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
-  it.each(['case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
+  it.each(['judge', 'case-before', 'case-during', 'case-after', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     const preload = path.join(dir, 'block.mjs'); writeFileSync(preload, 'globalThis.fetch = async () => { throw new Error("network blocked"); };\n');
     vi.stubEnv('NODE_OPTIONS', `--import=${preload}`); vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
     try {
-      const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: path.join(process.cwd(), 'evals/fixtures'), caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
+      const suiteDir = scenario === 'judge' ? path.join(dir, 'suite') : path.join(process.cwd(), 'evals/fixtures');
+      if (scenario === 'judge') {
+        cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
+        appendFileSync(path.join(suiteDir, 'core.yml'), '\nrecommendationJudge:\n  provider: openrouter\n  model: openai/gpt-6-luna\n  reasoning: high\n  checks:\n    - id: safety\n      rubric: Test rubric.\n');
+      }
+      const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
       writeFileSync(caseFile, caseBytes);
-      const suiteDir = path.join(process.cwd(), 'evals/fixtures'), build = buildDigest();
+      const build = buildDigest();
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'one',
         evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000,
         caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls: [], integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
@@ -56,6 +61,12 @@ describe('campaign driver', () => {
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       await expect(openCampaign(file, '0'.repeat(64), { fetchImpl, models })).rejects.toThrow('config digest');
+      if (scenario === 'judge') {
+        await expect(openCampaign(file, sha(config), { fetchImpl, models })).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });
+        await expect(runCase(caseFile, { budgeted: true })).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });
+        expect({ gets, posts }).toEqual({ gets: 0, posts: 0 });
+        expect(existsSync(base.supervisorPath)).toBe(false); expect(existsSync(base.ledgerPath)).toBe(false); return;
+      }
       const campaign = await openCampaign(file, sha(config), { fetchImpl, models });
       if (scenario === 'case-before') {
         appendFileSync(caseFile, ' ');
@@ -232,7 +243,14 @@ describe('campaign driver', () => {
       const reopened = await openCampaign(file, sha(config), { fetchImpl, models });
       expect(await reopened.step()).toMatchObject({ action: 'completed' });
       expect(reopened.ledger.totals().starts).toBe(starts);
-      expect({ healthPosts, gets }).toEqual({ healthPosts: probes, gets: reads }); reopened.close();
+      expect({ healthPosts, gets }).toEqual({ healthPosts: probes, gets: reads });
+      if (scenario === 'single') reopened.ledger.db.prepare("UPDATE physical SET charge=0 WHERE id=(SELECT id FROM physical WHERE state='priced' AND charge>0 LIMIT 1)").run();
+      reopened.close();
+      if (scenario === 'single') {
+        const drifted = await openCampaign(file, sha(config), { fetchImpl, models });
+        expect(await drifted.step()).toMatchObject({ action: 'stop', reason: 'accounting_failed' });
+        expect({ healthPosts, gets }).toEqual({ healthPosts: probes, gets: reads }); drifted.close();
+      }
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
 
