@@ -7,6 +7,7 @@ import { boundaryDecision, boundaryRefusalReason, BoundaryBindingError } from '.
 import { makePhysicalTransport } from './physical-fetch.mjs';
 import { outsideCheckout, runCase, workerBounds } from './case.mjs';
 import { listEvidenceFiles } from './admission.mjs';
+import { assertIntegrity } from './integrity.mjs';
 const bindingError = () => Object.assign(new Error('binding mismatch'), { context: { reason: 'binding_mismatch' } });
 function readWorkerToken() {
   const bytes = Buffer.alloc(65); let length = 0;
@@ -52,7 +53,7 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
@@ -63,6 +64,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
     ledger.assertRestartSafe();
     const caseConfigBytes = readFileSync(outsideCheckout(caseConfig));
     if (!/^[a-f0-9]{64}$/u.test(caseConfigSHA256 ?? '') || createHash('sha256').update(caseConfigBytes).digest('hex') !== caseConfigSHA256) throw bindingError();
+    if (integrity !== undefined) { try { assertIntegrity(integrity); } catch { throw bindingError(); } }
     let plannerReplay;
     if (plannerReplayBinding !== undefined) {
       if (!plannerReplayBinding || typeof plannerReplayBinding !== 'object' || typeof plannerReplayBinding.capturePath !== 'string') throw bindingError();
@@ -82,6 +84,14 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       const expected = matching.length === 1 ? matching[0] : {};
       const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError });
       const preflight = () => {
+        if (integrity !== undefined) {
+          try { assertIntegrity(integrity); }
+          catch {
+            try { ledger.recordRefusal({ id: `${attemptPrefix}/${call.callId}/integrity`, logicalId: `${attemptPrefix}/${call.callId}`, reason: 'binding_mismatch' }); ledger.stop('binding_mismatch'); }
+            catch { try { ledger.stop('accounting_failed'); } catch {} throw new TransportAdmissionError('accounting_failed'); }
+            throw new TransportAdmissionError('binding_mismatch');
+          }
+        }
         if (boundaryVerified) return;
         const id = `${attemptPrefix}/${call.callId}/preflight`;
         let reason;

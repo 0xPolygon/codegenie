@@ -349,6 +349,18 @@ export class CampaignSupervisor {
       return { state: 'interrupted', receiptSHA256: hash };
     });
   }
+  cancelUnclaimedStart(slotId, attemptNo, ledger) {
+    return this.transaction(() => {
+      this.assertDriver();
+      const row = this.db.prepare('SELECT state FROM attempt WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+      const claim = this.db.prepare('SELECT 1 FROM worker_claim WHERE slot_id=? AND attempt_no=?').get(slotId, attemptNo);
+      const prefix = `${prefixFor(slotId, attemptNo)}/`;
+      const physical = ledger.db.prepare('SELECT 1 FROM physical WHERE substr(id,1,?)=? LIMIT 1').get(prefix.length, prefix);
+      if (!row || row.state !== 'started' || claim || physical || (this.receipts && this.receipts.find(slotId, attemptNo) !== null)) throw new Error('unclaimed start requires reconciliation');
+      this.db.prepare("UPDATE attempt SET state='no_start' WHERE slot_id=? AND attempt_no=?").run(slotId, attemptNo);
+      return { state: 'no_start' };
+    });
+  }
   authorizeRetry(slotId, attemptNo, proofSHA256, { ledger, retryProbeId, verifyReceipt, verifyFailure, verifyRetry }) {
     if (!isHash(proofSHA256) || typeof retryProbeId !== 'string' || !retryProbeId || typeof verifyReceipt !== 'function' || typeof verifyFailure !== 'function' || typeof verifyRetry !== 'function') throw new Error('invalid retry authorization');
     this.transaction(() => {

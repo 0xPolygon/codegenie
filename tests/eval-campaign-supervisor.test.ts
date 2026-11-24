@@ -81,6 +81,23 @@ describe('campaign admission custody', () => {
       second.releaseDriver(next); first.close(); second.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it('reconciles an unclaimed start only when no receipt or physical call exists', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-unclaimed-'));
+    try {
+      const scheduleBytes = Buffer.from(JSON.stringify({ slots: [{ id: 'one', boundaryId: 'one', provider: 'openrouter' }] }));
+      const binding = { binding: 'b', scheduleBytes, scheduleSHA256: digest(scheduleBytes), receiptDirectory: path.join(dir, 'receipts'), runRootFor: () => path.join(dir, 'out') };
+      const supervisor = new CampaignSupervisor(path.join(dir, 'supervisor.db'), binding), token = supervisor.claimDriver();
+      const ledger = new CampaignLedger(path.join(dir, 'ledger.db'), { binding: 'b', limitMicros: 2_000_000 });
+      ledger.keyDecision = () => ({ action: 'admit' }); ledger.healthDecision = () => ({ action: 'admit' });
+      expect(supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify })).toMatchObject({ action: 'started' });
+      expect(supervisor.cancelUnclaimedStart('one', 1, ledger)).toEqual({ state: 'no_start' });
+      expect(supervisor.begin('one', { ledger, evidenceFiles: {}, verifyReceipt: supervisor.receipts.verify })).toMatchObject({ action: 'started', attempt: 2 });
+      ledger.reservePhysical({ id: 'one/attempt-02/mc/physical-1', logicalId: 'one/attempt-02/mc', kind: 'initial' });
+      expect(() => supervisor.cancelUnclaimedStart('one', 2, ledger)).toThrow('requires reconciliation');
+      expect(supervisor.db.prepare("SELECT state FROM attempt WHERE slot_id='one' AND attempt_no=2").get()).toEqual({ state: 'started' });
+      supervisor.releaseDriver(token); supervisor.close(); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('retains a receipt-backed 503, authorizes one fresh retry and excludes a second failure', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-bound-retry-')), runs: string[] = [];
     try {
