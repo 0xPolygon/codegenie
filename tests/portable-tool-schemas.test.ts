@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildRepositoryToolDefinitions, normalizeRepositoryToolArguments } from "../src/llm/tool-definitions.js";
 import { __piRunnerTestHooks } from "../src/llm/pi-runner.js";
 import { createFieldRepair } from "../src/llm/field-repair.js";
-import { SubmitPlanSchema, SubmitPacketReviewSchema, SubmitVerificationVerdictSchema, SubmitCompositionSchema } from "../src/llm/schemas.js";
+import { SubmitPlanSchema, SubmitPacketReviewSchema, submitPacketReviewSchema, SubmitVerificationVerdictSchema, SubmitCompositionSchema } from "../src/llm/schemas.js";
+import { checkAssignedEffects, createAssignedEffectsFieldRepair, type PacketReviewWithEffects } from "../src/llm/assigned-effects.js";
 import { LocationSchema } from "../src/pipeline/finding-location.js";
 import { recommendationJudgeTool } from "../src/evals/recommendation-judge.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
@@ -18,6 +19,28 @@ const serialized = (name: string, parameters: ToolDefinition["parameters"]) => _
 }).parameters;
 
 describe("portable provider tool schemas", () => {
+  it("keeps the legacy submit schema and emits a portable treatment and effect-only repair", () => {
+    expect(submitPacketReviewSchema()).toBe(SubmitPacketReviewSchema);
+    const assigned = Array.from({ length: 23 }, (_, index) => `h${index + 1}`);
+    const schema = submitPacketReviewSchema(assigned);
+    const emit = serialized("submit_review", schema);
+    expect(portableSchemaIssues("stage7 effects", emit)).toEqual([]);
+    expect(emit).toMatchObject({ required: expect.arrayContaining(["assignedEffects"]), properties: {
+      assignedEffects: { maxItems: 23, items: { properties: { hunkId: { enum: assigned } } } }
+    } });
+    const baseline = { findings: [], followUpHints: [], uncertainties: [], assignedEffects: [] };
+    const repair = createAssignedEffectsFieldRepair(schema, baseline, assigned)!;
+    expect(repair.paths).toEqual(["assignedEffects"]);
+    expect(portableSchemaIssues("stage7 effect repair", serialized("submit_review", repair.schema))).toEqual([]);
+    const row = { hunkId: "h24", kind: "none", disposition: "safe", effect: "No skipped behavior", basis: "a.ts:1" } as const;
+    expect(submissionIssues(schema, { ...baseline, assignedEffects: [row] })).toContainEqual({ kind: "invalid", path: "assignedEffects.0.hunkId" });
+    expect(checkAssignedEffects({ ...baseline, reviewStatus: "incomplete", assignedEffects: [
+      { ...row, hunkId: "h1", disposition: "question" }
+    ] }, assigned)).toMatchObject({ errors: [expect.stringContaining("requires disposition safe")] });
+    expect(portableSchemaIssues("stage7 empty assignment", serialized("submit_review", submitPacketReviewSchema([])))).toEqual([]);
+    expect(checkAssignedEffects({ ...baseline } as PacketReviewWithEffects, []).errors).toEqual([]);
+  });
+
   it("checks both repository surfaces, stage submissions and location clarification", () => {
     const entries: Array<[string, ToolDefinition["parameters"]]> = [];
     for (const toolSurface of ["current", "six"] as const) {

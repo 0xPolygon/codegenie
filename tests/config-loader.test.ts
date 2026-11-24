@@ -16,6 +16,17 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
+  it("loads explicit assignedEffects without adding the field to default configuration", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride, env: {} }).config.review).not.toHaveProperty("assignedEffects");
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nassignedEffects = true\n");
+    const loaded = loadConfig({ repoRoot, homeOverride, env: {} });
+    expect(loaded.config.review.assignedEffects).toBe(true);
+    expect(loaded.sources["review.assignedEffects"]).toBe("user-config");
+    expect(rawConfigSchema.safeParse({ review: { assignedEffects: "true" } }).success).toBe(false);
+  });
+
   it("loads the repository tool surface and validates its value", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

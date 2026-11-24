@@ -18,9 +18,22 @@ export const SUBMIT_REVIEW_EXAMPLE = {
   uncertainties: []
 } satisfies SubmitPacketReview;
 
-export const SUBMIT_REVIEW_SHAPE_GUIDANCE = [
+const SUBMIT_REVIEW_SHAPE_LINES = [
   "Submit findings as an array of JSON objects, never JSON-encoded strings or comma-split fragments. Nested evidence and anchor values are objects too.",
   "Always include findings, followUpHints, and uncertainties as arrays; use [] for an empty array.",
-  "Shape-only example (not evidence or a finding to copy; replace with your actual review, and add an anchor only from the reviewed diff):",
-  JSON.stringify(SUBMIT_REVIEW_EXAMPLE)
-].join("\n");
+  "Shape-only example (not evidence or a finding to copy; replace with your actual review, and add an anchor only from the reviewed diff):"
+];
+
+export const SUBMIT_REVIEW_SHAPE_GUIDANCE = [...SUBMIT_REVIEW_SHAPE_LINES, JSON.stringify(SUBMIT_REVIEW_EXAMPLE)].join("\n");
+
+export const ASSIGNED_EFFECTS_GUIDANCE =
+  'Include assignedEffects identifying what each assigned hunk removes, skips or stops guaranteeing, or which guard it relies on, with the source call or line supporting safety or the resulting finding or question, using none only with safe and reporting only evaluated hunks for reviewStatus "incomplete".';
+
+export function assignedEffectsSubmitShape(hunkId?: string): string {
+  return [...SUBMIT_REVIEW_SHAPE_LINES, JSON.stringify({ ...SUBMIT_REVIEW_EXAMPLE,
+    assignedEffects: hunkId === undefined ? [] : [{
+      hunkId, effect: "Empty requests no longer return an empty result.", kind: "skipped_path", disposition: "finding",
+      basis: "The first finding describes the unchecked items[0] access."
+    }]
+  })].join("\n");
+}

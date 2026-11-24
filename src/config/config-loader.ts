@@ -283,6 +283,10 @@ function applyRawConfig(
     config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
     sources["review.adaptiveSecondPass"] = source;
   }
+  if (raw.review?.assignedEffects !== undefined) {
+    config.review.assignedEffects = raw.review.assignedEffects;
+    sources["review.assignedEffects"] = source;
+  }
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;
     sources["review.toolSurface"] = source;

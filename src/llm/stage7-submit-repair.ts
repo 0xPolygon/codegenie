@@ -1,9 +1,10 @@
 import { submissionIssues } from "./submit-preservation.js";
+import type { TSchema } from "typebox";
 import { SubmitPacketReviewSchema } from "./schemas.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
-import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
+import { ASSIGNED_EFFECTS_GUIDANCE, assignedEffectsSubmitShape, SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
 import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
@@ -140,21 +141,24 @@ export function stage7SubmitRepairDecision(
   return stage7SubmitRepairDecisionFromParts(
     submitCall,
     cause instanceof Error ? cause.message : String(cause),
-    candidateDraftedBeforeSubmit
+    candidateDraftedBeforeSubmit,
+    request.schema
   );
 }
 
 export function stage7SubmitRepairDecisionFromParts(
   submitCall: PiToolCall,
   errorText: string,
-  candidateDraftedBeforeSubmit: boolean
+  candidateDraftedBeforeSubmit: boolean,
+  schema?: TSchema
 ): Stage7SubmitRepairDecision | undefined {
   if (submitCall.name !== "submit_review") {
     return undefined;
   }
-  const classification = classifyStage7SchemaInvalid(errorText, [submitCall]);
+  const assignedEffects = assignedEffectsSchema(schema) !== undefined;
+  const classification = classifyStage7SchemaInvalid(errorText, [submitCall], schema);
   if (!candidateDraftedBeforeSubmit) {
-    const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments);
+    const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments, assignedEffects);
     if (noFindingsCleanup.status === "recovered") {
       return {
         classification,
@@ -168,7 +172,7 @@ export function stage7SubmitRepairDecisionFromParts(
     }
   }
   if (stage7PayloadLooksCandidateLike(submitCall.arguments)) {
-    const cleanup = cleanupStage7CandidateSubmit(submitCall.arguments);
+    const cleanup = cleanupStage7CandidateSubmit(submitCall.arguments, assignedEffects);
     if (cleanup.status === "recovered") {
       return {
         classification,
@@ -197,14 +201,20 @@ export function stage7SubmitRepairDecisionFromParts(
   return { classification, compactRepair: true };
 }
 
-export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[]): Stage7SchemaInvalidKind {
+function assignedEffectsSchema(schema?: TSchema) {
+  return (schema as { properties?: { assignedEffects?: { items?: { properties?: { hunkId?: { enum?: string[] } } } } } } | undefined)
+    ?.properties?.assignedEffects;
+}
+
+export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[], schema?: TSchema): Stage7SchemaInvalidKind {
   const text = error.split("Received arguments:")[0]!.toLowerCase();
-  const issues = submitCalls.flatMap(call => submissionIssues(SubmitPacketReviewSchema, call.arguments));
+  const effects = assignedEffectsSchema(schema);
+  const issues = submitCalls.flatMap(call => submissionIssues(effects ? schema! : SubmitPacketReviewSchema, call.arguments));
   if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
     return "xml_parameter_bleed";
   }
   if (submitCalls.some((call) => stage7PayloadLooksCandidateLike(call.arguments))) {
-    if (submitCalls.some((call) => extraStage7TopLevelKeys(call.arguments).length > 0)) {
+    if (submitCalls.some((call) => extraStage7TopLevelKeys(call.arguments, effects !== undefined).length > 0)) {
       return "extra_top_level_properties";
     }
     if (issues.some(issue => issue.kind === "unknown" && issue.path.startsWith("findings."))) {
@@ -237,12 +247,14 @@ export function stage7CompactSchemaRepairPrompt(
   submitToolName: string,
   error: string,
   classification: Stage7SchemaInvalidKind,
-  repairInput: LlmSchemaRepairInput
+  repairInput: LlmSchemaRepairInput,
+  schema?: TSchema
 ): string {
   const invalidSubmitArgs = repairInput.submitCalls.map((call) => ({
     id: call.id,
     arguments: call.arguments
   }));
+  const effects = assignedEffectsSchema(schema);
   return [
     "Repair only the structured Stage 7 packet-review submit payload for codegenie.",
     "",
@@ -263,7 +275,7 @@ export function stage7CompactSchemaRepairPrompt(
     "- Do not write `<parameter>` tags.",
     "- Do not describe the schema.",
     "- Do not answer in plain text.",
-    SUBMIT_REVIEW_SHAPE_GUIDANCE
+    ...(effects ? [ASSIGNED_EFFECTS_GUIDANCE, assignedEffectsSubmitShape(effects.items?.properties?.hunkId?.enum?.[0])] : [SUBMIT_REVIEW_SHAPE_GUIDANCE])
   ].join("\n");
 }
 
@@ -277,7 +289,7 @@ export function stage7SubmitPayloadKind(submitCalls: PiToolCall[]): "candidate" 
   return "unknown";
 }
 
-function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7CandidateCleanup {
+function cleanupStage7CandidateSubmit(args: Record<string, unknown>, assignedEffects: boolean): Stage7CandidateCleanup {
   const findings = args.findings;
   if (!Array.isArray(findings) || findings.length === 0) {
     return { status: "not_applicable" };
@@ -286,7 +298,7 @@ function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7Cand
   const unsafeKeys: string[] = [];
   const cleaned = cloneRecord(args);
 
-  for (const key of extraStage7TopLevelKeys(cleaned)) {
+  for (const key of extraStage7TopLevelKeys(cleaned, assignedEffects)) {
     const value = cleaned[key];
     if (!isSafeUnknownStage7SubmitField(value)) {
       unsafeKeys.push(key);
@@ -324,13 +336,13 @@ function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7Cand
   return { status: "recovered", arguments: cleaned, strippedKeys };
 }
 
-function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoFindingsCleanup {
+function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>, assignedEffects: boolean): Stage7NoFindingsCleanup {
   if (!isSafeStage7NoFindingsSalvage(args)) {
     return { status: "not_applicable" };
   }
   const cleaned = cloneRecord(args);
   const strippedKeys: string[] = [];
-  for (const key of extraStage7TopLevelKeys(cleaned)) {
+  for (const key of extraStage7TopLevelKeys(cleaned, assignedEffects)) {
     const value = cleaned[key];
     if (!isSafeUnknownStage7SubmitField(value)) {
       return { status: "not_applicable" };
@@ -358,7 +370,8 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     findings: [],
     followUpHints: Array.isArray(cleaned.followUpHints) ? cleaned.followUpHints : [],
     uncertainties: Array.isArray(cleaned.uncertainties) ? cleaned.uncertainties : [],
-    noFindingReason: reason.value
+    noFindingReason: reason.value,
+    ...(assignedEffects && Object.hasOwn(cleaned, "assignedEffects") ? { assignedEffects: cleaned.assignedEffects } : {})
   };
   const shapeChanged =
     strippedKeys.length > 0 ||
@@ -402,8 +415,8 @@ function cloneRecord(input: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(safeStringify(input) || "{}") as Record<string, unknown>;
 }
 
-function extraStage7TopLevelKeys(args: Record<string, unknown>): string[] {
-  return Object.keys(args).filter((key) => !STAGE7_SUBMIT_ALLOWED_KEYS.has(key)).sort();
+function extraStage7TopLevelKeys(args: Record<string, unknown>, assignedEffects: boolean): string[] {
+  return Object.keys(args).filter(key => !STAGE7_SUBMIT_ALLOWED_KEYS.has(key) && !(assignedEffects && key === "assignedEffects")).sort();
 }
 
 function extraStage7FindingKeys(args: Record<string, unknown>): string[] {
@@ -538,7 +551,7 @@ function safeStringify(input: unknown): string {
 export function stage7RecoverInvalidSubmit(
   input: LlmSchemaInvalidSubmitRecoveryInput,
   telemetry: TelemetryRecorder,
-  context: { workerId?: string; packetId?: string }
+  context: { workerId?: string; packetId?: string; schema?: TSchema }
 ): LlmInvalidSubmitRecovery | undefined {
   const submit = input.submitCalls[0];
   if (input.stage !== 7 || input.submitTool !== "submit_review" || submit === undefined) {
@@ -548,7 +561,8 @@ export function stage7RecoverInvalidSubmit(
   const decision = stage7SubmitRepairDecisionFromParts(
     submitCall,
     input.fullError ?? input.error,
-    input.candidateDrafted === true
+    input.candidateDrafted === true,
+    context.schema
   );
   if (decision === undefined) {
     return undefined;
