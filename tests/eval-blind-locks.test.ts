@@ -17,7 +17,7 @@ describe('blind export lock gate', () => {
       expect(verifyPrimaryLocks({ manifestSHA256, locks: [a, b], reconciliation })).toMatchObject({ reconciliationSHA256: reconciliation.sha256 });
       expect(() => verifyPrimaryLocks({ manifestSHA256, locks: [a, b] })).toThrow();
       expect(() => verifyPrimaryLocks({ manifestSHA256, locks: [a, a], reconciliation })).toThrow();
-      const same = file('same', { analyst: 'one', manifestSHA256 });
+      const same = file('same', { analyst: ' ONE ', manifestSHA256 });
       expect(() => verifyPrimaryLocks({ manifestSHA256, locks: [a, same], reconciliation })).toThrow();
       const wrong = file('wrong', { analyst: 'two', manifestSHA256: 'c'.repeat(64) });
       expect(() => verifyPrimaryLocks({ manifestSHA256, locks: [a, wrong], reconciliation })).toThrow();

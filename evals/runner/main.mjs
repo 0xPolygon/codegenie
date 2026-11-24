@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { CampaignConfigurationError, runCase } from './case.mjs';
+import { createHash } from 'node:crypto';
+import { CampaignConfigurationError, outsideCheckout, runCase } from './case.mjs';
+import { readCheckedFile } from './safe-read.mjs';
 import { openCampaign } from './campaign.mjs';
 
 const args = process.argv.slice(2);
@@ -11,6 +13,31 @@ if (args.length === 3 && ['run', 'run-case'].includes(args[0]) && args[1] === '-
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  }
+} else if (args.length === 9 && ['export-mechanism', 'reveal'].includes(args[0]) && args[1] === '--campaign' && args[3] === '--sha256' && args[5] === '--request' && args[7] === '--request-sha256') {
+  let campaign;
+  try {
+    const bytes = readCheckedFile(outsideCheckout(args[6]));
+    if (!/^[a-f0-9]{64}$/u.test(args[8]) || createHash('sha256').update(bytes).digest('hex') !== args[8]) throw new Error('request mismatch');
+    const request = JSON.parse(bytes.toString('utf8'));
+    campaign = await openCampaign(args[2], args[4], { resumeOnly: true });
+    console.log(JSON.stringify(await (args[0] === 'reveal' ? campaign.reveal(request) : campaign.exportEffects(request))));
+  } catch {
+    console.error('Export requires verified campaign, lock and reconciliation evidence.');
+    process.exitCode = 1;
+  } finally {
+    if (campaign) { try { campaign.close(); } catch { console.error('Campaign driver claim requires reconciliation.'); process.exitCode = 1; } }
+  }
+} else if (args.length === 9 && args[0] === 'export-blind' && args[1] === '--campaign' && args[3] === '--sha256' && args[5] === '--output' && args[7] === '--mapping') {
+  let campaign;
+  try {
+    campaign = await openCampaign(args[2], args[4], { resumeOnly: true });
+    console.log(JSON.stringify(campaign.exportBlind({ outputDirectory: args[6], mappingFile: args[8] })));
+  } catch (error) {
+    console.error(error instanceof CampaignConfigurationError ? `Campaign configuration error: ${error.message}` : 'Blind export requires verified terminal campaign evidence.');
+    process.exitCode = 1;
+  } finally {
+    if (campaign) { try { campaign.close(); } catch { console.error('Campaign driver claim requires reconciliation.'); process.exitCode = 1; } }
   }
 } else if (args.length === 5 && ['run', 'release'].includes(args[0]) && args[1] === '--campaign' && args[3] === '--sha256') {
   let campaign;
@@ -44,6 +71,6 @@ if (args.length === 3 && ['run', 'run-case'].includes(args[0]) && args[1] === '-
     }
   }
 } else {
-  console.error('Usage: node evals/runner/main.mjs run-case --campaign <file> | run|release --campaign <file> --sha256 <hash>');
+  console.error('Usage: node evals/runner/main.mjs run-case --campaign <file> | run|release --campaign <file> --sha256 <hash> | export-blind --campaign <file> --sha256 <hash> --output <dir> --mapping <file> | export-mechanism|reveal --campaign <file> --sha256 <hash> --request <file> --request-sha256 <hash>');
   process.exitCode = 2;
 }

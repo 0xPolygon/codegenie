@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { closeSync, constants, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { outsideCheckout, workerBounds } from './case.mjs';
@@ -10,6 +11,9 @@ import { spawnAttempt } from './spawn-worker.mjs';
 import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { verifyAllEvidence } from './boundary.mjs';
+import { exportFirstLock, exportMechanism, revealPairing } from './blind-export.mjs';
+import { verifyPrimaryLocks } from './blind-locks.mjs';
+import { ASSIGNED_EFFECTS_PLAN_SHA256, ASSIGNED_EFFECTS_SEED, generate405Order, validate405Schedule } from './qualification-405.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -27,6 +31,7 @@ function checkExisting(config, configSHA256) {
       }
       const rows = db.prepare('SELECT * FROM campaign').all();
       if (rows.length !== 1 || !checkRow(rows[0])) throw new Error('binding');
+      if (schema.blind_export) { const rows = db.prepare('SELECT mapping_sha256,manifest_sha256 FROM blind_export WHERE id=1').all(); if (rows.length !== 1 || ((rows[0].mapping_sha256 === null) !== (rows[0].manifest_sha256 === null)) || (rows[0].mapping_sha256 !== null && (!hash(rows[0].mapping_sha256) || !hash(rows[0].manifest_sha256)))) throw new Error('blind export binding'); }
     } finally { db.close(); }
   };
   try {
@@ -37,7 +42,7 @@ function checkExisting(config, configSHA256) {
       outcome: ['slot_id', 'state', 'attempt_no', 'receipt_sha256'], retry_authorization: ['slot_id', 'attempt_no', 'failure_sha256', 'proof_sha256', 'probe_id'],
       exclusion: ['slot_id', 'first_attempt_no', 'first_sha256', 'second_attempt_no', 'second_sha256'],
       case_reset_event: ['slot_id', 'attempt_no', 'case_id', 'receipt_sha256', 'resets'],
-      driver_claim: ['id', 'pid', 'host', 'process_start', 'pid_namespace', 'token_sha256'], release: ['prefix_sha256']
+      driver_claim: ['id', 'pid', 'host', 'process_start', 'pid_namespace', 'token_sha256'], release: ['prefix_sha256'], blind_export: ['id', 'mapping_sha256', 'manifest_sha256']
     }, (row) => row.schema_version === 1 && row.binding === config.binding && row.schedule_sha256 === config.scheduleSHA256 && row.config_sha256 === configSHA256 && row.receipt_directory === config.receiptDirectory);
     check(config.ledgerPath, {
       campaign: ['binding', 'limit_micros', 'reserve_micros', 'error_hold_micros', 'salt', 'meter_stale', 'stopped', 'schema_version'],
@@ -80,9 +85,30 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   if (sha(scheduleBytes) !== config.scheduleSHA256) throw new Error('campaign schedule digest mismatch');
   const schedule = JSON.parse(scheduleBytes.toString('utf8'));
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
+  if (config.qualification405 !== undefined) {
+    const registration = config.qualification405;
+    if (!registration || registration.verifierConcurrency !== 'native' || typeof registration.registrationFile !== 'string' || !hash(registration.registrationSHA256) || !config.blind || !hash(config.blind.oracleManifestSHA256)) throw new Error('invalid 405 binding');
+    const order = await generate405Order(registration), registrationBytes = readBytes(outsideCheckout(registration.registrationFile));
+    const record = JSON.parse(registrationBytes.toString('utf8'));
+    const oracleBytes = readBytes(config.blind.oracleManifestPath);
+    if (record.oracleManifestSHA256 !== config.blind.oracleManifestSHA256 || sha(oracleBytes) !== record.oracleManifestSHA256) throw new Error('405 oracle binding mismatch');
+    const oracle = JSON.parse(oracleBytes.toString('utf8'));
+    if (!Array.isArray(oracle.cases) || oracle.cases.map((item) => item.caseId).sort().join('\0') !== [...order.caseIds].sort().join('\0')) throw new Error('405 case membership mismatch');
+    validate405Schedule({ scheduleBytes, scheduleSHA256: config.scheduleSHA256, caseIds: order.caseIds, seed: ASSIGNED_EFFECTS_SEED, planSHA256: ASSIGNED_EFFECTS_PLAN_SHA256, verifierConcurrency: 'native' });
+    if (schedule.slots.some((slot, index) => slot.caseId !== order.slots[index].caseId || slot.blind.arm !== order.slots[index].arm || slot.blind.draw !== order.slots[index].draw)) throw new Error('405 registered order mismatch');
+  }
+
   const roots = new Map();
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
+    if (slot.blind !== undefined) {
+      const expectedEffects = slot.blind.arm === 'treatment';
+      const packetTemplate = expectedEffects ? 'p7.16-assigned-effects.1' : 'p7.16';
+      const packetCalls = wc?.expectedCalls?.filter((call) => call.stage === 7 && call.purpose !== 'location_clarification');
+      if (!['control', 'treatment'].includes(slot.blind.arm) || typeof wc?.assignedEffects !== 'boolean' || wc.assignedEffects !== expectedEffects ||
+          !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') || packetCalls.some((call) => call.templateVersion !== packetTemplate) ||
+          wc.expectedCalls.some((call) => call.stage === 7 && call.purpose === 'location_clarification' && call.templateVersion !== 'location-clarification-v1')) throw new Error('campaign arm binding mismatch');
+    } else if (wc?.assignedEffects !== undefined) throw new Error('unbound campaign arm');
     if (!wc || slot.boundaryId === `final-${sha(config.binding)}` || typeof slot.caseId !== 'string' || !slot.caseId || !Array.isArray(slot.expectedPacketIds) || slot.provider !== 'openrouter' ||
         wc.supervisorPath !== config.supervisorPath || wc.ledgerPath !== config.ledgerPath || wc.ledgerBinding !== config.binding || wc.boundaryId !== slot.boundaryId ||
         wc.evidenceDirectory !== config.evidenceDirectory || wc.evidenceFiles !== undefined || wc.limitMicros !== config.limitMicros || wc.reserveMicros !== config.reserveMicros || wc.errorHoldMicros !== config.errorHoldMicros || !hash(wc.caseConfigSHA256) || typeof wc.caseConfig !== 'string' || !path.isAbsolute(wc.caseConfig) || outsideCheckout(wc.caseConfig) !== wc.caseConfig) throw new Error('worker schedule binding mismatch');
@@ -93,6 +119,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         !wc.integrity?.build || Object.keys(wc.integrity.build).some((key) => wc.integrity.build[key] !== config.build?.[key]) || Object.keys(config.build ?? {}).length !== Object.keys(wc.integrity.build).length) throw new Error('case integrity binding mismatch');
     assertIntegrity(wc.integrity);
     const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1));
+    if (slot.blind !== undefined && bounds.toolSurface !== 'current') throw new Error('campaign arm surface mismatch');
     roots.set(slot.id, path.dirname(bounds.outputDir));
   }
   const protectedPaths = [config.supervisorPath, config.ledgerPath, config.receiptDirectory, config.evidenceDirectory, config.workDirectory];
@@ -247,12 +274,108 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       return { action: 'stop', reason: localStop };
     }
   };
+  const selectedForBlind = () => {
+    supervisor.assertDriver(); ledger.assertRestartSafe(); verifyAllEvidence(ledger, files());
+    if (ledger.hasPendingMeter()) throw new Error('meter custody requires reconciliation');
+    const stopped = ledger.totals().stopped;
+    const outcomes = supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger, { historical: Boolean(stopped) });
+    if (supervisor.db.prepare("SELECT 1 FROM attempt WHERE state='started' LIMIT 1").get()) throw new Error('campaign attempt requires reconciliation');
+    if (!stopped) {
+      if (outcomes.length !== supervisor.slots.length) throw new Error('campaign is not terminal');
+      const finalBoundary = `final-${sha(config.binding)}`;
+      const snapshot = ledger.db.prepare('SELECT physical_starts FROM key_snapshot WHERE fresh=1 AND boundary_id=? ORDER BY rowid DESC LIMIT 1').get(finalBoundary);
+      if (!snapshot || snapshot.physical_starts !== ledger.physicalPrefix()) throw new Error('final key snapshot missing');
+    }
+    const binding = config.blind;
+    if (!binding || !hash(binding.locatorManifestSHA256) || !hash(binding.oracleManifestSHA256) || typeof binding.locatorManifestPath !== 'string' || typeof binding.oracleManifestPath !== 'string') throw new Error('blind manifest binding missing');
+    const locatorBytes = readBytes(binding.locatorManifestPath), oracleBytes = readBytes(binding.oracleManifestPath);
+    if (sha(locatorBytes) !== binding.locatorManifestSHA256 || sha(oracleBytes) !== binding.oracleManifestSHA256) throw new Error('blind manifest binding mismatch');
+    const locators = JSON.parse(locatorBytes.toString('utf8')), oracles = JSON.parse(oracleBytes.toString('utf8'));
+    if (!Array.isArray(oracles.cases) || new Set(oracles.cases.map((item) => item.caseId)).size !== oracles.cases.length) throw new Error('invalid oracle manifest');
+    if (!Array.isArray(locators.cases) || new Set(locators.cases.map((item) => item.caseId)).size !== locators.cases.length) throw new Error('invalid locator manifest');
+    const selected = outcomes.filter((row) => row.state === 'selected').map((row) => {
+      const slot = supervisor.slots.find((item) => item.id === row.slot_id), location = locators.cases.find((item) => item.caseId === slot?.caseId);
+      const found = supervisor.receipts.find(row.slot_id, row.attempt_no);
+      if (!slot || !location || !found || found.hash !== row.receipt_sha256 || !['control', 'treatment'].includes(slot.blind?.arm) || !Number.isSafeInteger(slot.blind?.draw)) throw new Error('invalid selected blind binding');
+      if (!hash(location.oracleSHA256) || !oracles.cases.some((item) => item.caseId === slot.caseId && item.sha256 === location.oracleSHA256) || sha(readBytes(location.oraclePath)) !== location.oracleSHA256 || !/^[a-f0-9]{40}$/u.test(location.sourceRevision ?? '') ||
+          execFileSync('git', ['-C', location.sourceRoot, 'rev-parse', '--verify', `${location.sourceRevision}^{commit}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() !== location.sourceRevision) throw new Error('blind source or oracle changed');
+      const root = path.join(found.receipt.runDir, 'telemetry');
+      const read = (file) => JSON.parse(readBytes(path.join(root, file)).toString('utf8'));
+      const run = read('run.json'), resolved = read('stages/01-input/resolved-input.json');
+      const packetDir = path.join(root, 'stages/06-packets/packets');
+      const packetIdentifiers = readdirSync(packetDir).filter((name) => name.endsWith('.json')).flatMap((name) => {
+        const packet = JSON.parse(readBytes(path.join(packetDir, name)).toString('utf8'));
+        return [packet.id, ...(Array.isArray(packet.hunks) ? packet.hunks.map((hunk) => hunk.hunkId) : [])];
+      });
+      const armBinding = JSON.parse(readBytes(path.join(found.receipt.runDir, 'arm-binding.json')).toString('utf8'));
+      const expectedTemplate = slot.blind.arm === 'treatment' ? 'p7.16-assigned-effects.1' : 'p7.16';
+      if (resolved.headSha !== location.sourceRevision) throw new Error('blind source revision mismatch');
+      if (armBinding.declaredArm !== slot.blind.arm || armBinding.assignedEffects !== (slot.blind.arm === 'treatment') || !Array.isArray(armBinding.packetTemplates) || !armBinding.packetTemplates.length || armBinding.packetTemplates.some((value) => value !== expectedTemplate)) throw new Error('blind effective arm mismatch');
+      return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
+        caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator,
+        evidence: { outcome: run.outcome?.status, privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
+          candidates: read('stages/09-verification/candidate-findings.json'), promotion: read('stages/09-verification/uncertainty-promotion.json'),
+          verification: read('stages/09-verification/verification.json'), finalReview: read('final-review.json') } };
+    });
+    return { selected, outcomes, stopped, binding };
+  };
+  const exportBlind = ({ outputDirectory, mappingFile }) => {
+    const { selected, outcomes, stopped, binding } = selectedForBlind();
+    if (typeof binding.mappingFile !== 'string' || mappingFile !== binding.mappingFile) throw new Error('blind mapping path mismatch');
+    const prior = supervisor.db.prepare('SELECT mapping_sha256,manifest_sha256 FROM blind_export WHERE id=1').get();
+    if (!prior) throw new Error('blind export custody failure');
+    if (prior.mapping_sha256 !== null && !existsSync(mappingFile)) throw new Error('blind mapping custody failure');
+    const result = exportFirstLock({ bindingSHA256: expectedSHA256, oracleManifestSHA256: binding.oracleManifestSHA256, selections: selected,
+      excludedCount: outcomes.filter((row) => row.state === 'excluded').length, campaignState: stopped ? 'stopped' : 'completed', outputDirectory, mappingFile,
+      ...(prior.mapping_sha256 !== null ? { expectedMappingSHA256: prior.mapping_sha256, expectedManifestSHA256: prior.manifest_sha256 } : {}),
+      bindPrepared: (mappingSHA256, manifestSHA256) => { supervisor.bindBlindExport(mappingSHA256, manifestSHA256); return true; } });
+    return result;
+  };
+  const exportEffects = async ({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, outputDirectory }) => {
+    const { selected, outcomes, stopped, binding } = selectedForBlind();
+    if (mappingFile !== binding.mappingFile) throw new Error('blind mapping path mismatch');
+    const authority = supervisor.db.prepare('SELECT mapping_sha256,manifest_sha256 FROM blind_export WHERE id=1').get();
+    if (!authority || authority.manifest_sha256 !== manifestSHA256) throw new Error('blind export not bound');
+    const manifestBytes = readBytes(outsideCheckout(manifestFile));
+    if (sha(manifestBytes) !== manifestSHA256) throw new Error('blind manifest changed');
+    const manifest = JSON.parse(manifestBytes.toString('utf8')), mappingBytes = readBytes(outsideCheckout(mappingFile));
+    if (sha(mappingBytes) !== manifest.mappingSHA256) throw new Error('blind mapping changed');
+    const mapping = JSON.parse(mappingBytes.toString('utf8'));
+    if (mapping.bindingSHA256 !== expectedSHA256 || mapping.oracleManifestSHA256 !== binding.oracleManifestSHA256 || mapping.campaignState !== (stopped ? 'stopped' : 'completed') || mapping.excludedCount !== outcomes.filter((row) => row.state === 'excluded').length || !Array.isArray(mapping.selections) || mapping.selections.length !== selected.length || mapping.selections.some((item, index) => {
+      const current = selected[index];
+      return !current || ['slotId', 'attempt', 'receiptSHA256', 'arm', 'draw', 'caseId', 'sourceLocator', 'oracleLocator'].some((key) => item[key] !== current[key]);
+    })) throw new Error('blind cohort changed');
+    verifyPrimaryLocks({ manifestSHA256, locks, reconciliation });
+    const evidence = mapping.selections.filter((item) => item.arm === 'treatment').map((item) => {
+      const found = supervisor.receipts.find(item.slotId, item.attempt);
+      if (!found || found.hash !== item.receiptSHA256) throw new Error('mechanism receipt changed');
+      const root = path.join(found.receipt.runDir, 'telemetry');
+      const records = JSON.parse(readBytes(path.join(root, 'stages/07-review/assigned-effects.json')).toString('utf8'));
+      const packetDir = path.join(root, 'stages/06-packets/packets');
+      const packets = readdirSync(packetDir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readBytes(path.join(packetDir, name)).toString('utf8')));
+      if (!Array.isArray(records) || !packets.length || packets.some((packet) => !records.some((record) => record.packetId === packet.id))) throw new Error('effect sidecar is incomplete');
+      return { id: item.id, receiptSHA256: item.receiptSHA256, records, packets };
+    });
+    return exportMechanism({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, outputDirectory, evidence });
+  };
+  const reveal = async (request) => {
+    const { selected, outcomes, stopped, binding } = selectedForBlind();
+    if (request.mappingFile !== binding.mappingFile) throw new Error('blind mapping path mismatch');
+    const authority = supervisor.db.prepare('SELECT mapping_sha256,manifest_sha256 FROM blind_export WHERE id=1').get();
+    if (!authority || authority.manifest_sha256 !== request.manifestSHA256) throw new Error('blind export not bound');
+    const bytes = readBytes(outsideCheckout(request.mappingFile)), mapping = JSON.parse(bytes.toString('utf8'));
+    if (mapping.bindingSHA256 !== expectedSHA256 || mapping.oracleManifestSHA256 !== binding.oracleManifestSHA256 || mapping.campaignState !== (stopped ? 'stopped' : 'completed') || mapping.excludedCount !== outcomes.filter((row) => row.state === 'excluded').length || !Array.isArray(mapping.selections) || mapping.selections.length !== selected.length || mapping.selections.some((item, index) => {
+      const current = selected[index];
+      return !current || ['slotId', 'attempt', 'receiptSHA256', 'arm', 'draw', 'caseId', 'sourceLocator', 'oracleLocator'].some((key) => item[key] !== current[key]);
+    })) throw new Error('blind cohort changed');
+    return revealPairing(request);
+  };
   const progressFingerprint = () => sha(JSON.stringify({ totals: ledger.totals(),
     attempts: supervisor.db.prepare('SELECT slot_id,attempt_no,state FROM attempt ORDER BY slot_id,attempt_no').all(),
     outcomes: supervisor.db.prepare('SELECT slot_id,state,receipt_sha256 FROM outcome ORDER BY slot_id').all(),
     polls: ledger.db.prepare('SELECT boundary_id,attempts,pending FROM meter_poll ORDER BY boundary_id').all(),
     snapshots: ledger.db.prepare('SELECT COUNT(*) AS count FROM key_snapshot').get().count }));
-  return { step, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, releaseCheckpoint() {
+  return { step, exportBlind, exportEffects, reveal, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, releaseCheckpoint() {
     supervisor.assertDriver();
     if (ledger.totals().stopped) throw new Error('campaign stopped');
     ledger.assertRestartSafe(); verifyAllEvidence(ledger, files());

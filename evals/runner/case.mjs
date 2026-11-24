@@ -83,10 +83,10 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   const timeoutMs = found[0].evalCase.review?.maxTimeMinutes === undefined ? base.review.maxTimeMs : Math.round(found[0].evalCase.review.maxTimeMinutes * 60_000);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs + 300_000 > 2_147_483_647) throw new CampaignConfigurationError('unsupported_case_config', 'review timeout exceeds the campaign worker watchdog limit');
   const outputRoot = outsideCheckout(config.outputDir ? path.resolve(path.dirname(file), config.outputDir) : path.join(homedir(), '.cache/codegenie/eval-campaigns', config.caseName));
-  return { timeoutMs, caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
+  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir: outsideCheckout(path.join(outputRoot, attemptPrefix)) };
 }
 
-export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false } = {}) {
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false, assignedEffects } = {}) {
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -111,7 +111,9 @@ export async function runCase(configFile, { fetchForCall, onFailure, plannerRepl
     selected.evalCase.repo = { external: prepareTarget(target, url, selected.evalCase.command?.base, selected.evalCase.command?.head, match ? Number(match[1]) : undefined) };
   }
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
-  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
+  if (assignedEffects !== undefined && (!budgeted || typeof assignedEffects !== 'boolean')) throw new Error('invalid campaign arm override');
+  const configForRun = assignedEffects === undefined ? loaded.config : { ...loaded.config, review: { ...loaded.config.review, assignedEffects } };
+  return runEvalCase(suite, selected, { config: configForRun, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
     ...(onFailure !== undefined ? { onFailure } : {}),
     ...(plannerReplay !== undefined ? { plannerReplay } : {}),
     ...(fetchForCall !== undefined ? { fetchForCall } : {}) });

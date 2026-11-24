@@ -17,7 +17,7 @@ function checkedJson(file, expected) {
 export function verifyPrimaryLocks({ manifestSHA256, locks, reconciliation }) {
   if (!isHash(manifestSHA256) || !Array.isArray(locks) || locks.length !== 2 || locks[0]?.sha256 === locks[1]?.sha256) throw new Error('two distinct locks required');
   const records = locks.map((lock) => checkedJson(lock.path, lock.sha256));
-  if (records.some((record) => typeof record.analyst !== 'string' || !record.analyst.trim() || record.manifestSHA256 !== manifestSHA256) || records[0].analyst === records[1].analyst) throw new Error('analyst lock mismatch');
+  if (records.some((record) => typeof record.analyst !== 'string' || !record.analyst.trim() || record.manifestSHA256 !== manifestSHA256) || records[0].analyst.trim().toLowerCase() === records[1].analyst.trim().toLowerCase()) throw new Error('analyst lock mismatch');
   const joined = checkedJson(reconciliation?.path, reconciliation?.sha256);
   if (joined.manifestSHA256 !== manifestSHA256 || !Array.isArray(joined.lockSHA256) || joined.lockSHA256.length !== 2 ||
       [...joined.lockSHA256].sort().join(',') !== locks.map((lock) => lock.sha256).sort().join(',')) throw new Error('reconciliation binding mismatch');
