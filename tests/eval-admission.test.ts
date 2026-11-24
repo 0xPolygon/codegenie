@@ -19,6 +19,47 @@ function response() {
   return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
 }
 describe('campaign boundary preparation', () => {
+  it('reuses the bound post-failure retry probe after restart', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-retry-'));
+    vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
+    try {
+      const db = path.join(dir, 'ledger'), config = { binding: 'campaign', limitMicros: 2_000_000 };
+      let ledger = new CampaignLedger(db, config), gets = 0, posts = 0;
+      const fetchImpl = vi.fn(async (input: string) => {
+        if (String(input) === 'https://openrouter.ai/api/v1/key') { gets++; return new Response(`{"data":{"usage":${gets === 1 ? 0 : gets === 2 ? 0.0001 : 0.0002}}}`); }
+        posts++; return response();
+      });
+      const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
+      const common = { boundaryId: 'one', receiptDirectory: path.join(dir, 'receipts'), expected,
+        llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl, models };
+      const admission = { ...common, ledger, attemptPrefix: 'health/admission', purpose: 'admission' };
+      expect(await prepareAdmission(admission)).toMatchObject({ status: 'clean' });
+      expect(await prepareAdmission(admission)).toMatchObject({ action: 'admit' });
+      ledger.reservePhysical({ id: 'one/attempt-01/mc-1/physical-1', logicalId: 'one/attempt-01/mc-1', kind: 'initial', provider: 'openrouter', startedAtMs: 1 });
+      ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 2 });
+      const retry = { ...common, ledger, attemptPrefix: 'health/retry', purpose: 'retry', retryFor: 'one/attempt-01', failureReceiptSHA256: 'f'.repeat(64) };
+      const original = await prepareAdmission(retry);
+      expect(original).toMatchObject({ status: 'clean' }); expect(posts).toBe(2);
+      ledger.close(); ledger = new CampaignLedger(db, config);
+      const recovered = await prepareAdmission({ ...retry, ledger });
+      expect(recovered).toMatchObject({ status: 'clean', physicalId: original.physicalId, receiptSHA256: original.receiptSHA256, reused: true });
+      expect({ gets, posts }).toEqual({ gets: 3, posts: 2 }); ledger.close();
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  }, 90_000);
+  it('does not repeat a denied key GET on re-entry', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-denied-'));
+    try {
+      const ledger = new CampaignLedger(path.join(dir, 'ledger'), { binding: 'campaign', limitMicros: 2_000_000 });
+      const fetchImpl = vi.fn(async () => new Response('denied', { status: 401 }));
+      const args = { ledger, boundaryId: 'one', receiptDirectory: path.join(dir, 'receipts'), attemptPrefix: 'health/one', expected,
+        llmConfig: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', maxConcurrentCalls: 1 }, fetchImpl,
+        models: { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) } };
+      expect(await prepareAdmission(args)).toEqual({ action: 'stop' });
+      expect(await prepareAdmission(args)).toEqual({ action: 'stop', reason: 'provider_401' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1); expect(ledger.totals().starts).toBe(0); ledger.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it.each(['key-drift', 'stale-meter'])('stops before a model POST on %s', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-admission-deny-'));
     vi.stubEnv('OPENROUTER_API_KEY', 'key-b'); vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));

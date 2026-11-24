@@ -14,7 +14,8 @@ function prepareFailure(ledger: { reservePhysical(args: object): void; settlePhy
   ledger.settlePhysical({ id: 'one/attempt-01/mc-1/physical-1', httpStatus: 500, settledAtMs: 100 });
 }
 function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysical(args: object): void; recordHealth(args: object): void }, id: string, purpose: string, startedAtMs: number) {
-  ledger.reservePhysical({ id, logicalId: id, kind: 'health', provider: 'openrouter', healthBoundary: 'one', healthPurpose: purpose, startedAtMs });
+  ledger.reservePhysical({ id, logicalId: id, kind: 'health', provider: 'openrouter', healthBoundary: 'one', healthPurpose: purpose, startedAtMs,
+    ...(purpose === 'retry' ? { retryFor: 'one/attempt-01', failureReceiptSHA256: digest('first') } : {}) });
   ledger.settlePhysical({ id, httpStatus: 200, providerCostMicros: 0, costConfirmed: true, settledAtMs: startedAtMs + 1 });
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }

@@ -4,7 +4,7 @@ import { makePhysicalTransport } from './physical-fetch.mjs';
 
 // A probe is one logical structured call and at most one physical POST. The
 // caller supplies its bound model metadata and seals sanitized receipt bytes.
-export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefix, llmConfig, expected, sealReceipt, fetchImpl = globalThis.fetch }) {
+export async function runHealthProbe({ ledger, boundaryId, purpose, retryFor, failureReceiptSHA256, attemptPrefix, llmConfig, expected, sealReceipt, fetchImpl = globalThis.fetch }) {
   if (typeof boundaryId !== 'string' || !boundaryId || !['admission', 'retry'].includes(purpose) || typeof sealReceipt !== 'function' ||
       expected?.provider !== 'openrouter' || llmConfig?.provider !== 'openrouter') throw new Error('invalid health binding');
   const [{ createPiRunner }, { TransportAdmissionError }] = await Promise.all([
@@ -21,6 +21,7 @@ export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefi
     const tokenCounts = usage && ['inputTokens', 'outputTokens', 'totalTokens'].every((field) => Number.isSafeInteger(usage[field]) && usage[field] >= 0)
       ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens } : undefined;
     const receipt = { kind: 'health', physicalId: row.id, boundaryId, provider: 'openrouter', purpose, outcome, observedMs: Date.now(),
+      ...(purpose === 'retry' ? { retryFor, failureReceiptSHA256 } : {}),
       ...(model ? { modelCallId: model.callId } : {}), ...(tokenCounts ? { usage: tokenCounts } : {}) };
     const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`), digest = createHash('sha256').update(bytes).digest('hex');
     if (sealReceipt(bytes, digest) !== true) throw new Error('health receipt not sealed');
@@ -34,7 +35,7 @@ export async function runHealthProbe({ ledger, boundaryId, purpose, attemptPrefi
     const runner = await createPiRunner({ llmConfig, telemetry, logger, runSignal: AbortSignal.timeout(60_000),
       hooks: { checkpoint: () => 'ok', onUsage() {} },
       fetchForCall(call) {
-        const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError, healthBoundary: boundaryId, healthPurpose: purpose });
+        const transport = makePhysicalTransport({ ledger, call, expected, attemptPrefix, fetchImpl, AdmissionError: TransportAdmissionError, healthBoundary: boundaryId, healthPurpose: purpose, retryFor, failureReceiptSHA256 });
         return { ...transport, fetch: (input, init) => {
           if (++starts > 1) {
             try { ledger.recordRefusal({ id: `${attemptPrefix}/${call.callId}/health-refusal-${starts}`, logicalId: `${attemptPrefix}/${call.callId}`, reason: 'health_single_start' }); }

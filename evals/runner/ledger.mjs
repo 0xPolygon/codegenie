@@ -13,7 +13,7 @@ export class CampaignLedger {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA busy_timeout=30000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS campaign(binding TEXT PRIMARY KEY, limit_micros INTEGER NOT NULL, reserve_micros INTEGER NOT NULL, error_hold_micros INTEGER NOT NULL, salt BLOB NOT NULL, meter_stale INTEGER NOT NULL DEFAULT 1, stopped TEXT);
-      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
+      CREATE TABLE IF NOT EXISTS physical(id TEXT PRIMARY KEY, logical_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, health_boundary TEXT, health_purpose TEXT, retry_for TEXT, retry_failure_sha256 TEXT, started_at_ms INTEGER NOT NULL, settled_at_ms INTEGER, state TEXT NOT NULL, charge INTEGER NOT NULL, http_status INTEGER, evidence_json TEXT, lower_bound INTEGER NOT NULL DEFAULT 0, provider_cost_nanos INTEGER);
       CREATE TABLE IF NOT EXISTS key_baseline(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, key_fingerprint TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS key_snapshot(usage_micros INTEGER NOT NULL, usage_nanos INTEGER NOT NULL, priced_floor_micros INTEGER NOT NULL, priced_floor_nanos INTEGER NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, fresh INTEGER NOT NULL, boundary_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS health_receipt(physical_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, observed_ms INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL);
@@ -38,10 +38,11 @@ export class CampaignLedger {
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  reservePhysical({ id, logicalId, kind, provider = 'openrouter', healthBoundary = null, healthPurpose = kind === 'health' ? 'admission' : null, startedAtMs = Date.now() }) {
+  reservePhysical({ id, logicalId, kind, provider = 'openrouter', healthBoundary = null, healthPurpose = kind === 'health' ? 'admission' : null, retryFor = null, failureReceiptSHA256 = null, startedAtMs = Date.now() }) {
     if (![id, logicalId, kind, provider].every((x) => typeof x === 'string' && x)) throw new TypeError('invalid physical identity');
     if ((kind === 'health') !== (typeof healthBoundary === 'string' && healthBoundary.length > 0)) throw new TypeError('invalid health boundary binding');
     if (!Number.isSafeInteger(startedAtMs) || startedAtMs < 0 || (kind === 'health' ? !['admission', 'retry'].includes(healthPurpose) : healthPurpose !== null)) throw new TypeError('invalid physical start metadata');
+    if (healthPurpose === 'retry' ? (typeof retryFor !== 'string' || !retryFor || !/^[a-f0-9]{64}$/u.test(failureReceiptSHA256 ?? '')) : (retryFor !== null || failureReceiptSHA256 !== null)) throw new TypeError('invalid retry health binding');
     return this.transaction(() => {
       if (this.db.prepare('SELECT 1 FROM physical WHERE id=? UNION ALL SELECT 1 FROM local_refusal WHERE id=?').get(id, id)) throw new Error('duplicate attempt identity');
       if (this.db.prepare("SELECT 1 FROM logical WHERE id=? AND status='cache_hit'").get(logicalId)) throw new Error('cache hit cannot start a physical call');
@@ -63,7 +64,7 @@ export class CampaignLedger {
         this.db.prepare('INSERT INTO local_refusal(id,logical_id,reason) VALUES(?,?,?)').run(id, logicalId, reason);
         return { admitted: false, reason };
       }
-      this.db.prepare("INSERT INTO physical(id,logical_id,kind,provider,health_boundary,health_purpose,started_at_ms,state,charge) VALUES(?,?,?,?,?,?,?,'open',?)").run(id, logicalId, kind, provider, healthBoundary, healthPurpose, startedAtMs, this.reserve);
+      this.db.prepare("INSERT INTO physical(id,logical_id,kind,provider,health_boundary,health_purpose,retry_for,retry_failure_sha256,started_at_ms,state,charge) VALUES(?,?,?,?,?,?,?,?,?,'open',?)").run(id, logicalId, kind, provider, healthBoundary, healthPurpose, retryFor, failureReceiptSHA256, startedAtMs, this.reserve);
       return { admitted: true };
     });
   }
@@ -184,13 +185,14 @@ export class CampaignLedger {
         !Number.isSafeInteger(nowMs) || nowMs < 0 || typeof verifyEvidence !== 'function') throw new TypeError('invalid health decision');
     const stop = this.db.prepare('SELECT stopped FROM campaign').get().stopped;
     if (stop) return { action: 'stop', reason: stop };
-    const rows = this.db.prepare(`SELECT p.id,p.state,p.health_purpose,h.outcome,h.observed_ms,h.evidence_sha256
+    const rows = this.db.prepare(`SELECT p.id,p.state,p.health_purpose,p.retry_for,p.retry_failure_sha256,h.outcome,h.observed_ms,h.evidence_sha256
       FROM physical p LEFT JOIN health_receipt h ON h.physical_id=p.id
       WHERE p.kind='health' AND p.health_boundary=? AND p.provider=? ORDER BY h.rowid,p.id`).all(boundaryId, provider);
     if (rows.some((row) => row.state === 'open' || row.outcome === null)) return { action: 'reconcile' };
     let recovery = false, clean = 0, last = 0;
     for (const row of rows) {
-      if (verifyEvidence(row.id, row.evidence_sha256, { kind: 'health', purpose: row.health_purpose, outcome: row.outcome, observedMs: row.observed_ms }) !== true) throw new Error('health evidence mismatch');
+      if (verifyEvidence(row.id, row.evidence_sha256, { kind: 'health', purpose: row.health_purpose, outcome: row.outcome, observedMs: row.observed_ms,
+        ...(row.health_purpose === 'retry' ? { retryFor: row.retry_for, failureReceiptSHA256: row.retry_failure_sha256 } : {}) }) !== true) throw new Error('health evidence mismatch');
       if (row.observed_ms > nowMs) throw new Error('health receipt is in the future');
       if (row.outcome === 'capacity') { recovery = true; clean = 0; } else clean++;
       last = row.observed_ms;

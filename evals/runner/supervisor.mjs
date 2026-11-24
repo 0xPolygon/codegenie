@@ -52,15 +52,15 @@ export class CampaignSupervisor {
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  assertRetryProbe(ledger, slotId, attemptNo, probeId) {
+  assertRetryProbe(ledger, slotId, attemptNo, failureSHA256, probeId) {
     const slot = this.slots.find((s) => s.id === slotId);
     if (!slot || !ledger?.db || typeof probeId !== 'string' || !probeId) throw new Error('retry probe ledger binding missing');
     const prefix = `${prefixFor(slotId, attemptNo)}/`;
     const failed = ledger.db.prepare('SELECT COUNT(*) AS count, SUM(settled_at_ms IS NULL) AS open, MAX(settled_at_ms) AS last FROM physical WHERE substr(id,1,?)=?').get(prefix.length, prefix);
-    const probe = ledger.db.prepare(`SELECT p.kind,p.provider,p.health_boundary,p.health_purpose,p.started_at_ms,p.settled_at_ms,p.state,p.http_status,h.outcome,h.observed_ms
+    const probe = ledger.db.prepare(`SELECT p.kind,p.provider,p.health_boundary,p.health_purpose,p.retry_for,p.retry_failure_sha256,p.started_at_ms,p.settled_at_ms,p.state,p.http_status,h.outcome,h.observed_ms
       FROM physical p LEFT JOIN health_receipt h ON h.physical_id=p.id WHERE p.id=?`).get(probeId);
     if (!failed.count || failed.open || !probe || probe.kind !== 'health' || probe.provider !== slot.provider || probe.health_boundary !== slot.boundaryId ||
-        probe.health_purpose !== 'retry' || probe.state === 'open' || probe.http_status < 200 || probe.http_status >= 300 || probe.outcome !== 'clean' ||
+        probe.health_purpose !== 'retry' || probe.retry_for !== prefixFor(slotId, attemptNo) || probe.retry_failure_sha256 !== failureSHA256 || probe.state === 'open' || probe.http_status < 200 || probe.http_status >= 300 || probe.outcome !== 'clean' ||
         probe.started_at_ms <= failed.last || probe.settled_at_ms === null || probe.observed_ms < probe.settled_at_ms) throw new Error('retry probe is not a fresh clean ledger result');
   }
   checkedOutcomes(verifyReceipt, verifyRetry, ledger) {
@@ -77,7 +77,7 @@ export class CampaignSupervisor {
         if (priorFailures.length !== 1 || verifyReceipt(slot.id, priorFailures[0].attempt_no, priorFailures[0].receipt_sha256) !== true ||
             !auth || auth.attempt_no !== priorFailures[0].attempt_no || auth.failure_sha256 !== priorFailures[0].receipt_sha256 ||
             typeof verifyRetry !== 'function' || verifyRetry(slot.id, auth.attempt_no, auth.failure_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
-        this.assertRetryProbe(ledger, slot.id, auth.attempt_no, auth.probe_id);
+        this.assertRetryProbe(ledger, slot.id, auth.attempt_no, auth.failure_sha256, auth.probe_id);
       }
       if (row.state === 'selected' && attempt.state !== 'sealed') throw new Error('selected attempt missing');
       if (row.state === 'excluded') {
@@ -135,7 +135,7 @@ export class CampaignSupervisor {
         if (!auth || auth.attempt_no !== failed.attempt_no || auth.failure_sha256 !== failed.receipt_sha256 ||
             verifyReceipt(slotId, failed.attempt_no, failed.receipt_sha256) !== true || typeof verifyRetry !== 'function' ||
             verifyRetry(slotId, failed.attempt_no, failed.receipt_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('attempt requires retry authorization');
-        this.assertRetryProbe(ledger, slotId, failed.attempt_no, auth.probe_id);
+        this.assertRetryProbe(ledger, slotId, failed.attempt_no, failed.receipt_sha256, auth.probe_id);
       }
       ledger.assertRestartSafe();
       const decision = boundaryDecision({ ledger, boundaryId: next.boundaryId, provider: next.provider, evidenceFiles, nowMs });
@@ -167,7 +167,7 @@ export class CampaignSupervisor {
         if (!auth || auth.attempt_no !== first.attempt_no || auth.failure_sha256 !== first.receipt_sha256 ||
             verifyReceipt(slotId, first.attempt_no, first.receipt_sha256) !== true || typeof verifyRetry !== 'function' ||
             verifyRetry(slotId, first.attempt_no, first.receipt_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
-        this.assertRetryProbe(ledger, slotId, first.attempt_no, auth.probe_id);
+        this.assertRetryProbe(ledger, slotId, first.attempt_no, first.receipt_sha256, auth.probe_id);
       }
       this.db.prepare("UPDATE attempt SET state='interrupted',receipt_sha256=? WHERE slot_id=? AND attempt_no=?").run(hash, slotId, attemptNo);
       if (failures.length === 1) {
@@ -187,7 +187,7 @@ export class CampaignSupervisor {
           this.db.prepare("SELECT 1 FROM attempt WHERE slot_id=? AND state='started'").get(slotId) || !['interrupted', 'infrastructure_failure'].includes(attempt.state) ||
           verifyReceipt(slotId, attemptNo, attempt.receipt_sha256) !== true || verifyFailure(slotId, attemptNo, attempt.receipt_sha256) !== true ||
           verifyRetry(slotId, attemptNo, attempt.receipt_sha256, proofSHA256, retryProbeId) !== true) throw new Error('retry evidence missing or changed');
-      this.assertRetryProbe(ledger, slotId, attemptNo, retryProbeId);
+      this.assertRetryProbe(ledger, slotId, attemptNo, attempt.receipt_sha256, retryProbeId);
       this.db.prepare('INSERT INTO retry_authorization VALUES(?,?,?,?,?)').run(slotId, attemptNo, attempt.receipt_sha256, proofSHA256, retryProbeId);
     });
   }
@@ -202,7 +202,7 @@ export class CampaignSupervisor {
         if (!auth || auth.attempt_no !== first.attempt_no || auth.failure_sha256 !== first.receipt_sha256 ||
             verifyReceipt(slotId, first.attempt_no, first.receipt_sha256) !== true || typeof verifyRetry !== 'function' ||
             verifyRetry(slotId, first.attempt_no, first.receipt_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
-        this.assertRetryProbe(ledger, slotId, first.attempt_no, auth.probe_id);
+        this.assertRetryProbe(ledger, slotId, first.attempt_no, first.receipt_sha256, auth.probe_id);
       }
       const updated = this.db.prepare("UPDATE attempt SET state='infrastructure_failure',receipt_sha256=? WHERE slot_id=? AND attempt_no=? AND state='started'").run(receiptSHA256, slotId, attemptNo);
       if (updated.changes !== 1) throw new Error('attempt is not awaiting a receipt');
@@ -222,7 +222,7 @@ export class CampaignSupervisor {
         if (failures.length !== 1 || !auth || auth.attempt_no !== first.attempt_no || auth.failure_sha256 !== first.receipt_sha256 ||
             verifyReceipt(slotId, first.attempt_no, first.receipt_sha256) !== true || typeof verifyRetry !== 'function' ||
             verifyRetry(slotId, first.attempt_no, first.receipt_sha256, auth.proof_sha256, auth.probe_id) !== true) throw new Error('retry authorization missing or changed');
-        this.assertRetryProbe(ledger, slotId, first.attempt_no, auth.probe_id);
+        this.assertRetryProbe(ledger, slotId, first.attempt_no, first.receipt_sha256, auth.probe_id);
       }
       const result = this.db.prepare("UPDATE attempt SET state='sealed',receipt_sha256=? WHERE slot_id=? AND attempt_no=? AND state='started'").run(receiptSHA256, slotId, attemptNo);
       if (result.changes !== 1) throw new Error('attempt is not awaiting a receipt');
