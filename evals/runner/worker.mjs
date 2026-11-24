@@ -34,14 +34,16 @@ function activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerCo
   } finally { db.close(); }
 }
 
-export function operationalError(ledger, attemptPrefix) {
+export function operationalError(ledger, attemptPrefix, failure) {
   const stopped = ledger.totals().stopped;
   if (stopped) return boundaryRefusalReason(stopped);
-  const prefix = `${attemptPrefix}/`;
-  const refusal = ledger.db.prepare('SELECT reason FROM local_refusal WHERE substr(logical_id,1,?)=? ORDER BY rowid DESC LIMIT 1').get(prefix.length, prefix);
-  if (refusal) return boundaryRefusalReason(refusal.reason);
-  const physical = ledger.db.prepare('SELECT http_status FROM physical WHERE substr(id,1,?)=? ORDER BY rowid DESC LIMIT 1').get(prefix.length, prefix);
-  return physical && Number.isInteger(physical.http_status) && physical.http_status >= 400 ? 'provider_failure' : 'harness_exception';
+  if (failure && ['config_error', 'budget_exhausted'].includes(failure.code) &&
+      ['campaign_budget', 'binding_mismatch', 'provider_denied', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted'].includes(failure.reason)) return failure.reason;
+  if (failure?.code === 'llm_call_failed' && ['transient_error', 'request_error'].includes(failure.reason) && typeof failure.callId === 'string') {
+    const row = ledger.db.prepare('SELECT http_status,state FROM physical WHERE logical_id=? ORDER BY rowid DESC LIMIT 1').get(`${attemptPrefix}/${failure.callId}`);
+    if (row && (row.http_status >= 400 || (row.http_status === 200 && row.state === 'unknown'))) return 'provider_failure';
+  }
+  return 'unclassified';
 }
 
 // This internal worker receives paths and expected metadata only; provider
@@ -49,7 +51,7 @@ export function operationalError(ledger, attemptPrefix) {
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
   const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
-  const { TransportAdmissionError } = await import('../../dist/llm/transport-admission.js');
+  const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros });
   try {
     // The campaign supervisor runs one review attempt at a time. An open row
@@ -59,6 +61,7 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
     const caseConfigBytes = readFileSync(outsideCheckout(caseConfig));
     if (!/^[a-f0-9]{64}$/u.test(caseConfigSHA256 ?? '') || createHash('sha256').update(caseConfigBytes).digest('hex') !== caseConfigSHA256) throw bindingError();
     const bounds = await workerBounds(caseConfig, caseConfigBytes, attemptPrefix);
+    let failure;
     const authenticated = workerToken !== undefined || supervisorPath !== undefined
       ? activateWorker({ supervisorPath, attemptPrefix, ledgerBinding, workerConfigSHA256, workerToken }) : false;
     if ((workerToken !== undefined || supervisorPath !== undefined) && !authenticated) throw bindingError();
@@ -90,8 +93,10 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    const result = await runCase(caseConfig, { fetchForCall, caseConfigBytes, outputOverride: bounds.outputDir });
-    return result.status === 'error' ? { ...result, operationalError: operationalError(ledger, attemptPrefix) } : result;
+    const result = await runCase(caseConfig, { fetchForCall, caseConfigBytes, outputOverride: bounds.outputDir, onFailure(error) {
+      if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
+    } });
+    return result.status === 'error' ? { ...result, operationalError: operationalError(ledger, attemptPrefix, failure) } : result;
   } finally { ledger.close(); }
 }
 

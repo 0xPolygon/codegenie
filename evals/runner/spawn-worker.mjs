@@ -45,7 +45,7 @@ export async function spawnAttempt({ supervisor, slotId, attemptNo, configFile, 
         if (result.caseName !== bounds.caseName || !['pass', 'fail', 'error'].includes(result.status) || typeof result.runDir !== 'string') throw new Error('invalid');
         const runDir = outsideCheckout(result.runDir);
         if (!runDir.startsWith(bounds.outputDir + path.sep)) throw new Error('wrong attempt output');
-        const allowed = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'provider_failure', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'harness_exception'];
+        const allowed = ['campaign_budget', 'binding_mismatch', 'provider_denied', 'provider_failure', 'accounting_failed', 'campaign_stopped', 'boundary_not_admitted', 'unclassified'];
         if (result.status === 'error' && !allowed.includes(result.error)) throw new Error('missing operational error');
         resolve({ caseName: result.caseName, status: result.status, runDir, ...(result.status === 'error' ? { error: result.error } : {}) });
       } catch { reject(new Error('invalid worker result')); }

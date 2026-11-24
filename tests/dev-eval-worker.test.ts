@@ -23,10 +23,14 @@ describe("development eval worker", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-worker-error-"));
     try {
       const ledger = new CampaignLedger(path.join(dir, "ledger"), { binding: "synthetic", limitMicros: 2_000_000 });
-      expect(operationalError(ledger, 'slot/attempt-01')).toBe('harness_exception');
+      expect(operationalError(ledger, 'slot/attempt-01')).toBe('unclassified');
       ledger.reservePhysical({ id: 'slot/attempt-01/mc-1/physical-1', logicalId: 'slot/attempt-01/mc-1', kind: 'initial', provider: 'openrouter' });
-      ledger.settlePhysical({ id: 'slot/attempt-01/mc-1/physical-1', httpStatus: 503 });
-      expect(operationalError(ledger, 'slot/attempt-01')).toBe('provider_failure'); ledger.close();
+      ledger.reservePhysical({ id: 'slot/attempt-01/mc-2/physical-1', logicalId: 'slot/attempt-01/mc-2', kind: 'initial', provider: 'openrouter' });
+      ledger.settlePhysical({ id: 'slot/attempt-01/mc-2/physical-1', httpStatus: 200, providerCostMicros: 1, costConfirmed: true });
+      ledger.settlePhysical({ id: 'slot/attempt-01/mc-1/physical-1', httpStatus: 200 });
+      expect(operationalError(ledger, 'slot/attempt-01', { code: 'llm_call_failed', reason: 'transient_error', callId: 'mc-1' })).toBe('provider_failure');
+      expect(operationalError(ledger, 'slot/attempt-01', { code: 'invalid_args' })).toBe('unclassified');
+      ledger.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   it("keeps unadmitted boundaries and accounting failures distinct from a campaign stop", () => {

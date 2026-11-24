@@ -50,6 +50,8 @@ export type EvalSuite = {
 };
 
 export type EvalRunOptions = {
+  /** Internal observer for an unmodified failure before eval scoring sanitizes it. */
+  onFailure?: (error: unknown) => void;
   judgeReplay?: boolean;
   fetchForCall?: import("../llm/llm-runner.js").CreateRunnerOptions["fetchForCall"];
   cacheOverride?: boolean;
@@ -528,6 +530,7 @@ async function runLiveCase(
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
+    try { options.onFailure?.(error); } catch { /* observation must not alter evaluation */ }
     return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
@@ -627,6 +630,7 @@ async function runRepeatedLiveCase(
     await writeEvalRunInfo(allocated.dir, info);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
+    try { options.onFailure?.(error); } catch { /* observation must not alter evaluation */ }
     return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
