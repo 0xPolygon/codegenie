@@ -11,14 +11,14 @@ const isHash = (value) => /^[a-f0-9]{64}$/u.test(value ?? '');
 const prefixFor = (slot, number) => `${slot}/attempt-${String(number).padStart(2, '0')}`;
 const canonical = (value) => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
-function processStart(pid) {
+export function processStart(pid, { platform = process.platform, read = readFileSync, run = execFileSync } = {}) {
   try {
-    if (process.platform === 'linux') {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'), close = stat.lastIndexOf(')');
+    if (platform === 'linux') {
+      const stat = read(`/proc/${pid}/stat`, 'utf8'), close = stat.lastIndexOf(')');
       const start = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/u)[19] : undefined;
       return /^\d+$/u.test(start ?? '') ? start : null;
     }
-    if (process.platform === 'darwin') return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+    if (platform === 'darwin') return run('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { TZ: 'UTC0', LC_ALL: 'C' } }).trim() || null;
   } catch { /* Ambiguous process identity stays blocked. */ }
   return null;
 }

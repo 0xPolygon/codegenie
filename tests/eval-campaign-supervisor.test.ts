@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { CampaignLedger } from '../evals/runner/ledger.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { CampaignSupervisor } from '../evals/runner/supervisor.mjs';
+import { CampaignSupervisor, processStart } from '../evals/runner/supervisor.mjs';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const claim = (supervisor: { db: { prepare(sql: string): { run(...values: unknown[]): void } } }, slot: string, number: number) => supervisor.db.prepare("INSERT INTO worker_claim(slot_id,attempt_no,config_sha256,token_sha256,activated,spawn_state) VALUES(?,?,?,?,?,'exited')").run(slot, number, 'a'.repeat(64), 'b'.repeat(64), 1);
@@ -21,6 +21,14 @@ function prepareProbe(ledger: { reservePhysical(args: object): void; settlePhysi
   ledger.recordHealth({ physicalId: id, outcome: 'clean', observedMs: startedAtMs + 1, evidenceSHA256: digest(id) });
 }
 describe('campaign admission custody', () => {
+  it('pins macOS process-start formatting across parent time-zone changes', () => {
+    const run = vi.fn((_file: string, _args: string[], options: { env: Record<string, string> }) => `${options.env.TZ}/${options.env.LC_ALL}`);
+    try {
+      vi.stubEnv('TZ', 'America/Toronto'); const first = processStart(123, { platform: 'darwin', run });
+      vi.stubEnv('TZ', 'Pacific/Auckland'); const second = processStart(123, { platform: 'darwin', run });
+      expect(first).toBe('UTC0/C'); expect(second).toBe(first); expect(run).toHaveBeenCalledTimes(2);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it('revalidates the first failed receipt after a successful retry on restart', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-supervisor-successful-retry-'));
     try {
