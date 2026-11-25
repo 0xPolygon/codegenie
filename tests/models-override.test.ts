@@ -92,8 +92,11 @@ describe("OpenAI Responses tool and effort framing", () => {
         expect(bodies.length, updated.errorMessage).toBe(beforeCount + 2);
         const before = bodies.at(-2)!;
         const after = bodies.at(-1)!;
-        expect(before.reasoning.effort).toBe(chatGPTSignIn ? wireEffort : "medium");
-        expect(before.input.some(item => item.type === "configuration_update")).toBe(!chatGPTSignIn);
+        // Pi pins Codex to the initial (high) effort. Later selections still use an update.
+        expect(before.reasoning.effort).toBe(codex ? "high" : chatGPTSignIn ? wireEffort : "medium");
+        expect(before.input.some(item => item.type === "configuration_update")).toBe(
+          !chatGPTSignIn && (!codex || selected !== "high")
+        );
         if (!codex) {
           expect(before.max_output_tokens).toBe(chatGPTSignIn ? undefined : 8192);
         }
