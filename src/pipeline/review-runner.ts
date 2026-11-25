@@ -226,7 +226,7 @@ export async function runReview(
     if (services.runner.stageModels) {
       run.telemetry.event({ stage: 0, level: "info", message: "stage_models", data: { models: services.runner.stageModels } });
     }
-    const dossier = await buildPlannerDossier(resolved, kept, fileFacts, decisions, repoIndex, config, run.telemetry, {
+    const dossier = await buildPlannerDossier(resolved, kept, fileFacts, decisions, repoIndex, run.telemetry, {
       lenses: services.lenses,
       allFiles: diff.files
     });
@@ -269,7 +269,7 @@ export async function runReview(
     if (isToolsHost(repoIndex.tools)) {
       repoIndex.tools.bindPackets(packets);
     }
-    const packetResults = await runLensPackets(plannerResult.plan, packets, repoIndex.tools, config, run.telemetry, {
+    const packetResults = await runLensPackets(packets, repoIndex.tools, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
       lensRegistry: services.lensRegistry,

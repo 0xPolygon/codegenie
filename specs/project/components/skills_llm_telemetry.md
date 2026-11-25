@@ -231,7 +231,7 @@ The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md
 
 #### Provider Protocol Matrix (plan 86)
 
-codegenie's normalized interface maps the submit tool choice onto vendor dialects inside `pi-runner` (`mapProviderToolChoice`); every call, forced or not, goes through Pi's simple path, so Pi maps the reasoning level onto each provider's wire fields (#74-#77). Each model call records the tool-choice protocol and the requested reasoning level (`toolChoiceRequested/Effective/Downgraded`, `reasoningRequested/Configured/Selected` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
+Codegenie's normalized interface maps the submit tool choice onto vendor dialects inside `pi-runner` (`mapProviderToolChoice`). Every call goes through Pi's simple path, where Pi maps the reasoning level onto each provider's wire fields (#74–#77). Each model call records the tool-choice protocol and reasoning (`toolChoiceRequested/Effective/Downgraded`, `reasoningRequested/Configured/Selected` in `model-calls.jsonl`). The once-per-model `provider_protocol` event records `firstRequestEffort`, the first request's selected effort before forced-submit thinking rules apply. The first downgrade emits `tool_choice_downgraded`. Downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
 
 | API family | Forced submit tool choice | Reasoning on forced submits | Notes |
 | --- | --- | --- | --- |

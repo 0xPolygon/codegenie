@@ -8,7 +8,6 @@ import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
   LlmSchemaRepairInput,
-  LlmStructuredRequest,
   LlmSubmitFailureClassification,
   PiToolCall
 } from "./llm-runner.js";
@@ -126,22 +125,6 @@ export function normalizeStage7Submit(value: unknown) {
   }
   const { noFindingReason: _empty, ...normalized } = value;
   return { value: normalized, removedFields: ["noFindingReason"], reason: "empty_reason_with_findings" };
-}
-
-export function stage7SubmitRepairDecision(
-  request: LlmStructuredRequest<unknown>,
-  submitCall: PiToolCall,
-  cause: unknown,
-  candidateDraftedBeforeSubmit: boolean
-): Stage7SubmitRepairDecision | undefined {
-  if (request.stage !== 7) {
-    return undefined;
-  }
-  return stage7SubmitRepairDecisionFromParts(
-    submitCall,
-    cause instanceof Error ? cause.message : String(cause),
-    candidateDraftedBeforeSubmit
-  );
 }
 
 export function stage7SubmitRepairDecisionFromParts(

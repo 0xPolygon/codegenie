@@ -81,7 +81,6 @@ describe("Plan 101 language-skill semantic fixtures", () => {
         facts,
         decisions,
         index,
-        defaultConfig,
         telemetry,
         { lenses: registry.enabledLenses() }
       );

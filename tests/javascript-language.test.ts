@@ -57,7 +57,6 @@ describe("Plan 98 JavaScript vertical slice", () => {
       facts,
       decisions,
       index,
-      defaultConfig,
       telemetry,
       { lenses: lenses.enabledLenses() }
     );

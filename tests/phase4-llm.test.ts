@@ -3064,6 +3064,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map(call => call.reasoningPolicy)).toEqual([
       enabled ? "one_level_lower" : "configured", enabled ? "one_level_lower" : "configured", "lowest_supported"
     ]);
+    expect(telemetry.events.filter(event => event.message === "provider_protocol")).toEqual([
+      expect.objectContaining({ stage: 10, data: expect.objectContaining({ firstRequestEffort: expected }) })
+    ]);
     expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
       provider: { reasoningConfigured: "max", reasoning: expected }
     });

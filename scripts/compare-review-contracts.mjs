@@ -35,9 +35,10 @@ const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function capture(dist) {
   const load = (relative) => import(pathToFileURL(path.resolve(dist, relative)));
   const [{ defaultConfig }, { parseDiff }, { createPromptBuilder }, { createPiRunner }, { runLensPackets },
-    { clarifyFindingLocations }, { verifyFindings }, { dedupeRankAndComposeReview }] = await Promise.all([
+    { clarifyFindingLocations }, { verifyFindings }, { dedupeRankAndComposeReview }, { buildPlannerDossier, runPlanner }] = await Promise.all([
     load("config/schema.js"), load("git/diff-parser.js"), load("skills/prompt-builder.js"), load("llm/pi-runner.js"),
-    load("pipeline/lens-runner.js"), load("pipeline/finding-location.js"), load("pipeline/verifier.js"), load("pipeline/composer.js")
+    load("pipeline/lens-runner.js"), load("pipeline/finding-location.js"), load("pipeline/verifier.js"), load("pipeline/composer.js"),
+    load("pipeline/planner.js")
   ]);
   const diff = parseDiff(rawDiff), hunk = diff.files[0].hunks[0];
   const packet = {
@@ -73,8 +74,8 @@ async function capture(dist) {
       adapter: {
         resolveModel: () => ({ provider: "fixture", id: "fixture", raw: { id: "fixture", api: "fixture" } }),
         validateToolCall,
-        async complete(_model, context, { submitToolName }) {
-          contexts.push({ submitToolName, ...structuredClone(context) });
+        async complete(_model, context, { submitToolName, reasoning, toolChoice }) {
+          contexts.push({ submitToolName, reasoning, toolChoice, ...structuredClone(context) });
           assert(drafts.length, `Unexpected call for ${name}`);
           return { role: "assistant", provider: "fixture", model: "fixture", content: [drafts.shift()], stopReason: "toolUse", timestamp: 0 };
         }
@@ -85,23 +86,42 @@ async function capture(dist) {
     assert.deepEqual(calls.map(({ kind }) => kind), expected, name);
     assert.equal(calls.length, contexts.length, name);
     for (const [index, { request, kind, stage }] of calls.entries()) {
-      const { messages, tools, submitToolName } = contexts[index];
+      const { messages, tools, submitToolName, reasoning, toolChoice } = contexts[index];
       const schema = tools.find(tool => tool.name === submitToolName)?.parameters;
       assert(schema, `Missing submit schema in ${name} ${kind}`);
       captures[`${name}/${kind}`] = {
         stage, version: request.promptTemplateVersion, schemaVersion: request.schemaVersion, promptHash: request.promptHash,
+        reasoning, toolChoice,
         messages: JSON.stringify(messages.map(({ timestamp: _timestamp, ...message }) => message)),
         submit: JSON.stringify(schema), tools: JSON.stringify(tools),
         toolSchemas: JSON.stringify(tools.map(({ name, parameters }) => ({ name, parameters })))
       };
     }
   }
+  await exercise("plan", [
+    call("invalid-plan", "submit_plan", { coverage: "unexpected shape" }),
+    call("plan", "submit_plan", plan)
+  ], ["initial", "repair"], async (runner, telemetry) => {
+    const resolved = { mode: "branch", headSha: "fixture-head", commits: [] };
+    const repoIndex = { symbolFacts: [], staticSignals: [] };
+    const args = [resolved, diff.files, [], [], repoIndex];
+    // Older compiled baselines accepted an unused config argument.
+    assert([6, 7].includes(buildPlannerDossier.length));
+    const dossier = await buildPlannerDossier(...args,
+      ...(buildPlannerDossier.length === 7 ? [defaultConfig] : []), telemetry);
+    const result = await runPlanner(dossier, defaultConfig, telemetry,
+      { runner, promptBuilder: createPromptBuilder(registry), lenses: [], skills: [] });
+    assert.equal(result.plan.diffUnderstanding.declaredIntent, plan.diffUnderstanding.declaredIntent);
+  });
   for (const toolSurface of ["current", "six"]) {
     const baseConfig = structuredClone(defaultConfig);
     const config = { ...baseConfig, review: { ...baseConfig.review, toolSurface, verify: true, concurrency: 1 } };
     const promptBuilder = createPromptBuilder(registry, { toolSurface });
     const packetRun = (selected) => async (runner, telemetry) => {
-      const [result] = await runLensPackets(plan, [selected], repository, config, telemetry, { runner, promptBuilder, lensRegistry: registry, diff });
+      // Older compiled baselines accepted an unused plan argument.
+      assert([5, 6].includes(runLensPackets.length));
+      const [result] = await runLensPackets(...(runLensPackets.length === 6 ? [plan] : []),
+        [selected], repository, config, telemetry, { runner, promptBuilder, lensRegistry: registry, diff });
       assert.equal(result?.status, "completed");
     };
 
