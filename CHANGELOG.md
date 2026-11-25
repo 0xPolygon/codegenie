@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.8
+
+### Changed
+
+- Stage 10 classifies rejected composer submissions from structured validation diagnostics. A length error counts as `summary_overflow` only when it targets the top-level summary, and missing findings and misplaced source citations get their own labels. The `missing_summary` and `missing_composed_findings_parameter` failure reasons are retired. [#466](https://github.com/0xPolygon/codegenie/issues/466) · [PR #470](https://github.com/0xPolygon/codegenie/pull/470)
+
+### Removed
+
+- `review.adaptiveSecondPass` was removed (an experimental opt-in, off by default). A blind campaign found no recall gain from the extra Stage 7 passes. Configs that set it now fail validation with an unknown-key error; delete the key. [#248](https://github.com/0xPolygon/codegenie/issues/248) · [PR #479](https://github.com/0xPolygon/codegenie/pull/479)
+
+### Development
+
+- The development-only eval runner keeps a bounded, redacted health-probe diagnostic and shares its transport checks with planner captures. The npm package excludes `evals/`. [#461](https://github.com/0xPolygon/codegenie/issues/461) · [PR #471](https://github.com/0xPolygon/codegenie/pull/471) · [PR #474](https://github.com/0xPolygon/codegenie/pull/474)
+
 ## 0.9.7
 
 ### Fixed
