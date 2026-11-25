@@ -150,8 +150,8 @@ describe("forced submits over Amazon Bedrock (#47)", () => {
 // captured at a blocked fetch instead (Codex compresses it with zstd).
 describe("forced submits on Responses APIs carry the native tool_choice", () => {
   it.each([
-    { provider: "openai", model: "gpt-4" },
-    { provider: "azure", model: "gpt-4" },
+    { provider: "openai", model: "gpt-6-luna" },
+    { provider: "azure", model: "gpt-6-luna" },
     { provider: "openai-codex", model: "gpt-5.6-sol" }
   ])("$provider/$model sends tool_choice for the submit tool", async ({ provider, model }) => {
     const home = mkdtempSync(path.join(tmpdir(), "codegenie-forced-responses-"));

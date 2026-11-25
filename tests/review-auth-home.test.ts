@@ -67,7 +67,9 @@ describe("resolved auth home", () => {
       const options = { repoRoot: repo, homeOverride: home, env: {}, writeOutput: () => undefined };
       if (entrypoint === "review") {
         const parsed = parseReviewCommand(["review", "--base", base, "--head", head], options);
-        await expect(executeReviewCommand(parsed, options)).rejects.toMatchObject({ code: "llm_call_failed" });
+        await expect(executeReviewCommand(parsed, options)).resolves.toMatchObject({
+          review: { coverage: { partial: true } }
+        });
       } else {
         writeFileSync(path.join(suite, "case.yml"), JSON.stringify({
           name: "live-auth", repo: { external: repo }, command: { base, head }, logs: { dir: logs },
