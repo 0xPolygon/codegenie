@@ -41,3 +41,14 @@ it('verifies per-call packet assignments, rejecting swaps, omissions and duplica
   debug.set('mc-location', { request: { promptTemplateVersion: 'location-clarification-v1' } });
   expect(() => verify(calls, [...modelCalls, { callId: 'mc-location', kind: 'initial', stage: 7, candidateId: 'candidate', workerId: 'location-candidate' } as typeof modelCalls[number]])).not.toThrow();
 });
+
+it('joins two initial calls on the same packet by call ID, including an adaptive pass', () => {
+  const bindings = derivePacketTemplates([packet('shortened', true)]);
+  const calls = ['mc-1', 'mc-2'].map((callId) => ({ callId, packetId: 'shortened', kind: 'initial', templateVersion: 'p7.17' }));
+  const modelCalls = calls.map(({ callId, packetId, kind }) => ({ callId, packetId, kind, stage: 7 }));
+  const verify = (observed = calls) => verifyPacketCalls({ bindings, packetIds: ['shortened'], calls: observed, modelCalls,
+    readDebug: () => ({ request: { promptTemplateVersion: 'p7.17' } }) });
+  expect(() => verify()).not.toThrow();
+  expect(() => verify([calls[0]!, { ...calls[1]!, callId: calls[0]!.callId }])).toThrow('packet call evidence mismatch');
+  expect(() => verify([calls[0]!])).toThrow('packet call evidence mismatch');
+});

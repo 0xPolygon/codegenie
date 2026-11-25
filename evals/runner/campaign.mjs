@@ -14,6 +14,7 @@ import { exportFirstLock, revealPairing } from './blind-export.mjs';
 import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
 import { validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
 import { readCheckedFile } from './safe-read.mjs';
+import { validateReviewOverride } from './review-override.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -86,9 +87,15 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   const schedule = JSON.parse(scheduleBytes.toString('utf8'));
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
   const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots);
+  const bindsReview = schedule.slots.some((slot) => slot?.workerConfig?.reviewOverride !== undefined);
   const roots = new Map(), reviewInputRoots = [];
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
+    if (bindsReview) {
+      validateReviewOverride(wc?.reviewOverride);
+      const arm = slot.blind?.arm;
+      if (!blindInputs || !['control', 'treatment'].includes(arm) || wc.reviewOverride.adaptiveSecondPass !== (arm === 'treatment')) throw new Error('campaign arm review override mismatch');
+    }
     if (slot.blind !== undefined) {
       const packetCalls = wc?.expectedCalls?.filter((call) => call.stage === 7 && call.purpose !== 'location_clarification');
       if (!['control', 'treatment'].includes(slot.blind.arm) || !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') ||
@@ -243,7 +250,8 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     }
     if (result.status === 'worker_failed') return { action: 'reconcile', slot: slot.id, reason: result.error };
     let recoveredResets;
-    try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds, priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
+    try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds,
+      reviewOverride: slot.workerConfig.reviewOverride, priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
     catch (error) {
       if (error instanceof RecoveredResetLimitError) recoveredResets = error.recoveredResets;
       else {
@@ -312,7 +320,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         } });
       return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
         caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator, causes: oracles.cases.find((item) => item.caseId === slot.caseId).causes,
-        evidence: { outcome: run.outcome?.status, hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
+        evidence: { outcome: run.outcome?.status, screenAdaptiveMarkers: bindsReview, hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
           candidates: read('stages/09-verification/candidate-findings.json'), promotion: read('stages/09-verification/uncertainty-promotion.json'),
           verification: read('stages/09-verification/verification.json'), finalReview: read('final-review.json') } };
     });
