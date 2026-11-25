@@ -29,6 +29,8 @@ An HTTP-200 stream with unknown billing is not by itself evidence of a provider 
 
 When a health probe exposes a provider error message, the campaign step reports its credential-redacted excerpt and `diagnosticSHA256`. The matching `health_diagnostic` receipt in the private evidence directory binds that excerpt to the physical request, HTTP status and stream terminal. Admission still uses the separate health receipt.
 
+For a blind adaptive-second-pass campaign, bind `workerConfig.reviewOverride: { adaptiveSecondPass: false }` on every control slot and `true` on every treatment slot. This is the only supported override key. The worker applies it as the final case review setting, records it in the private attempt binding, and the supervisor checks Stage 7 telemetry before selecting or exporting the attempt.
+
 Worker recovery is local to the recorded host. On Linux, PID-based recovery also requires the recorded PID namespace to match; on macOS it assumes a single host. If process identity or exit cannot be verified, the attempt remains blocked for reconciliation.
 
 Sealed attempt trees are read-only to prevent accidental artifact changes. Exports must be written elsewhere; removing an attempt tree later requires restoring its owner's write permission first (for example, `chmod -R u+w`).
