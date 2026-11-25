@@ -51,6 +51,7 @@ type CommanderReviewOptions = {
   provider?: string;
   model?: string;
   reasoning?: string;
+  adaptiveThinking?: boolean;
   compositionReasoningStepDown?: boolean;
   skipSvgReview?: boolean;
   format?: string;
@@ -96,6 +97,8 @@ export function parseReviewCommand(
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model as [provider/]model[:reasoning]. Exact IDs on the configured provider take precedence. Use --provider to choose explicitly.")
     .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
+    .option("--adaptive-thinking", "use automatic reasoning step-downs (default)")
+    .option("--no-adaptive-thinking", "use the configured stage reasoning on every call")
     .option("--skip-svg-review", "skip SVG files during review (default)")
     .option("--no-skip-svg-review", "include SVG files in review, subject to other exclusion rules")
     .option("--composition-reasoning-step-down", "use the next lower supported reasoning level for composition only")
@@ -340,6 +343,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   }
   if (options.reasoning !== undefined) {
     cli.reasoning = parseReasoningLevel(options.reasoning, "--reasoning");
+  }
+  if (options.adaptiveThinking !== undefined) {
+    cli.adaptiveThinking = options.adaptiveThinking;
   }
   if (options.compositionReasoningStepDown !== undefined) {
     cli.compositionReasoningStepDown = options.compositionReasoningStepDown;

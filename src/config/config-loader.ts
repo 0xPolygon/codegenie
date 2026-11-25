@@ -27,6 +27,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 
 export type CliConfigOverrides = {
   budgetBoost?: number;
+  adaptiveThinking?: boolean;
   compositionReasoningStepDown?: boolean;
   skipSvgReview?: boolean;
   maxTimeMs?: number;
@@ -59,6 +60,7 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
   "review.verify",
+  "review.adaptiveThinking",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
   "review.maxFindings",
@@ -84,7 +86,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["maxFindings", "softCommentCap", "budgetBoost", "maxTime", "adaptiveThinking", "compositionReasoningStepDown", "skipSvgReview"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -263,6 +265,10 @@ function applyRawConfig(
     config.review.perPassTimeoutMs = raw.review.perPassTimeoutMs;
     sources["review.perPassTimeoutMs"] = source;
   }
+  if (raw.review?.adaptiveThinking !== undefined) {
+    config.review.adaptiveThinking = raw.review.adaptiveThinking;
+    sources["review.adaptiveThinking"] = source;
+  }
   if (raw.review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = source;
@@ -379,6 +385,9 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     }
     if (raw.review.softCommentCap !== undefined) {
       safe.review.softCommentCap = raw.review.softCommentCap;
+    }
+    if (raw.review.adaptiveThinking !== undefined) {
+      safe.review.adaptiveThinking = raw.review.adaptiveThinking;
     }
     if (raw.review.compositionReasoningStepDown !== undefined) {
       safe.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
@@ -502,6 +511,10 @@ function applyCliOverrides(
   cli: CliConfigOverrides,
   sources: Record<string, ConfigSource>
 ): void {
+  if (cli.adaptiveThinking !== undefined) {
+    config.review.adaptiveThinking = cli.adaptiveThinking;
+    sources["review.adaptiveThinking"] = "cli";
+  }
   if (cli.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = "cli";

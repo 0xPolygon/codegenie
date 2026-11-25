@@ -235,7 +235,7 @@ describe('campaign driver', () => {
         const arm = scenario === 'treatment' || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
         const blinded = ['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario);
         const packetTemplates = packetIds.map((packetId: string) => ({ packetId, templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16'])) }));
-        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { packetTemplates } : {}) } };
+        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { packetTemplates } : {}), ...(scenario === 'treatment' ? { reviewOverride: { adaptiveThinking: false } } : {}) } };
       });
       const schedule = Buffer.from(JSON.stringify({ ...(scenario === 'checkpoint' ? { pauseAfterSlot: 'slot-08' } : {}), slots }));
       const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
@@ -253,6 +253,13 @@ describe('campaign driver', () => {
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
       if (scenario === 'treatment') {
+        const wrongArmSchedule = JSON.parse(schedule.toString('utf8'));
+        wrongArmSchedule.slots[0].workerConfig.reviewOverride.adaptiveThinking = true;
+        const wrongArmBytes = Buffer.from(JSON.stringify(wrongArmSchedule)), wrongArmPath = path.join(dir, 'wrong-arm-schedule.json'); writeFileSync(wrongArmPath, wrongArmBytes);
+        const wrongArmConfig = { ...JSON.parse(config.toString('utf8')), schedulePath: wrongArmPath, scheduleSHA256: sha(wrongArmBytes) };
+        const wrongArmConfigBytes = Buffer.from(JSON.stringify(wrongArmConfig)), wrongArmFile = path.join(dir, 'wrong-arm-campaign.json'); writeFileSync(wrongArmFile, wrongArmConfigBytes);
+        await expect(openCampaign(wrongArmFile, sha(wrongArmConfigBytes), { fetchImpl, models })).rejects.toThrow('campaign arm review override mismatch');
+        expect({ gets, healthPosts }).toEqual({ gets: 0, healthPosts: 0 });
         const swappedSchedule = JSON.parse(schedule.toString('utf8'));
         swappedSchedule.slots[0].workerConfig.packetTemplates[0].templates.initial = 'retired-template';
         const swappedBytes = Buffer.from(JSON.stringify(swappedSchedule)), swappedPath = path.join(dir, 'swapped-schedule.json'); writeFileSync(swappedPath, swappedBytes);
@@ -281,6 +288,12 @@ describe('campaign driver', () => {
           selectedCount++;
           if (scenario === 'stopped') { campaign.ledger.stop('budget_limit'); break; }
           expect(campaign.supervisor.receipts.find(outcome.slot, 1)).toMatchObject({ receipt: { status: 'fail', recoveredResets: 0 } });
+          if (scenario === 'treatment') {
+            const receipt = campaign.supervisor.receipts.find(outcome.slot, 1).receipt;
+            expect(receipt.files.some((entry: { path: string }) => entry.path === 'arm-binding.json')).toBe(true);
+            expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toEqual({ bound: false, observed: false });
+            expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'info.json'), 'utf8')).effectiveConfig.review.adaptiveThinking).toBe(false);
+          }
           if (scenario === 'checkpoint' || scenario === 'arms') {
             const receipt = campaign.supervisor.receipts.find(outcome.slot, 1).receipt;
             const models = readFileSync(path.join(receipt.runDir, 'telemetry/model-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
