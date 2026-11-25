@@ -83,17 +83,22 @@ it('refuses treatment markers with aggregate counts before writing any export', 
 it('permits only source-attested product uses while still refusing pass provenance', async () => {
   // @ts-expect-error Development-only ESM has no emitted types.
   const { projectBlindSheet } = await import('../evals/runner/blind-sheet.mjs');
-  const source = 'const quota = 1;\n// adaptive quota\nconst snippet = "adaptive quota";';
+  const source = 'const quotaLimit = 1;\n// adaptive quotaLimit\nconst snippet = "adaptive quotaLimit";';
   const args = { id: '1'.repeat(24), key: Buffer.alloc(32, 7), caseId: 'case-01', outcome: 'completed_full', screenAdaptiveMarkers: true,
-    attestedSources: { phraseSources: [source], changedCodeSources: [source] }, candidates: [{ id: 'f', title: 'adaptive quota', evidence: { changedCode: 'const snippet = "adaptive quota";' } }], promotion: { decisions: [] }, verification: [], finalReview: {} };
+    attestedSources: { phraseSources: [source], changedCodeSources: [source] }, candidates: [{ id: 'f', title: 'adaptive quotaLimit', evidence: { changedCode: 'const snippet = "adaptive quotaLimit";' } }], promotion: { decisions: [] }, verification: [], finalReview: {} };
   const sheet = projectBlindSheet(args);
-  expect(sheet.discovery.findings[0].title).toBe('adaptive quota');
-  expect(sheet.discovery.findings[0].changedCode).toBe('const snippet = "adaptive quota";');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota in the second pass' }] })).toThrow('treatment markers');
+  expect(sheet.discovery.findings[0].title).toBe('adaptive quotaLimit');
+  expect(sheet.discovery.findings[0].changedCode).toBe('const snippet = "adaptive quotaLimit";');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit in the second pass' }] })).toThrow('treatment markers');
   expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive reasoning' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['const quota=1; // nonadaptive quota'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive quota' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota', evidence: { changedCode: 'unbound adaptive sample' } }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota and treatment arm' }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['const quotaLimit=1; // nonadaptive quotaLimit'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive quotaLimit' }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['const result = 42; // adaptive result'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive result' }] })).toThrow('treatment markers');
+  for (const token of ['baseFeeX', 'MAX_Y', 'fee2', 'service.fee']) {
+    expect(projectBlindSheet({ ...args, attestedSources: { phraseSources: [`// adaptive ${token}`], changedCodeSources: [] }, candidates: [{ id: 'raw-id-123', title: `adaptive ${token}` }] }).discovery.findings[0].title).toBe(`adaptive ${token}`);
+  }
+  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['// adaptive service.fee.extra'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive service.fee' }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit', evidence: { changedCode: 'unbound adaptive sample' } }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit and treatment arm' }] })).toThrow('treatment markers');
 });
 
 it('derives changed-code attestation from the bound git revisions', async () => {

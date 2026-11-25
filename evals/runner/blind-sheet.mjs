@@ -4,19 +4,12 @@ import { createHmac } from 'node:crypto';
 const marker = /\b(?:read_change|read_range|read_definition|find_usages|search_files|list_files|find_definition|find_symbol_mentions|read_symbol|read_diff_blocks|read_file_outline|find_likely_tests|six[-_ ]tool|nine[-_ ]tool|packet-first|arm\s+[abce]|draw[-_ ]+\d+|review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|toolSurface|stage7Prompt|p[579]\.[\w.-]+|openrouter|openai-codex|gpt-6-luna)\b/giu;
 const treatment = /(?:review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|stage7Prompt|p7\.[\w.-]+|\b(?:control|treatment)[\s_-]+arm\b|\barm[\s:=_-]*(?:control|treatment|[ae])\b|\bblind\.arm\b|\\?["']arm\\?["'])/giu;
 const adaptiveTreatment = /\b(?:adaptive(?:[\s_-]?(?:review|secondpass))?|second[\s_-]+pass|pass[\s_-]+2)\b/giu;
-const nonProductNeighbour = /^(?:adaptive|pass|passes|second|first|review|reviews|stage|stages|arm|arms|control|treatment|experiment|experiments|model|models|pipeline|the|and|for|with|from|this|that|their|its|our)$/iu;
-const productIdentifiers = (sources) => {
-  const identifiers = new Set();
-  for (const source of sources) {
-    for (const match of source.matchAll(/\b(?:class|interface|type|enum|function|const|let|var)\s+([A-Za-z_$][\w$]*)|\b([A-Za-z_$][\w$]*)\s*[:=(]/gu)) identifiers.add(match[1] ?? match[2]);
-  }
-  return identifiers;
-};
-const sourceHasPhrase = (source, phrase) => new RegExp(`(?<![\\p{L}\\p{N}_$])${phrase.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}_$])`, 'u').test(source);
+const codeShapedIdentifier = (token) => /(?:[a-z][A-Z]|_|\d|\.)/u.test(token);
+const sourceHasPhrase = (source, phrase) => new RegExp(`(?<![\\p{L}\\p{N}_$.])${phrase.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}_$.])`, 'u').test(source);
 function attestedAdaptiveHits(sheet, attestation) {
   const sources = attestation?.phraseSources, excerpts = attestation?.changedCodeSources;
   if (!Array.isArray(sources) || !Array.isArray(excerpts) || [...sources, ...excerpts].some((source) => typeof source !== 'string')) return 0;
-  const identifiers = productIdentifiers(sources); let allowed = 0;
+  let allowed = 0;
   const walk = (value, field) => {
     if (Array.isArray(value)) { for (const item of value) walk(item, field); return; }
     if (value && typeof value === 'object') { for (const [key, item] of Object.entries(value)) walk(item, key); return; }
@@ -27,11 +20,11 @@ function attestedAdaptiveHits(sheet, attestation) {
       if (!/^adaptive$/iu.test(match[0])) continue;
       if (exactChangedCode) { allowed++; continue; }
       const before = encoded.slice(0, match.index), after = encoded.slice(match.index + match[0].length);
-      const left = before.match(/(?:^|[^\p{L}\p{N}_$])([A-Za-z_$][\w$]{2,})[ \t]+$/u), right = after.match(/^[ \t]+([A-Za-z_$][\w$]{2,})(?![\p{L}\p{N}_$])/u);
+      const left = before.match(/(?:^|[^\p{L}\p{N}_$.])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)[ \t]+$/u), right = after.match(/^[ \t]+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?![\p{L}\p{N}_$.])/u);
       const candidates = [];
       if (left) candidates.push({ token: left[1], phrase: `${left[1]}${before.slice(-before.match(/[ \t]+$/u)[0].length)}${match[0]}` });
       if (right) candidates.push({ token: right[1], phrase: `${match[0]}${right[0]}` });
-      if (candidates.some(({ token, phrase }) => !nonProductNeighbour.test(token) && identifiers.has(token) && sources.some((source) => sourceHasPhrase(source, phrase)))) allowed++;
+      if (candidates.some(({ token, phrase }) => codeShapedIdentifier(token) && sources.some((source) => sourceHasPhrase(source, phrase)))) allowed++;
     }
   };
   walk(sheet); return allowed;
