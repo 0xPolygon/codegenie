@@ -355,7 +355,10 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     outcomes: supervisor.db.prepare('SELECT slot_id,state,receipt_sha256 FROM outcome ORDER BY slot_id').all(),
     polls: ledger.db.prepare('SELECT boundary_id,attempts,pending FROM meter_poll ORDER BY boundary_id').all(),
     snapshots: ledger.db.prepare('SELECT COUNT(*) AS count FROM key_snapshot').get().count }));
-  return { step, exportBlind, reveal, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, releaseCheckpoint() {
+  return { step, exportBlind, reveal, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, verifiedOutcomes() {
+    supervisor.assertDriver();
+    return supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
+  }, releaseCheckpoint() {
     supervisor.assertDriver();
     if (ledger.totals().stopped) throw new Error('campaign stopped');
     ledger.assertRestartSafe(); verifyAllEvidence(ledger, files());
