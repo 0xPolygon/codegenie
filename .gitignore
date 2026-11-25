@@ -1,6 +1,7 @@
 .specs_skill_state/
 reviews/
 .codegenie/runs/
+/runs/
 evals/fixtures/logs/
 node_modules/
 dist/
