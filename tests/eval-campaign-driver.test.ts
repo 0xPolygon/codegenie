@@ -289,6 +289,7 @@ describe('campaign driver', () => {
           if (scenario === 'stopped') { campaign.ledger.stop('budget_limit'); break; }
           expect(campaign.supervisor.receipts.find(outcome.slot, 1)).toMatchObject({ receipt: { status: 'fail', recoveredResets: 0 } });
           if (scenario === 'treatment') {
+            expect(campaign.verifiedOutcomes()).toMatchObject([{ slot_id: outcome.slot, state: 'selected' }]);
             const receipt = campaign.supervisor.receipts.find(outcome.slot, 1).receipt;
             expect(receipt.files.some((entry: { path: string }) => entry.path === 'arm-binding.json')).toBe(true);
             expect(JSON.parse(readFileSync(path.join(receipt.runDir, 'arm-binding.json'), 'utf8'))).toEqual({ bound: false, observed: false });
