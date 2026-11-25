@@ -1,0 +1,111 @@
+# Stages @0xsequence/codegenie on npm on version tags (v*) using npm
+# Trusted Publishing (OIDC) — no long-lived NPM_TOKEN secret. The trusted
+# publisher is STAGE-ONLY (--allow-stage-publish): CI can stage the tarball
+# with provenance, but a package maintainer must approve the stage with 2FA
+# before the version goes live.
+#
+# The build job runs with no OIDC permission; only the stage job holds
+# id-token: write, and it runs no dependency lifecycle scripts.
+#
+# One-time npm-side setup (package owner): register a stage-only trusted
+# publisher for @0xsequence/codegenie pointing at this repository
+# (0xPolygon/codegenie) and this workflow file (release.yml). See RELEASING.md.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {} # default-deny; each job declares its own permissions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: "11.15.1"
+
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          pkg_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "${pkg_version}" != "${tag_version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.ignore-scripts=false
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Upload release files
+        # Everything `files` in package.json names, plus package.json itself.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            package.json
+            README.md
+            LICENSE
+            dist
+            bundled-skills
+            bundled-grammars
+            models.md
+          if-no-files-found: error
+
+  stage:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Required for npm Trusted Publishing (OIDC token exchange) and provenance.
+      id-token: write
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install npm with staged-publishing support
+        # Staged publishing requires npm 11.15.0; pin, never @latest.
+        run: |
+          npm install -g npm@11.15.0
+          npm --version
+
+      - name: Download release files
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-files
+          path: package
+
+      - name: Stage release on npm
+        # No NODE_AUTH_TOKEN and no dependency install: auth happens via the
+        # OIDC trusted-publisher exchange, and this job runs no lifecycle
+        # scripts, so only this step ever sees the staging authority. The
+        # trusted publisher is stage-only — the tarball waits for a
+        # maintainer's 2FA approval (see RELEASING.md) and the version is
+        # reserved at stage time. Provenance is attached automatically.
+        working-directory: package
+        run: npm stage publish --access public
