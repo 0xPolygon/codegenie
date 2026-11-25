@@ -147,7 +147,6 @@ const caseSchema = z
         budgetBoost: positiveNumberSchema.optional(),
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
-        adaptiveSecondPass: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
         verify: z.boolean().optional(),
@@ -882,9 +881,6 @@ function applyCaseReviewConfig(
   }
   if (review?.maxBudgetTokens !== undefined) {
     config.review.maxBudgetTokens = review.maxBudgetTokens;
-  }
-  if (review?.adaptiveSecondPass !== undefined) {
-    config.review.adaptiveSecondPass = review.adaptiveSecondPass;
   }
   if (review?.toolSurface !== undefined) {
     config.review.toolSurface = review.toolSurface;

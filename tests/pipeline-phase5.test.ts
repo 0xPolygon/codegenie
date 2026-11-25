@@ -12,13 +12,11 @@ import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAda
 import { parseDiff } from "../src/git/diff-parser.js";
 import { maybePublishToGitHub } from "../src/github/publisher.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
-import { createModelCallCache } from "../src/llm/model-call-cache.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
-import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
@@ -68,7 +66,6 @@ import type {
 } from "../src/types.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { renderCoverageSummaryLines } from "../src/util/coverage-summary.js";
-import { summarizeAdaptiveReviews } from "../src/util/adaptive-review.js";
 import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 import { textRepository } from "./helpers/text-repository.js";
@@ -121,8 +118,6 @@ describe("phase 5 pipeline regressions", () => {
       ] }, unresolvedConcern: original }];
     const before = structuredClone(verdicts);
     const coverage = fakeCoverage();
-    coverage.adaptiveReviews = summarizeAdaptiveReviews([{ packetId: "supplemental", lenses: [], findings: [], followUpHints: [], uncertainties: [],
-      status: "completed", adaptiveReview: { outcome: "timed_out", attempts: 1, trigger: "concrete_hint" } }])!;
     const artifacts = new Map<string, unknown>();
     let calls = 0;
     const events: Array<{ message: string; data?: unknown }> = [];
@@ -176,10 +171,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.needsHumanAttention).toEqual([{ ...original, question: expected }]);
     if (mode !== "no-findings") {
       expect(result.postingPlan!.reviewBody).toContain(expected);
-      expect(result.postingPlan!.reviewBody).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
     }
     expect(renderMarkdownReview(result)).toContain(expected);
-    expect(renderMarkdownReview(result)).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 4,
       outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
@@ -603,297 +596,7 @@ describe("phase 5 pipeline regressions", () => {
     );
   });
 
-  it.each([1, 3])("caches independent adaptive draws and replays them with concurrency %i", async concurrency => {
-    const repoRoot = initRepo();
-    const telemetry = nullTelemetry();
-    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-draw-test", logger: fakeLogger(), telemetry });
-    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
-    const finding = { title: "Zero-decimal origin token truncates the fee result", severity: "medium", confidence: "medium", path: "app.ts",
-      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }, category: "correctness", evidence: { changedCode: "+bad" },
-      failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.", whyThisMatters: "matters", verification: "test" };
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
-      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
-    ]);
-    let attempts = 0;
-    const adapter: PiAiAdapter = { ...scripted, complete: async (...args) => {
-      attempts++;
-      if (concurrency === 1 && attempts === 2) {
-        const error = new Error("rate limited") as Error & { status: number; headers: Record<string, string> };
-        error.status = 429;
-        error.headers = { "retry-after": "0" };
-        throw error;
-      }
-      return scripted.complete(...args);
-    } };
-    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
-      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const packet = fakePacket();
-    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency } };
-    const run = (adaptive = true) => runLensPackets(fakePlan(), [packet], fakeTools(),
-      { ...cfg, review: { ...cfg.review, adaptiveSecondPass: adaptive } }, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    const primary = await run(false);
-    expect(scripted.calls).toBe(1);
-    expect(primary[0]?.findings).toEqual([]);
-    expect(primary[0]?.passesRun).toBe(1);
-    const cold = await run();
-    expect(scripted.calls).toBe(2);
-    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
-    expect(cold[0]?.findings.map(item => item.title)).toEqual([finding.title]);
-    expect(cold[0]?.passesRun).toBe(2);
-    const warm = await run();
-    expect(scripted.calls).toBe(2);
-    expect(attempts).toBe(concurrency === 1 ? 3 : 2);
-    expect(warm[0]?.findings.map(item => item.title)).toEqual([finding.title]);
-    expect(warm[0]?.passesRun).toBe(2);
-    const uncachedAdapter = scriptedPiAdapter([
-      assistantMessage([toolCall("primary", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
-      assistantMessage([toolCall("adaptive", "submit_review", { findings: [finding], followUpHints: [], uncertainties: [] })])
-    ]);
-    const uncachedRunner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: concurrency }, telemetry,
-      logger: fakeLogger(), runSignal: new AbortController().signal, adapter: uncachedAdapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const uncached = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, telemetry,
-      { runner: uncachedRunner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    expect(uncachedAdapter.calls).toBe(2);
-    expect(uncached[0]?.findings.map(item => item.title)).toEqual([finding.title]);
-  });
-
-  it("keeps adaptive cache identity through identical tool continuations", async () => {
-    const repoRoot = initRepo();
-    const telemetry = nullTelemetry();
-    const cache = await createModelCallCache({ dir: ".codegenie/cache", repoRoot, runFingerprint: "adaptive-continuation", logger: fakeLogger(), telemetry });
-    const read = () => assistantMessage([toolCall("read-1", "read_range", { path: "app.ts", startLine: 1, endLine: 1 })]);
-    const hint = { question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-      files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" };
-    const adapter = scriptedPiAdapter([read(), assistantMessage([toolCall("submit-1", "submit_review", { findings: [], followUpHints: [hint], uncertainties: [] })]),
-      read(), assistantMessage([toolCall("submit-2", "submit_review", { findings: [], followUpHints: [], uncertainties: [] })])]);
-    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }, telemetry,
-      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } };
-    const run = () => runLensPackets(fakePlan(), [fakePacket()], fakeTools("line"), cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    const cold = await run();
-    expect(adapter.calls).toBe(4);
-    expect(cold[0]?.passesRun).toBe(2);
-    expect(cold[0]?.followUpHints).toHaveLength(1);
-    const warm = await run();
-    expect(adapter.calls).toBe(4);
-    expect(warm[0]?.passesRun).toBe(2);
-    expect(warm[0]?.followUpHints).toHaveLength(1);
-  });
-
-  it("runs an adaptive second pass when the first pass emits a concrete near-miss hint (plan 92 T1)", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const callsByPacket = new Map<string, number>();
-    const runner: LlmRunner = {
-      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
-        const packetId = request.telemetryContext?.packetId ?? "";
-        const call = (callsByPacket.get(packetId) ?? 0) + 1;
-        callsByPacket.set(packetId, call);
-        if (packetId === "packet-hint" && call === 1) {
-          return {
-            findings: [],
-            followUpHints: [{
-              question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-              files: ["app.ts"],
-              symbols: [],
-              suggestedLenses: [],
-              reason: "The changed calculation divides by decimals without a zero guard.",
-              confidence: "medium"
-            }],
-            uncertainties: []
-          } as T;
-        }
-        if (packetId === "packet-hint" && call === 2) {
-          return {
-            findings: [{
-              title: "Zero-decimal origin token truncates the fee result",
-              severity: "medium",
-              confidence: "medium",
-              path: "app.ts",
-              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
-              category: "correctness",
-              evidence: { changedCode: "+bad" },
-              failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.",
-              whyThisMatters: "matters",
-              verification: "test"
-            }],
-            followUpHints: [],
-            uncertainties: []
-          } as T;
-        }
-        return { findings: [], followUpHints: [], uncertainties: [] } as T;
-      }
-    };
-
-    const results = await runLensPackets(
-      fakePlan(),
-      [fakePacket({ id: "packet-hint" }), fakePacket({ id: "packet-quiet" })],
-      fakeTools(),
-      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
-    );
-
-    expect(callsByPacket.get("packet-hint")).toBe(2);
-    expect(callsByPacket.get("packet-quiet")).toBe(1);
-    const rescued = results.find((result) => result.packetId === "packet-hint");
-    // Adaptive pass candidates carry the a-marker and the pooled result
-    // records both passes.
-    expect(rescued?.findings.map((finding) => finding.id)).toEqual(["packet-h-a2f1"]);
-    expect(rescued?.passesRun).toBe(2);
-    expect(events).toContainEqual(expect.objectContaining({
-      message: "stage7_adaptive_pass",
-      packetId: "packet-hint",
-      data: expect.objectContaining({ trigger: "concrete_hint", produced: 1 })
-    }));
-  });
-
-  it("pools a candidate found by both the first and adaptive passes exactly once", async () => {
-    const duplicate = {
-      title: "Zero-decimal origin token truncates the fee result",
-      severity: "medium",
-      confidence: "medium",
-      path: "app.ts",
-      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
-      category: "correctness",
-      evidence: { changedCode: "+bad" },
-      failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.",
-      whyThisMatters: "matters",
-      verification: "test"
-    };
-    let calls = 0;
-    const runner: LlmRunner = {
-      runStructured: async <T>() => (++calls === 1 ? {
-        findings: [duplicate],
-        followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-          files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" }],
-        uncertainties: []
-      } : { findings: [duplicate], followUpHints: [], uncertainties: [] }) as T
-    };
-    const packet = fakePacket({ id: "packet-both" });
-    const results = await runLensPackets(fakePlan(), [packet], fakeTools(),
-      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } }, nullTelemetry(),
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-
-    expect(calls).toBe(2);
-    expect(results[0]?.findings.map((finding) => finding.id)).toEqual(["packet-b-f1"]);
-    expect(results[0]?.passesRun).toBe(2);
-    const records = buildAttentionRecords({ packets: [packet], plannedHunkIds: new Set(), packetResults: results,
-      candidateFindings: results[0]!.findings, verdicts: [], publishedFindings: [] });
-    expect(records[0]).toMatchObject({ ensemblePasses: 2, directCandidates: 1 });
-    expect(aggregateAttentionEfficiency(records).byCoverage.normal).toMatchObject({ packets: 1, ensembledPackets: 1 });
-  });
-
-  it.each(["failed", "timeout", "incomplete", "recovered", "not_dispatched", "cancelled", "baseline_failed"] as const)("discloses adaptive %s separately from baseline coverage", async mode => {
-    let calls = 0;
-    const abort = new AbortController();
-    const packet = fakePacket();
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = { runStructured: async <T>() => {
-      calls++;
-      if (mode === "baseline_failed" || mode === "failed" && calls > 1 || mode === "recovered" && calls === 2)
-        throw new CodegenieError("llm_schema_invalid", "Submission failed", { recoverable: true });
-      if (mode === "timeout" && calls > 1)
-        throw new CodegenieError("llm_call_failed", "Pass deadline exhausted", { recoverable: true, context: { reason: "timeout" } });
-      if (calls === 1) {
-        return { findings: [], followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-          files: [packet.path], symbols: [], suggestedLenses: [], reason: "Changed division has no zero guard", confidence: "medium" }], uncertainties: [] } as T;
-      }
-      return { findings: [], followUpHints: [], uncertainties: [], reviewStatus: mode === "incomplete" ? "incomplete" : "no_findings",
-        noFindingReason: mode === "incomplete" ? "Caller evidence could not be established" : "Inspected caller rejects zero precision before division" } as T;
-    } };
-    // Cancellation of the baseline itself is tested by worker-runner; here the
-    // next scheduling wave sees the signal after a successful first pass.
-    const results = await runLensPackets(fakePlan(), [packet], fakeTools(),
-      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
-      { ...nullTelemetry(), event: event => {
-        events.push(event);
-        if (mode === "cancelled" && event.message === "stage7_adaptive_summary") abort.abort(new Error("cancelled after baseline"));
-      } }, { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(),
-        signal: abort.signal, checkpoint: () => mode === "not_dispatched" && calls > 0 ? "exhausted" : "ok" });
-    const coverage = aggregateRunCoverage(fakePlan(), [], results, { incompleteCount: 0 }, nullTelemetry(), { packets: [packet] });
-    const counts = coverage.adaptiveReviews!.counts;
-    if (mode === "baseline_failed") {
-      expect(coverage.partial).toBe(true);
-      expect(counts.scheduled).toBe(0);
-      expect(coverage.failedHunks).toBe(1);
-      return;
-    }
-    expect(coverage.partial).toBe(false);
-    expect(coverage.reviewedHunks).toBe(1);
-    expect(counts.scheduled).toBe(1);
-    expect(counts.completed).toBe(mode === "recovered" ? 1 : 0);
-    expect(counts.completed + counts.incomplete + counts.failed + counts.timedOut + counts.cancelled + counts.notDispatched).toBe(1);
-    expect(counts).toMatchObject(mode === "recovered" ? { retries: 1 } : mode === "failed" ? { failed: 1, retries: 1 }
-      : mode === "timeout" ? { timedOut: 1, failed: 0, retries: 0 }
-      : mode === "incomplete" ? { incomplete: 1 } : mode === "not_dispatched" ? { notDispatched: 1 } : { cancelled: 1 });
-    const report = renderCoverageSummaryLines(coverage).join("\n");
-    expect(report).toContain(`Supplemental investigations:** ${counts.completed}/1 scheduled passes completed`);
-    expect(report).toContain("Baseline hunk coverage is reported separately");
-    expect(events).toContainEqual(expect.objectContaining({ message: "pipeline_metrics", data: expect.objectContaining({ adaptiveReviews: counts }) }));
-    expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ packetId: packet.id, trigger: "concrete_hint" });
-    if (mode === "incomplete") expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ outcome: "completed", reviewStatus: "incomplete" });
-    if (mode === "timeout") {
-      expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ outcome: "failed", failureReason: "timeout", errorCode: "llm_call_failed" });
-      expect(report).toContain("1 timed out");
-      expect(calls).toBe(2); // First pass plus one adaptive attempt; no timeout retry.
-    }
-  });
-
-  it("records adaptive cap omissions without counting them as dispatched failures", async () => {
-    const packets = Array.from({ length: 5 }, (_, index) => fakePacket({ id: `p${index}` }));
-    const results = await runLensPackets(fakePlan(), packets, fakeTools(),
-      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } }, nullTelemetry(), {
-        promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), runner: { runStructured: async <T>() => ({ findings: [], uncertainties: [],
-          followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?", files: ["app.ts"], symbols: [],
-            suggestedLenses: [], reason: "Changed division has no guard", confidence: "medium" }] }) as T }
-      });
-    const coverage = aggregateRunCoverage(fakePlan(), [], results, { incompleteCount: 0 }, nullTelemetry(), { packets });
-    expect(coverage.adaptiveReviews!.counts).toMatchObject({ triggered: 5, scheduled: 4, capped: 1, completed: 4, failed: 0 });
-    expect(coverage.adaptiveReviews!.passes.find(pass => pass.outcome === "capped")).toMatchObject({ attempts: 0 });
-    expect(renderCoverageSummaryLines(coverage).join("\n")).toContain("1 not scheduled (pass cap)");
-  });
-
-  it("does not run adaptive passes when the flag is off (plan 92 default)", async () => {
-    let calls = 0;
-    const runner: LlmRunner = {
-      runStructured: async <T>() => {
-        calls += 1;
-        return {
-          findings: [],
-          followUpHints: [{
-            question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-            files: ["app.ts"],
-            symbols: [],
-            suggestedLenses: [],
-            reason: "The changed calculation divides by decimals without a zero guard.",
-            confidence: "medium"
-          }],
-          uncertainties: []
-        } as T;
-      }
-    };
-    await runLensPackets(
-      fakePlan(),
-      [fakePacket({ id: "packet-hint" })],
-      fakeTools(),
-      { ...config(), review: { ...config().review, concurrency: 1 } },
-      nullTelemetry(),
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
-    );
-    expect(calls).toBe(1);
-  });
-
   it("reviews a deep packet with exactly one Stage-7 draw (#115)", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const calls = new Map<string, number>();
     const runner: LlmRunner = {
       runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
@@ -923,89 +626,14 @@ describe("phase 5 pipeline regressions", () => {
       [{ ...fakePacket({ id: "packet-deep" }), coverage: "deep" }, fakePacket({ id: "packet-normal" })],
       fakeTools(),
       { ...config(), review: { ...config().review, concurrency: 1 } },
-      { ...nullTelemetry(), event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => { events.push(event); } },
+      nullTelemetry(),
       { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
     expect(Object.fromEntries(calls)).toEqual({ "packet-deep": 1, "packet-normal": 1 });
     const deepResult = results.find((result) => result.packetId === "packet-deep");
     expect(deepResult?.status).toBe("completed");
-    expect(deepResult?.passesRun).toBe(1);
     expect(deepResult?.findings.map((finding) => finding.id)).toEqual(["packet-d-f1"]);
-    expect(deepResult?.findings[0]?.producedBy).not.toHaveProperty("ensemblePass");
-    expect(events.map((event) => event.message)).not.toContain("stage7_ensemble");
-  });
-
-  it("preserves item-level projected skill ids when the adaptive pass differs", async () => {
-    let pass = 0;
-    const promptBuilder = {
-      ...fakePromptBuilder(),
-      buildPacketReviewPrompt: () => {
-        pass += 1;
-        const skillId = pass === 1 ? "lang/typescript" : "core/code-review";
-        return {
-          prompt: "",
-          templateVersion: "test",
-          untrustedBlockCount: 0,
-          projection: {
-            text: skillId,
-            totalChars: skillId.length,
-            perSkill: [{ skillId, includedSections: ["checks" as const], chars: skillId.length, truncatedChars: 0, omitted: false }]
-          }
-        };
-      }
-    };
-    let modelPass = 0;
-    const runner: LlmRunner = {
-      runStructured: async <T>() => {
-        modelPass += 1;
-        return {
-          findings: [{
-            title: `Pass ${String(modelPass)} finding`,
-            severity: "medium",
-            confidence: "medium",
-            path: "app.ts",
-            anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
-            category: "correctness",
-            evidence: { changedCode: "+bad" },
-            failureMode: `Concrete failure unique to pass ${String(modelPass)}.`,
-            whyThisMatters: "Callers observe the failure.",
-            verification: "Verify the changed line."
-          }],
-          followUpHints: [{
-            question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-            files: ["app.ts"],
-            symbols: ["changed"],
-            suggestedLenses: [],
-            reason: "The changed calculation divides by decimals without a zero guard.",
-            confidence: "medium"
-          }],
-          uncertainties: [{
-            question: "Can the changed path return an invalid value?",
-            files: ["app.ts"],
-            symbols: ["changed"]
-          }]
-        } as T;
-      }
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({ id: "packet-item-provenance" })],
-      fakeTools(),
-      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
-      nullTelemetry(),
-      { runner, promptBuilder, lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
-    );
-
-    expect(result?.findings.map((finding) => finding.producedBy.skillIds)).toEqual([
-      ["lang/typescript"],
-      ["core/code-review"]
-    ]);
-    expect(result?.followUpHints).toHaveLength(1);
-    expect(result?.followUpHints[0]?.projectedSkillIds).toEqual(["lang/typescript"]);
-    expect(result?.uncertainties).toHaveLength(1);
-    expect(result?.uncertainties[0]?.projectedSkillIds).toEqual(["lang/typescript"]);
   });
 
   it("matches packet results by outcome identity even when dispatch reorders tasks (run 0c4d5213/49)", async () => {
@@ -16770,7 +16398,6 @@ describe("plan 124 source retention and fallback presentation", () => {
   it.each([false, true])("retains successful reads across worker retries without accepting failed submissions (terminal=%s)", async terminal => {
     let calls = 0;
     const cfg = config();
-    cfg.review = { ...cfg.review, adaptiveSecondPass: false };
     const runner: LlmRunner = { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
       const attempt = ++calls;
       const results = [{ id: "read", tool: "read_range", target: "policy.txt", status: "ok" as const, resultChars: 18,
@@ -16882,31 +16509,6 @@ it("does not display synthesis failure for successful or intentional composition
   }
 });
 
-it("retains a failed adaptive pass's reads without leaking first-pass reads into it", async () => {
-  const packet = fakePacket();
-  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } };
-  const read = (text: string) => ({ id: "read", tool: "read_range" as const, target: "guard.txt", status: "ok" as const, resultChars: text.length,
-    repositoryEvidence: [{ id: "read", tool: "read_range" as const, path: "guard.txt", source: "head" as const, text }] });
-  let calls = 0;
-  const [result] = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, nullTelemetry(), {
-    runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-      if (++calls === 1) {
-        request.onToolResults?.([read("first pass observation")]);
-        return { findings: [], followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
-          files: [packet.path], symbols: [], suggestedLenses: [], reason: "Changed division has no zero guard", confidence: "medium" }], uncertainties: [] } as T;
-      }
-      expect(request.prompt).not.toContain("first pass observation");
-      request.onToolResults?.([read("guard rejects expired")]);
-      throw new CodegenieError("llm_schema_invalid", "invalid independent pass", { recoverable: false });
-    } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
-  });
-  expect(calls).toBe(2);
-  expect(result!.status).toBe("completed");
-  expect(result!.findings).toEqual([]);
-  expect(result!.repositoryEvidence!.map(evidence => evidence.text)).toEqual(["first pass observation", "guard rejects expired"]);
-  expect(result!.repositoryEvidence![1]).toMatchObject({ origin: expect.objectContaining({ pass: 2, attempt: 1 }) });
-});
-
 it("keeps different invariants in the same function separate despite adjacent anchors", async () => {
   const a = { ...fakeFinding(), id: "payment", title: "Duplicate charge", failureMode: "Retry charges a completed payment twice.",
     evidence: { changedCode: "charge(invoice);" } };
@@ -16922,7 +16524,7 @@ it("keeps different invariants in the same function separate despite adjacent an
 
 it("keeps repeated provider call IDs distinct across snapshots and retries, including unresolved refusals", async () => {
   let attempts = 0;
-  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: false } };
+  const cfg = config();
   const read = (source: "head" | "base", text: string) => ({ id: "call-0", tool: "read_range", target: "policy.txt", status: "ok" as const,
     resultChars: text.length, repositoryEvidence: [{ id: "call-0", tool: "read_range", path: "policy.txt", source, text }] });
   const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
@@ -16955,7 +16557,7 @@ it("keeps repeated provider call IDs distinct across snapshots and retries, incl
 
 it("retains every ambiguous definition hit across a worker retry with distinct host provenance", async () => {
   let attempts = 0;
-  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: false } };
+  const cfg = config();
   const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
     runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
       const attempt = ++attempts;

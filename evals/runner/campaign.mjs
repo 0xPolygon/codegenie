@@ -14,8 +14,6 @@ import { exportFirstLock, revealPairing } from './blind-export.mjs';
 import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
 import { validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
 import { readCheckedFile } from './safe-read.mjs';
-import { validateReviewOverride } from './review-override.mjs';
-import { inputSources } from './source-attestation.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -88,15 +86,9 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   const schedule = JSON.parse(scheduleBytes.toString('utf8'));
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
   const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots);
-  const bindsReview = schedule.slots.some((slot) => slot?.workerConfig?.reviewOverride !== undefined);
   const roots = new Map(), reviewInputRoots = [];
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
-    if (bindsReview) {
-      validateReviewOverride(wc?.reviewOverride);
-      const arm = slot.blind?.arm;
-      if (!blindInputs || !['control', 'treatment'].includes(arm) || wc.reviewOverride.adaptiveSecondPass !== (arm === 'treatment')) throw new Error('campaign arm review override mismatch');
-    }
     if (slot.blind !== undefined) {
       const packetCalls = wc?.expectedCalls?.filter((call) => call.stage === 7 && call.purpose !== 'location_clarification');
       if (!['control', 'treatment'].includes(slot.blind.arm) || !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') ||
@@ -252,7 +244,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     if (result.status === 'worker_failed') return { action: 'reconcile', slot: slot.id, reason: result.error };
     let recoveredResets;
     try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds,
-      reviewOverride: slot.workerConfig.reviewOverride, priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
+      priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
     catch (error) {
       if (error instanceof RecoveredResetLimitError) recoveredResets = error.recoveredResets;
       else {
@@ -297,7 +289,6 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     }
     const binding = config.blind;
     const { locators, oracles } = validateBlindInputs(binding, supervisor.slots);
-    const sourceCache = new Map();
     const selected = outcomes.filter((row) => row.state === 'selected').map((row) => {
       const slot = supervisor.slots.find((item) => item.id === row.slot_id), location = locators.cases.find((item) => item.caseId === slot?.caseId);
       const found = supervisor.receipts.find(row.slot_id, row.attempt_no);
@@ -313,10 +304,6 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         return [packet.id, ...(Array.isArray(packet.hunks) ? packet.hunks.map((hunk) => hunk.hunkId) : [])];
       });
       if (resolved.headSha !== location.sourceRevision) throw new Error('blind source revision mismatch');
-      const replay = slot.workerConfig.plannerReplayBinding;
-      const sourceKey = `${location.sourceRoot}\0${replay?.baseSHA}\0${location.sourceRevision}`;
-      if (bindsReview && !sourceCache.has(sourceKey)) sourceCache.set(sourceKey, replay?.headSHA === location.sourceRevision
-        ? inputSources({ sourceRoot: location.sourceRoot, baseSHA: replay.baseSHA, headSHA: location.sourceRevision }) : []);
       const packetCalls = JSON.parse(readBytes(path.join(found.receipt.runDir, 'packet-calls.json')).toString('utf8'));
       const modelCalls = readBytes(path.join(root, 'model-calls.jsonl')).toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
       verifyPacketCalls({ bindings: slot.workerConfig.packetTemplates, packetIds: slot.expectedPacketIds, calls: packetCalls, modelCalls,
@@ -326,7 +313,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         } });
       return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
         caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator, causes: oracles.cases.find((item) => item.caseId === slot.caseId).causes,
-        evidence: { outcome: run.outcome?.status, screenAdaptiveMarkers: bindsReview, attestedSources: sourceCache.get(sourceKey), hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
+        evidence: { outcome: run.outcome?.status, hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
           candidates: read('stages/09-verification/candidate-findings.json'), promotion: read('stages/09-verification/uncertainty-promotion.json'),
           verification: read('stages/09-verification/verification.json'), finalReview: read('final-review.json') } };
     });

@@ -981,7 +981,6 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   }
   metrics.planningQuality = artifacts.coverage?.degradedPlanning === undefined ? "unknown"
     : artifacts.coverage.degradedPlanning ? "degraded" : "non-degraded";
-  if (artifacts.coverage?.adaptiveReviews) metrics.adaptiveReviews = { ...artifacts.coverage.adaptiveReviews.counts };
   const recoveryEvents = artifacts.metricsSources.recoveryEvents ?? [];
   const openObligations = new Set<string>();
   let fidelityStarted = false;

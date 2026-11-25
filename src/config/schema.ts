@@ -56,8 +56,7 @@ export const rawConfigSchema = z
         perPassTimeoutMs: positiveIntSchema.optional(),
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
-        maxModelCalls: positiveIntSchema.optional(),
-        adaptiveSecondPass: z.boolean().optional()
+        maxModelCalls: positiveIntSchema.optional()
       })
       .strict()
       .optional(),
@@ -145,8 +144,7 @@ export const codegenieConfigSchema = z
         perPassTimeoutMs: positiveIntSchema,
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
-        maxModelCalls: positiveIntSchema.optional(),
-        adaptiveSecondPass: z.boolean().optional()
+        maxModelCalls: positiveIntSchema.optional()
       })
       .strict(),
     github: z

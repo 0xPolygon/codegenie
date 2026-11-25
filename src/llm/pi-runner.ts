@@ -1553,7 +1553,6 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
     ...wireProtocol,
     stage: request.stage,
-    ...(request.cacheDraw !== undefined ? { cacheDraw: request.cacheDraw } : {}),
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
     schemaVersion: SCHEMA_VERSIONS[submitToolNameForStage(request.stage)],
@@ -1566,9 +1565,6 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     tools
   });
   const promptText = stableJson(canonicalRequest);
-  // Draw identity is local cache metadata, not part of the provider request.
-  const { cacheDraw: _cacheDraw, ...estimateRequest } = canonicalRequest;
-  const estimateText = request.cacheDraw === undefined ? promptText : stableJson(estimateRequest);
   const cacheKey = buildModelCallCacheKey(canonicalRequest);
   const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length, providerPromptCache);
 
@@ -1649,7 +1645,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       if (checkpoint === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
-      estimatedTokens = estimateProviderCallTokens(estimateText);
+      estimatedTokens = estimateProviderCallTokens(promptText);
       if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
         throw budgetExhaustedError(request.stage);
       }
@@ -2193,7 +2189,6 @@ function canonicalModelRequest(input: {
   toolPlacement?: "top_level" | "none";
   configurationUpdate?: false;
   stage: ReviewStage;
-  cacheDraw?: LlmStructuredRequest<unknown>["cacheDraw"];
   templateVersion: string;
   schemaName: string;
   schemaVersion: number;
@@ -2218,7 +2213,6 @@ function canonicalModelRequest(input: {
     ...(input.toolPlacement === undefined ? {} : { toolPlacement: input.toolPlacement }),
     ...(input.configurationUpdate === undefined ? {} : { configurationUpdate: input.configurationUpdate }),
     stage: input.stage,
-    ...(input.cacheDraw !== undefined ? { cacheDraw: input.cacheDraw } : {}),
     templateVersion: input.templateVersion,
     schemaName: input.schemaName,
     schemaVersion: input.schemaVersion,

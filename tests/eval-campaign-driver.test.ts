@@ -157,12 +157,10 @@ describe('campaign driver', () => {
       expect({ gets, posts }).toEqual({ gets: 2, posts: 1 });
     } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); makeWritable(dir); rmSync(dir, { recursive: true, force: true }); }
   }, 90_000);
-  it.each(['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms', 'checkpoint', 'quota', 'adaptive-control', 'adaptive-treatment'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
+  it.each(['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms', 'checkpoint', 'quota'])('completes and reconciles a %s synthetic campaign through the real adapter and child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-success-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unexpected network'); }));
-    const bindsAdaptive = scenario.startsWith('adaptive-'), adaptiveSecondPass = scenario === 'adaptive-treatment';
-    const exportsBlind = bindsAdaptive || ['single', 'positive', 'treatment', 'stopped', 'worker-stop'].includes(scenario);
     try {
       const suiteDir = path.join(dir, 'suite'); cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
       const baselineCase = path.join(dir, 'baseline.json');
@@ -174,7 +172,6 @@ describe('campaign driver', () => {
       const yaml = path.join(suiteDir, 'core.yml');
       let suiteYaml = readFileSync(yaml, 'utf8').replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna\n  reasoning: high\n  compositionReasoningStepDown: false\n  debug: true');
       if (scenario !== 'checkpoint' && scenario !== 'arms') suiteYaml = suiteYaml.replace('verify: true', 'verify: false');
-      if (bindsAdaptive) suiteYaml = suiteYaml.replace('review:\n', `review:\n  adaptiveSecondPass: ${!adaptiveSecondPass}\n`);
       const sharedCache = path.join(dir, 'shared-cache');
       if (scenario === 'checkpoint' || scenario === 'arms') {
         suiteYaml = suiteYaml.replace('cache: false', `cache: true\n  cacheDir: ${sharedCache}`);
@@ -192,7 +189,7 @@ describe('campaign driver', () => {
           hunks: dossier.hunkIndex.flatMap((entry: { path: string; hunkIds: string[] }) => entry.hunkIds.map((hunkId) => ({ path: entry.path, hunkId }))) };
         suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${repo}`);
       }
-      if (exportsBlind || scenario === 'arms') suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${path.join(baseline.runDir, 'fixture-repo')}`);
+      if (['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario)) suiteYaml = suiteYaml.replace('fixture: repos/core', `fixture: ${path.join(baseline.runDir, 'fixture-repo')}`);
       writeFileSync(yaml, suiteYaml);
       const preload = path.join(dir, 'synthetic.mjs');
       writeFileSync(preload, `globalThis.fetch = async (input, init) => {
@@ -202,13 +199,13 @@ describe('campaign driver', () => {
         if (!name) throw new Error('unexpected submit tool');
         if ((${scenario === 'quota'} || (${scenario === 'worker-stop'} && process.argv[2]?.includes('slot-02'))) && name === 'submit_plan') return new Response(JSON.stringify({error:{message:'quota exceeded',type:'insufficient_quota'}}), {status:400,headers:{'content-type':'application/json'}});
         let findings = [];
-        if (name === 'submit_review' && ${scenario === 'checkpoint' || scenario === 'arms' || bindsAdaptive}) {
+        if (name === 'submit_review' && ${scenario === 'checkpoint' || scenario === 'arms'}) {
           const prompt = body.messages.map(x => typeof x.content === 'string' ? x.content : (x.content || []).map(y => y.text || '').join('')).join('\\n');
           const marker = prompt.indexOf('untrusted-data label=review-packet'), start = prompt.indexOf('\\n', marker) + 1, end = prompt.indexOf('\\n'+String.fromCharCode(96).repeat(4), start);
           const packet = JSON.parse(prompt.slice(start, end));
           const hunk = packet.hunks.find(x => x.lines.some(y => y.kind === 'add' && y.newLine));
           const line = hunk.lines.find(x => x.kind === 'add' && x.newLine);
-          findings = ['correctness','security'].map((category, i) => ({ title:'Synthetic issue '+i, severity:'medium', confidence:${JSON.stringify(bindsAdaptive ? 'low' : 'high')}, path:packet.path, anchor:{path:packet.path,line:line.newLine,side:'RIGHT',hunkId:hunk.hunkId}, category, evidence:{changedCode:line.content}, failureMode:'Synthetic failure '+i, whyThisMatters:'Synthetic impact '+i, verification:'Synthetic evidence.' }));
+          findings = ['correctness','security'].map((category, i) => ({ title:'Synthetic issue '+i, severity:'medium', confidence:'high', path:packet.path, anchor:{path:packet.path,line:line.newLine,side:'RIGHT',hunkId:hunk.hunkId}, category, evidence:{changedCode:line.content}, failureMode:'Synthetic failure '+i, whyThisMatters:'Synthetic impact '+i, verification:'Synthetic evidence.' }));
         }
         const value = name === 'submit_plan' ? {diffUnderstanding:{declaredIntent:'fixture',inferredBehavior:'fixture'},coverage:[]} : name === 'submit_review' ? {reviewStatus:findings.length?'findings':'no_findings',...(findings.length?{}:{noFindingReason:'No issue found.'}),findings,followUpHints:[],uncertainties:[]} : name === 'submit_verdict' ? {verdict:'reject',reason:'Synthetic candidate is refuted.',requiredEvidencePresent:false,falsePositiveRisk:'high',proofAssessment:{status:'refuted',evidence:'Synthetic evidence.',assumptions:[]}} : {summary:'No findings.',composedFindings:[],attentionResolutions:[]};
         if (name === 'submit_verdict') await new Promise(resolve => setTimeout(resolve, 75));
@@ -220,7 +217,7 @@ describe('campaign driver', () => {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
       writeFileSync(caseFile, caseBytes);
       let blind;
-      if (exportsBlind) {
+      if (['single', 'positive', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) {
         const sourceRoot = path.join(baseline.runDir, 'fixture-repo');
         const revision = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'feature'], { encoding: 'utf8' }).stdout.trim();
         const oraclePath = path.join(dir, 'oracle.txt'); writeFileSync(oraclePath, 'Synthetic oracle.');
@@ -231,14 +228,14 @@ describe('campaign driver', () => {
       }
       const build = buildDigest(), expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', wireEffort: 'high' };
       const calls = [[5, 'p5.9'], [7, 'p7.16'], [9, 'p9.31'], [10, 'p10.25']].map(([stage, templateVersion]) => ({ ...expected, stage, kind: 'initial', templateVersion }));
-      if (exportsBlind) calls.push({ ...expected, stage: 7, kind: 'initial', purpose: 'location_clarification', templateVersion: 'location-clarification-v1' } as typeof calls[number]);
+      if (['single', 'positive', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) calls.push({ ...expected, stage: 7, kind: 'initial', purpose: 'location_clarification', templateVersion: 'location-clarification-v1' } as typeof calls[number]);
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'case1', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 15_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls: calls, ...(plannerReplayBinding ? { plannerReplayBinding } : {}), integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
       const slots = Array.from({ length: scenario === 'checkpoint' ? 9 : scenario === 'arms' ? 4 : ['stopped', 'worker-stop'].includes(scenario) ? 2 : 1 }, (_, index) => {
         const id = `slot-${String(index + 1).padStart(2, '0')}`, boundaryId = `case${Math.floor(index / 4) + 1}`;
-        const arm = scenario === 'treatment' || adaptiveSecondPass || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
-        const blinded = exportsBlind || scenario === 'arms';
+        const arm = scenario === 'treatment' || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
+        const blinded = ['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario);
         const packetTemplates = packetIds.map((packetId: string) => ({ packetId, templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16'])) }));
-        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { packetTemplates } : {}), ...(bindsAdaptive ? { reviewOverride: { adaptiveSecondPass } } : {}) } };
+        return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { packetTemplates } : {}) } };
       });
       const schedule = Buffer.from(JSON.stringify({ ...(scenario === 'checkpoint' ? { pauseAfterSlot: 'slot-08' } : {}), slots }));
       const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
@@ -255,22 +252,6 @@ describe('campaign driver', () => {
         healthPosts++; return healthResponse();
       });
       const models = { getAuth: async () => ({ auth: { apiKey: 'synthetic-key' } }) };
-      if (bindsAdaptive) {
-        const rejectSchedule = async (slots: unknown[], message: string) => {
-          const bytes = Buffer.from(JSON.stringify({ slots })), wrongSchedule = path.join(dir, 'wrong-schedule.json');
-          writeFileSync(wrongSchedule, bytes);
-          const wrongConfig = Buffer.from(JSON.stringify({ ...JSON.parse(config.toString('utf8')), schedulePath: wrongSchedule, scheduleSHA256: sha(bytes) }));
-          const wrongFile = path.join(dir, 'wrong-campaign.json'); writeFileSync(wrongFile, wrongConfig);
-          await expect(openCampaign(wrongFile, sha(wrongConfig), { fetchImpl, models })).rejects.toThrow(message);
-        };
-        const slot = slots[0]!;
-        await rejectSchedule([{ ...slot, workerConfig: { ...slot.workerConfig, reviewOverride: { adaptiveSecondPass: !adaptiveSecondPass } } }], 'campaign arm review override mismatch');
-        await rejectSchedule([{ ...slot, workerConfig: { ...slot.workerConfig, reviewOverride: { adaptiveSecondPass, toolSurface: 'six' } } }], 'invalid campaign review override');
-        await rejectSchedule([{ ...slot, blind: undefined }], 'campaign arm review override mismatch');
-        await rejectSchedule([slot, { ...slot, id: 'slot-02', workerConfig: { ...slot.workerConfig, reviewOverride: undefined } }], 'invalid campaign review override');
-        expect({ gets, healthPosts }).toEqual({ gets: 0, healthPosts: 0 });
-        expect(existsSync(base.ledgerPath)).toBe(false);
-      }
       if (scenario === 'treatment') {
         const swappedSchedule = JSON.parse(schedule.toString('utf8'));
         swappedSchedule.slots[0].workerConfig.packetTemplates[0].templates.initial = 'retired-template';
@@ -371,7 +352,7 @@ describe('campaign driver', () => {
       expect(await reopened.step()).toMatchObject(scenario === 'stopped' ? { action: 'stop', reason: 'budget_limit' } : scenario === 'worker-stop' ? { action: 'stop', reason: 'provider_quota' } : { action: 'completed' });
       expect(reopened.ledger.totals().starts).toBe(starts);
       expect({ healthPosts, gets }).toEqual({ healthPosts: probes, gets: reads });
-      if (exportsBlind) {
+      if (['single', 'positive', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) {
         const exportArgs = { outputDirectory: path.join(dir, 'blind-output'), mappingFile: path.join(dir, 'sealed', 'mapping.json') };
         if (!['stopped', 'worker-stop'].includes(scenario)) {
           reopened.ledger.db.exec('BEGIN');
@@ -419,16 +400,7 @@ describe('campaign driver', () => {
         const manifest = JSON.parse(readFileSync(path.join(exportArgs.outputDirectory, 'manifest.json'), 'utf8'));
         if (scenario === 'positive') expect(manifest.sheets[0].causes).toEqual([{ id: 'required-cause', optional: false }]);
         expect(manifest).toMatchObject({ campaignState: ['stopped', 'worker-stop'].includes(scenario) ? 'stopped' : 'completed', selectedCount: 1 });
-        const packetCalls = JSON.parse(readFileSync(path.join(selectedReceipt.runDir, 'packet-calls.json'), 'utf8'));
-        if (bindsAdaptive) {
-          expect(JSON.parse(readFileSync(path.join(selectedReceipt.runDir, 'arm-binding.json'), 'utf8'))).toEqual({ bound: adaptiveSecondPass, observed: adaptiveSecondPass });
-          const callsForPacket = packetCalls.filter((call: { packetId: string; kind: string }) => call.packetId === packetIds[0] && call.kind === 'initial');
-          expect(callsForPacket).toHaveLength(adaptiveSecondPass ? 2 : 1);
-          expect(callsForPacket.every((call: { templateVersion: string }) => call.templateVersion === 'p7.16')).toBe(true);
-          expect(new Set(callsForPacket.map((call: { callId: string }) => call.callId)).size).toBe(callsForPacket.length);
-          const sheet = readFileSync(path.join(exportArgs.outputDirectory, `${manifest.sheets[0].id}.json`), 'utf8');
-          expect(sheet).not.toMatch(/adaptive|ensemblePass|reviewOverride|arm-binding/iu);
-        } else expect(packetCalls).toMatchObject([{ templateVersion: 'p7.16' }]);
+        expect(JSON.parse(readFileSync(path.join(selectedReceipt.runDir, 'packet-calls.json'), 'utf8'))).toMatchObject([{ templateVersion: 'p7.16' }]);
         if (scenario === 'treatment') {
           const lock = (name: string, value: unknown) => { const bytes = Buffer.from(JSON.stringify(value)), dest = path.join(dir, name); writeFileSync(dest, bytes); return { path: dest, sha256: sha(bytes) }; };
           const sheetId = manifest.sheets[0].id;

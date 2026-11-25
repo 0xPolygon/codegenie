@@ -424,18 +424,16 @@ describe("removed review depth inputs (#183)", () => {
   });
 });
 
-describe("removed review.deepEnsemblePasses (#115)", () => {
-  it("rejects the key in user config and eval cases", async () => {
-    expect(rawConfigSchema.safeParse({ review: { adaptiveSecondPass: true } }).success).toBe(true);
-    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: 1 } }).success).toBe(false);
+describe("removed review options", () => {
+  it.each([["deepEnsemblePasses", 1], ["adaptiveSecondPass", true]])("rejects %s in user config and eval cases", async (key, value) => {
+    expect(rawConfigSchema.safeParse({ review: { [key]: value } }).success).toBe(false);
     const evalCase = (review: Record<string, unknown>) => {
       const dir = tempDir();
       writeFileSync(path.join(dir, "eval.yml"), JSON.stringify({ name: "example", artifacts: { path: "logs/1" }, review }));
       return loadEvalSuite(dir);
     };
-    await expect(evalCase({ adaptiveSecondPass: true })).resolves.toMatchObject({ cases: [expect.anything()] });
-    await expect(evalCase({ deepEnsemblePasses: 1 })).rejects.toMatchObject({
-      context: { errors: [expect.stringContaining("deepEnsemblePasses")] }
+    await expect(evalCase({ [key]: value })).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining(key)] }
     });
   });
 });

@@ -10,11 +10,8 @@ import type {
 
 // Plan 92 Layer 1: score the pipeline's attention-allocation decision.
 // Coverage assignment is the only major pipeline decision with no outcome
-// feedback — these records join what each packet was ALLOTTED (coverage,
-// Stage-7 passes) with what it PRODUCED (candidates, hints, kept verdicts,
-// published findings), making miscalibration (runs 47/49/50: losses on
-// normal/default packets while deep ensembles ran empty) visible on every
-// run instead of only in post-failure forensics.
+// feedback: these records join each packet's allotted coverage with its
+// candidates, hints, kept verdicts, and published findings.
 
 export function buildAttentionRecords(input: {
   packets: ReviewPacket[];
@@ -79,7 +76,6 @@ export function buildAttentionRecords(input: {
             packet.hunks.every((hunk) => input.plannedHunkIds.has(hunk.hunkId) === false)
           ? "deterministic_default"
           : "planner",
-      ensemblePasses: result?.passesRun ?? 1,
       directCandidates: result?.findings.length ?? 0,
       promotedCandidates: promotedByPacket.get(packet.id) ?? 0,
       hintsEmitted: result?.followUpHints.length ?? 0,
@@ -95,16 +91,12 @@ export function aggregateAttentionEfficiency(records: AttentionRecord[]): Attent
   for (const record of records) {
     const bucket = byCoverage[record.coverage] ?? {
       packets: 0,
-      ensembledPackets: 0,
       directCandidates: 0,
       hintsEmitted: 0,
       keptVerified: 0,
       published: 0
     };
     bucket.packets += 1;
-    if (record.ensemblePasses > 1) {
-      bucket.ensembledPackets += 1;
-    }
     bucket.directCandidates += record.directCandidates;
     bucket.hintsEmitted += record.hintsEmitted;
     bucket.keptVerified += record.keptVerified;
