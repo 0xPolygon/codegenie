@@ -80,28 +80,24 @@ it('refuses treatment markers with aggregate counts before writing any export', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('permits only source-attested product uses while still refusing pass provenance', async () => {
+it('exempts bare adaptive only for a case whose bound input diff contains it', async () => {
   // @ts-expect-error Development-only ESM has no emitted types.
   const { projectBlindSheet } = await import('../evals/runner/blind-sheet.mjs');
-  const source = 'const quotaLimit = 1;\n// adaptive quotaLimit\nconst snippet = "adaptive quotaLimit";';
+  const inputDiff = '+// adaptive quota\n';
   const args = { id: '1'.repeat(24), key: Buffer.alloc(32, 7), caseId: 'case-01', outcome: 'completed_full', screenAdaptiveMarkers: true,
-    attestedSources: { phraseSources: [source], changedCodeSources: [source] }, candidates: [{ id: 'f', title: 'adaptive quotaLimit', evidence: { changedCode: 'const snippet = "adaptive quotaLimit";' } }], promotion: { decisions: [] }, verification: [], finalReview: {} };
+    attestedSources: { inputDiff }, candidates: [{ id: 'raw-id-123', title: 'adaptive quota', evidence: { changedCode: 'adaptive quota' } }], promotion: { decisions: [] }, verification: [], finalReview: {} };
   const sheet = projectBlindSheet(args);
-  expect(sheet.discovery.findings[0].title).toBe('adaptive quotaLimit');
-  expect(sheet.discovery.findings[0].changedCode).toBe('const snippet = "adaptive quotaLimit";');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit in the second pass' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive reasoning' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['const quotaLimit=1; // nonadaptive quotaLimit'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive quotaLimit' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['const result = 42; // adaptive result'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive result' }] })).toThrow('treatment markers');
-  for (const token of ['baseFeeX', 'MAX_Y', 'fee2', 'service.fee']) {
-    expect(projectBlindSheet({ ...args, attestedSources: { phraseSources: [`// adaptive ${token}`], changedCodeSources: [] }, candidates: [{ id: 'raw-id-123', title: `adaptive ${token}` }] }).discovery.findings[0].title).toBe(`adaptive ${token}`);
+  expect(sheet.discovery.findings[0].title).toBe('adaptive quota');
+  expect(sheet.discovery.findings[0].changedCode).toBe('adaptive quota');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota in the second pass' }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptiveReview' }] })).toThrow('treatment markers');
+  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota and treatment arm' }] })).toThrow('treatment markers');
+  for (const attestedSources of [undefined, { inputDiff: '+nonadaptive quota' }, { inputDiff: '+adaptiveReview' }]) {
+    expect(() => projectBlindSheet({ ...args, attestedSources })).toThrow('treatment markers');
   }
-  expect(() => projectBlindSheet({ ...args, attestedSources: { phraseSources: ['// adaptive service.fee.extra'], changedCodeSources: [] }, candidates: [{ id: 'f', title: 'adaptive service.fee' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit', evidence: { changedCode: 'unbound adaptive sample' } }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quotaLimit and treatment arm' }] })).toThrow('treatment markers');
 });
 
-it('derives changed-code attestation from the bound git revisions', async () => {
+it('derives the input diff from the bound git revisions', async () => {
   // @ts-expect-error Development-only ESM has no emitted types.
   const { inputSources } = await import('../evals/runner/source-attestation.mjs');
   const dir = mkdtempSync(path.join(tmpdir(), 'eval-source-attestation-'));
@@ -111,8 +107,7 @@ it('derives changed-code attestation from the bound git revisions', async () => 
     writeFileSync(path.join(dir, 'feature.ts'), 'const quota = 1;\n'); git('add', 'feature.ts'); git('commit', '-qm', 'base');
     const baseSHA = git('rev-parse', 'HEAD'); writeFileSync(path.join(dir, 'feature.ts'), 'const quota = 2;\n// adaptive quota\n'); git('commit', '-qam', 'head');
     const headSHA = git('rev-parse', 'HEAD'), evidence = inputSources({ sourceRoot: dir, baseSHA, headSHA });
-    expect(evidence.changedCodeSources).toContain('const quota = 2;\n// adaptive quota');
-    expect(evidence.phraseSources.some((source: string) => source.includes('adaptive quota'))).toBe(true);
+    expect(evidence.inputDiff).toContain('+// adaptive quota');
     expect(inputSources({ sourceRoot: dir, baseSHA: 'not-a-revision', headSHA })).toBeUndefined();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
