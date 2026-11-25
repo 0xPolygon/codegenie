@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateReviewOverride } from './review-override.mjs';
 
 const checkout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const urls = { goinfer: 'https://github.com/townsendmerino/goinfer.git', pi: 'https://github.com/earendil-works/pi.git', codegenie: 'https://github.com/0xPolygon/codegenie.git' };
@@ -117,7 +118,11 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
 
 }
 
-export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false } = {}) {
+export async function runCase(configFile, { fetchForCall, onFailure, plannerReplay, caseConfigBytes, outputOverride, budgeted = false, reviewOverride } = {}) {
+  if (reviewOverride !== undefined) {
+    if (!budgeted) throw new CampaignConfigurationError('binding_mismatch', 'unbound campaign review override');
+    validateReviewOverride(reviewOverride);
+  }
   const file = path.resolve(configFile);
   const config = JSON.parse(caseConfigBytes === undefined ? readFileSync(file, 'utf8') : caseConfigBytes.toString('utf8'));
   if (!config || typeof config !== 'object' || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -131,6 +136,10 @@ export async function runCase(configFile, { fetchForCall, onFailure, plannerRepl
   if (budgeted && found[0].evalCase.recommendationJudge !== undefined) rejectJudge();
   const original = found[0];
   const selected = { ...original, evalCase: { ...original.evalCase, repeat: 1, logs: { dir: output } } };
+  const bound = reviewOverride?.adaptiveSecondPass;
+  // The pinned eval runner applies the selected case's review settings after
+  // user and repository config. Bind the value at this final layer.
+  if (bound !== undefined) selected.evalCase.review = { ...selected.evalCase.review, adaptiveSecondPass: bound };
   if (selected.evalCase.artifacts) throw new Error('artifact replay is not supported by this entry point');
   if (selected.evalCase.repo?.external) {
     const kind = config.publicRepo;
@@ -142,8 +151,11 @@ export async function runCase(configFile, { fetchForCall, onFailure, plannerRepl
     selected.evalCase.repo = { external: prepareTarget(target, url, selected.evalCase.command?.base, selected.evalCase.command?.head, match ? Number(match[1]) : undefined) };
   }
   const loaded = loadConfig({ repoRoot: suiteDir, loadRepoConfig: false });
-  return runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
+  const observed = selected.evalCase.review?.adaptiveSecondPass;
+  if (bound !== undefined && observed !== bound) throw new CampaignConfigurationError('binding_mismatch', 'effective campaign review override mismatch');
+  const result = await runEvalCase(suite, selected, { config: loaded.config, codegenieHome: loaded.paths.home, configWarnings: loaded.warnings, cacheOverride: false,
     ...(onFailure !== undefined ? { onFailure } : {}),
     ...(plannerReplay !== undefined ? { plannerReplay } : {}),
     ...(fetchForCall !== undefined ? { fetchForCall } : {}) });
+  return bound === undefined ? result : { ...result, reviewBinding: { bound, observed } };
 }
