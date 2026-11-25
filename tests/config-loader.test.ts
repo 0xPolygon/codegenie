@@ -65,6 +65,17 @@ describe("config loader", () => {
     expect(loaded.sources["llm.stages"]).toBe("github-action");
   });
 
+  it("layers adaptive thinking as a repo-safe boolean", () => {
+    const repoRoot = tempDir(), homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(true);
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nadaptiveThinking = false\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(false);
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nadaptiveThinking = true\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(true);
+    expect(loadConfig({ repoRoot, homeOverride, cli: { adaptiveThinking: false } }).config.review.adaptiveThinking).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { adaptiveThinking: "false" } }).success).toBe(false);
+  });
+
   it("layers composition step-down as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
