@@ -312,7 +312,7 @@ flowchart TB
 | 4 | Index | Build the symbol index (tree-sitter), extract changed-symbol facts and static risk signals. | — |
 | 5 | Plan | Decide intent framing, per-hunk coverage and lenses. Doesn't hunt bugs. | 1 or more for chunked plans |
 | 6 | Build packets | Assemble focused packets: changed hunks, enclosing symbols, file outline, likely tests, bounded related context. | — |
-| 7 | Review | Parallel reviewers examine each packet with read-only repo tools (`read_symbol`, `find_definition`, …) and return candidate findings + uncertainties. An opt-in adaptive pass can add reviews. | 1 per packet, plus optional adaptive passes |
+| 7 | Review | Parallel reviewers examine each packet with read-only repo tools (`read_symbol`, `find_definition`, …) and return candidate findings + uncertainties. | 1 per packet |
 | 9 | Verify | Every candidate is independently re-examined in a fresh context that never saw the reviewer's reasoning. | 1 per candidate |
 | 10 | Compose | Dedupe and merge same-root-cause findings, rank, cap, and phrase the final review. | 1 |
 | 11 | Publish | Write stdout/JSON; post GitHub comments only with the explicit flag. | — |

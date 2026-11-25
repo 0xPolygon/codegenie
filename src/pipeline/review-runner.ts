@@ -1,7 +1,6 @@
 import { deriveReviewHealth, reviewDiagnostic } from "../util/review-health.js";
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 import { createRunTelemetry, provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
@@ -1063,7 +1062,6 @@ export function aggregateRunCoverage(
   opts: CoverageOptions = {}
 ): RunCoverageStatus {
   const packets = opts.packets ?? [];
-  const adaptiveReviews = summarizeAdaptiveReviews(packetResults);
   const packetById = new Map(packets.map((packet) => [packet.id, packet]));
   const totalHunks = opts.allFiles?.reduce((sum, file) => sum + file.hunks.length, 0) ?? plan.coverage.length;
   const coverageByLevel: Record<CoverageLevel, number> = { deep: 0, normal: 0, light: 0, skip: 0 };
@@ -1126,7 +1124,6 @@ export function aggregateRunCoverage(
     totalHunks,
     diagnostics: [...packetResults.flatMap(result => result.diagnostics ?? (result.status === "failed" ? [reviewDiagnostic(7, undefined, result.packetId)] : [])),
       ...(verified.verdicts ?? []).flatMap(verdict => verdict.diagnostic ? [verdict.diagnostic] : [])],
-    ...(adaptiveReviews ? { adaptiveReviews } : {}),
     reviewedHunks,
     skippedHunks,
     excludedHunks: skippedHunks,

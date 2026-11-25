@@ -19,7 +19,7 @@ function jsonl(file, expected) {
 
 // Check terminal evidence before a receipt becomes selectable. No error text,
 // model prose, or tool arguments are used to classify a row.
-export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false, reviewOverride }) {
+export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false }) {
   if (typeof attemptPrefix !== 'string' || !attemptPrefix || !ledger?.db || !Array.isArray(expectedPacketIds) || expectedPacketIds.some((id) => typeof id !== 'string' || !id) || new Set(expectedPacketIds).size !== expectedPacketIds.length || !count(priorRecoveredResets)) throw new Error('invalid terminal binding');
   const root = path.join(outsideCheckout(runDir), 'telemetry'), run = json(path.join(root, 'run.json')), summary = json(path.join(root, 'telemetry.json'));
   const failureMode = typeof failureCallId === 'string' && /^[A-Za-z0-9._-]+$/u.test(failureCallId);
@@ -30,16 +30,6 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
   if ([...events, ...models, ...tools].some((row) => row.runId !== run.runId)) throw new Error('telemetry run mismatch');
   if (new Set(events.map((row) => row.eventId)).size !== events.length || new Set(models.map((row) => row.callId)).size !== models.length || new Set(tools.map((row) => row.toolCallId)).size !== tools.length ||
       events.some((row) => typeof row.eventId !== 'string') || models.some((row) => typeof row.callId !== 'string') || tools.some((row) => typeof row.toolCallId !== 'string')) throw new Error('telemetry identity mismatch');
-  if (reviewOverride !== undefined) {
-    const expected = reviewOverride.adaptiveSecondPass;
-    const binding = json(path.join(path.dirname(root), 'arm-binding.json'));
-    const adaptiveWaves = events.filter((row) => row.stage === 7 && row.message === 'stage7_adaptive_summary').length;
-    // A provider failure can end the attempt before Stage 7 reaches its
-    // adaptive decision. A completed review must corroborate the binding.
-    const hasStage7Outcome = !failureMode || events.some((row) => row.stage === 7 && row.message === 'stage_completed');
-    if (typeof expected !== 'boolean' || binding?.bound !== expected || binding.observed !== expected ||
-        adaptiveWaves > Number(expected) || (hasStage7Outcome && adaptiveWaves !== Number(expected))) throw new Error('effective campaign review override mismatch');
-  }
   if (models.some((row) => row.retryReason === 'usage_limit')) throw new Error('provider quota denial');
   for (const row of tools) {
     if (['internal', 'timeout', 'unknown'].includes(row.errorCode)) throw new Error('tool failure requires stop');

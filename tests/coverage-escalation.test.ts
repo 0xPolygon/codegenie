@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { applyCoverageEscalations, coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
-import { isAdaptiveNearMissSignal } from "../src/pipeline/uncertainty-promotion.js";
 import type { ReviewPacket, ReviewPlan, TelemetryEvent } from "../src/types.js";
 import { nullTelemetry } from "./helpers/git.js";
 
@@ -87,31 +86,5 @@ describe("plan 92 layer 2: coverage escalators", () => {
       message: "coverage_escalations",
       data: { escalated: 1, rule: "test_coverage_delta" }
     }));
-  });
-});
-
-describe("plan 92 layer 3: adaptive near-miss trigger (T1)", () => {
-  it("accepts a run-50-shaped concrete predicate hint tied to changed scope", () => {
-    expect(isAdaptiveNearMissSignal(packet("p"), {
-      question: "Can origin token decimals be 0 for a real token in the fee path, causing a wrong zero fallback result?",
-      files: ["workers/balance_test.go"],
-      symbols: ["erc20BalanceAt"],
-      reason: "The changed path divides by decimals without a zero guard."
-    })).toBe(true);
-  });
-
-  it("rejects vague verify-style hints and off-scope questions", () => {
-    expect(isAdaptiveNearMissSignal(packet("p"), {
-      question: "Please review the change and confirm it looks good.",
-      files: ["workers/balance_test.go"],
-      symbols: [],
-      reason: "general check"
-    })).toBe(false);
-    expect(isAdaptiveNearMissSignal(packet("p"), {
-      question: "Does the unrelated cache layer handle nil entries incorrectly?",
-      files: ["lib/other/cache.go"],
-      symbols: ["cacheGet"],
-      reason: "unrelated"
-    })).toBe(false);
   });
 });

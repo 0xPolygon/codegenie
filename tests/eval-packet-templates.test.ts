@@ -42,7 +42,7 @@ it('verifies per-call packet assignments, rejecting swaps, omissions and duplica
   expect(() => verify(calls, [...modelCalls, { callId: 'mc-location', kind: 'initial', stage: 7, candidateId: 'candidate', workerId: 'location-candidate' } as typeof modelCalls[number]])).not.toThrow();
 });
 
-it('joins two initial calls on the same packet by call ID, including an adaptive pass', () => {
+it('joins repeated initial calls on the same packet by call ID', () => {
   const bindings = derivePacketTemplates([packet('shortened', true)]);
   const calls = ['mc-1', 'mc-2'].map((callId) => ({ callId, packetId: 'shortened', kind: 'initial', templateVersion: 'p7.17' }));
   const modelCalls = calls.map(({ callId, packetId, kind }) => ({ callId, packetId, kind, stage: 7 }));

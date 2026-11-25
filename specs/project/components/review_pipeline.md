@@ -240,7 +240,7 @@ Sequencing rules:
 - Stage 5 planning must complete before any packet review. Chunked planner calls for oversized dossiers are the only intra-stage-5 parallelism, bounded by `llm.maxConcurrentCalls`.
 - After Stage 6 completes and before any Stage 7 dispatch, the orchestrator calls the tools host's `bindPackets(packets)` (`RepositoryToolsHost`, `components/context_and_tools.md`) so `readDiffBlocks(packetId)` lookups resolve for stage 7-9 workers; path lookups work without binding.
 - Stage 7 packet workers run with bounded concurrency (`review.concurrency`); packets are independent by construction (never span files, isolated worker context), so all packets may run concurrently up to the limit.
-- Stage 9 verifier calls run with bounded concurrency after all Stage 7 workers (including adaptive second passes) have settled. Stage 8 (targeted system follow-up) was deleted in #114.
+- Stage 9 verifier calls run with bounded concurrency after all Stage 7 workers have settled. Stage 8 (targeted system follow-up) was deleted in #114.
 - Stage 10 composition and stage 11 publishing are strictly sequential and always run (composition runs even under budget exhaustion; publishing only when requested).
 - `renderOutputs` runs after `maybePublishToGitHub`, per the architecture main algorithm: in posting mode the concise stdout summary renders from Stage 11's results, and its schema is the publisher's posting record (owned by `components/repository_and_github.md`); in non-posting mode `posting` is empty and rendering is unaffected by the ordering.
 - `candidate-findings.json` persists all candidates produced by Stage 7 (pre-gate), so evals can attribute losses to gates, verification, or composition.

@@ -120,7 +120,6 @@ describe("plan 92 layer 1: attention records", () => {
         packetId: "packet-deep",
         coverage: "deep",
         coverageSource: "planner",
-        ensemblePasses: 1,
         directCandidates: 2,
         promotedCandidates: 0,
         hintsEmitted: 1,
@@ -131,7 +130,6 @@ describe("plan 92 layer 1: attention records", () => {
         packetId: "packet-default",
         coverage: "normal",
         coverageSource: "deterministic_default",
-        ensemblePasses: 1,
         directCandidates: 0,
         promotedCandidates: 1,
         uncertaintiesEmitted: 1,
@@ -144,13 +142,13 @@ describe("plan 92 layer 1: attention records", () => {
 
   it("aggregates attention efficiency by coverage", () => {
     const records: AttentionRecord[] = [
-      { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", ensemblePasses: 2, directCandidates: 0, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 0, published: 0 },
-      { packetId: "p2", path: "b", coverage: "normal", coverageSource: "deterministic_default", ensemblePasses: 1, directCandidates: 1, promotedCandidates: 0, hintsEmitted: 1, uncertaintiesEmitted: 0, keptVerified: 1, published: 1 }
+      { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", directCandidates: 0, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 0, published: 0 },
+      { packetId: "p2", path: "b", coverage: "normal", coverageSource: "deterministic_default", directCandidates: 1, promotedCandidates: 0, hintsEmitted: 1, uncertaintiesEmitted: 0, keptVerified: 1, published: 1 }
     ];
     expect(aggregateAttentionEfficiency(records)).toEqual({
       byCoverage: {
-        deep: { packets: 1, ensembledPackets: 1, directCandidates: 0, hintsEmitted: 0, keptVerified: 0, published: 0 },
-        normal: { packets: 1, ensembledPackets: 0, directCandidates: 1, hintsEmitted: 1, keptVerified: 1, published: 1 }
+        deep: { packets: 1, directCandidates: 0, hintsEmitted: 0, keptVerified: 0, published: 0 },
+        normal: { packets: 1, directCandidates: 1, hintsEmitted: 1, keptVerified: 1, published: 1 }
       },
       defaultCoveragePackets: 1
     });
@@ -169,13 +167,13 @@ describe("plan 92 layer 1: attention records", () => {
       hintEvents: [],
       metricsSources: {},
       attention: [
-        { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", ensemblePasses: 2, directCandidates: 1, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 1, published: 1 }
+        { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", directCandidates: 1, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 1, published: 1 }
       ]
     }, "live");
 
     expect(score.metrics.attentionEfficiency).toEqual({
       byCoverage: {
-        deep: { packets: 1, ensembledPackets: 1, directCandidates: 1, hintsEmitted: 0, keptVerified: 1, published: 1 }
+        deep: { packets: 1, directCandidates: 1, hintsEmitted: 0, keptVerified: 1, published: 1 }
       },
       defaultCoveragePackets: 0
     });
