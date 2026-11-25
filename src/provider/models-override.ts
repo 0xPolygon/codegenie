@@ -18,10 +18,11 @@ const RESPONSES_COMPAT = {
   supportsMidConvoEffort: false
 } as const;
 
-// Luna can skip reasoning with in-band tools and has inconsistent effort
-// updates (#375, #431, earendil-works/pi#12361 and openai/codex#47843).
-// The Anthropic override addresses low-like Opus reasoning on one fixture (#443).
-// Requalify the routes independently on Pi upgrades (earendil-works/pi#12464, #432).
+// Use request-level effort because Codex ignores mid-conversation effort updates
+// (earendil-works/pi#12464); direct OpenAI did not show this behavior. Tool
+// placement is pinned for wire stability, not because additional_tools was shown
+// to reduce reasoning. The Anthropic override addresses an Opus fixture (#443).
+// Requalify the routes independently on Pi upgrades (#432).
 const REQUEST_LEVEL_EFFORT_OVERRIDES = new Map<string, RequestLevelEffortCompat>([
   ["openai/openai-responses", RESPONSES_COMPAT],
   ["openai-codex/openai-codex-responses", RESPONSES_COMPAT],
