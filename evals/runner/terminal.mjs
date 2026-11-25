@@ -1,12 +1,11 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
+import { validateTransportEvidence } from './transport-evidence.mjs';
+export { RecoveredResetLimitError } from './transport-evidence.mjs';
 
 const guided = new Set(['invalid_args', 'budget_exhausted', 'file_missing', 'path_outside_repo', 'not_found', 'unavailable']);
 const count = (x) => Number.isSafeInteger(x) && x >= 0;
-export class RecoveredResetLimitError extends Error {
-  constructor(recoveredResets) { super('too many recovered stream resets'); this.recoveredResets = recoveredResets; }
-}
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 function jsonl(file, expected) {
   let text;
@@ -63,41 +62,7 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
     const row = models.find((item) => item.callId === failureCallId), starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${failureCallId}`), last = starts.at(-1);
     if (!row || row.errorCode !== 'llm_call_failed' || row.status !== 'transient_error' || !last || !((last.http_status >= 500 && last.http_status < 600) || (last.http_status === 200 && ['provider_error_event', 'body_reset'].includes(last.stream_terminal))) || last.state === 'open') throw new Error('transient failure evidence missing');
   }
-  let recoveredResets = 0;
-  for (const [index, row] of models.entries()) {
-    const starts = physical.filter((item) => item.logical_id === `${attemptPrefix}/${row.callId}`);
-    if (row.cacheStatus === 'hit' ? starts.length !== 0 : starts.length === 0) throw new Error('logical and physical call mismatch');
-    if (row.cacheStatus === 'hit' && ledger.db.prepare('SELECT status FROM logical WHERE id=?').get(`${attemptPrefix}/${row.callId}`)?.status !== 'cache_hit') throw new Error('cache hit missing ledger record');
-    const limit = row.toolArgumentStreamLimit;
-    const last = starts.at(-1);
-    const abort = row.status === 'aborted' && row.errorCode === 'llm_call_failed' && row.retryReason === 'tool_argument_stream_limit' && limit && last?.state === 'unknown' && last.charge >= ledger.reserve &&
-      ['whitespace_run', 'total_chars'].includes(limit.trigger) && ['limitChars', 'observedChars', 'toolArgumentChars', 'contentIndex'].every((key) => count(limit[key])) && limit.observedChars > limit.limitChars &&
-      events.some((event) => event.message === 'model_tool_argument_stream_limit' && event.data?.callId === row.callId && event.stage === row.stage &&
-        ['packetId', 'structuredRequestId'].every((key) => row[key] === undefined || event.data?.[key] === row[key]) &&
-        ['trigger', 'limitChars', 'observedChars', 'toolArgumentChars', 'contentIndex'].every((key) => event.data?.[key] === limit[key]));
-    const noUsage = [row.inputTokens, row.outputTokens, row.totalTokens].every((value) => value === undefined || value === null);
-    const sameRequest = (next) => next.stage === row.stage && next.workerId === row.workerId && next.packetId === row.packetId && next.structuredRequestId === row.structuredRequestId;
-    const next = models.slice(index + 1).find(sameRequest);
-    const nextStart = next && physical.filter((item) => item.logical_id === `${attemptPrefix}/${next.callId}`).at(-1);
-    const nextUsage = nextStart?.evidence_json ? JSON.parse(nextStart.evidence_json) : null;
-    const reset = row.status === 'transient_error' && noUsage && typeof row.structuredRequestId === 'string' && row.structuredRequestId &&
-      typeof row.packetId === 'string' && accepted.has(row.packetId) && Number.isSafeInteger(row.attempt) && row.attempt > 0 &&
-      starts.length === 1 && starts[0].http_status === 200 && starts[0].stream_terminal === 'body_reset' && starts[0].state === 'unknown' && starts[0].charge >= ledger.reserve &&
-      next?.kind === row.kind && next.attempt === row.attempt + 1 && next.status === 'ok' && [next.inputTokens, next.outputTokens, next.totalTokens].every(count) &&
-      nextStart && nextStart.http_status >= 200 && nextStart.http_status < 300 && nextUsage?.usagePresent === true &&
-      ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => count(nextUsage[key]) && nextUsage[key] === next[key]);
-    if (reset) recoveredResets++;
-    if (!abort && !reset && ![row.inputTokens, row.outputTokens, row.totalTokens].every(count)) throw new Error('model usage missing');
-    for (const start of starts) {
-      if ((start.http_status >= 200 && start.http_status < 300) || (start === last && start.http_status >= 500 && start.http_status < 600)) {
-        const usage = start.evidence_json ? JSON.parse(start.evidence_json) : null;
-        const complete = usage && usage.usagePresent === true && [usage.inputTokens, usage.outputTokens, usage.totalTokens].every(count);
-        if (!complete && !(abort && start === last) && !reset) throw new Error('physical usage missing');
-        if (complete && start === last && [row.inputTokens, row.outputTokens, row.totalTokens].every(count) && ['inputTokens', 'outputTokens', 'totalTokens'].some((key) => row[key] !== usage[key])) throw new Error('physical and native usage differ');
-      }
-    }
-  }
-  if (priorRecoveredResets + recoveredResets >= 3) throw new RecoveredResetLimitError(recoveredResets);
+  const { recoveredResets } = validateTransportEvidence({ models, physical, events, attemptPrefix, ledger, acceptedPackets: accepted, priorRecoveredResets });
   const stopped = ledger.totals().stopped;
   if (stopped && !historical) throw new Error('campaign stop is latched');
   return { status: run.outcome.status, packets: packetIds.length, modelCalls: models.length, physicalStarts: physical.length, recoveredResets };
