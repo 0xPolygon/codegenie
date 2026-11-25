@@ -1,7 +1,7 @@
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-ai'
-  - '@earendil-works/pi-telemetry@0.86.1 || 0.87.0 || 0.87.1 || 1.0.0 || 1.0.4 || 1.6.0'
-  - '@earendil-works/pi-schema@1.6.0'
+  - '@earendil-works/pi-telemetry@0.86.1 || 0.87.0 || 0.87.1 || 1.0.0 || 1.0.4 || 1.6.0 || 1.6.1'
+  - '@earendil-works/pi-schema@1.6.0 || 1.6.1'
   - openai@7.59.0
 
 # tree-sitter-solidity mis-spells its optional-peer metadata key as
