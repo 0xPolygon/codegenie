@@ -59,7 +59,6 @@ describe("Plan 98 Rust vertical slice", () => {
       facts,
       decisions,
       index,
-      defaultConfig,
       telemetry,
       { lenses: lenses.enabledLenses() }
     );

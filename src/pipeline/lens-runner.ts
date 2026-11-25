@@ -17,7 +17,6 @@ import type {
   RepositoryTools,
   RepositoryEvidence,
   ReviewPacket,
-  ReviewPlan,
   ReviewPriority,
   ReviewStage,
   UnifiedDiff
@@ -66,7 +65,6 @@ const MAX_UNCERTAINTIES_PER_PACKET = 1;
 const stage7Generation = new WeakMap<PacketReviewResult, Stage7PacketGeneration>();
 
 export async function runLensPackets(
-  _plan: ReviewPlan,
   packets: ReviewPacket[],
   tools: RepositoryTools,
   config: CodegenieConfig,

@@ -88,7 +88,6 @@ async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<PlannerDossier>
 ```
@@ -122,7 +121,6 @@ async function buildReviewPackets(
 ```ts
 // src/pipeline/lens-runner.ts — Stage 7
 async function runLensPackets(
-  plan: ReviewPlan,
   packets: ReviewPacket[],
   tools: RepositoryTools,
   config: CodegenieConfig,
@@ -574,7 +572,7 @@ Result validation, applied in pipeline code to each schema-valid `PacketReviewRe
 - Verification receives the actual anchored hunk plus separately labeled discovery context. It does not synthesize representative coordinates for anchorless candidates. Evidence-backed low-confidence candidates may enter the bounded evidence-resolution lane without an inline location; coordinate validity never establishes claim validity. Existing composition, threshold, and duplicate policies remain in force.
 - Missing `evidence.changedCode` or missing `failureMode` is recorded now (`missing_evidence`, `missing_failure_mode`) and enforced by the Stage 9 gates; low-confidence candidates are recorded and left for gate suppression so telemetry can attribute the loss stage precisely.
 - `followUpHints` are validated for pointer-richness: a hint with an empty `question` or with no `files` and no `symbols` is dropped (`vague_hint`).
-- Each surviving `followUpHint` and each `uncertainty` receives required pipeline-stamped `projectedSkillIds` from its specific producing pass, after model-schema validation. Adaptive-pass pooling and question deduplication preserve the selected item's list without equality requirements, unioning, or a packet-level approximation; an uncertainty-promotion candidate inherits only its selected source item's list. Telemetry events (`event: "follow_up_hint"` / `"uncertainty"`) persist that ordered list with the existing pointer-rich data — the hint-event reader contract consumed by `components/evals.md`.
+- Each surviving `followUpHint` and each `uncertainty` receives required pipeline-stamped `projectedSkillIds` from the packet review's prompt after model-schema validation. Question deduplication preserves the selected item's list. An uncertainty-promotion candidate inherits only its selected source item's list. Telemetry events (`event: "follow_up_hint"` / `"uncertainty"`) persist that ordered list with the existing pointer-rich data consumed by `components/evals.md`.
 - Prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult` carries no tool-usage data: tool calls and files read live in the always-on `tool-calls.jsonl` `ToolCallRecord`s, and readers join them on `workerId`.
 
 All candidates (pre-gate) are persisted to `candidate-findings.json`.

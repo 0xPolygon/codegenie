@@ -92,7 +92,6 @@ export async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  _config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: PlannerOptions = {}
 ): Promise<PlannerDossier> {

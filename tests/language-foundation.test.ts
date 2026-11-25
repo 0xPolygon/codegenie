@@ -149,7 +149,7 @@ describe("Plan 98 shared language foundation", () => {
     const facts = await classifyChangedFiles(resolved, kept, decisions, defaultConfig, nullTelemetry());
     const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, nullTelemetry());
     const lenses = languageLenses();
-    const dossier = await buildPlannerDossier(resolved, kept, facts, decisions, index, defaultConfig, nullTelemetry(), { lenses });
+    const dossier = await buildPlannerDossier(resolved, kept, facts, decisions, index, nullTelemetry(), { lenses });
     // #129: the planner keeps the input label the depth campaign measured.
     expect(dossier.depth).toBe("normal");
     const plan = defaultPlan(dossier, lenses, "shared language foundation");
@@ -291,7 +291,6 @@ describe("Plan 98 shared language foundation", () => {
       facts,
       decisions,
       index,
-      defaultConfig,
       telemetry,
       { lenses }
     );

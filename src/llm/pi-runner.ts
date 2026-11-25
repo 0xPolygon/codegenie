@@ -339,12 +339,13 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
       if (!modelFlags.providerProtocolRecorded) {
         modelFlags.providerProtocolRecorded = true;
-        const initialReasoning = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
-          modelThinkingLevels(model.raw), request.purpose === "location_clarification" ? "lowest_supported" : "configured");
+        // This probe describes the first request before provider constraints apply.
+        const firstRequestEffort = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
+          modelThinkingLevels(model.raw), callReasoningPolicy(request, "initial"));
         const forcedProbe = describeProviderProtocol(
           model,
           { type: "tool", name: submitTool.name },
-          initialReasoning,
+          firstRequestEffort,
           opts.llmConfig.forceSubmitToolChoice !== false
         );
         opts.telemetry.event({
@@ -359,7 +360,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
             forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
             forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
             toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
-            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {})
+            firstRequestEffort
           }
         });
       }
@@ -1854,10 +1855,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
                 }),
               maxRetries: 0,
               onUsageReported: (reported: boolean) => { usageReported = reported; },
-              ...(anthropicForcedSubmitCall(model, toolChoice, opts.llmConfig.forceSubmitToolChoice !== false)
-                ? {}
-                : { reasoning: reasoning }),
-              forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
+              ...(forcedSubmitThinkingOff ? {} : { reasoning }),
+              forceSubmitToolChoice: forceSubmit,
               submitToolName: submitToolNameForStage(request.stage),
               toolChoice,
               sessionId: providerPromptCache.sessionId,
