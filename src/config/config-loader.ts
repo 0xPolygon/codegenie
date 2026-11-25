@@ -283,10 +283,6 @@ function applyRawConfig(
     config.review.maxModelCalls = raw.review.maxModelCalls;
     sources["review.maxModelCalls"] = source;
   }
-  if (raw.review?.adaptiveSecondPass !== undefined) {
-    config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
-    sources["review.adaptiveSecondPass"] = source;
-  }
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;
     sources["review.toolSurface"] = source;

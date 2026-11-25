@@ -10,7 +10,6 @@ import { outsideCheckout, runCase, workerBounds } from './case.mjs';
 import { listEvidenceFiles } from './admission.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { resolveExpectedCall } from './packet-templates.mjs';
-import { validateReviewOverride } from './review-override.mjs';
 const bindingError = () => Object.assign(new Error('binding mismatch'), { context: { reason: 'binding_mismatch' } });
 function readWorkerToken() {
   const bytes = Buffer.alloc(65); let length = 0;
@@ -55,11 +54,8 @@ export function operationalError(ledger, attemptPrefix, failure) {
 // This internal worker receives paths and expected metadata only; provider
 // credentials remain in the normal Codegenie home/environment.
 export async function runWorker(options, { fetchImpl = globalThis.fetch, workerConfigSHA256, workerToken } = {}) {
-  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity, packetTemplates: packetBindings, reviewOverride } = options;
+  const { caseConfig, caseConfigSHA256, supervisorPath, ledgerPath, ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, attemptPrefix, expectedCalls, boundaryId, evidenceFiles, evidenceDirectory, plannerReplayBinding, integrity, packetTemplates: packetBindings } = options;
   if (![caseConfig, ledgerPath, ledgerBinding, attemptPrefix].every((x) => typeof x === 'string' && x) || !Array.isArray(expectedCalls)) throw new TypeError('invalid worker binding');
-  if (reviewOverride !== undefined) {
-    try { validateReviewOverride(reviewOverride); } catch { throw bindingError(); }
-  }
   const [{ TransportAdmissionError }, { isCodegenieError }] = await Promise.all([import('../../dist/llm/transport-admission.js'), import('../../dist/util/errors.js')]);
   const ledger = new CampaignLedger(outsideCheckout(ledgerPath), { binding: ledgerBinding, limitMicros, reserveMicros, errorHoldMicros, initialize: false });
   try {
@@ -123,14 +119,11 @@ export async function runWorker(options, { fetchImpl = globalThis.fetch, workerC
       };
       return { ...transport, fetch: (input, init) => { preflight(); return transport.fetch(input, init); } };
     };
-    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, budgeted: true, reviewOverride, onFailure(error) {
+    const result = await runCase(caseConfig, { fetchForCall, plannerReplay, caseConfigBytes, outputOverride: bounds.outputDir, budgeted: true, onFailure(error) {
       if (isCodegenieError(error)) failure = { code: error.code, reason: error.context?.reason, callId: error.context?.callId };
     } });
     if (packetBindings !== undefined) {
       writeFileSync(path.join(result.runDir, 'packet-calls.json'), JSON.stringify(packetCalls) + '\n', { mode: 0o600 });
-    }
-    if (reviewOverride !== undefined) {
-      writeFileSync(path.join(result.runDir, 'arm-binding.json'), JSON.stringify(result.reviewBinding) + '\n', { mode: 0o600 });
     }
     if (result.status !== 'error') return result;
     const operational = operationalError(ledger, attemptPrefix, failure);

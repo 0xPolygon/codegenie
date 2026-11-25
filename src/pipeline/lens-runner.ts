@@ -9,7 +9,6 @@ import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-
 import { exactSourceToolNames, projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
-  AdaptiveReviewOutcome,
   AnchorSource,
   CandidateFinding,
   CodegenieConfig,
@@ -24,15 +23,12 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isExactDuplicateCandidate } from "./verifier.js";
 import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
-import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
 import { normalizeStage7Submit, stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
-import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -66,7 +62,6 @@ type Stage7PacketGeneration = {
 };
 
 const MAX_FOLLOW_UP_HINTS_PER_PACKET = 2;
-const MAX_ADAPTIVE_PASSES_PER_RUN = 4;
 const MAX_UNCERTAINTIES_PER_PACKET = 1;
 const stage7Generation = new WeakMap<PacketReviewResult, Stage7PacketGeneration>();
 
@@ -97,7 +92,7 @@ export async function runLensPackets(
     repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
     awaitCancellation: true,
     retryOnTransient: true,
-    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, 1)
+    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads)
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const passResults = outcomes.map((outcome): PacketReviewResult => {
@@ -123,7 +118,7 @@ export async function runLensPackets(
     return {
       packetId,
       lenses: packets.find((packet) => packet.id === packetId)?.lenses ?? [],
-      repositoryEvidence: retainedReads.get(`${packetId}/1`) ?? [],
+      repositoryEvidence: retainedReads.get(packetId) ?? [],
       findings: [],
       followUpHints: [],
       uncertainties: [],
@@ -139,12 +134,9 @@ export async function runLensPackets(
     const result = passResults[index];
     if (result !== undefined) resultByPacket.set(outcome.task.packetId ?? result.packetId, result);
   });
-  let results = packets.map((packet) => {
-    const result = resultByPacket.get(packet.id);
-    return poolPassResults(packet, result === undefined ? [] : [result]);
+  const results = packets.map((packet): PacketReviewResult => resultByPacket.get(packet.id) ?? {
+    packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "failed"
   });
-  results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
-  const adaptiveReviews = summarizeAdaptiveReviews(results);
   await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
     stage: 7,
@@ -163,259 +155,18 @@ export async function runLensPackets(
       candidates: {
         generated: results.reduce((sum, result) => sum + result.findings.length, 0)
       },
-      generation: summarizeStage7Generation(results),
-      ...(adaptiveReviews ? { adaptiveReviews: adaptiveReviews.counts } : {})
+      generation: summarizeStage7Generation(results)
     }
   });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
   return results;
 }
 
-type AdaptiveTrigger = NonNullable<AdaptiveReviewOutcome["trigger"]>;
-
-// Plan 92 layer 3: a single-pass packet whose first pass shows near-miss
-// evidence earns ONE additional independent review pass — a real second draw
-// instead of a fabricated promotion candidate. Capped per run; triggered
-// packets are chosen in trigger-priority order (T1 > T2 > T3) then input
-// order. Off unless review.adaptiveSecondPass is set.
-function adaptiveTriggerFor(packet: ReviewPacket, result: PacketReviewResult): AdaptiveTrigger | undefined {
-  if (result.status !== "completed") {
-    return undefined;
-  }
-  const signals = [
-    ...result.followUpHints.map((hint) => ({ question: hint.question, files: hint.files, symbols: hint.symbols, reason: hint.reason })),
-    ...result.uncertainties.map((uncertainty) => ({ question: uncertainty.question, files: uncertainty.files, symbols: uncertainty.symbols, reason: "packet reviewer reported an unresolved uncertainty" }))
-  ];
-  if (signals.some((signal) => isAdaptiveNearMissSignal(packet, signal))) {
-    return "concrete_hint";
-  }
-  if (result.findings.length === 0) {
-    const deletedTestSignal = packet.testCoverageDelta !== undefined && packet.testCoverageDelta.deletedTestSymbols.length > 0;
-    const staticSignal = packet.hunks.some((hunk) => (hunk.staticSignals?.length ?? 0) > 0);
-    if (deletedTestSignal || staticSignal) {
-      return "silent_with_signal";
-    }
-    return undefined;
-  }
-  if (result.findings.every((finding) => finding.confidence === "low")) {
-    return "low_confidence_only";
-  }
-  return undefined;
-}
-
-const ADAPTIVE_TRIGGER_RANK: Record<AdaptiveTrigger, number> = {
-  concrete_hint: 0,
-  silent_with_signal: 1,
-  low_confidence_only: 2
-};
-
-async function runAdaptiveSecondWave(
-  results: PacketReviewResult[],
-  packets: ReviewPacket[],
-  workerRunner: ReturnType<typeof createWorkerRunner>,
-  tools: RepositoryTools,
-  config: CodegenieConfig,
-  telemetry: TelemetryRecorder,
-  opts: LensRunnerOptions
-): Promise<PacketReviewResult[]> {
-  if (config.review.adaptiveSecondPass !== true) {
-    return results;
-  }
-  for (const result of results) result.adaptiveReview = { outcome: "not_triggered", attempts: 0 };
-  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
-  const triggered = results.flatMap((result) => {
-    const packet = packetsById.get(result.packetId);
-    if (packet === undefined) {
-      return [];
-    }
-    const trigger = adaptiveTriggerFor(packet, result);
-    return trigger === undefined ? [] : [{ packet, result, trigger }];
-  });
-  // Flat cap (run 0c4d5213/52): a deep-count-scaled cap compounded with a
-  // planner deep-explosion (14 planner-deep packets) into 16 adaptive passes
-  // and the first budget soft-stop breach of the wave era.
-  const cap = MAX_ADAPTIVE_PASSES_PER_RUN;
-  const ordered = [...triggered].sort((a, b) => ADAPTIVE_TRIGGER_RANK[a.trigger] - ADAPTIVE_TRIGGER_RANK[b.trigger]);
-  const scheduled = ordered.slice(0, cap);
-  const capped = ordered.length - scheduled.length;
-  for (const entry of ordered.slice(cap)) entry.result.adaptiveReview = { trigger: entry.trigger, outcome: "capped", attempts: 0 };
-  telemetry.event({
-    stage: 7,
-    level: scheduled.length > 0 ? "info" : "debug",
-    message: "stage7_adaptive_summary",
-    data: {
-      triggered: triggered.length,
-      scheduled: scheduled.length,
-      capped,
-      cap,
-      triggers: scheduled.map((entry) => ({ packetId: entry.packet.id, trigger: entry.trigger }))
-    }
-  });
-  if (scheduled.length === 0) {
-    return results;
-  }
-  const retainedReads = new Map<string, RepositoryEvidence[]>();
-  const tasks = scheduled.map(({ packet }): WorkerTask<PacketReviewResult> => ({
-    stage: 7,
-    priority: packetPriority(packet),
-    coverage: packet.coverage,
-    dispatchRank: packet.dispatchRank,
-    packetId: packet.id,
-    timeoutMs: config.review.perPassTimeoutMs,
-    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
-    awaitCancellation: true,
-    retryOnTransient: true,
-    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, 2, true)
-  }));
-  const outcomes = await workerRunner.schedule(tasks);
-  const adaptiveByPacket = new Map<string, PacketReviewResult>();
-  const statusByPacket = new Map<string, AdaptiveReviewOutcome>();
-  outcomes.forEach((outcome) => {
-    const packetId = outcome.task.packetId ?? "unknown";
-    const status: AdaptiveReviewOutcome = {
-      outcome: outcome.outcome, attempts: outcome.attempts,
-      ...(outcome.value ? { reviewStatus: outcome.value.status } : {}),
-      ...(isCodegenieError(outcome.error) ? { errorCode: outcome.error.code,
-        ...(outcome.error.code === "timeout" || outcome.error.context?.reason === "timeout" ? { failureReason: "timeout" as const } : {}) } : {})
-    };
-    statusByPacket.set(packetId, status);
-    telemetry.event({ stage: 7, level: "info", message: "adaptive_pass_outcome", packetId, data: status });
-    if (outcome.outcome === "completed" && outcome.value) {
-      adaptiveByPacket.set(packetId, outcome.value);
-      return;
-    }
-    if (isRunFatalLlmError(outcome.error) && isSchemaInvalidError(outcome.error) === false) {
-      throw outcome.error;
-    }
-    telemetry.event({
-      stage: 7,
-      level: "warn",
-      message: "adaptive_pass_failed",
-      packetId,
-      data: { outcome: outcome.outcome }
-    });
-  });
-  const triggerByPacket = new Map(scheduled.map((entry) => [entry.packet.id, entry.trigger]));
-  return results.map((result) => {
-    const adaptive = adaptiveByPacket.get(result.packetId);
-    const packet = packetsById.get(result.packetId);
-    if (adaptive === undefined || packet === undefined) {
-      result.repositoryEvidence = [...(result.repositoryEvidence ?? []), ...(retainedReads.get(`${result.packetId}/2`) ?? [])];
-      const status = statusByPacket.get(result.packetId);
-      const trigger = triggerByPacket.get(result.packetId);
-      if (status) result.adaptiveReview = { ...status, ...(trigger ? { trigger } : {}) };
-      return result;
-    }
-    telemetry.event({
-      stage: 7,
-      level: "info",
-      message: "stage7_adaptive_pass",
-      packetId: result.packetId,
-      data: {
-        trigger: triggerByPacket.get(result.packetId),
-        produced: adaptive.findings.length,
-        firstPassCandidates: result.findings.length
-      }
-    });
-    const pooled = poolPassResults(packet, [result, adaptive]);
-    const trigger = triggerByPacket.get(result.packetId);
-    pooled.adaptiveReview = { ...statusByPacket.get(result.packetId)!, ...(trigger ? { trigger } : {}) };
-    return pooled;
-  });
-}
-
-// Merge a packet's first pass and its adaptive second pass (plan 92) into a
-// single PacketReviewResult. Candidates union under the verifier's
-// exact-duplicate identity (near-duplicates that differ in wording stay
-// separate — that is the verifier's job to absorb); hints/uncertainties
-// dedupe by normalized question under the existing per-packet caps.
-function poolPassResults(
-  packet: ReviewPacket,
-  passResults: PacketReviewResult[]
-): PacketReviewResult {
-  const first = passResults[0];
-  if (first === undefined) {
-    return { packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "failed" };
-  }
-  if (passResults.length === 1) {
-    // Mutate rather than clone: stage7Generation stats are keyed on the
-    // result object identity (WeakMap).
-    first.passesRun = first.passesRun ?? 1;
-    return first;
-  }
-  const usable = passResults.filter((result) => result.status === "completed" || result.status === "incomplete");
-  const source = usable.length > 0 ? usable : [];
-  const pooled: CandidateFinding[] = [];
-  for (const result of source) {
-    for (const finding of result.findings) {
-      if (!pooled.some((existing) => isExactDuplicateCandidate(finding, existing))) pooled.push(finding);
-    }
-  }
-  const followUpHints = dedupeByQuestion(source.flatMap((result) => result.followUpHints)).slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
-  const uncertainties = dedupeByQuestion(source.flatMap((result) => result.uncertainties)).slice(0, MAX_UNCERTAINTIES_PER_PACKET);
-  const status: PacketReviewResult["status"] = usable.some((result) => result.status === "completed")
-    ? "completed"
-    : usable.length > 0
-      ? "incomplete"
-      : passResults.some((result) => result.status === "failed")
-        ? "failed"
-        : "skipped";
-  const noFindingReason = source.map((result) => result.noFindingReason).find((reason) => reason !== undefined);
-  const reviewStatus: PacketReviewResult["reviewStatus"] = pooled.length > 0
-    ? "findings"
-    : source.some((result) => result.reviewStatus === "no_findings")
-      ? "no_findings"
-      : source.some((result) => result.reviewStatus === "incomplete")
-        ? "incomplete"
-        : undefined;
-  const merged: PacketReviewResult = {
-    packetId: packet.id,
-    lenses: packet.lenses,
-    passesRun: passResults.reduce((sum, result) => sum + (result.passesRun ?? 1), 0),
-    ...(!passResults.some(result => result.status === "completed" && !result.diagnostics?.length) ? { diagnostics: passResults.flatMap(result => result.diagnostics ?? []) } : {}),
-    repositoryEvidence: passResults.flatMap(result => result.repositoryEvidence ?? []),
-    findings: pooled,
-    ...(reviewStatus !== undefined ? { reviewStatus } : {}),
-    ...(noFindingReason !== undefined ? { noFindingReason } : {}),
-    followUpHints,
-    uncertainties,
-    status
-  };
-  const generations = source.map((result) => stage7Generation.get(result)).filter((generation) => generation !== undefined);
-  if (generations.length > 0) {
-    stage7Generation.set(merged, {
-      directCandidates: pooled.length,
-      submittedFollowUpHints: generations.reduce((sum, generation) => sum + generation.submittedFollowUpHints, 0),
-      keptFollowUpHints: followUpHints.length,
-      droppedFollowUpHints: generations.reduce((sum, generation) => sum + generation.droppedFollowUpHints, 0),
-      submittedUncertainties: generations.reduce((sum, generation) => sum + generation.submittedUncertainties, 0),
-      keptUncertainties: uncertainties.length,
-      droppedUncertainties: generations.reduce((sum, generation) => sum + generation.droppedUncertainties, 0)
-    });
-  }
-  return merged;
-}
-
-function dedupeByQuestion<T extends { question: string }>(items: T[]): T[] {
-  const seen = new Set<string>();
-  const kept: T[] = [];
-  for (const item of items) {
-    const key = item.question.toLowerCase().replace(/\s+/gu, " ").trim();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    kept.push(item);
-  }
-  return kept;
-}
-
-// One journal per logical pass, bounded by the worker's existing attempt and
-// tool-delivery limits. Never feed prior findings into independent prompts.
+// Retain delivered reads across retries of the same packet, even if a submit fails.
 function packetAttemptRunner(
   packet: ReviewPacket, tools: RepositoryTools, config: CodegenieConfig,
   opts: LensRunnerOptions, telemetry: TelemetryRecorder,
-  retained: Map<string, RepositoryEvidence[]>, pass: number, adaptive = false
+  retained: Map<string, RepositoryEvidence[]>
 ): WorkerTask<PacketReviewResult>["run"] {
   const reads = new Map<string, RepositoryEvidence>();
   const observations = new Map<string, LlmToolResultSummary>();
@@ -426,19 +177,19 @@ function packetAttemptRunner(
       results.forEach((result, index) => {
         // Provider IDs are only local to a model response and may repeat even
         // within a worker attempt. Snapshot position is a host-owned identity.
-        const id = `${task.workerId}/pass-${pass}/attempt-${currentAttempt}/read-${index}`;
+        const id = `${task.workerId}/pass-1/attempt-${currentAttempt}/read-${index}`;
         observations.set(id, structuredClone(result));
         for (const [hit, evidence] of (result.repositoryEvidence ?? []).entries()) {
           const readId = result.repositoryEvidence!.length === 1 ? id : `${id}/hit-${hit}`;
           const read = { ...structuredClone(evidence), id: readId,
-            origin: { workerId: task.workerId, attempt: currentAttempt, pass, toolCallId: result.id } };
+            origin: { workerId: task.workerId, attempt: currentAttempt, pass: 1, toolCallId: result.id } };
           reads.set(readId, read);
         }
       });
-      retained.set(`${packet.id}/${pass}`, [...reads.values()]);
+      retained.set(packet.id, [...reads.values()]);
       return [...observations.values()];
     };
-    const result = await runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, adaptive ? pass : undefined, collect);
+    const result = await runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, collect);
     result.repositoryEvidence = [...reads.values()];
     return result;
   };
@@ -452,7 +203,6 @@ async function runPacket(
   telemetry: TelemetryRecorder,
   workerId: string,
   signal: AbortSignal,
-  adaptivePass?: number,
   collect?: (results: LlmToolResultSummary[]) => LlmToolResultSummary[]
 ): Promise<PacketReviewResult> {
   const skills = skillsCompatibleWithLanguage(
@@ -473,7 +223,6 @@ async function runPacket(
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
-    ...(adaptivePass !== undefined ? { cacheDraw: "stage7-adaptive-2" as const } : {}),
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
     signal,
@@ -496,7 +245,7 @@ async function runPacket(
         : { buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, input, exactSourceToolNames[toolSurface]) })
     }
   });
-  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, adaptivePass));
+  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff));
   const reviewStatus = normalizedReviewStatus(submitted, findings.length);
   if (reviewStatus === "no_findings") {
     telemetry.event({
@@ -852,14 +601,10 @@ function stampFinding(
   passSkillIds: readonly string[],
   workerId: string,
   telemetry: TelemetryRecorder,
-  diff: UnifiedDiff | undefined,
-  adaptivePass?: number
+  diff: UnifiedDiff | undefined
 ): CandidateFinding {
   const modelAnchor = normalizeAnchor(submitted.anchor, packet, diff);
-  // Adaptive second passes (plan 92) carry an `a` pass marker so candidate
-  // ids never collide with the first pass, which keeps the plain id shape.
-  const passMarker = adaptivePass !== undefined ? `a${adaptivePass}` : "";
-  const candidateId = `${packet.id.slice(0, 8)}-${passMarker}f${index + 1}`;
+  const candidateId = `${packet.id.slice(0, 8)}-f${index + 1}`;
   if (submitted.anchor !== undefined && modelAnchor === undefined) {
     telemetry.event({
       stage: 7,
@@ -934,8 +679,7 @@ function stampFinding(
       packetId: packet.id,
       lensId: primaryLens,
       skillIds: [...passSkillIds],
-      workerId,
-      ...(adaptivePass !== undefined ? { ensemblePass: adaptivePass } : {})
+      workerId
     }
   };
 }

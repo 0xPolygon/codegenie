@@ -3,12 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { projectBlindSheet } from '../evals/runner/blind-sheet.mjs';
 
 describe('blind grading projection', () => {
-  it.each(['Adaptive', 'second pass', 'SECOND-PASS', 'pass 2', 'pass-2', 'adaptiveReview', 'adaptiveSecondPass'])('refuses %s only for an adaptive-bound campaign', (phrase) => {
-    const input = { id: 'a'.repeat(24), caseId: 'example', outcome: 'completed_full', key: Buffer.alloc(32),
-      candidates: [], promotion: { decisions: [] }, verification: [], finalReview: { summary: `Selected finding: ${phrase}.` } };
-    expect(() => projectBlindSheet(input)).not.toThrow();
-    expect(() => projectBlindSheet({ ...input, screenAdaptiveMarkers: true })).toThrow('first-lock treatment markers');
-  });
   it('preserves discovery, related-question joins and visible output without treatment identifiers', () => {
     const input = { id: 'a'.repeat(24), caseId: 'example', outcome: 'completed_partial', key: Buffer.alloc(32, 7),
       candidates: [{ id: 'candidate-001', path: 'src/a.ts', title: 'A test can pass when the write fails', failureMode: 'search_files found a missing guard', evidence: { changedCode: 'write()' } },

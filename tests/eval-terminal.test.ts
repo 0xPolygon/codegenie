@@ -31,25 +31,6 @@ function fixture(dir: string) {
 }
 
 describe('campaign terminal evidence', () => {
-  it('requires the sealed adaptive setting to agree with Stage 7 evidence', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-arm-')), f = fixture(dir);
-    try {
-      const file = path.join(dir, 'arm-binding.json');
-      const check = (adaptiveSecondPass: boolean) => validateTerminal({ runDir: dir, attemptPrefix: f.prefix, ledger: f.ledger,
-        expectedPacketIds: ['packet'], reviewOverride: { adaptiveSecondPass } });
-      f.save();
-      expect(() => check(true)).toThrow();
-      writeFileSync(file, JSON.stringify({ bound: true, observed: false }));
-      expect(() => check(true)).toThrow('effective campaign review override mismatch');
-      writeFileSync(file, JSON.stringify({ bound: true, observed: true }));
-      expect(() => check(true)).toThrow('effective campaign review override mismatch');
-      f.events.push({ runId: 'run-1', eventId: 'ev-2', stage: 7, message: 'stage7_adaptive_summary', data: { scheduled: 0 } });
-      f.save();
-      expect(check(true)).toMatchObject({ packets: 1 });
-      writeFileSync(file, JSON.stringify({ bound: false, observed: false }));
-      expect(() => check(false)).toThrow('effective campaign review override mismatch');
-    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
-  });
   it('requires each packet submit and accounts typed tool errors without stopping', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-'));
     const f = fixture(dir);

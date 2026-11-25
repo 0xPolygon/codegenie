@@ -1898,9 +1898,8 @@ function clusterCandidates(
 // (plan 87, functional_spec:563): two candidates share a verdict iff they
 // are exact duplicates. No text similarity, no scope/symbol inference, no
 // cross-category bridging — a shared verdict a candidate did not earn is a
-// silent correlated kill (fable bug 2). Exported for Stage-7 pass pooling,
-// which unions a packet's adaptive pass candidates under the same rule.
-export function isExactDuplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
+// silent correlated kill (fable bug 2).
+function isExactDuplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
   if (!b) {
     return false;
   }

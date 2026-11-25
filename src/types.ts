@@ -52,10 +52,6 @@ export type CodegenieConfig = {
     budgetBoost: number;
     maxBudgetTokens?: number;
     maxModelCalls?: number;
-    // Plan 92 layer 3: single-pass packets whose first pass shows near-miss
-    // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
-    // only) earn one additional independent review pass. Off by default.
-    adaptiveSecondPass?: boolean;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -877,10 +873,6 @@ export type FindingProducer = {
   lensId: string;
   skillIds: string[];
   workerId?: string;
-  // 2 when the adaptive second pass (plan 92) produced this candidate;
-  // absent for first-pass candidates. Historical artifacts may also carry
-  // plan 84 ensemble pass numbers.
-  ensemblePass?: number;
 };
 
 export type CandidateFindingProvenance = {
@@ -1008,39 +1000,6 @@ export type PacketReviewResult = {
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
-  // Total Stage-7 passes that produced this result (first pass + adaptive
-  // second pass).
-  passesRun?: number;
-  /** Supplemental investigation only; never substitutes for baseline coverage. */
-  adaptiveReview?: AdaptiveReviewOutcome;
-};
-
-export type AdaptiveReviewOutcome = {
-  trigger?: "concrete_hint" | "silent_with_signal" | "low_confidence_only";
-  outcome: "not_triggered" | "capped" | "completed" | "failed" | "cancelled" | "timed_out" | "not_dispatched";
-  attempts: number;
-  reviewStatus?: PacketReviewResult["status"];
-  errorCode?: string;
-  /** An explicit cooperative deadline error can have worker outcome=failed. */
-  failureReason?: "timeout";
-};
-
-export type AdaptiveReviewCounts = {
-  triggered: number;
-  scheduled: number;
-  completed: number;
-  incomplete: number;
-  failed: number;
-  timedOut: number;
-  cancelled: number;
-  notDispatched: number;
-  capped: number;
-  retries: number;
-};
-
-export type AdaptiveReviewSummary = {
-  passes: Array<AdaptiveReviewOutcome & { packetId: string }>;
-  counts: AdaptiveReviewCounts;
 };
 
 export type VerificationVerdict = {
@@ -1086,8 +1045,6 @@ export type RunCoverageStatus = {
   /** No trustworthy coverage snapshot was assembled; numeric counters are placeholders. */
   unavailable?: boolean;
   diagnostics?: ReviewDiagnostic[];
-  /** Absent in legacy artifacts or when supplemental outcomes were not recorded. */
-  adaptiveReviews?: AdaptiveReviewSummary;
   totalHunks: number;
   reviewedHunks: number;
   skippedHunks: number;
@@ -1231,7 +1188,6 @@ export type EvalCase = {
     budgetBoost?: number;
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
-    adaptiveSecondPass?: boolean;
     verify?: boolean;
     compositionReasoningStepDown?: boolean;
     skipSvgReview?: boolean;
@@ -1381,13 +1337,12 @@ export type EvalBudgetResult = {
 };
 
 // Plan 92 Layer 1: per-packet attention-allocation scoring — what a packet
-// was allotted (coverage, Stage-7 passes) joined with what it produced.
+// was allotted (coverage) joined with what it produced.
 export type AttentionRecord = {
   packetId: string;
   path: string;
   coverage: Exclude<CoverageLevel, "skip">;
   coverageSource: "planner" | "deterministic_default" | `escalated:${string}`;
-  ensemblePasses: number;
   directCandidates: number;
   promotedCandidates: number;
   hintsEmitted: number;
@@ -1399,7 +1354,6 @@ export type AttentionRecord = {
 export type AttentionEfficiency = {
   byCoverage: Partial<Record<Exclude<CoverageLevel, "skip">, {
     packets: number;
-    ensembledPackets: number;
     directCandidates: number;
     hintsEmitted: number;
     keptVerified: number;
@@ -1409,7 +1363,6 @@ export type AttentionEfficiency = {
 };
 
 export type EvalRunMetrics = {
-  adaptiveReviews?: AdaptiveReviewCounts;
   reportedFindings: number;
   inlineFindings: number;
   summaryOnlyFindings: number;

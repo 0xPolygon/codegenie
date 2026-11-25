@@ -1,7 +1,6 @@
 import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { exportFirstLock } from '../evals/runner/blind-export.mjs';
@@ -77,38 +76,6 @@ it('refuses treatment markers with aggregate counts before writing any export', 
         evidence: { outcome: 'completed_full', candidates: [{ id: `raw-id-${index}`, failureMode: index ? 'assigned effect' : 'skipped_path relied_guard' }], promotion: { decisions: [] }, verification: [], finalReview: {} } })) };
     try { exportFirstLock(options); throw new Error('expected refusal'); } catch (error) { expect(error).toMatchObject({ affectedSheets: 2, hits: 3 }); }
     expect(() => readdirSync(options.outputDirectory)).toThrow(); expect(() => readFileSync(options.mappingFile)).toThrow();
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-it('exempts bare adaptive only for a case whose bound input diff contains it', async () => {
-  // @ts-expect-error Development-only ESM has no emitted types.
-  const { projectBlindSheet } = await import('../evals/runner/blind-sheet.mjs');
-  const inputDiff = '+// adaptive quota\n';
-  const args = { id: '1'.repeat(24), key: Buffer.alloc(32, 7), caseId: 'case-01', outcome: 'completed_full', screenAdaptiveMarkers: true,
-    attestedSources: { inputDiff }, candidates: [{ id: 'raw-id-123', title: 'adaptive quota', evidence: { changedCode: 'adaptive quota' } }], promotion: { decisions: [] }, verification: [], finalReview: {} };
-  const sheet = projectBlindSheet(args);
-  expect(sheet.discovery.findings[0].title).toBe('adaptive quota');
-  expect(sheet.discovery.findings[0].changedCode).toBe('adaptive quota');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota in the second pass' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptiveReview' }] })).toThrow('treatment markers');
-  expect(() => projectBlindSheet({ ...args, candidates: [{ id: 'f', title: 'adaptive quota and treatment arm' }] })).toThrow('treatment markers');
-  for (const attestedSources of [undefined, { inputDiff: '+nonadaptive quota' }, { inputDiff: '+adaptiveReview' }]) {
-    expect(() => projectBlindSheet({ ...args, attestedSources })).toThrow('treatment markers');
-  }
-});
-
-it('derives the input diff from the bound git revisions', async () => {
-  // @ts-expect-error Development-only ESM has no emitted types.
-  const { inputSources } = await import('../evals/runner/source-attestation.mjs');
-  const dir = mkdtempSync(path.join(tmpdir(), 'eval-source-attestation-'));
-  const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  try {
-    git('init', '-q'); git('config', 'user.email', 'fixture@example.test'); git('config', 'user.name', 'Fixture');
-    writeFileSync(path.join(dir, 'feature.ts'), 'const quota = 1;\n'); git('add', 'feature.ts'); git('commit', '-qm', 'base');
-    const baseSHA = git('rev-parse', 'HEAD'); writeFileSync(path.join(dir, 'feature.ts'), 'const quota = 2;\n// adaptive quota\n'); git('commit', '-qam', 'head');
-    const headSHA = git('rev-parse', 'HEAD'), evidence = inputSources({ sourceRoot: dir, baseSHA, headSHA });
-    expect(evidence.inputDiff).toContain('+// adaptive quota');
-    expect(inputSources({ sourceRoot: dir, baseSHA: 'not-a-revision', headSHA })).toBeUndefined();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
