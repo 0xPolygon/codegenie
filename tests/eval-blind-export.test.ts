@@ -34,11 +34,11 @@ it('writes one stable, private mapping and receipt-selected blind sheets', () =>
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('writes no mechanism files before independent locks and reconciliation', async () => {
+it('reveals pairing only after independent locks and reconciliation', async () => {
   const { createHash } = await import('node:crypto');
   // @ts-expect-error Development-only ESM has no emitted types.
-  const { exportMechanism, revealPairing } = await import('../evals/runner/blind-export.mjs');
-  const dir = mkdtempSync(path.join(tmpdir(), 'eval-mechanism-export-'));
+  const { revealPairing } = await import('../evals/runner/blind-export.mjs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'eval-pairing-reveal-'));
   try {
     const evidence = { outcome: 'completed_partial', candidates: [], promotion: { decisions: [] }, verification: [], finalReview: { findings: [] } };
     const options = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0, outputDirectory: path.join(dir, 'blind'), mappingFile: path.join(dir, 'private', 'mapping.json'),
@@ -49,26 +49,18 @@ it('writes no mechanism files before independent locks and reconciliation', asyn
     const grades = [{ id: mapping.selections[0].id, noApplicableCauses: true, causes: [], otherClaims: { survivingMediumPlus: [], published: [] } }];
     const a = file('a.json', { analyst: 'a', manifestSHA256: first.manifestSHA256, grades }), b = file('b.json', { analyst: 'b', manifestSHA256: first.manifestSHA256, grades });
     const reconciliation = file('reconciled.json', { manifestSHA256: first.manifestSHA256, lockSHA256: [a.sha256, b.sha256], grades });
-    const target = path.join(dir, 'mechanism');
-    const args = { manifestFile, manifestSHA256: first.manifestSHA256, mappingFile: options.mappingFile, locks: [a, b], reconciliation, outputDirectory: target,
-      evidence: [{ id: mapping.selections[0].id, receiptSHA256: 'c'.repeat(64), records: [{ packetId: 'p', pass: 1, reviewStatus: 'incomplete', assignedHunkIds: ['h'], assignedEffects: [] }], packets: [{ id: 'p', path: 'src/a', hunks: [{ hunkId: 'h', lines: [] }] }] }] };
-    await expect(exportMechanism({ ...args, reconciliation: undefined })).rejects.toThrow();
-    await expect(exportMechanism({ ...args, locks: [a, a] })).rejects.toThrow();
+    const reveal = { manifestFile, manifestSHA256: first.manifestSHA256, mappingFile: options.mappingFile, locks: [a, b], reconciliation, outputFile: path.join(dir, 'revealed', 'pairing.json') };
+    await expect(revealPairing({ ...reveal, reconciliation: undefined })).rejects.toThrow();
+    await expect(revealPairing({ ...reveal, locks: [a, a] })).rejects.toThrow();
     const wrong = file('wrong.json', { analyst: 'b', manifestSHA256: 'f'.repeat(64) });
-    await expect(exportMechanism({ ...args, locks: [a, wrong] })).rejects.toThrow();
-    expect(() => readdirSync(target)).toThrow();
-    const injected = path.join(options.outputDirectory, 'private-note.txt'); writeFileSync(injected, 'do not publish');
-    await expect(exportMechanism(args)).rejects.toThrow('unexpected export'); expect(() => readdirSync(target)).toThrow(); rmSync(injected);
-    const result = await exportMechanism(args); expect(result.reviewCount).toBe(1);
-    expect(JSON.parse(readFileSync(path.join(target, `${mapping.selections[0].id}.json`), 'utf8')).passes[0].uncoveredHunks).toEqual(['h']);
-    const reveal = { manifestFile, manifestSHA256: first.manifestSHA256, mappingFile: options.mappingFile, locks: [a, b], reconciliation, mechanismManifestFile: path.join(target, 'manifest.json'), mechanismManifestSHA256: result.mechanismManifestSHA256, outputFile: path.join(dir, 'revealed', 'pairing.json') };
-    await expect(revealPairing(reveal)).rejects.toThrow();
+    await expect(revealPairing({ ...reveal, locks: [a, wrong] })).rejects.toThrow();
     expect(() => readdirSync(path.dirname(reveal.outputFile))).toThrow();
-    const coding = file('coding.json', { frozen: true, mechanismManifestSHA256: result.mechanismManifestSHA256, reviews: [{ id: mapping.selections[0].id, noApplicableCauses: true, causes: [] }] });
+    const injected = path.join(options.outputDirectory, 'private-note.txt'); writeFileSync(injected, 'do not publish');
+    await expect(revealPairing(reveal)).rejects.toThrow('unexpected export'); rmSync(injected);
     const sheetFile = path.join(options.outputDirectory, `${mapping.selections[0].id}.json`), originalSheet = readFileSync(sheetFile);
-    writeFileSync(sheetFile, '{}'); await expect(revealPairing({ ...reveal, coding })).rejects.toThrow('sheet mismatch');
+    writeFileSync(sheetFile, '{}'); await expect(revealPairing(reveal)).rejects.toThrow('sheet mismatch');
     expect(() => readdirSync(path.dirname(reveal.outputFile))).toThrow(); writeFileSync(sheetFile, originalSheet);
-    expect((await revealPairing({ ...reveal, coding })).reviewCount).toBe(1);
+    expect((await revealPairing(reveal)).reviewCount).toBe(1);
     const pairing = JSON.parse(readFileSync(reveal.outputFile, 'utf8'));
     expect(pairing.reviews[0]).toMatchObject({ arm: 'treatment', draw: 1 });
     expect(JSON.stringify(pairing)).not.toMatch(/receipt|slotId|"key"/u);
@@ -125,18 +117,16 @@ it('refuses unrelated destination files before publishing anything', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('keeps frozen anchor hunk IDs in the private mapping while projecting optional causes', () => {
+it('projects optional causes', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-anchor-'));
   try {
     const args = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0, outputDirectory: path.join(dir, 'blind'), mappingFile: path.join(dir, 'private', 'mapping.json'),
       selections: [{ slotId: 'slot', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'treatment', draw: 1, caseId: 'case-01', sourceLocator: 'source/01', oracleLocator: 'oracle/01',
-        causes: [{ id: 'optional-cause', optional: true }], anchorMappings: [{ id: 'optional-cause', optional: true, hunkIds: ['private-hunk-id'], unmapped: false }],
+        causes: [{ id: 'optional-cause', optional: true }],
         evidence: { outcome: 'completed_full', candidates: [], promotion: { decisions: [] }, verification: [], finalReview: {} } }] };
     exportFirstLock(args);
     const manifest = JSON.parse(readFileSync(path.join(args.outputDirectory, 'manifest.json'), 'utf8'));
     expect(manifest.sheets[0].causes).toEqual([{ id: 'optional-cause', optional: true }]);
-    expect(readdirSync(args.outputDirectory).map((name) => readFileSync(path.join(args.outputDirectory, name), 'utf8')).join('')).not.toContain('private-hunk-id');
-    expect(readFileSync(args.mappingFile, 'utf8')).toContain('private-hunk-id');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -50,11 +50,9 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
     if (!entry || typeof entry.slotId !== 'string' || !Number.isSafeInteger(entry.attempt) || entry.attempt < 1 || !validHash(entry.receiptSHA256) ||
         !['control', 'treatment'].includes(entry.arm) || !Number.isSafeInteger(entry.draw) || entry.draw < 1 || !neutral(entry.caseId) || !neutral(entry.sourceLocator) || !neutral(entry.oracleLocator) || !Array.isArray(entry.causes) || new Set(entry.causes.map((cause) => cause.id)).size !== entry.causes.length || entry.causes.some((cause) => !cause || !neutral(cause.id) || typeof cause.optional !== 'boolean')) throw new Error('invalid selected review');
     return { slotId: entry.slotId, attempt: entry.attempt, receiptSHA256: entry.receiptSHA256, arm: entry.arm, draw: entry.draw,
-      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator, causes: entry.causes.map(({ id, optional }) => ({ id, optional })),
-      anchorMappings: entry.anchorMappings ?? [] };
+      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator, causes: entry.causes.map(({ id, optional }) => ({ id, optional })) };
   });
   if (new Set(descriptors.map((entry) => entry.slotId)).size !== descriptors.length) throw new Error('duplicate selected slot');
-  if (descriptors.some((entry) => !Array.isArray(entry.anchorMappings) || entry.anchorMappings.length !== entry.causes.length || entry.causes.some((cause) => !entry.anchorMappings.some((mapping) => mapping.id === cause.id && mapping.optional === cause.optional && Array.isArray(mapping.hunkIds) && typeof mapping.unmapped === 'boolean' && (mapping.unavailable === true ? !mapping.unmapped && mapping.hunkIds.length === 0 : mapping.unmapped === (mapping.hunkIds.length === 0)))))) throw new Error('missing anchor diagnostics');
   let key;
   if (existsSync(mapping)) {
     const stat = lstatSync(mapping);
@@ -125,75 +123,22 @@ function verifyPrimaryBundle(manifestFile, manifest, mapping) {
   return sheets;
 }
 
-// The caller supplies receipt-verified artifacts for precisely the mapped cohort.
-// All checks and projections precede creation of any mechanism output.
-export async function exportMechanism({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, evidence, outputDirectory, expectedMechanismManifestSHA256, bindPrepared }) {
+// Reveal pairing only after both primary grades and their reconciliation are locked.
+export async function revealPairing({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, outputFile, expectedReconciliationSHA256, bindPrepared }) {
   const { verifyPrimaryLocks } = await import('./blind-locks.mjs');
-  const { projectMechanism } = await import('./blind-mechanism.mjs');
   const manifest = readBound(manifestFile, manifestSHA256);
   if ((lstatSync(checkedOutside(mappingFile)).mode & 0o077) !== 0) throw new Error('mapping permissions too broad');
   const mappingBytes = readCheckedFile(checkedOutside(mappingFile));
   if (digest(mappingBytes) !== manifest.mappingSHA256) throw new Error('mapping binding mismatch');
   const mapping = JSON.parse(mappingBytes.toString('utf8'));
   const sheets = verifyPrimaryBundle(manifestFile, manifest, mapping);
-  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation, manifest, sheets });
-  const selected = mapping.selections.filter((item) => item.arm === 'treatment');
-  if (!Array.isArray(evidence) || evidence.length !== selected.length || new Set(evidence.map((item) => item.id)).size !== selected.length ||
-      selected.some((item) => !manifest.sheets.some((sheet) => sheet.id === item.id) || !evidence.some((entry) => entry.id === item.id))) throw new Error('mechanism cohort mismatch');
-  const projections = selected.map((item) => {
-    const source = evidence.find((entry) => entry.id === item.id);
-    if (!source || source.receiptSHA256 !== item.receiptSHA256) throw new Error('mechanism receipt mismatch');
-    const bytes = json(projectMechanism({ id: item.id, records: source.records, packets: source.packets, anchorMappings: item.anchorMappings }));
-    return { id: item.id, bytes, sha256: digest(bytes) };
-  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const output = checkedOutside(outputDirectory);
-  const firstLockDirectory = path.dirname(checkedOutside(manifestFile)), mappingPath = checkedOutside(mappingFile);
-  if (output === firstLockDirectory || output.startsWith(`${firstLockDirectory}${path.sep}`) || mappingPath === output || mappingPath.startsWith(`${output}${path.sep}`)) throw new Error('mechanism output overlaps protected files');
-  const bytes = json({ version: 1, firstLockManifestSHA256: manifestSHA256, reconciliationSHA256: reconciliation.sha256,
-    reviews: projections.map(({ id, sha256 }) => ({ id, sha256 })) });
-  if (expectedMechanismManifestSHA256 !== undefined && digest(bytes) !== expectedMechanismManifestSHA256) throw new Error('mechanism export binding changed');
-  const expectedFiles = new Map(projections.map((entry) => [`${entry.id}.json`, entry.bytes])); expectedFiles.set('manifest.json', bytes);
-  checkDestination(output, expectedFiles);
-  if (bindPrepared !== undefined && (typeof bindPrepared !== 'function' || bindPrepared(digest(bytes)) !== true)) throw new Error('mechanism export binding failed');
-  mkdirSync(output, { recursive: true, mode: 0o700 });
-  for (const projection of projections) publish(path.join(output, `${projection.id}.json`), projection.bytes);
-  publish(path.join(output, 'manifest.json'), bytes);
-  return { mechanismManifestSHA256: digest(bytes), reviewCount: projections.length };
-}
-
-// Pairing is released only after primary reconciliation and frozen mechanism
-// coding. The analyst-facing output never contains the export key or receipts.
-export async function revealPairing({ manifestFile, manifestSHA256, mappingFile, locks, reconciliation, mechanismManifestFile, mechanismManifestSHA256, coding, outputFile, expectedCodingSHA256, bindPrepared }) {
-  const { verifyPrimaryLocks, verifyMechanismFreeze } = await import('./blind-locks.mjs');
-  const manifest = readBound(manifestFile, manifestSHA256);
-  if ((lstatSync(checkedOutside(mappingFile)).mode & 0o077) !== 0) throw new Error('mapping permissions too broad');
-  const mappingBytes = readCheckedFile(checkedOutside(mappingFile));
-  if (digest(mappingBytes) !== manifest.mappingSHA256) throw new Error('mapping binding mismatch');
-  const mapping = JSON.parse(mappingBytes.toString('utf8'));
-  const sheets = verifyPrimaryBundle(manifestFile, manifest, mapping);
-  verifyPrimaryLocks({ manifestSHA256, locks, reconciliation, manifest, sheets });
-  const mechanism = readBound(mechanismManifestFile, mechanismManifestSHA256);
-  if (mechanism.firstLockManifestSHA256 !== manifestSHA256 || mechanism.reconciliationSHA256 !== reconciliation.sha256 || !Array.isArray(mechanism.reviews)) throw new Error('mechanism manifest mismatch');
-  const expected = mapping.selections.filter((item) => item.arm === 'treatment').map((item) => item.id).sort();
-  if (mechanism.reviews.length !== expected.length || mechanism.reviews.map((item) => item.id).sort().join(',') !== expected.join(',')) throw new Error('mechanism cohort mismatch');
-  if (path.basename(mechanismManifestFile) !== 'manifest.json') throw new Error('invalid mechanism manifest path');
-  const mechanismReviews = [], expectedMechanismFiles = new Map([['manifest.json', readCheckedFile(mechanismManifestFile)]]);
-  for (const item of mechanism.reviews) {
-    if (!/^[a-f0-9]{24}$/u.test(item.id ?? '') || !validHash(item.sha256)) throw new Error('mechanism review changed');
-    const bytes = readCheckedFile(path.join(path.dirname(mechanismManifestFile), `${item.id}.json`));
-    if (digest(bytes) !== item.sha256) throw new Error('mechanism review changed');
-    expectedMechanismFiles.set(`${item.id}.json`, bytes);
-    const review = JSON.parse(bytes.toString('utf8')); if (review.id !== item.id || !Array.isArray(review.passes)) throw new Error('mechanism review changed');
-    mechanismReviews.push(review);
-  }
-  checkDestination(path.dirname(mechanismManifestFile), expectedMechanismFiles);
-  const verifiedCoding = verifyMechanismFreeze({ mechanismManifestSHA256, coding, manifest, mapping, mechanismReviews });
-  if (expectedCodingSHA256 !== undefined && expectedCodingSHA256 !== verifiedCoding.codingSHA256) throw new Error('coding freeze changed');
+  const { reconciliationSHA256 } = verifyPrimaryLocks({ manifestSHA256, locks, reconciliation, manifest, sheets });
+  if (expectedReconciliationSHA256 !== undefined && expectedReconciliationSHA256 !== reconciliationSHA256) throw new Error('reconciliation binding changed');
   const output = checkedOutside(outputFile);
-  if (output === mappingFile || output.startsWith(`${path.dirname(manifestFile)}${path.sep}`) || output.startsWith(`${path.dirname(mechanismManifestFile)}${path.sep}`)) throw new Error('reveal overlaps protected evidence');
-  const bytes = json({ version: 1, manifestSHA256, mechanismManifestSHA256, codingSHA256: coding.sha256,
-    reviews: mapping.selections.map((item) => ({ id: item.id, case: item.caseId, arm: item.arm, draw: item.draw })), mechanismCoding: verifiedCoding.derived });
-  if (bindPrepared !== undefined && (typeof bindPrepared !== 'function' || bindPrepared(verifiedCoding.codingSHA256) !== true)) throw new Error('coding freeze binding failed');
+  if (output === mappingFile || output.startsWith(`${path.dirname(manifestFile)}${path.sep}`)) throw new Error('reveal overlaps protected evidence');
+  const bytes = json({ version: 1, manifestSHA256, reconciliationSHA256,
+    reviews: mapping.selections.map((item) => ({ id: item.id, case: item.caseId, arm: item.arm, draw: item.draw })) });
+  if (bindPrepared !== undefined && (typeof bindPrepared !== 'function' || bindPrepared(reconciliationSHA256) !== true)) throw new Error('reconciliation binding failed');
   mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
   publish(output, bytes);
   return { revealSHA256: digest(bytes), reviewCount: mapping.selections.length };

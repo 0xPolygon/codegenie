@@ -426,156 +426,6 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("repairs missing assigned effects without altering accepted draft rows or leaking them into the pipeline result", async () => {
-    const repoRoot = mkdtempSync(path.join(tmpdir(), "codegenie-assigned-effects-"));
-    const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true } });
-    try {
-      const { runDir } = await run.attachRunDirectory(repoRoot);
-      const packet = fakePacket();
-      packet.reviewProfile = "simple";
-      packet.hunks.push({ ...packet.hunks[0]!, hunkId: "h2" });
-      const draft = {
-        reviewStatus: "findings",
-        findings: [{
-          title: "Null result bypasses the fallback", severity: "medium", confidence: "medium", path: "app.ts",
-          anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }, category: "correctness",
-          evidence: { changedCode: "bad" }, failureMode: "The caller receives null.", whyThisMatters: "The caller expects a value.",
-          verification: "The fallback no longer runs."
-        }],
-        followUpHints: [{ question: "Does the caller distinguish null?", files: ["app.ts"], symbols: [],
-          suggestedLenses: [], reason: "Inspect the caller's null handling.", confidence: "medium" }],
-        uncertainties: [{ question: "Does the data layer permit null?", files: ["app.ts"], symbols: [] }]
-      };
-      const validEffect = { hunkId: "h1", kind: "skipped_path", disposition: "finding", effect: "Removal of the fallback",
-        basis: "EFFECT_BASIS_SENTINEL at app.ts:1" };
-      const additionalEffect = { hunkId: "h2", kind: "relied_guard", disposition: "question", effect: "Null guard",
-        basis: "Question about the data layer" };
-      const scripted = scriptedPiAdapter([
-        assistantMessage([toolCall("first", "submit_review", { ...draft, assignedEffects: [validEffect] })]),
-        assistantMessage([toolCall("rewritten", "submit_review", { assignedEffects: [{ ...validEffect, basis: "Changed" }, additionalEffect] })]),
-        assistantMessage([toolCall("repaired", "submit_review", { assignedEffects: [validEffect, additionalEffect] })])
-      ]);
-      const adapter = { ...scripted, validateToolCall };
-      const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 },
-        telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
-        hooks: { checkpoint: () => "ok", onUsage() {} } });
-      const cfg = { ...config(), review: { ...config().review, assignedEffects: true } };
-      const [result] = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, run.recorder, {
-        runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fakeDiff()
-      });
-      expect(scripted.calls).toBe(3);
-      expect(result?.findings[0]?.title).toBe(draft.findings[0]!.title);
-      expect(result?.followUpHints[0]?.question).toBe(draft.followUpHints[0]!.question);
-      expect(result?.uncertainties[0]?.question).toBe(draft.uncertainties[0]!.question);
-      expect(JSON.stringify(result)).not.toContain("EFFECT_BASIS_SENTINEL");
-      expect(result).not.toHaveProperty("assignedEffects");
-      const records = JSON.parse(readFileSync(path.join(runDir, "stages/07-review/assigned-effects.json"), "utf8"));
-      expect(records).toEqual([{ packetId: packet.id, workerId: "w7-001", pass: 1, assignedHunkIds: ["h1", "h2"],
-        reviewStatus: "findings", assignedEffects: [validEffect, additionalEffect] }]);
-      const events = readFileSync(path.join(runDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-      expect(events).toContainEqual(expect.objectContaining({ message: "stage7_assigned_effects", data: expect.objectContaining({
-        uncoveredHunksFirstSubmit: ["h2"], uncoveredHunksAccepted: [], effectRepairUsed: true, otherRepairUsed: false
-      }) }));
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it.each(["incomplete", "no_findings"] as const)("accepts a tool-less assigned-effects %s submit", async reviewStatus => {
-    const packet = fakePacket();
-    packet.reviewProfile = "simple";
-    const row = { hunkId: "h1", kind: "none", disposition: "safe", effect: "Added an optional helper", basis: "app.ts:1" };
-    // Leave the ordinary arrays out of the no-findings draft so the existing
-    // deterministic cleanup must preserve the valid effect row.
-    const args = reviewStatus === "incomplete"
-      ? { findings: [], followUpHints: [], uncertainties: [], assignedEffects: [] }
-      : { findings: [], noFindingReason: "The reviewed call is unchanged.", assignedEffects: [row] };
-    const scripted = scriptedPiAdapter([assistantMessage([toolCall("submit", "submit_review", { reviewStatus, ...args })])]);
-    const adapter = { ...scripted, validateToolCall };
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const writeArtifact = vi.fn(async () => {});
-    const telemetry = { ...nullTelemetry(), event: (event: typeof events[number]) => events.push(event), writeArtifact };
-    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 },
-      telemetry, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
-      hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const cfg = { ...config(), review: { ...config().review, assignedEffects: true } };
-    const [result] = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, telemetry, {
-      runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry()
-    });
-    expect(scripted.calls).toBe(1);
-    expect(result?.reviewStatus).toBe(reviewStatus);
-    expect(writeArtifact).toHaveBeenCalledWith("assigned-effects.json", [expect.objectContaining({ reviewStatus, assignedEffects: args.assignedEffects })]);
-    expect(events).toContainEqual(expect.objectContaining({ message: "stage7_assigned_effects", data: expect.objectContaining({
-      uncoveredHunksAccepted: reviewStatus === "incomplete" ? ["h1"] : [], effectRepairUsed: false, otherRepairUsed: false
-    }) }));
-  });
-
-  it("keeps the assigned-effects coverage rule during forced finalization", async () => {
-    const row = { hunkId: "h1", kind: "none", disposition: "safe", effect: "Added an optional helper", basis: "app.ts:1" };
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("read-first", "read_range", { path: "app.ts", startLine: 1, endLine: 1 }),
-        toolCall("read-second", "read_range", { path: "app.ts", startLine: 2, endLine: 2 })]),
-      assistantMessage([toolCall("finalize", "submit_review", {
-        reviewStatus: "no_findings", findings: [], followUpHints: [], uncertainties: [], assignedEffects: []
-      })]),
-      assistantMessage([toolCall("repair", "submit_review", { assignedEffects: [row] })])
-    ]);
-    const contexts: Array<{ messages: unknown; tools?: Array<{ name: string }> }> = [];
-    const adapter = { ...scripted, validateToolCall, complete: async (...args: Parameters<PiAiAdapter["complete"]>) => {
-      contexts.push(structuredClone(args[1]));
-      return scripted.complete(...args);
-    } };
-    const cfg = { ...config(), review: { ...config().review, assignedEffects: true } };
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry: nullTelemetry(), logger: fakeLogger(),
-      runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
-      runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry()
-    });
-    expect(scripted.calls).toBe(3);
-    expect(contexts[1]?.tools?.map(tool => tool.name)).toEqual(["submit_review"]);
-    expect(JSON.stringify(contexts[1]?.messages)).toContain("Tool budget is exhausted.");
-    expect(JSON.stringify(contexts[1]?.messages)).toContain("Include assignedEffects");
-    expect(JSON.stringify(contexts[2]?.messages)).toContain("Missing assignedEffects for hunks h1.");
-    expect(result?.status).toBe("completed");
-  });
-
-  it("keeps the assigned-effects artifact out of verifier and composer inputs", async () => {
-    const repo = initRepo();
-    const artifactDir = mkdtempSync(path.join(tmpdir(), "codegenie-effects-pipeline-"));
-    try {
-      writeRepoFile(repo, "app.ts", "export const value = 1;\n");
-      const base = commitAll(repo, "base");
-      writeRepoFile(repo, "app.ts", "export const value = 2; // CODEGENIE_FAKE_FINDING\n");
-      const head = commitAll(repo, "change");
-      const fake = createFakeRunner();
-      const downstreamStages = new Set<number>();
-      const cfg = { ...config(), review: { ...config().review, assignedEffects: true } };
-      await runReview({ mode: "head", baseRef: base, headRef: head }, cfg, {
-        repoRoot: repo, runArtifactDir: artifactDir,
-        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-          const result = await fake.runStructured(request);
-          if (request.stage === 7) {
-            const shape = request.schema as { properties: { assignedEffects: { items: { properties: { hunkId: { enum: string[] } } } } } };
-            return { ...result, assignedEffects: shape.properties.assignedEffects.items.properties.hunkId.enum.map(hunkId => ({
-              hunkId, kind: "relied_guard", disposition: "safe", effect: "An inspected guard remains", basis: "SIDE_CAR_ONLY_FIXTURE_TEXT"
-            })) } as T;
-          }
-          if (request.stage >= 9) {
-            downstreamStages.add(request.stage);
-            expect(request.prompt).not.toContain("SIDE_CAR_ONLY_FIXTURE_TEXT");
-            expect(request.prompt).not.toContain("assignedEffects");
-          }
-          return result;
-        } }
-      });
-      expect(downstreamStages).toEqual(new Set([9, 10]));
-      expect(readFileSync(path.join(artifactDir, canonicalArtifactPath("assigned-effects.json")), "utf8")).toContain("SIDE_CAR_ONLY_FIXTURE_TEXT");
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-      rmSync(artifactDir, { recursive: true, force: true });
-    }
-  });
-
   it("does not expose likely-test lookup to ordinary Stage 7 packets", async () => {
     const toolsByPacket = new Map<string, string[]>();
     const runner: LlmRunner = {
@@ -10926,6 +10776,51 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings).toHaveLength(0);
     expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
+
+  it.each(["wrong_section", "summary_overflow", "invalid_tool_arguments", "missing_composed_findings"] as const)(
+    "classifies composer submit failures by structured diagnostics: %s", async expected => {
+      const { findings, sections, evidenceRefs } = authorizationComposition();
+      const valid = { summary: "A verified issue.", composedFindings: [{
+        findingIds: [findings[0]!.id], sections, evidenceRefs, publication: "summary-only"
+      }] };
+      const draft: Partial<typeof valid> = structuredClone(valid);
+      const draftSections = draft.composedFindings![0]!.sections;
+      if (expected === "wrong_section") {
+        // Keep established proof visible, but move the ordinary verification citation into Test.
+        const verification = draftSections.find(section => section.kind === "verification")!;
+        const misplaced = verification.sourceRefs.shift()!;
+        draftSections.find(section => section.kind === "test")!.sourceRefs.push(misplaced);
+      }
+      if (expected === "summary_overflow") draft.summary = "x".repeat(4_001);
+      if (expected === "invalid_tool_arguments") draftSections[0]!.text = "x".repeat(12_001);
+      if (expected === "missing_composed_findings") delete draft.composedFindings;
+      const telemetry = { ...nullTelemetry(), event: vi.fn() };
+      const runner: LlmRunner = {
+        runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const before = structuredClone(draft);
+          expect(request.schemaRepair?.recoverInvalidSubmit?.({
+            stage: 10,
+            submitTool: "submit_composition",
+            error: "A section has a 4000-character limit. Do not echo the summary.",
+            submitCalls: [{ id: "bad-composition", arguments: draft }],
+            extraToolNames: [],
+            schemaRepairUsed: false
+          })).toBeUndefined();
+          expect(draft).toEqual(before);
+          return valid as T;
+        }
+      };
+      await dedupeRankAndComposeReview(
+        { verified: findings, verdicts: [] }, fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        fakeCoverage(), config(), telemetry, { runner, promptBuilder: fakePromptBuilder() }
+      );
+      expect(telemetry.event).toHaveBeenCalledWith(expect.objectContaining({
+        message: "composer_schema_invalid_classified",
+        data: expect.objectContaining({ schemaInvalidKind: expected })
+      }));
+    }
+  );
 
   it("salvages composer XML parameter bleed when embedded composed findings are valid", async () => {
     const finding = fakeFinding();

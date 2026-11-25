@@ -13,7 +13,7 @@ import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
 import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
-import { ASSIGNED_EFFECTS_GUIDANCE, assignedEffectsSubmitShape, SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
 import { VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 
 export { stableJson };
@@ -63,7 +63,7 @@ export const exactSourceToolNames: Record<ReviewToolSurface, string> = {
 export type PromptBuilder = {
   renderDossier(dossier: PlannerDossier): string;
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt;
-  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[]; changeDirectory?: string; assignedEffects?: boolean }): BuiltPrompt;
+  buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[]; changeDirectory?: string }): BuiltPrompt;
   buildVerifierPrompt(input: {
     candidate: CandidateFinding;
     originContext: string;
@@ -291,7 +291,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "Finish by calling submit_plan exactly once with object arguments matching the schema, for example {\"diffUnderstanding\": {...}, \"coverage\": [...]}. Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text."
       ], projection, 1);
     },
-    buildPacketReviewPrompt: ({ packet, skills, changeDirectory, assignedEffects }) => {
+    buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
       const shortenedPatch = packet.hunks.some(hunk => hunk.truncated);
       const missingChangedRows = packet.hunks.some(hunk => (hunk.omittedChangedLineCount ?? 0) > 0);
@@ -351,12 +351,12 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         ...patchNotice,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
-        ...(assignedEffects ? [ASSIGNED_EFFECTS_GUIDANCE, assignedEffectsSubmitShape(packet.hunks[0]?.hunkId)] : [SUBMIT_REVIEW_SHAPE_GUIDANCE])
+        SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
-      const version = shortenedPatch ? (six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION)
-        : (six ? SIX_STAGE7_PROMPT_VERSION : built.templateVersion);
-      return assignedEffects ? { ...built, templateVersion: version + "-assigned-effects.1" }
-        : version === built.templateVersion ? built : { ...built, templateVersion: version };
+      if (shortenedPatch) {
+        return { ...built, templateVersion: six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION };
+      }
+      return six ? { ...built, templateVersion: SIX_STAGE7_PROMPT_VERSION } : built;
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
