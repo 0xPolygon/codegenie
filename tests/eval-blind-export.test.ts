@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { exportFirstLock } from '../evals/runner/blind-export.mjs';
+import { containsSlotId, exportFirstLock } from '../evals/runner/blind-export.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { readCheckedFile } from '../evals/runner/safe-read.mjs';
 
@@ -174,5 +174,13 @@ it('exports registered hunk prose and refuses residual identifiers before publis
     const unicode = { ...selection, evidence: { ...evidence, candidates: [{ id: 'candidate', failureMode: `é${hunk}é` }] } };
     expect(() => exportFirstLock({ ...args, outputDirectory: unicodeOutput, mappingFile: unicodeMapping, selections: [unicode] })).toThrow('private identifier');
     expect(() => readdirSync(unicodeOutput)).toThrow(); expect(() => readFileSync(unicodeMapping)).toThrow();
+    const slotOutput = path.join(dir, 'slot'), slotMapping = path.join(dir, 'private', 'slot.json');
+    const slotLeak = { ...selection, slotId: 'slot-01', evidence: { ...evidence, candidates: [{ id: 'candidate', title: 'Failure on slot-01' }] } };
+    expect(() => exportFirstLock({ ...args, outputDirectory: slotOutput, mappingFile: slotMapping, selections: [slotLeak] })).toThrow('private identifier');
+    expect(() => readdirSync(slotOutput)).toThrow(); expect(() => readFileSync(slotMapping)).toThrow();
+    expect(containsSlotId('(slot-01)', 'slot-01')).toBe(true);
+    expect(containsSlotId('xslot-01', 'slot-01')).toBe(false);
+    expect(containsSlotId('slot-01é', 'slot-01')).toBe(false);
+    expect(containsSlotId('slotX01', 'slot.01')).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
