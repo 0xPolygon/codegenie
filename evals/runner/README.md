@@ -48,4 +48,6 @@ The first-lock manifest contains the selected sheet hashes. The command prints i
 
 Each blinded slot also binds `workerConfig.packetTemplates`, an array of `{packetId, templates}` entries covering its complete expected packet inventory. Derive the versions with `derivePacketTemplates` from the actual packets and product prompt builder. The worker checks and records each packet call's ID, kind and version. Blind export rejoins those tuples to model-call telemetry and debug request artifacts. Location clarification keeps its own purpose and template.
 
+An opted-in blind campaign binds `workerConfig.reviewOverride = { adaptiveThinking: boolean }` on every slot: `true` for control and `false` for treatment. The worker applies it after case configuration, records the effective value in its receipt, and the transport checks each call against the slot's `expectedCalls`. Missing, mixed or swapped bindings refuse admission. Existing campaigns without the override retain their configuration.
+
 If a projected first-lock sheet contains treatment-specific vocabulary or a treatment template marker, export refuses before writing sheets or a mapping and reports only aggregate affected-sheet and hit counts. Record that refusal for operator disposition; do not redact the markers into visible replacement tokens.

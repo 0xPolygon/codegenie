@@ -56,6 +56,8 @@ export type EvalRunOptions = {
   judgeReplay?: boolean;
   fetchForCall?: import("../llm/llm-runner.js").CreateRunnerOptions["fetchForCall"];
   cacheOverride?: boolean;
+  /** Internal campaign binding, checked after all case configuration layers. */
+  expectedAdaptiveThinking?: boolean;
   config: CodegenieConfig;
   codegenieHome?: string;
   /** Warnings from loading the user layers, reported with each review (#129). */
@@ -147,6 +149,7 @@ const caseSchema = z
         budgetBoost: positiveNumberSchema.optional(),
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
+        adaptiveThinking: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
         verify: z.boolean().optional(),
@@ -483,6 +486,7 @@ async function runLiveCase(
     const actualRepoRoot = await git.repoRoot();
     const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    assertExpectedAdaptiveThinking(caseConfig.config, options.expectedAdaptiveThinking);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
@@ -565,6 +569,7 @@ async function runRepeatedLiveCase(
     const actualRepoRoot = await git.repoRoot();
     const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    assertExpectedAdaptiveThinking(caseConfig.config, options.expectedAdaptiveThinking);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
@@ -858,6 +863,14 @@ function formatCaseLoadErrors(error: unknown): string[] {
   return [error instanceof Error ? error.message : String(error)];
 }
 
+function assertExpectedAdaptiveThinking(config: CodegenieConfig, expected: boolean | undefined): void {
+  if (expected !== undefined && config.review.adaptiveThinking !== expected) {
+    throw new CodegenieError("config_error", "effective campaign review override mismatch", {
+      context: { reason: "binding_mismatch" }
+    });
+  }
+}
+
 function applyCaseReviewConfig(
   loaded: CodegenieConfig,
   evalCase: EvalCase,
@@ -884,6 +897,9 @@ function applyCaseReviewConfig(
   }
   if (review?.toolSurface !== undefined) {
     config.review.toolSurface = review.toolSurface;
+  }
+  if (review?.adaptiveThinking !== undefined) {
+    config.review.adaptiveThinking = review.adaptiveThinking;
   }
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
@@ -933,6 +949,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
   return {
     review: {
       concurrency: config.review.concurrency,
+      adaptiveThinking: config.review.adaptiveThinking,
       compositionReasoningStepDown: config.review.compositionReasoningStepDown,
       skipSvgReview: config.review.skipSvgReview,
       timeoutMs: config.review.maxTimeMs,

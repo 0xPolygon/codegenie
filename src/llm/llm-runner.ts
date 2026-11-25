@@ -264,6 +264,7 @@ export type CreateRunnerHooks = {
 
 export type CreateRunnerOptions = {
   llmConfig: CodegenieConfig["llm"];
+  adaptiveThinking?: boolean;
   codegenieHome?: string;
   telemetry: TelemetryRecorder;
   logger: Logger;

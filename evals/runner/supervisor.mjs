@@ -202,7 +202,7 @@ export class CampaignSupervisor {
       const priorRecoveredResets = this.caseResetCount(slot.caseId) - (existing?.resets ?? 0);
       if (found.receipt.status === 'error' && (found.receipt.error !== 'provider_failure' || typeof found.receipt.failureCallId !== 'string')) throw new Error('failure requires reconciliation');
       let observed;
-      try { observed = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(slotId, attemptNo), ledger, expectedPacketIds: slot.expectedPacketIds,
+      try { observed = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(slotId, attemptNo), ledger, expectedPacketIds: slot.expectedPacketIds, reviewOverride: slot.workerConfig?.reviewOverride,
         priorRecoveredResets, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) }).recoveredResets; }
       catch (error) { if (error instanceof RecoveredResetLimitError) observed = error.recoveredResets; else throw error; }
       if (observed !== found.receipt.recoveredResets) throw new Error('case reset count mismatch');
@@ -238,7 +238,7 @@ export class CampaignSupervisor {
         const found = this.receipts.find(event.slot_id, event.attempt_no);
         if (!slot || slot.caseId !== event.case_id || !attempt || !found || found.hash !== event.receipt_sha256 || found.receipt.caseId !== event.case_id || found.receipt.recoveredResets !== event.resets) throw new Error('case reset evidence missing or changed');
         const terminal = validateTerminal({ runDir: found.receipt.runDir, attemptPrefix: prefixFor(event.slot_id, event.attempt_no), ledger,
-          expectedPacketIds: slot.expectedPacketIds, historical, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) });
+          expectedPacketIds: slot.expectedPacketIds, reviewOverride: slot.workerConfig?.reviewOverride, historical, ...(found.receipt.status === 'error' ? { failureCallId: found.receipt.failureCallId } : {}) });
         if (terminal.recoveredResets !== event.resets || this.caseResetCount(event.case_id) >= 3) throw new Error('case reset evidence missing or changed');
       }
     }

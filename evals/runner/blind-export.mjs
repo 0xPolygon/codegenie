@@ -8,6 +8,11 @@ import { projectBlindSheet, TreatmentLeakError } from './blind-sheet.mjs';
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const json = (value) => Buffer.from(`${JSON.stringify(value)}\n`);
 const validHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
+export function containsSlotId(text, slotId) {
+  if (typeof text !== 'string' || typeof slotId !== 'string' || !slotId) throw new Error('invalid slot identifier');
+  const escaped = slotId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u').test(text);
+}
 function checkedOutside(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || outsideCheckout(value) !== value) throw new Error('invalid export path');
   return value;
@@ -73,7 +78,7 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
     const bytes = json({ ...sheet, causes: descriptor.causes, sourceLocator: descriptor.sourceLocator, oracleLocator: descriptor.oracleLocator });
     const visible = bytes.toString('utf8');
     const privateValues = [entry.slotId, entry.receiptSHA256, ...(entry.evidence.privateIdentifiers ?? [])].filter((value) => typeof value === 'string' && value.length >= 8);
-    if (privateValues.some((value) => visible.includes(value)) || /(?:^|[\s"'])\/(?:home|tmp|private|Users)\//u.test(visible)) throw new Error('private identifier in first-lock sheet');
+    if (containsSlotId(visible, entry.slotId) || privateValues.some((value) => visible.includes(value)) || /(?:^|[\s"'])\/(?:home|tmp|private|Users)\//u.test(visible)) throw new Error('private identifier in first-lock sheet');
     sheets.push({ case: descriptor.caseId, id: descriptor.id, causes: descriptor.causes, terminal: entry.evidence.outcome, bytes, sha256: digest(bytes) });
   }
   if (hits) throw new TreatmentLeakError(hits, affectedSheets);

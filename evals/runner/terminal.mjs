@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { validateTransportEvidence } from './transport-evidence.mjs';
+import { validateReviewOverride } from './review-override.mjs';
 export { RecoveredResetLimitError } from './transport-evidence.mjs';
 
 const guided = new Set(['invalid_args', 'budget_exhausted', 'file_missing', 'path_outside_repo', 'not_found', 'unavailable']);
@@ -19,7 +20,7 @@ function jsonl(file, expected) {
 
 // Check terminal evidence before a receipt becomes selectable. No error text,
 // model prose, or tool arguments are used to classify a row.
-export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false }) {
+export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false, reviewOverride }) {
   if (typeof attemptPrefix !== 'string' || !attemptPrefix || !ledger?.db || !Array.isArray(expectedPacketIds) || expectedPacketIds.some((id) => typeof id !== 'string' || !id) || new Set(expectedPacketIds).size !== expectedPacketIds.length || !count(priorRecoveredResets)) throw new Error('invalid terminal binding');
   const root = path.join(outsideCheckout(runDir), 'telemetry'), run = json(path.join(root, 'run.json')), summary = json(path.join(root, 'telemetry.json'));
   const failureMode = typeof failureCallId === 'string' && /^[A-Za-z0-9._-]+$/u.test(failureCallId);
@@ -30,6 +31,13 @@ export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacket
   if ([...events, ...models, ...tools].some((row) => row.runId !== run.runId)) throw new Error('telemetry run mismatch');
   if (new Set(events.map((row) => row.eventId)).size !== events.length || new Set(models.map((row) => row.callId)).size !== models.length || new Set(tools.map((row) => row.toolCallId)).size !== tools.length ||
       events.some((row) => typeof row.eventId !== 'string') || models.some((row) => typeof row.callId !== 'string') || tools.some((row) => typeof row.toolCallId !== 'string')) throw new Error('telemetry identity mismatch');
+  if (reviewOverride !== undefined) {
+    validateReviewOverride(reviewOverride);
+    const binding = json(path.join(path.dirname(root), 'arm-binding.json'));
+    const info = json(path.join(path.dirname(root), 'info.json'));
+    if (binding?.bound !== reviewOverride.adaptiveThinking || binding.observed !== binding.bound ||
+        info?.effectiveConfig?.review?.adaptiveThinking !== binding.bound) throw new Error('effective campaign review override mismatch');
+  }
   if (models.some((row) => row.retryReason === 'usage_limit')) throw new Error('provider quota denial');
   for (const row of tools) {
     if (['internal', 'timeout', 'unknown'].includes(row.errorCode)) throw new Error('tool failure requires stop');
