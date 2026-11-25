@@ -260,6 +260,13 @@ describe('campaign driver', () => {
         const wrongArmConfigBytes = Buffer.from(JSON.stringify(wrongArmConfig)), wrongArmFile = path.join(dir, 'wrong-arm-campaign.json'); writeFileSync(wrongArmFile, wrongArmConfigBytes);
         await expect(openCampaign(wrongArmFile, sha(wrongArmConfigBytes), { fetchImpl, models })).rejects.toThrow('campaign arm review override mismatch');
         expect({ gets, healthPosts }).toEqual({ gets: 0, healthPosts: 0 });
+        const extraKeySchedule = JSON.parse(schedule.toString('utf8'));
+        extraKeySchedule.slots[0].workerConfig.reviewOverride.extra = true;
+        const extraKeyBytes = Buffer.from(JSON.stringify(extraKeySchedule)), extraKeyPath = path.join(dir, 'extra-key-schedule.json'); writeFileSync(extraKeyPath, extraKeyBytes);
+        const extraKeyConfig = { ...JSON.parse(config.toString('utf8')), schedulePath: extraKeyPath, scheduleSHA256: sha(extraKeyBytes) };
+        const extraKeyConfigBytes = Buffer.from(JSON.stringify(extraKeyConfig)), extraKeyFile = path.join(dir, 'extra-key-campaign.json'); writeFileSync(extraKeyFile, extraKeyConfigBytes);
+        await expect(openCampaign(extraKeyFile, sha(extraKeyConfigBytes), { fetchImpl, models })).rejects.toThrow('invalid campaign review override');
+        expect({ gets, healthPosts }).toEqual({ gets: 0, healthPosts: 0 });
         const swappedSchedule = JSON.parse(schedule.toString('utf8'));
         swappedSchedule.slots[0].workerConfig.packetTemplates[0].templates.initial = 'retired-template';
         const swappedBytes = Buffer.from(JSON.stringify(swappedSchedule)), swappedPath = path.join(dir, 'swapped-schedule.json'); writeFileSync(swappedPath, swappedBytes);
