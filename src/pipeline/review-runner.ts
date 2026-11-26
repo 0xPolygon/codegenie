@@ -928,7 +928,6 @@ function createRunner(
     : createToolResultCache({ runFingerprint: cache.runFingerprint });
   return createPiRunner({
     llmConfig: config.llm,
-    adaptiveThinking: config.review.adaptiveThinking,
     telemetry: run.telemetry,
     logger: run.logger,
     ...(cache !== undefined ? { cache } : {}),
