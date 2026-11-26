@@ -88,12 +88,12 @@ function fixtureReviewRoots(suiteDir, fixture) {
   return [canonicalPotential(path.join(target, 'base')), canonicalPotential(path.join(target, 'feature'))];
 }
 
-export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
+export async function workerBounds(configFile, caseConfigBytes, attemptPrefix, { resolveEffective = false } = {}) {
   if (typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._-]+\/attempt-\d{2,}$/u.test(attemptPrefix) || ['.', '..'].includes(attemptPrefix.split('/')[0])) throw new Error('invalid attempt prefix');
   const file = path.resolve(configFile), config = JSON.parse(caseConfigBytes.toString('utf8'));
   if (!config || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
   const suiteDir = path.resolve(path.dirname(file), config.caseDir);
-  const { loadEvalSuite } = await import('../../dist/evals/eval-runner.js');
+  const { loadEvalSuite, resolveEvalCaseConfig } = await import('../../dist/evals/eval-runner.js');
   const { loadConfig } = await import('../../dist/config/config-loader.js');
   const suite = await loadEvalSuite(suiteDir), found = suite.cases.filter((candidate) => candidate.evalCase.name === config.caseName);
   if (found.length !== 1) throw new Error('campaign caseName must match one case');
@@ -113,7 +113,24 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
   const reviewInputRoots = repo?.external !== undefined
     ? [canonicalPotential(config.targetDir ? path.resolve(path.dirname(file), config.targetDir) : path.dirname(outputDir))]
     : fixtureReviewRoots(suiteDir, repo.fixture);
-  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots };
+  let effectiveConfig;
+  if (resolveEffective || found[0].evalCase.llm?.stages !== undefined) {
+    let repoRoot = repo.external !== undefined ? config.targetDir && path.resolve(path.dirname(file), config.targetDir) : undefined;
+    if (repo.fixture !== undefined) {
+      const fixture = repo.fixture === '~' ? homedir() : repo.fixture.startsWith('~/') ? path.join(homedir(), repo.fixture.slice(2)) : repo.fixture;
+      repoRoot = path.resolve(suiteDir, fixture);
+      let isWorktree = false;
+      try { isWorktree = realpathSync(git(repoRoot, 'rev-parse', '--show-toplevel')) === realpathSync(repoRoot); } catch { /* Materializable fixture. */ }
+      if (!isWorktree) {
+        const feature = path.join(repoRoot, 'feature'), baseTree = path.join(repoRoot, 'base');
+        repoRoot = existsSync(path.join(feature, 'codegenie.toml')) || !existsSync(baseTree) ? feature : baseTree;
+      }
+    }
+    if (!repoRoot || !existsSync(repoRoot)) throw new CampaignConfigurationError('binding_mismatch', 'stage selections require an existing review repository');
+    effectiveConfig = resolveEvalCaseConfig(base, found[0].evalCase, repoRoot, false).config;
+  }
+  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots,
+    ...(effectiveConfig === undefined ? {} : { effectiveConfig }) };
 
 }
 

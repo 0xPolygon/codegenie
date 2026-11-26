@@ -1202,6 +1202,7 @@ export type EvalCase = {
     provider?: string;
     model?: string;
     reasoning?: ReasoningLevel;
+    stages?: CodegenieConfig["llm"]["stages"];
     maxConcurrentCalls?: number;
   };
   logs?: {

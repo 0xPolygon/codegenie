@@ -7,6 +7,8 @@ import { CampaignLedger } from './ledger.mjs';
 import { CampaignSupervisor } from './supervisor.mjs';
 import { listEvidenceFiles, prepareAdmission } from './admission.mjs';
 import { spawnAttempt } from './spawn-worker.mjs';
+import { assertExpectedCalls } from './expected-calls.mjs';
+import { reviewStageSelection } from './stage-binding.mjs';
 import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { verifyAllEvidence } from './boundary.mjs';
@@ -86,6 +88,13 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   const schedule = JSON.parse(scheduleBytes.toString('utf8'));
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
   const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots);
+  const armSelections = config.blind?.stageSelections;
+  if (armSelections !== undefined && (!armSelections || typeof armSelections !== 'object' || Array.isArray(armSelections) ||
+      Object.keys(armSelections).sort().join(',') !== 'control,treatment' || ['control', 'treatment'].some((arm) => {
+        const value = armSelections[arm];
+        return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'modelId,provider,reasoning' ||
+          ['provider', 'modelId', 'reasoning'].some((field) => typeof value[field] !== 'string' || !value[field]);
+      }))) throw new Error('invalid blind stage selections');
   const roots = new Map(), reviewInputRoots = [];
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
@@ -105,7 +114,13 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     if (typeof caseConfig.caseDir !== 'string' || wc.integrity?.suiteDir !== path.resolve(path.dirname(wc.caseConfig), caseConfig.caseDir) ||
         !wc.integrity?.build || Object.keys(wc.integrity.build).some((key) => wc.integrity.build[key] !== config.build?.[key]) || Object.keys(config.build ?? {}).length !== Object.keys(wc.integrity.build).length) throw new Error('case integrity binding mismatch');
     assertIntegrity(wc.integrity);
-    const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1));
+    const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1), { resolveEffective: armSelections !== undefined && slot.blind !== undefined });
+    if (bounds.effectiveConfig !== undefined) assertExpectedCalls(bounds.effectiveConfig, wc.expectedCalls);
+    if (slot.blind !== undefined && bounds.effectiveConfig !== undefined && armSelections === undefined) throw new Error('blind stage selections missing');
+    if (slot.blind !== undefined && armSelections !== undefined) {
+      const actual = reviewStageSelection(bounds.effectiveConfig?.llm), expected = armSelections[slot.blind.arm];
+      if (actual.provider !== expected.provider || actual.modelId !== expected.modelId || actual.reasoning !== expected.reasoning) throw new Error('blind arm stage selection mismatch');
+    }
     if (slot.blind !== undefined && bounds.toolSurface !== 'current') throw new Error('campaign arm surface mismatch');
     roots.set(slot.id, path.dirname(bounds.outputDir));
     reviewInputRoots.push(...bounds.reviewInputRoots);
@@ -244,7 +259,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     }
     if (result.status === 'worker_failed') return { action: 'reconcile', slot: slot.id, reason: result.error };
     let recoveredResets;
-    try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds,
+    try { recoveredResets = validateTerminal({ runDir: result.runDir, attemptPrefix: started.attemptPrefix, ledger, expectedPacketIds: slot.expectedPacketIds, expectedCalls: slot.workerConfig.expectedCalls,
       priorRecoveredResets: supervisor.caseResetCount(slot.caseId), ...(result.status === 'error' ? { failureCallId: result.failureCallId } : {}) }).recoveredResets; }
     catch (error) {
       if (error instanceof RecoveredResetLimitError) recoveredResets = error.recoveredResets;

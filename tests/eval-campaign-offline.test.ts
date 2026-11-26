@@ -63,9 +63,10 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
       ledger.settlePhysical({ id: physical, httpStatus: 200, settledAtMs: now, providerCostMicros: 1, costConfirmed: true, usageEvidence: { usagePresent: true, costPresent: true, inputTokens: 1, outputTokens: 0, totalTokens: 1 } }); ledger.close();
       const runDir = path.join(dir, 'output', slotId, 'attempt-01', 'run'), telemetry = path.join(runDir, 'telemetry'), runId = `run-${slotId}`;
       mkdirSync(path.join(telemetry, 'stages/06-packets/packets'), { recursive: true });
+      writeFileSync(path.join(runDir, 'info.json'), JSON.stringify({ effectiveConfig: { llm: { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high' } } }));
       writeFileSync(path.join(telemetry, 'run.json'), JSON.stringify({ runId, outcome: { status: 'completed_full' } }));
       writeFileSync(path.join(telemetry, 'telemetry.json'), JSON.stringify({ runId, events: 1, packets: { generated: 1 }, modelCalls: { totalRecords: 1 }, toolCalls: { totalCalls: 0 } }));
-      writeFileSync(path.join(telemetry, 'model-calls.jsonl'), JSON.stringify({ runId, callId: 'mc-1', cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 0, totalTokens: 1 }) + '\n');
+      writeFileSync(path.join(telemetry, 'model-calls.jsonl'), JSON.stringify({ runId, callId: 'mc-1', stage: 7, kind: 'initial', provider: 'openrouter', model: 'openai/gpt-6-luna', reasoningSelected: 'high', cacheStatus: 'disabled', status: 'ok', inputTokens: 1, outputTokens: 0, totalTokens: 1 }) + '\n');
       writeFileSync(path.join(telemetry, 'events.jsonl'), JSON.stringify({ runId, eventId: 'ev-1', stage: 7, message: 'structured_submission_accepted', data: { packetId: 'packet' } }) + '\n');
       writeFileSync(path.join(telemetry, 'stages/06-packets/packets/packet.json'), JSON.stringify({ id: 'packet' }));
       supervisor.recordWorkerExit(slotId, attemptNo); return { caseName: 'fixture-core-lens', status: 'fail', runDir };

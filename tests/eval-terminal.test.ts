@@ -31,6 +31,29 @@ function fixture(dir: string) {
 }
 
 describe('campaign terminal evidence', () => {
+  it('refuses a swapped stage model or native effort before selection', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-stage-')), f = fixture(dir);
+    const expectedCalls = [{ stage: 7, kind: 'initial', provider: 'openrouter', modelId: 'openai/gpt-6.1-terra', reasoningSelected: 'high' }];
+    const llm = { provider: 'openrouter', model: 'openai/gpt-6-luna', reasoning: 'high', stages: { review: { model: 'openrouter/openai/gpt-6.1-terra', reasoning: 'high' } } };
+    const check = () => validateTerminal({ runDir: dir, attemptPrefix: f.prefix, ledger: f.ledger, expectedPacketIds: ['packet'], expectedCalls });
+    try {
+      Object.assign(f.models[0]!, { kind: 'initial', provider: 'openrouter', model: 'openai/gpt-6.1-terra', reasoningSelected: 'high' });
+      writeFileSync(path.join(dir, 'info.json'), JSON.stringify({ effectiveConfig: { llm } })); f.save();
+      expect(check()).toMatchObject({ packets: 1 });
+      llm.stages.review.model = 'openrouter/openai/gpt-6-luna';
+      writeFileSync(path.join(dir, 'info.json'), JSON.stringify({ effectiveConfig: { llm } }));
+      expect(check).toThrow('effective stage binding mismatch');
+      llm.stages.review.model = 'openrouter/openai/gpt-6.1-terra';
+      writeFileSync(path.join(dir, 'info.json'), JSON.stringify({ effectiveConfig: { llm } }));
+      f.models[0]!.reasoningSelected = 'low'; f.save();
+      expect(check).toThrow('native stage binding mismatch');
+      expectedCalls.push({ ...expectedCalls[0]!, kind: 'initial', purpose: 'location_clarification', reasoningSelected: 'low' } as typeof expectedCalls[number]);
+      f.models[0]!.workerId = 'location-finding';
+      mkdirSync(path.join(dir, 'telemetry/debug/llm-calls'), { recursive: true });
+      writeFileSync(path.join(dir, 'telemetry/debug/llm-calls/mc-1.request.json'), JSON.stringify({ request: { promptTemplateVersion: 'location-clarification-v1' } }));
+      f.save(); expect(check()).toMatchObject({ packets: 1 });
+    } finally { f.ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('requires each packet submit and accounts typed tool errors without stopping', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-terminal-'));
     const f = fixture(dir);

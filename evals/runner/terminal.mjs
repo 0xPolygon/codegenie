@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { validateTransportEvidence } from './transport-evidence.mjs';
+import { assertStageBinding } from './stage-binding.mjs';
 export { RecoveredResetLimitError } from './transport-evidence.mjs';
 
 const guided = new Set(['invalid_args', 'budget_exhausted', 'file_missing', 'path_outside_repo', 'not_found', 'unavailable']);
@@ -19,13 +20,20 @@ function jsonl(file, expected) {
 
 // Check terminal evidence before a receipt becomes selectable. No error text,
 // model prose, or tool arguments are used to classify a row.
-export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, priorRecoveredResets = 0, failureCallId, historical = false }) {
+export function validateTerminal({ runDir, attemptPrefix, ledger, expectedPacketIds, expectedCalls = [], priorRecoveredResets = 0, failureCallId, historical = false }) {
   if (typeof attemptPrefix !== 'string' || !attemptPrefix || !ledger?.db || !Array.isArray(expectedPacketIds) || expectedPacketIds.some((id) => typeof id !== 'string' || !id) || new Set(expectedPacketIds).size !== expectedPacketIds.length || !count(priorRecoveredResets)) throw new Error('invalid terminal binding');
   const root = path.join(outsideCheckout(runDir), 'telemetry'), run = json(path.join(root, 'run.json')), summary = json(path.join(root, 'telemetry.json'));
   const failureMode = typeof failureCallId === 'string' && /^[A-Za-z0-9._-]+$/u.test(failureCallId);
   if (typeof run.runId !== 'string' || !run.runId || summary.runId !== run.runId || (failureMode ? run.outcome?.status !== 'failed' : !['completed_full', 'completed_partial'].includes(run.outcome?.status))) throw new Error('terminal review missing or failed');
   const events = jsonl(path.join(root, 'events.jsonl'), summary.events);
   const models = jsonl(path.join(root, 'model-calls.jsonl'), summary.modelCalls?.totalRecords);
+  if (expectedCalls.some((call) => call.stage === 7)) {
+    const info = json(path.join(outsideCheckout(runDir), 'info.json'));
+    assertStageBinding(info.effectiveConfig?.llm, expectedCalls, models, (callId) => {
+      if (typeof callId !== 'string' || !/^mc-[A-Za-z0-9_-]+$/u.test(callId)) throw new Error('invalid model call id');
+      return json(path.join(root, 'debug/llm-calls', `${callId}.request.json`));
+    });
+  }
   const tools = jsonl(path.join(root, 'tool-calls.jsonl'), summary.toolCalls?.totalCalls);
   if ([...events, ...models, ...tools].some((row) => row.runId !== run.runId)) throw new Error('telemetry run mismatch');
   if (new Set(events.map((row) => row.eventId)).size !== events.length || new Set(models.map((row) => row.callId)).size !== models.length || new Set(tools.map((row) => row.toolCallId)).size !== tools.length ||

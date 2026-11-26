@@ -8,6 +8,7 @@ import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   reviewToolSurfaceSchema,
+  stageSelectionsSchema,
   severitySchema
 } from "../config/schema.js";
 import { createGitClient } from "../git/git-client.js";
@@ -164,6 +165,7 @@ const caseSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema.optional()
       })
       .strict()
@@ -481,8 +483,7 @@ async function runLiveCase(
       });
     }
     const actualRepoRoot = await git.repoRoot();
-    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
-    const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    const caseConfig = resolveEvalCaseConfig(options.config, entry.evalCase, actualRepoRoot, options.cacheOverride);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
@@ -496,7 +497,7 @@ async function runLiveCase(
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
-      configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
+      configWarnings: [...(options.configWarnings ?? []), ...caseConfig.warnings],
       onRunStart: (run) => {
         reviewRunId = run.runId;
       },
@@ -563,8 +564,7 @@ async function runRepeatedLiveCase(
       });
     }
     const actualRepoRoot = await git.repoRoot();
-    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
-    const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    const caseConfig = resolveEvalCaseConfig(options.config, entry.evalCase, actualRepoRoot, options.cacheOverride);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
@@ -590,7 +590,7 @@ async function runRepeatedLiveCase(
           runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
-          configWarnings: [...(options.configWarnings ?? []), ...repoLayer.warnings, ...caseConfig.warnings],
+          configWarnings: [...(options.configWarnings ?? []), ...caseConfig.warnings],
           writeOutput: (chunk) => {
             reviewOutput += chunk;
           }
@@ -860,6 +860,18 @@ function formatCaseLoadErrors(error: unknown): string[] {
   return [error instanceof Error ? error.message : String(error)];
 }
 
+// Registration and execution must use the same repo and case precedence.
+export function resolveEvalCaseConfig(
+  loaded: CodegenieConfig,
+  evalCase: EvalCase,
+  repoRoot: string,
+  cacheOverride: boolean | undefined
+): { config: CodegenieConfig; cache: EvalRunInfo["cache"]; warnings: ConfigWarning[] } {
+  const repoLayer = applyRepoConfigLayer(loaded, repoRoot);
+  const result = applyCaseReviewConfig(repoLayer.config, evalCase, cacheOverride);
+  return { ...result, warnings: [...repoLayer.warnings, ...result.warnings] };
+}
+
 function applyCaseReviewConfig(
   loaded: CodegenieConfig,
   evalCase: EvalCase,
@@ -917,6 +929,9 @@ function applyCaseReviewConfig(
   }
   if (reasoning !== undefined) {
     config.llm.reasoning = reasoning;
+  }
+  if (llm?.stages !== undefined) {
+    config.llm.stages = structuredClone(llm.stages);
   }
   if (llm?.maxConcurrentCalls !== undefined) {
     config.llm.maxConcurrentCalls = llm.maxConcurrentCalls;

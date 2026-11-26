@@ -583,6 +583,42 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "provider_protocol")).toHaveLength(2);
   });
 
+  it("serializes identical non-review requests when only the review model changes", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const capture = async (stage: 5 | 7 | 9 | 10, treatment: boolean) => {
+      let body: Record<string, unknown> | undefined;
+      const runner = await createPiRunner({
+        llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1,
+          ...(treatment ? { stages: { review: { model: "openrouter/openai/gpt-6.1-terra", reasoning: "high" as const } } } : {}) },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: () => ({ fetch: async (_input, init) => {
+          body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          throw new TransportAdmissionError("campaign_budget");
+        } }),
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await expect(runner.runStructured({ ...submitReviewRequest("same prompt"), stage,
+        ...(stage === 10 ? { compositionReasoningStepDown: true } : {}) })).rejects.toBeDefined();
+      expect(body).toBeDefined();
+      return body!;
+    };
+    try {
+      for (const stage of [5, 7, 9, 10] as const) {
+        const control = await capture(stage, false), treatment = await capture(stage, true);
+        if (stage !== 7) expect(JSON.stringify(treatment)).toBe(JSON.stringify(control));
+        else {
+          expect(control.model).toBe("openai/gpt-6-luna");
+          expect(treatment.model).toBe("openai/gpt-6.1-terra");
+          expect(control.reasoning).toEqual({ effort: "high" });
+          expect(treatment.reasoning).toEqual({ effort: "high" });
+          const { model: _a, reasoning: _ar, ...controlRest } = control;
+          const { model: _b, reasoning: _br, ...treatmentRest } = treatment;
+          expect(treatmentRest).toEqual(controlRest);
+        }
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("steps down inherited composition reasoning using the composition model's levels", async () => {
     const scripted = scriptedAdapter([assistant([{ type: "toolCall", id: "submit", name: "submit_composition", arguments: { findings: [], followUpHints: [], uncertainties: [] } }])]);
     const adapter: PiAiAdapter = { ...scripted, resolveModel: request => ({ provider: request.provider ?? "one", id: request.model ?? "base", raw: { id: request.model ?? "base", api: "faux", reasoning: true } }) };
