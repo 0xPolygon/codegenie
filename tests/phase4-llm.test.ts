@@ -554,7 +554,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       .toThrow(globalError!.message);
   });
 
-  it.each([true, false])("routes explicit stage reasoning with adaptive thinking=%s", async adaptiveThinking => {
+  it("routes stage models with explicit compose reasoning and per-model protocol records", async () => {
     const telemetry = fakeTelemetry();
     const hookCalls: Array<{ provider: string; modelId: string; reasoningSelected: string; templateVersion: string }> = [];
     const seen: Array<{ model: string; reasoning: unknown }> = [];
@@ -566,7 +566,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         return assistant([{ type: "toolCall", id: `s${seen.length}`, name, arguments: { findings: [], followUpHints: [], uncertainties: [] } }]);
       }, validateToolCall
     };
-    const runner = createPiRunner({ adaptiveThinking, llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
+    const runner = createPiRunner({ llmConfig: { provider: "one", model: "base", reasoning: "high", maxConcurrentCalls: 1,
       stages: { review: { model: "two/special", reasoning: "low" }, compose: { model: "two/special", reasoning: "medium" } } },
       telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
       fetchForCall: (call) => { hookCalls.push(call); return { fetch: globalThis.fetch }; }, hooks: { checkpoint: () => "ok", onUsage() {} } });
@@ -1651,7 +1651,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect((telemetry.modelCalls[0] as { rateLimit?: Record<string, string> }).rateLimit).not.toHaveProperty("content-type");
   });
 
-  it.each([true, false])("keeps Anthropic forced-submit thinking off with adaptive thinking=%s", async adaptiveThinking => {
+  it("runs anthropic submit turns with real forcing and thinking off by default (plan 86 step 3)", async () => {
     const telemetry = fakeTelemetry();
     const scripted = scriptedAdapter([
       assistant([
@@ -1663,7 +1663,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       resolveModel: () => ({ provider: "anthropic", id: "fake-opus", raw: { id: "fake-opus", api: "anthropic-messages" } })
     };
     const runner = createPiRunner({
-      adaptiveThinking,
       llmConfig: { provider: "anthropic", model: "fake-opus", maxConcurrentCalls: 1 },
       telemetry: telemetry.recorder,
       logger: fakeLogger(),
@@ -3031,77 +3030,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.options.map((options) => options.reasoning)).toEqual(["high", supportsLow ? "low" : "minimal"]);
     expect(telemetry.modelCalls.map((call) => call.reasoningRequested)).toEqual(["high", supportsLow ? "low" : "minimal"]);
     expect(adapter.complete).toHaveBeenCalledTimes(2);
-  });
-
-  it("uses stage effort for composition, repair and clarification when adaptive thinking is off", async () => {
-    const exercise = async (adaptiveThinking: boolean | undefined) => {
-      const telemetry = fakeTelemetry();
-      const adapter = scriptedAdapter([
-        assistant([{ type: "toolCall", id: "initial", name: "submit_composition", arguments: {} }]),
-        assistant([{ type: "toolCall", id: "repair", name: "submit_composition", arguments: { summary: "Done", composedFindings: [] } }]),
-        assistant([{ type: "toolCall", id: "location", name: "submit_review", arguments: { status: "unavailable" } }])
-      ]);
-      adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
-        id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { minimal: null }
-      } });
-      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
-        ...(adaptiveThinking === undefined ? {} : { adaptiveThinking }), telemetry: telemetry.recorder, logger: fakeLogger(),
-        runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
-      await runner.runStructured({ stage: 10, compositionReasoningStepDown: true, prompt: "compose", schema: SubmitCompositionSchema,
-        templateVersion: "test", timeoutMs: 600_000 });
-      await runner.runStructured({ stage: 7, purpose: "location_clarification", prompt: "locate",
-        schema: Type.Object({ status: Type.Literal("unavailable") }, { additionalProperties: false }), templateVersion: "test-location", timeoutMs: 600_000 });
-      return { adapter, telemetry };
-    };
-    const defaultRun = await exercise(undefined), dynamic = await exercise(true), uniform = await exercise(false);
-    expect(defaultRun.adapter.options.map(x => x.reasoning)).toEqual(["medium", "low", "low"]);
-    expect(dynamic.adapter.options.map(x => x.reasoning)).toEqual(["medium", "low", "low"]);
-    expect(uniform.adapter.options.map(x => x.reasoning)).toEqual(["high", "high", "high"]);
-    expect(dynamic.adapter.contexts).toEqual(defaultRun.adapter.contexts);
-    expect(uniform.adapter.contexts).toEqual(dynamic.adapter.contexts);
-    expect(uniform.adapter.toolNames).toEqual(dynamic.adapter.toolNames);
-    expect(uniform.adapter.options.map(x => x.toolChoice)).toEqual(dynamic.adapter.options.map(x => x.toolChoice));
-    for (const id of ["mc-000001", "mc-000002", "mc-000003"]) {
-      expect(debugRecord(defaultRun.telemetry, `${id}.request`)).toEqual(debugRecord(dynamic.telemetry, `${id}.request`));
-      const request = (run: typeof dynamic) => {
-        const record = debugRecord(run.telemetry, `${id}.request`) as { request: Record<string, unknown> };
-        // The cache-key serialization includes the selected effort, so its
-        // hash and character count necessarily change with medium/low/high.
-        const { promptHash: _hash, promptChars: _chars, ...rest } = record.request;
-        return rest;
-      };
-      expect(request(uniform)).toEqual(request(dynamic));
-    }
-    expect(uniform.telemetry.modelCalls.map(x => x.reasoningPolicy)).toEqual(["configured", "configured", "configured"]);
-  });
-
-  it("keeps the configured planner effort on schema repair when adaptive thinking is off", async () => {
-    const adapter = scriptedAdapter([assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")]), assistant([validSubmitPlanCall("fixed")])]);
-    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
-      id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { minimal: null }
-    } });
-    const runner = createPiRunner({ adaptiveThinking: false,
-      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
-      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
-    await runner.runStructured({ stage: 5, prompt: "planner", schema: SubmitPlanSchema, templateVersion: "test", timeoutMs: 600_000 });
-    expect(adapter.options.map(options => options.reasoning)).toEqual(["high", "high"]);
-  });
-
-  it("keeps the configured verifier effort on schema repair when adaptive thinking is off", async () => {
-    const adapter = scriptedAdapter([
-      assistant([{ type: "toolCall", id: "invalid", name: "submit_verdict", arguments: {} }]),
-      assistant([validSubmitVerdictCall("fixed")])
-    ]);
-    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
-      id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { minimal: null }
-    } });
-    const runner = createPiRunner({ adaptiveThinking: false,
-      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
-      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
-    await runner.runStructured({ stage: 9, prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 600_000 });
-    expect(adapter.options.map(options => options.reasoning)).toEqual(["high", "high"]);
   });
 
   it.each([false, true])("applies composition step-down to retries but keeps repair policy (enabled=%s)", async enabled => {

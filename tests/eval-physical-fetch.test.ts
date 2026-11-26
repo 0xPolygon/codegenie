@@ -7,8 +7,6 @@ import { projectProviderUsage, TransportAdmissionError } from "../src/llm/transp
 import { CampaignLedger } from "../evals/runner/ledger.mjs";
 // @ts-expect-error Dev-only ESM has no emitted types.
 import { makePhysicalTransport } from "../evals/runner/physical-fetch.mjs";
-// @ts-expect-error Dev-only ESM has no emitted types.
-import { resolveExpectedCall } from "../evals/runner/packet-templates.mjs";
 
 const call = { callId: "mc-1", provider: "openrouter", modelId: "model", reasoningSelected: "high", templateVersion: "p7", kind: "initial" };
 const expected = { ...call, api: "openai-completions", destination: "https://synthetic.invalid/chat", wireEffort: "high" };
@@ -27,25 +25,6 @@ function testLedger(file: string, config: { binding: string; limitMicros: number
 }
 
 describe("physical fetch settlement", () => {
-  it.each([{ stage: 9, kind: 'repair', purpose: undefined }, { stage: 7, kind: 'initial', purpose: 'location_clarification' }] as const)(
-    'admits uniform-high $kind and refuses a mismatched physical effort', async ({ stage, kind, purpose }) => {
-      const dir = mkdtempSync(path.join(tmpdir(), 'codegenie-uniform-effort-'));
-      try {
-        const expectedCall = { ...expected, stage, kind, ...(purpose ? { purpose } : {}) };
-        const current = { ...call, stage, kind, ...(purpose ? { purpose } : {}) };
-        const ledger = testLedger(path.join(dir, 'ok'), { binding: 'ok', limitMicros: 2_000_000 });
-        const fetchImpl = vi.fn(async () => new Response('ok'));
-        const admitted = makePhysicalTransport({ ledger, call: current, expected: resolveExpectedCall([expectedCall], current), attemptPrefix: 'slot/attempt-01', fetchImpl, AdmissionError: TransportAdmissionError });
-        await admitted.fetch(expected.destination, init);
-        expect(fetchImpl).toHaveBeenCalledOnce();
-        expect(ledger.totals().starts).toBe(1); ledger.close();
-        const deniedLedger = testLedger(path.join(dir, 'denied'), { binding: 'denied', limitMicros: 2_000_000 });
-        const wrong = { ...current, reasoningSelected: 'low' };
-        const denied = makePhysicalTransport({ ledger: deniedLedger, call: wrong, expected: resolveExpectedCall([expectedCall], wrong), attemptPrefix: 'slot/attempt-01', fetchImpl, AdmissionError: TransportAdmissionError });
-        await expect(denied.fetch(expected.destination, init)).rejects.toMatchObject({ context: { reason: 'binding_mismatch' } });
-        expect(fetchImpl).toHaveBeenCalledOnce(); expect(deniedLedger.totals().starts).toBe(0); deniedLedger.close();
-      } finally { rmSync(dir, { recursive: true, force: true }); }
-    });
   it("refuses a health probe before a key baseline exists", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-health-baseline-"));
     try {

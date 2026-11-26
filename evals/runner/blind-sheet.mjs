@@ -3,7 +3,6 @@ import { createHmac } from 'node:crypto';
 // Project only grading evidence; neither operational records nor sidecars enter.
 const marker = /\b(?:read_change|read_range|read_definition|find_usages|search_files|list_files|find_definition|find_symbol_mentions|read_symbol|read_diff_blocks|read_file_outline|find_likely_tests|six[-_ ]tool|nine[-_ ]tool|packet-first|arm\s+[abce]|draw[-_ ]+\d+|review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|toolSurface|stage7Prompt|p[579]\.[\w.-]+|openrouter|openai-codex|gpt-6-luna)\b/giu;
 const treatment = /(?:review\.assignedEffects|assignedEffects|assigned[-_ ]effects?|removed_guarantee|skipped_path|relied_guard|stage7Prompt|p7\.[\w.-]+|\b(?:control|treatment)[\s_-]+arm\b|\barm[\s:=_-]*(?:control|treatment|[ae])\b|\bblind\.arm\b|\\?["']arm\\?["'])/giu;
-const thinkingTreatment = /\b(?:adaptiveThinking|adaptive[-_ ]thinking|uniform[-_ ](?:thinking|reasoning))\b/giu;
 export class TreatmentLeakError extends Error {
   constructor(hits, affectedSheets = 1) { super('first-lock treatment markers require disposition'); this.hits = hits; this.affectedSheets = affectedSheets; }
 }
@@ -20,7 +19,7 @@ function visible(value) {
   return value.split(/<details\b/iu)[0].replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gmu, '[code block]').trim();
 }
 
-export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, verification, finalReview, key, hunkIdentifiers = [], screenAdaptiveThinking = false }) {
+export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, verification, finalReview, key, hunkIdentifiers = [] }) {
   if (!/^[a-f0-9]{24}$/u.test(id ?? '') || typeof caseId !== 'string' || !caseId || !Buffer.isBuffer(key) || key.length !== 32 ||
       !['completed_full', 'completed_partial'].includes(outcome) || !Array.isArray(candidates) || !Array.isArray(promotion?.decisions) || !Array.isArray(verification) || !finalReview || typeof finalReview !== 'object') throw new Error('missing first-lock evidence');
   const candidate = (row) => ({ ...pick(row, ['id', 'path', 'changedLine', 'severity', 'confidence', 'behaviorChange', 'title', 'failureMode', 'whyThisMatters']),
@@ -38,8 +37,7 @@ export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, 
   const sheet = { id, case: caseId, reviewComplete: outcome === 'completed_full', discovery: { findings: candidates.filter((x) => !isQuestion(x)).map(candidate), questions }, verification: ver,
     published: { ...(typeof finalReview.summary === 'string' ? { summary: finalReview.summary } : {}), findings: (finalReview.findings ?? []).map(published), summaryOnly: (finalReview.summaryOnlyFindings ?? []).map(published),
       attentionQuestions: (finalReview.needsHumanAttention ?? []).map((x) => pick(x, ['question', 'reason', 'files', 'symbols'])) } };
-  const rawText = JSON.stringify(sheet);
-  const rawHits = [...rawText.matchAll(treatment)].length + (screenAdaptiveThinking ? [...rawText.matchAll(thinkingTreatment)].length : 0);
+  const rawHits = [...JSON.stringify(sheet).matchAll(treatment)].length;
   if (rawHits) throw new TreatmentLeakError(rawHits);
   const hunkAliases = new Map(hunkIdentifiers.map((hunk) => {
     if (typeof hunk !== 'string' || !hunk) throw new Error('invalid registered hunk identifier');
@@ -59,8 +57,7 @@ export function projectBlindSheet({ id, caseId, outcome, candidates, promotion, 
     if (hunkPattern) result = result.replace(hunkPattern, (value) => hunkAliases.get(value));
     return result.replace(marker, '[redacted identifier]'); };
   const result = clean(sheet);
-  const cleanText = JSON.stringify(result);
-  const remainingHits = [...cleanText.matchAll(treatment)].length + (screenAdaptiveThinking ? [...cleanText.matchAll(thinkingTreatment)].length : 0);
+  const remainingHits = [...JSON.stringify(result).matchAll(treatment)].length;
   if (remainingHits) throw new TreatmentLeakError(remainingHits);
   return result;
 }

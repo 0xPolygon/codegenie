@@ -341,7 +341,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
         modelFlags.providerProtocolRecorded = true;
         // This probe describes the first request before provider constraints apply.
         const firstRequestEffort = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
-          modelThinkingLevels(model.raw), callReasoningPolicy(request, "initial", opts.adaptiveThinking));
+          modelThinkingLevels(model.raw), callReasoningPolicy(request, "initial"));
         const forcedProbe = describeProviderProtocol(
           model,
           { type: "tool", name: submitTool.name },
@@ -1490,8 +1490,7 @@ function recordDeadline(input: CompleteWithCacheInput, source: string): void {
   });
 }
 
-function callReasoningPolicy(request: LlmStructuredRequest<unknown>, kind: ModelCallKind, adaptiveThinking = true): ReasoningPolicy {
-  if (!adaptiveThinking) return "configured";
+function callReasoningPolicy(request: LlmStructuredRequest<unknown>, kind: ModelCallKind): ReasoningPolicy {
   if (kind === "repair" || request.purpose === "location_clarification") return "lowest_supported";
   return request.stage === 10 && request.compositionReasoningStepDown === true ? "one_level_lower" : "configured";
 }
@@ -1516,7 +1515,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     finalizeTarget
   } = input;
   const reasoningConfigured = opts.llmConfig.reasoning ?? "high";
-  const reasoningPolicy = callReasoningPolicy(request, kind, opts.adaptiveThinking);
+  const reasoningPolicy = callReasoningPolicy(request, kind);
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
@@ -3456,7 +3455,7 @@ function writeModelCallRequestDebug(
 ): void {
   const schemaName = submitToolNameForStage(request.stage);
   const reasoningConfigured = opts.llmConfig.reasoning ?? "high";
-  const reasoningPolicy = callReasoningPolicy(request, meta.kind, opts.adaptiveThinking);
+  const reasoningPolicy = callReasoningPolicy(request, meta.kind);
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   writeDebugRecord(opts, request, "llm-calls", `${meta.callId}.request`, definedRecord({
     schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,

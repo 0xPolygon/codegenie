@@ -10,11 +10,6 @@ import { saveProviderSettings } from "../src/provider/provider-settings.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
-  it.each([["--adaptive-thinking", true], ["--no-adaptive-thinking", false]] as const)("parses %s", (flag, expected) => {
-    const parsed = parseReviewCommand(["review", "--branch", "feature", flag], testContext());
-    expect(parsed.config.review.adaptiveThinking).toBe(expected);
-    expect(parsed.configSources["review.adaptiveThinking"]).toBe("cli");
-  });
   it.each([
     [undefined, undefined, true, "defaults"],
     [true, undefined, true, "repo-config"],

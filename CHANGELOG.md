@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Removed the experimental `review.adaptiveThinking` toggle and its CLI flags. Dynamic effort remains in use. Existing configuration files with the key still load and ignore its value. [#485](https://github.com/0xPolygon/codegenie/issues/485)
+
 ## 0.9.8
 
 ### Changed

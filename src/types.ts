@@ -39,7 +39,6 @@ export type CodegenieConfig = {
   review: {
     toolSurface?: ReviewToolSurface;
     verify: boolean;
-    adaptiveThinking: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
     minSeverity?: Severity;
@@ -1190,7 +1189,6 @@ export type EvalCase = {
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
     verify?: boolean;
-    adaptiveThinking?: boolean;
     compositionReasoningStepDown?: boolean;
     skipSvgReview?: boolean;
     cache?: boolean;
@@ -1454,7 +1452,6 @@ export type EvalRunInfo = {
   effectiveConfig?: {
     review: {
       concurrency: number;
-      adaptiveThinking?: boolean;
       compositionReasoningStepDown?: boolean;
       skipSvgReview?: boolean;
       timeoutMs: number;
