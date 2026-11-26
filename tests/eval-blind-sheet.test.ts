@@ -34,11 +34,4 @@ describe('blind grading projection', () => {
     expect(() => projectBlindSheet({ ...base, promotion: { decisions: [{ question: 'q', files: ['d:/private/file'], promoted: false }] } })).toThrow('source locator');
     expect(() => projectBlindSheet({ ...base, candidates: [{ id: 'candidate-1', path: 'src/file.ts', title: 'Read C:/Users/alice/private' }] })).toThrow('absolute source locator');
   });
-  it('screens thinking-arm markers only for an opted-in campaign', () => {
-    const base = { id: 'a'.repeat(24), caseId: 'x', outcome: 'completed_full', key: Buffer.alloc(32),
-      candidates: [{ id: 'candidate-1', path: 'src/file.ts', title: 'adaptiveThinking changed' }],
-      promotion: { decisions: [] }, verification: [], finalReview: {} };
-    expect(projectBlindSheet(base).discovery.findings).toHaveLength(1);
-    expect(() => projectBlindSheet({ ...base, screenAdaptiveThinking: true })).toThrow('treatment markers');
-  });
 });

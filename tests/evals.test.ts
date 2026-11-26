@@ -2378,28 +2378,20 @@ describe("eval command fixture suite", () => {
     writeFileSync(path.join(suiteDir, "composition.yml"), [
       "name: composition-effort", "repo:", `  external: ${JSON.stringify(repo)}`,
       "command:", "  branch: feature", "  base: main",
-      ...(enabled === undefined ? [] : ["review:", `  compositionReasoningStepDown: ${enabled}`, `  adaptiveThinking: ${enabled}`]),
+      "review:", "  adaptiveThinking: false",
+      ...(enabled === undefined ? [] : [`  compositionReasoningStepDown: ${enabled}`]),
       "expect:", "  minFindings: 1"
     ].join("\n"));
     const suite = await loadEvalSuite(suiteDir);
     expect(suite.cases[0]!.evalCase.review?.compositionReasoningStepDown).toBe(enabled);
-    expect(suite.cases[0]!.evalCase.review?.adaptiveThinking).toBe(enabled);
+    expect(suite.cases[0]!.evalCase.review).not.toHaveProperty("adaptiveThinking");
     const result = await runEvalCase(suite, suite.cases[0]!, { config: {
       ...defaultConfig,
       llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" },
-      review: { ...defaultConfig.review, compositionReasoningStepDown: enabled !== true, adaptiveThinking: enabled !== true }
+      review: { ...defaultConfig.review, compositionReasoningStepDown: enabled !== true }
     } });
     expect(result.status).toBe("pass");
     expect(result.info.effectiveConfig?.review.compositionReasoningStepDown).toBe(enabled ?? true);
-    expect(result.info.effectiveConfig?.review.adaptiveThinking).toBe(enabled ?? true);
-    if (enabled === false) {
-      const review = vi.spyOn(reviewRunner, "runReview");
-      try {
-        const rejected = await runEvalCase(suite, suite.cases[0]!, { config: defaultConfig, expectedAdaptiveThinking: true });
-        expect(rejected.status).toBe("error");
-        expect(review).not.toHaveBeenCalled();
-      } finally { review.mockRestore(); }
-    }
   });
 
   it("applies the reviewed repository codegenie.toml layer before eval YAML overrides", async () => {

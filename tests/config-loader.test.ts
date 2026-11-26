@@ -16,6 +16,17 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
+  it.each(["user", "repository"])("ignores the retired review.adaptiveThinking key in %s config", (layer) => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    const file = layer === "user" ? path.join(homeOverride, "config.toml") : path.join(repoRoot, "codegenie.toml");
+    writeFileSync(file, "[review]\nadaptiveThinking = false\ncompositionReasoningStepDown = true\n");
+    const loaded = loadConfig({ repoRoot, homeOverride, env: {} });
+    expect(loaded.config.review).not.toHaveProperty("adaptiveThinking");
+    expect(loaded.sources).not.toHaveProperty(["review.adaptiveThinking"]);
+    expect(loaded.sources["review.compositionReasoningStepDown"]).toBe(layer === "user" ? "user-config" : "repo-config");
+  });
+
   it.each(["user", "repository"])("names the removed review.assignedEffects key in %s config errors", (layer) => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
@@ -63,17 +74,6 @@ describe("config loader", () => {
     });
     expect(loaded.config.llm.stages).toEqual({ plan: { model: "provider/planner" }, compose: { reasoning: "medium" } });
     expect(loaded.sources["llm.stages"]).toBe("github-action");
-  });
-
-  it("layers adaptive thinking as a repo-safe boolean", () => {
-    const repoRoot = tempDir(), homeOverride = tempDir();
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(true);
-    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nadaptiveThinking = false\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(false);
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nadaptiveThinking = true\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.adaptiveThinking).toBe(true);
-    expect(loadConfig({ repoRoot, homeOverride, cli: { adaptiveThinking: false } }).config.review.adaptiveThinking).toBe(false);
-    expect(rawConfigSchema.safeParse({ review: { adaptiveThinking: "false" } }).success).toBe(false);
   });
 
   it("layers composition step-down as a repo-safe boolean", () => {

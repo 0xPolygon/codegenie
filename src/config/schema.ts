@@ -44,7 +44,6 @@ export const rawConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         verify: z.boolean().optional(),
-        adaptiveThinking: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
         minSeverity: severitySchema.optional(),
@@ -133,7 +132,6 @@ export const codegenieConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         verify: z.boolean(),
-        adaptiveThinking: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
         skipSvgReview: z.boolean(),
         minSeverity: severitySchema.optional(),
@@ -206,7 +204,6 @@ export const defaultConfig: CodegenieConfig = {
   },
   review: {
     verify: true,
-    adaptiveThinking: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,
     maxFindings: 25,
