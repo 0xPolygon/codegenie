@@ -12,6 +12,7 @@ export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 export const reviewToolSurfaceSchema = z.enum(["current", "six"]);
+export const stage7InstructionsSchema = z.enum(["v1", "v2"]);
 
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
@@ -43,6 +44,7 @@ export const rawConfigSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
+        stage7Instructions: stage7InstructionsSchema.optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
@@ -131,6 +133,7 @@ export const codegenieConfigSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
+        stage7Instructions: stage7InstructionsSchema.optional(),
         verify: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
         skipSvgReview: z.boolean(),
@@ -203,6 +206,7 @@ export const defaultConfig: CodegenieConfig = {
     extraSkillPaths: []
   },
   review: {
+    stage7Instructions: "v1",
     verify: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,

@@ -259,6 +259,10 @@ toolSurface = "six"
 
 Set `toolSurface = "current"` or remove the setting to return to the default. In a small development comparison, the current surface published more required findings and used fewer calls and tokens.
 
+### Experimental Stage 7 instructions
+
+`review.stage7Instructions` defaults to `"v1"`. Set it to `"v2"` in the `[review]` table of `~/.codegenie/config.toml` to try the candidate-first prompt and revised bundled skills. With v2, Stage 7 receives Checks and Examples from bundled and custom skills. Selected verifier-only guidance is available in Stage 9. The setting is temporary while the two instruction sets are compared.
+
 ### Advanced: per-stage models
 
 Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.

@@ -59,6 +59,7 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
   "review.verify",
+  "review.stage7Instructions",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
   "review.maxFindings",
@@ -295,6 +296,10 @@ function applyRawConfig(
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;
     sources["review.toolSurface"] = source;
+  }
+  if (raw.review?.stage7Instructions !== undefined) {
+    config.review.stage7Instructions = raw.review.stage7Instructions;
+    sources["review.stage7Instructions"] = source;
   }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {

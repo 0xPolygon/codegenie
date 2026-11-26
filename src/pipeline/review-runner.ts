@@ -815,11 +815,16 @@ async function createPipelineServices(
   const skillsResult = await loadSkills({
     repoRoot,
     extraSkillPaths: config.lenses.extraSkillPaths,
+    instructionSet: config.review.stage7Instructions ?? "v1",
     logger: run.logger,
     telemetry: run.telemetry
   });
   const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry, skillsResult.failures);
-  const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry, toolSurface: config.review.toolSurface ?? "current" });
+  const promptBuilder = createPromptBuilder(lensRegistry, {
+    telemetry: run.telemetry,
+    toolSurface: config.review.toolSurface ?? "current",
+    stage7Instructions: config.review.stage7Instructions ?? "v1"
+  });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
     : undefined;
@@ -845,6 +850,7 @@ async function validateExplicitCliLensesForZeroWork(
   const skillsResult = await loadSkills({
     repoRoot,
     extraSkillPaths: config.lenses.extraSkillPaths,
+    instructionSet: config.review.stage7Instructions ?? "v1",
     logger: run.logger,
     telemetry: run.telemetry
   });
@@ -892,7 +898,7 @@ export function reviewCacheFingerprint(
   // the base-branch setting and skill paths. The model-call key also hashes
   // the actual prompts and tools, including changes caused by runtime limits.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
-  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, ...review } = config.review;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, stage7Instructions, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,
@@ -906,7 +912,11 @@ export function reviewCacheFingerprint(
     diffHash: sha256Hex(resolved.rawDiff),
     reviewConfigHash: buildModelCallCacheKey({
       lenses,
-      review: toolSurface === "six" ? { ...review, toolSurface } : review,
+      review: {
+        ...review,
+        ...(toolSurface === "six" ? { toolSurface } : {}),
+        ...(stage7Instructions === "v2" ? { stage7Instructions } : {})
+      },
       classification: config.classification,
       llm
     }),

@@ -8,6 +8,7 @@ import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   reviewToolSurfaceSchema,
+  stage7InstructionsSchema,
   stageSelectionsSchema,
   severitySchema
 } from "../config/schema.js";
@@ -142,6 +143,7 @@ const caseSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
+        stage7Instructions: stage7InstructionsSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -898,6 +900,9 @@ function applyCaseReviewConfig(
   }
   if (review?.toolSurface !== undefined) {
     config.review.toolSurface = review.toolSurface;
+  }
+  if (review?.stage7Instructions !== undefined) {
+    config.review.stage7Instructions = review.stage7Instructions;
   }
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
