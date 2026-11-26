@@ -32,6 +32,58 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
+  it('binds the blind arm label to its registered effective stage before admission', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-arm-stage-'));
+    vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
+    try {
+      const suiteDir = path.join(dir, 'suite'); cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
+      const repo = path.join(dir, 'repo'); cpSync(path.join(suiteDir, 'repos/core'), repo, { recursive: true });
+      const yaml = path.join(suiteDir, 'core.yml');
+      writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('fixture: repos/core', `fixture: ${repo}`).replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna') +
+        '\nllm:\n  stages:\n    review:\n      model: openrouter/openai/gpt-6.1-terra\n      reasoning: high\n');
+      const sourceRoot = path.join(dir, 'source'); mkdirSync(sourceRoot);
+      for (const args of [['init', '-q'], ['config', 'user.name', 'Fixture'], ['config', 'user.email', 'fixture@example.test']]) expect(spawnSync('git', ['-C', sourceRoot, ...args]).status).toBe(0);
+      writeFileSync(path.join(sourceRoot, 'source.txt'), 'fixture');
+      expect(spawnSync('git', ['-C', sourceRoot, 'add', 'source.txt']).status).toBe(0);
+      expect(spawnSync('git', ['-C', sourceRoot, 'commit', '-qm', 'fixture']).status).toBe(0);
+      const sourceRevision = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const oracle = path.join(dir, 'oracle.txt'); writeFileSync(oracle, 'fixture oracle');
+      const oracleBytes = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', sha256: sha(readFileSync(oracle)), causes: [] }] }));
+      const locatorBytes = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', label: 'fixture', sourceLocator: 'source/fixture', oracleLocator: 'oracle/fixture', sourceRoot, sourceRevision, oraclePath: oracle, oracleSHA256: sha(readFileSync(oracle)) }] }));
+      const oracleManifestPath = path.join(dir, 'oracle.json'), locatorManifestPath = path.join(dir, 'locators.json'); writeFileSync(oracleManifestPath, oracleBytes); writeFileSync(locatorManifestPath, locatorBytes);
+      const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') })); writeFileSync(caseFile, caseBytes);
+      const bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01');
+      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.16' });
+      const build = buildDigest(), worker = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'one',
+        evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls,
+        packetTemplates: [{ packetId: 'packet', templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16'])) }], integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
+      const slot = { id: 'one', caseId: 'fixture', boundaryId: 'one', provider: 'openrouter', expectedPacketIds: ['packet'], blind: { arm: 'control', draw: 1 }, workerConfig: worker };
+      const schedulePath = path.join(dir, 'schedule.json'), configPath = path.join(dir, 'campaign.json');
+      const writeConfig = () => {
+        const schedule = Buffer.from(JSON.stringify({ slots: [slot] })); writeFileSync(schedulePath, schedule);
+        const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: worker.supervisorPath, ledgerPath: worker.ledgerPath,
+          evidenceDirectory: worker.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: worker.limitMicros,
+          reserveMicros: worker.reserveMicros, errorHoldMicros: worker.errorHoldMicros, build,
+          blind: { oracleManifestPath, oracleManifestSHA256: sha(oracleBytes), locatorManifestPath, locatorManifestSHA256: sha(locatorBytes), mappingFile: path.join(dir, 'mapping.json'),
+            stageSelections: { control: { provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoning: 'high' }, treatment: { provider: 'openrouter', modelId: 'openai/gpt-6.1-terra', reasoning: 'high' } } },
+          health: { expected: { provider: 'openrouter' }, llmConfig: { provider: 'openrouter' } } }));
+        writeFileSync(configPath, config); return sha(config);
+      };
+      const fetchImpl = vi.fn(async () => { throw new Error('unexpected network'); });
+      await expect(openCampaign(configPath, writeConfig(), { fetchImpl })).rejects.toThrow('blind arm stage selection mismatch');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      slot.blind.arm = 'treatment';
+      writeConfig();
+      const unbound = JSON.parse(readFileSync(configPath, 'utf8')); delete unbound.blind.stageSelections;
+      const unboundBytes = Buffer.from(JSON.stringify(unbound)); writeFileSync(configPath, unboundBytes);
+      await expect(openCampaign(configPath, sha(unboundBytes), { fetchImpl })).rejects.toThrow('blind stage selections missing');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      const campaign = await openCampaign(configPath, writeConfig(), { fetchImpl }); campaign.close();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it('refuses swapped per-stage expectations before any admission', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-stage-swapped-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));

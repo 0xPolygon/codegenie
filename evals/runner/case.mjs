@@ -88,7 +88,7 @@ function fixtureReviewRoots(suiteDir, fixture) {
   return [canonicalPotential(path.join(target, 'base')), canonicalPotential(path.join(target, 'feature'))];
 }
 
-export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
+export async function workerBounds(configFile, caseConfigBytes, attemptPrefix, { resolveEffective = false } = {}) {
   if (typeof attemptPrefix !== 'string' || !/^[A-Za-z0-9._-]+\/attempt-\d{2,}$/u.test(attemptPrefix) || ['.', '..'].includes(attemptPrefix.split('/')[0])) throw new Error('invalid attempt prefix');
   const file = path.resolve(configFile), config = JSON.parse(caseConfigBytes.toString('utf8'));
   if (!config || typeof config.caseDir !== 'string' || typeof config.caseName !== 'string') throw new Error('campaign needs caseDir and caseName');
@@ -114,7 +114,7 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix) {
     ? [canonicalPotential(config.targetDir ? path.resolve(path.dirname(file), config.targetDir) : path.dirname(outputDir))]
     : fixtureReviewRoots(suiteDir, repo.fixture);
   let effectiveConfig;
-  if (found[0].evalCase.llm?.stages !== undefined) {
+  if (resolveEffective || found[0].evalCase.llm?.stages !== undefined) {
     let repoRoot = repo.external !== undefined ? config.targetDir && path.resolve(path.dirname(file), config.targetDir) : undefined;
     if (repo.fixture !== undefined) {
       const fixture = repo.fixture === '~' ? homedir() : repo.fixture.startsWith('~/') ? path.join(homedir(), repo.fixture.slice(2)) : repo.fixture;
