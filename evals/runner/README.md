@@ -48,4 +48,6 @@ The first-lock manifest contains the selected sheet hashes. The command prints i
 
 Each blinded slot also binds `workerConfig.packetTemplates`, an array of `{packetId, templates}` entries covering its complete expected packet inventory. Derive the versions with `derivePacketTemplates` from the actual packets and product prompt builder. The worker checks and records each packet call's ID, kind and version. Blind export rejoins those tuples to model-call telemetry and debug request artifacts. Location clarification keeps its own purpose and template.
 
+For a case with `llm.stages`, resolve its effective config with `resolveEvalCaseConfig` and derive the slot's `expectedCalls` with `deriveExpectedCalls`. Campaign open checks those expectations against the case's effective config before admission. Terminal and historical verification also compare the receipt-inventoried effective Stage 7 settings and native calls to those expectations.
+
 If a projected first-lock sheet contains treatment-specific vocabulary or a treatment template marker, export refuses before writing sheets or a mapping and reports only aggregate affected-sheet and hit counts. Record that refusal for operator disposition; do not redact the markers into visible replacement tokens.

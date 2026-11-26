@@ -13,6 +13,8 @@ import { openCampaign } from '../evals/runner/campaign.mjs';
 import { buildDigest, treeDigest } from '../evals/runner/integrity.mjs';
 // @ts-expect-error Development-only ESM has no emitted types.
 import { runCase, workerBounds } from '../evals/runner/case.mjs';
+// @ts-expect-error Development-only ESM has no emitted types.
+import { deriveExpectedCalls } from '../evals/runner/expected-calls.mjs';
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 function makeWritable(dir: string) {
   const stat = lstatSync(dir); if (stat.isSymbolicLink()) return;
@@ -30,6 +32,44 @@ function healthResponse() {
 }
 
 describe('campaign driver', () => {
+  it('refuses swapped per-stage expectations before any admission', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'eval-stage-swapped-'));
+    vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home'));
+    try {
+      const suiteDir = path.join(dir, 'suite'); cpSync(path.join(process.cwd(), 'evals/fixtures'), suiteDir, { recursive: true });
+      const repo = path.join(dir, 'repo'); cpSync(path.join(suiteDir, 'repos/core'), repo, { recursive: true });
+      const yaml = path.join(suiteDir, 'core.yml');
+      writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('fixture: repos/core', `fixture: ${repo}`).replace('provider: fake', 'provider: openrouter').replace('model: fake-model', 'model: openai/gpt-6-luna') +
+        '\nllm:\n  stages:\n    review:\n      model: openrouter/openai/gpt-6.1-terra\n      reasoning: high\n');
+      const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
+      writeFileSync(caseFile, caseBytes);
+      const bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01');
+      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.16' });
+      expectedCalls[0].modelId = 'openai/gpt-6-luna';
+      const build = buildDigest(), worker = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign',
+        boundaryId: 'one', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000,
+        caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls, integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
+      const schedule = Buffer.from(JSON.stringify({ slots: [{ id: 'one', caseId: 'fixture', boundaryId: 'one', provider: 'openrouter', expectedPacketIds: [], workerConfig: worker }] }));
+      const schedulePath = path.join(dir, 'schedule.json'); writeFileSync(schedulePath, schedule);
+      const expected = { provider: 'openrouter', modelId: 'openai/gpt-6-luna' };
+      const config = Buffer.from(JSON.stringify({ binding: 'campaign', schedulePath, scheduleSHA256: sha(schedule), supervisorPath: worker.supervisorPath, ledgerPath: worker.ledgerPath,
+        evidenceDirectory: worker.evidenceDirectory, receiptDirectory: path.join(dir, 'receipts'), workDirectory: path.join(dir, 'work'), limitMicros: worker.limitMicros,
+        reserveMicros: worker.reserveMicros, errorHoldMicros: worker.errorHoldMicros, build, health: { expected, llmConfig: { provider: 'openrouter' } } }));
+      const file = path.join(dir, 'campaign.json'); writeFileSync(file, config);
+      const fetchImpl = vi.fn(async () => { throw new Error('unexpected network'); });
+      await expect(openCampaign(file, sha(config), { fetchImpl })).rejects.toThrow('effective expected calls mismatch');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(existsSync(worker.ledgerPath)).toBe(false);
+      expectedCalls[0].modelId = 'openai/gpt-6.1-terra';
+      const correctedSchedule = Buffer.from(JSON.stringify({ slots: [{ id: 'one', caseId: 'fixture', boundaryId: 'one', provider: 'openrouter', expectedPacketIds: [], workerConfig: worker }] }));
+      writeFileSync(schedulePath, correctedSchedule);
+      const correctedConfig = Buffer.from(JSON.stringify({ ...JSON.parse(config.toString()), scheduleSHA256: sha(correctedSchedule) }));
+      writeFileSync(file, correctedConfig);
+      const campaign = await openCampaign(file, sha(correctedConfig), { fetchImpl });
+      campaign.close();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it.each(['judge', 'timeout', 'artifacts', 'suite-overlap', 'case-before', 'case-during', 'case-after', 'health-error', 'normal'])('handles %s with bound admission and a network-blocked child', async (scenario) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'eval-driver-'));
     vi.stubEnv('CODEGENIE_HOME', path.join(dir, 'home')); vi.stubEnv('OPENROUTER_API_KEY', 'synthetic-key');
