@@ -339,6 +339,24 @@ describe("eval suite validation", () => {
       })
     });
   });
+
+  it("rejects invalid per-stage eval model selectors", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-stage-invalid-"));
+    writeFileSync(path.join(suiteDir, "bad.yml"), [
+      "name: invalid-stage",
+      "artifacts:",
+      "  path: logs/1",
+      "llm:",
+      "  stages:",
+      "    review:",
+      "      model: unqualified-model",
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({ code: "config_error" });
+  });
 });
 
 describe("eval scoring", () => {
@@ -2240,6 +2258,10 @@ describe("eval command fixture suite", () => {
       "  model: fake-model",
       "  reasoning: high",
       "  maxConcurrentCalls: 2",
+      "  stages:",
+      "    review:",
+      "      model: fake/fake-model",
+      "      reasoning: medium",
       "should_find:",
       "  - id: fake-finding",
       "    path: src/app.js"
@@ -2259,7 +2281,8 @@ describe("eval command fixture suite", () => {
     expect(evalEvents).toContain("Per-run model and reasoning overrides ignore matching stage settings.");
     expect(result.info.effectiveConfig).toMatchObject({
       review: { concurrency: 3 },
-      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
+      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2,
+        stages: { review: { model: "fake/fake-model", reasoning: "medium" } } }
     });
     expect(result.info.codegenieRuntime).toMatchObject({
       packageVersion: expect.any(String),

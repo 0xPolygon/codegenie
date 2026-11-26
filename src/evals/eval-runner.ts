@@ -8,6 +8,7 @@ import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   reviewToolSurfaceSchema,
+  stageSelectionsSchema,
   severitySchema
 } from "../config/schema.js";
 import { createGitClient } from "../git/git-client.js";
@@ -164,6 +165,7 @@ const caseSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
+        stages: stageSelectionsSchema.optional(),
         maxConcurrentCalls: positiveIntSchema.optional()
       })
       .strict()
@@ -917,6 +919,9 @@ function applyCaseReviewConfig(
   }
   if (reasoning !== undefined) {
     config.llm.reasoning = reasoning;
+  }
+  if (llm?.stages !== undefined) {
+    config.llm.stages = structuredClone(llm.stages);
   }
   if (llm?.maxConcurrentCalls !== undefined) {
     config.llm.maxConcurrentCalls = llm.maxConcurrentCalls;
