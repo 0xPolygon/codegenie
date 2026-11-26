@@ -1,6 +1,6 @@
 import { StringEnum } from "./string-enum.js";
 import { Type, type Static } from "typebox";
-import type { ReviewStage, Stage7Instructions } from "../types.js";
+import type { ReviewStage, ReviewToolSurface, Stage7Instructions } from "../types.js";
 import { LineRangeSchema } from "./line-range-schema.js";
 
 const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);
@@ -190,8 +190,13 @@ const SubmitPacketReviewSchemaV2 = buildSubmitPacketReviewSchema(
   "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment."
 );
 
-export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined) {
-  return instructionSet === "v2" ? SubmitPacketReviewSchemaV2 : SubmitPacketReviewSchema;
+const SubmitPacketReviewSchemaV2Six = buildSubmitPacketReviewSchema(
+  "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."
+);
+
+export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined, toolSurface: ReviewToolSurface) {
+  if (instructionSet !== "v2") return SubmitPacketReviewSchema;
+  return toolSurface === "six" ? SubmitPacketReviewSchemaV2Six : SubmitPacketReviewSchemaV2;
 }
 
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;

@@ -195,16 +195,31 @@ describe("experimental Stage 7 instructions", () => {
     }).templateVersion).toBe("p9.32");
   });
 
-  it("only changes the submit schema's status description", () => {
-    expect(submitPacketReviewSchema("v1")).toBe(SubmitPacketReviewSchema);
-    const v2 = submitPacketReviewSchema("v2");
-    const description = "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment.";
-    expect(v2).toEqual({
-      ...SubmitPacketReviewSchema,
-      properties: { ...SubmitPacketReviewSchema.properties, reviewStatus: {
-        ...SubmitPacketReviewSchema.properties.reviewStatus, description
-      } }
+  it.each([
+    ["current", "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment."],
+    ["six", "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."]
+  ] as const)("uses the %s status wording in the v2 packet request schema", async (toolSurface, description) => {
+    expect(submitPacketReviewSchema("v1", toolSurface)).toBe(SubmitPacketReviewSchema);
+    const cfg = config();
+    cfg.review = { ...cfg.review, stage7Instructions: "v2", toolSurface };
+    const registry = fakeLensRegistry();
+    const promptBuilder = createPromptBuilder(registry, { stage7Instructions: "v2", toolSurface });
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.schema).toEqual({
+          ...SubmitPacketReviewSchema,
+          properties: { ...SubmitPacketReviewSchema.properties, reviewStatus: {
+            ...SubmitPacketReviewSchema.properties.reviewStatus, description
+          } }
+        });
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+    const packet = { ...fakePacket(), reviewProfile: "simple" as const };
+    const results = await runLensPackets([packet], fakeTools(), cfg, nullTelemetry(), {
+      runner, lensRegistry: registry, promptBuilder, diff: fakeDiff()
     });
+    expect(results[0]?.status).toBe("completed");
   });
 
   it.each([
@@ -251,7 +266,7 @@ describe("experimental Stage 7 instructions", () => {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 7) {
           expect(request.prompt).not.toContain(marker);
-          expect(request.schema).toBe(submitPacketReviewSchema(stage7Instructions));
+          expect(request.schema).toBe(submitPacketReviewSchema(stage7Instructions, "current"));
           const { id: _id, producedBy: _producedBy, changedLine: _changedLine, ...direct } = fakeFinding();
           return {
             findings: source === "finding" ? [{ ...direct, evidence: { changedCode: line } }] : [],

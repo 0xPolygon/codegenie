@@ -225,7 +225,7 @@ async function runPacket(
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
     prompt: prompt.prompt,
-    schema: submitPacketReviewSchema(config.review.stage7Instructions),
+    schema: submitPacketReviewSchema(config.review.stage7Instructions, toolSurface),
     signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
