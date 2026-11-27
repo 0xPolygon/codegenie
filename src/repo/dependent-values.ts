@@ -102,10 +102,14 @@ function goConstContracts(node: Node): ValueContract[] {
   return [...groups].map(([name, members]) => ({ name, members, range: lineRange(node) }));
 }
 
+export function supportsValueSetExtraction(language: string): boolean {
+  return ["typescript", "tsx", "javascript", "go"].includes(language);
+}
+
 export function valueContracts(file: ParsedFile, symbols: SymbolInfo[]): Map<string, ValueContract> {
   const tree = treeFromParsed(file);
   const contracts = new Map<string, ValueContract>();
-  if (!tree || !["typescript", "tsx", "javascript", "go"].includes(file.language)) return contracts;
+  if (!tree || !supportsValueSetExtraction(file.language)) return contracts;
   const pending = [tree.rootNode];
   while (pending.length) {
     const node = pending.pop()!;

@@ -107,6 +107,30 @@ describe("Stage 6 dependent leads", () => {
     } finally { repo.dispose(); }
   });
 
+  it("records unsupported value-set coverage for a changed Rust enum packet", async () => {
+    const repo = await fixture({
+      "mode.rs": "pub enum Mode { Open, Closed, Removed }\n",
+      "consumer.rs": "use crate::mode::Mode;\nfn code(m: Mode) -> u8 { match m { Mode::Open => 1, Mode::Closed => 2, Mode::Removed => 3 } }\n"
+    }, { "mode.rs": "pub enum Mode { Open, Closed }\n" });
+    try {
+      const emit = vi.fn();
+      const telemetry = { ...nullTelemetry(), event: emit };
+      const index = await buildRepositoryIndex(repo.resolved, repo.files, [], tracedConfig, telemetry);
+      const options = { config: tracedConfig, enabledLenses: ["core/code-review"] };
+      const [file] = repo.files;
+      const plan = { diffUnderstanding: { declaredIntent: "", inferredBehavior: "" },
+        coverage: file!.hunks.map(hunk => ({ hunkId: hunk.id, path: file!.path, coverage: "normal" as const,
+          lenses: ["core/code-review"], surroundingContextHints: [], reason: "fixture" })) };
+      const [packet] = await buildReviewPackets(plan, repo.files, [], index, telemetry, options);
+      expect(packet?.candidateDependents ?? []).not.toContainEqual(expect.objectContaining({ relation: "value_set" }));
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({ message: "dependents_traced",
+        data: expect.objectContaining({ perPacket: [
+          expect.objectContaining({ packetId: packet?.id, language: "rust", valueSetCoverage: "unsupported_language",
+            preCap: {}, attached: {} })
+        ] }) }));
+    } finally { repo.dispose(); }
+  });
+
   it("omits a failed contract and continues after a grep error", async () => {
     const repo = await fixture(stageFixture, head);
     try {
@@ -240,7 +264,8 @@ describe("Stage 6 dependent leads", () => {
       expect(emit).toHaveBeenCalledWith(expect.objectContaining({ message: "dependents_traced",
         data: expect.objectContaining({ preCap: expect.objectContaining({ "value_set:lexical": 13 }),
           attached: expect.any(Object), omitted: expect.any(Object),
-          perPacket: expect.arrayContaining([expect.objectContaining({ packetId: stage.id })]) }) }));
+          perPacket: expect.arrayContaining([expect.objectContaining({ packetId: stage.id,
+            language: "typescript", valueSetCoverage: "supported" })]) }) }));
       emit.mockClear();
       const off = await buildReviewPackets(plan, repo.files, [], index, telemetry, { ...options, config: defaultConfig });
       expect(off.every(packet => packet.candidateDependents === undefined)).toBe(true);

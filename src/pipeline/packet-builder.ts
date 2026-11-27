@@ -1,6 +1,7 @@
 import { diffRowRanges, mergeDeliveredRanges } from "../util/delivered-source.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { credentialSafeCut } from "../telemetry/redaction.js";
+import { supportsValueSetExtraction } from "../repo/dependent-values.js";
 import { selectPacketDependents } from "../repo/dependents.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
@@ -211,7 +212,12 @@ export async function buildReviewPackets(
       if (trace) {
         const { candidates, counts } = selectPacketDependents(trace, packet.hunks.map(hunk => hunk.hunkId));
         if (candidates.length) packet.candidateDependents = candidates;
-        perPacket.push({ packetId: packet.id, ...counts });
+        perPacket.push({
+          packetId: packet.id,
+          language: packet.language,
+          valueSetCoverage: supportsValueSetExtraction(packet.language) ? "supported" : "unsupported_language",
+          ...counts
+        });
       }
       packets.push(packet);
     }
