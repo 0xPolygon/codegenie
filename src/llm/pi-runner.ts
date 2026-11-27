@@ -490,7 +490,6 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
           recordFinalArgumentRepairOutcome(schemaRepairUsed ? "terminal_invalid" : "not_dispatched");
           throw cause;
         }
-        request.schemaRepair?.onScheduled?.(obligation?.original, repair.repairClassification);
         fieldRepair = nextFieldRepair;
         if (fieldRepair) recordFidelity("field_repair_scheduled", { paths: fieldRepair.paths, obligationId: obligation!.id });
         if (obligation && !fieldRepair) messages.push({ role: "user", timestamp: 0, content:
@@ -844,8 +843,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 resolveObligation("deterministic_correction");
                 return recovery.validated as T;
               }
-              const repairClassification = semanticClassification === "change_check_invalid"
-                ? semanticClassification : recovery.repairClassification ?? semanticClassification;
+              const repairClassification = recovery.repairClassification ?? semanticClassification;
               scheduleModelRepair({
                 submitToolName: submitTool.name,
                 submitCalls,
@@ -3253,7 +3251,7 @@ function queueSchemaRepair(input: {
     input.replaceConversationOverride === true &&
     isStage7SchemaInvalidKind(input.repairClassification);
   const instructions = input.promptOverride ?? (stage7CompactRepair
-    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput, input.request.schema)
+    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput)
     : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
       defaultSchemaRepairPrompt(input.request, input.submitToolName, error));
   // Always include the latest rejection, including with custom prompts and

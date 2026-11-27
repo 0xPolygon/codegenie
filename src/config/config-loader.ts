@@ -59,7 +59,6 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
   "review.verify",
-  "review.changeChecks",
   "review.traceDependents",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
@@ -179,8 +178,12 @@ export function applyRepoConfigLayer(
   return { config: validated.data as CodegenieConfig, warnings };
 }
 
-/** Preserve retired v1 settings while rejecting the removed v2 instructions. */
+/** Normalize supported legacy options and reject retired settings. */
 export function removeRetiredReviewOptions(parsed: unknown): void {
+  if (parsed && typeof parsed === "object" && "review" in parsed && parsed.review &&
+      typeof parsed.review === "object" && "changeChecks" in parsed.review) {
+    throw new CodegenieError("config_error", "review.changeChecks has been retired");
+  }
   if (parsed && typeof parsed === "object" && "review" in parsed && parsed.review &&
       typeof parsed.review === "object" && "stage7Instructions" in parsed.review) {
     if (parsed.review.stage7Instructions === "v1") delete parsed.review.stage7Instructions;
@@ -309,11 +312,6 @@ function applyRawConfig(
     config.review.traceDependents = raw.review.traceDependents;
     sources["review.traceDependents"] = source;
   }
-  if (raw.review?.changeChecks !== undefined) {
-    config.review.changeChecks = raw.review.changeChecks;
-    sources["review.changeChecks"] = source;
-  }
-
   if (raw.github?.summaryWhenNoFindings !== undefined) {
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;
     sources["github.summaryWhenNoFindings"] = source;

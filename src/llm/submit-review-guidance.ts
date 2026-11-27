@@ -24,22 +24,3 @@ export const SUBMIT_REVIEW_SHAPE_GUIDANCE = [
   "Shape-only example (not evidence or a finding to copy; replace with your actual review, and add an anchor only from the reviewed diff):",
   JSON.stringify(SUBMIT_REVIEW_EXAMPLE)
 ].join("\n");
-
-export function submitReviewShapeGuidance(changeCheckHunkId?: string): string {
-  if (changeCheckHunkId === undefined) return SUBMIT_REVIEW_SHAPE_GUIDANCE;
-  const example = {
-    ...SUBMIT_REVIEW_EXAMPLE,
-    changeChecks: [{
-      hunkId: changeCheckHunkId,
-      changeKind: "acceptance",
-      before: "An empty request returns an empty result.",
-      after: "An empty request reaches the first item access.",
-      breakAttempt: "Send an empty array; the request throws instead of returning an empty result.",
-      result: "finding",
-      ref: 0
-    }]
-  } satisfies SubmitPacketReview;
-  const lines = SUBMIT_REVIEW_SHAPE_GUIDANCE.split("\n");
-  lines.pop();
-  return [...lines, JSON.stringify(example)].join("\n");
-}

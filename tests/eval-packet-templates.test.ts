@@ -12,23 +12,18 @@ it('derives the full and shortened v1 template families', () => {
   expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'])).not.toThrow();
   const bad = structuredClone(bindings); bad[0].templates.repair = 'p7.21';
   expect(() => validatePacketTemplates(bad, ['ordinary', 'shortened'])).toThrow('binding mismatch');
-});
-
-it('retains changeChecks template bindings on the surviving instructions', () => {
-  const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: { changeChecks: true } });
-  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.20-cc.1');
-  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.21-cc.1');
-  expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { changeChecks: true })).not.toThrow();
-  expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { changeChecks: false })).toThrow('binding mismatch');
+  const retired = structuredClone(bindings);
+  for (const kind of kinds) retired[0].templates[kind] += '-cc.1';
+  expect(() => validatePacketTemplates(retired, ['ordinary', 'shortened'])).toThrow('binding mismatch');
 });
 
 it('derives the exact dependent trace template bindings for both packet shapes', () => {
   const packets = [packet('ordinary', false), packet('shortened', true)];
-  const bindings = derivePacketTemplatesForConfig(packets, { review: { traceDependents: 'leads', changeChecks: true } });
-  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.20-cc.1-dep.1');
-  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.21-cc.1-dep.1');
+  const bindings = derivePacketTemplatesForConfig(packets, { review: { traceDependents: 'leads' } });
+  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.20-dep.1');
+  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.21-dep.1');
   const ids = ['ordinary', 'shortened'];
-  expect(() => validatePacketTemplates(bindings, ids, { traceDependents: 'leads', changeChecks: true })).not.toThrow();
+  expect(() => validatePacketTemplates(bindings, ids, { traceDependents: 'leads' })).not.toThrow();
   expect(() => validatePacketTemplates(bindings, ids, { traceDependents: 'off' })).toThrow('binding mismatch');
 });
 

@@ -56,16 +56,21 @@ describe("eval suite validation", () => {
     const file = path.join(suite, "case.yml");
     const writeCase = (setting: string) => writeFileSync(file, [
       "name: retired-instruction-set", "repo:", "  fixture: repo",
-      "review:", `  stage7Instructions: ${setting}`, "  changeChecks: true"
+      "review:", `  stage7Instructions: ${setting}`
     ].join("\n"));
     writeCase("v1");
     const { cases } = await loadEvalSuite(suite);
-    expect(cases[0]!.evalCase.review).toMatchObject({ changeChecks: true });
     expect(cases[0]!.evalCase.review).not.toHaveProperty("stage7Instructions");
     writeCase("v2");
     await expect(loadEvalSuite(suite)).rejects.toMatchObject({
       code: "config_error", context: { errors: [expect.stringContaining("retired")] }
     });
+  });
+
+  it.each(["true", "false"])("rejects retired changeChecks=%s in eval cases", async (value) => {
+    const suite = mkdtempSync(path.join(tmpdir(), "codegenie-eval-retired-checks-"));
+    writeFileSync(path.join(suite, "case.yml"), ["name: retired-checks", "repo:", "  fixture: repo", "review:", `  changeChecks: ${value}`].join("\n"));
+    await expect(loadEvalSuite(suite)).rejects.toMatchObject({ code: "config_error", context: { errors: [expect.stringContaining("review.changeChecks has been retired")] } });
   });
 
   it("rejects command fields on artifact-backed cases", async () => {

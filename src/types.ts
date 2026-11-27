@@ -39,7 +39,6 @@ export type CodegenieConfig = {
   };
   review: {
     toolSurface?: ReviewToolSurface;
-    changeChecks?: boolean;
     traceDependents?: TraceDependentsMode;
     verify: boolean;
     compositionReasoningStepDown: boolean;
@@ -1006,15 +1005,7 @@ export type DeliveredSourceRange = {
   lineRange: [number, number];
 };
 
-export type ChangeCheckReference = { refDisposition: "kept" | "dropped"; refId?: string };
-export type ChangeCheckResult = Omit<import("./llm/schemas.js").SubmittedChangeCheck, "ref"> & Partial<ChangeCheckReference> & {
-  refIndex?: number;
-  pointerStatus?: "traceable" | "inside_changed_rows" | "source_not_delivered" | "line_clipped" | "pointer_missing";
-};
-
 export type PacketReviewResult = {
-  /** Private Stage 7 diagnostic; stripped before promotion and verification. */
-  changeChecks?: ChangeCheckResult[];
   repositoryEvidence?: RepositoryEvidence[];
   diagnostics?: ReviewDiagnostic[];
   packetId: string;
@@ -1215,7 +1206,6 @@ export type EvalCase = {
   };
   review?: {
     toolSurface?: ReviewToolSurface;
-    changeChecks?: boolean;
     traceDependents?: TraceDependentsMode;
     lenses?: string[];
     maxFindings?: number;

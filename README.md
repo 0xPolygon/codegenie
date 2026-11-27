@@ -265,10 +265,6 @@ Set `toolSurface = "current"` or remove the setting to return to the default. In
 
 Value-set extraction covers TypeScript, TSX, JavaScript and Go. For packets in other languages, Stage 6 records `valueSetCoverage: "unsupported_language"` and can still attach other kinds of leads.
 
-### Experimental change checks
-
-`review.changeChecks` adds experimental per-hunk checks to Stage 7 and defaults to `false`. When enabled, packet reviewers record a before-and-after comparison, a concrete break attempt, and the inspected source for ruled-out attempts. The checks are private telemetry and do not appear in review output.
-
 ### Advanced: per-stage models
 
 Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.
