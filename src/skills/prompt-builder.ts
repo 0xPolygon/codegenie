@@ -13,7 +13,7 @@ import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
 import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
-import { submitReviewShapeGuidance } from "../llm/submit-review-guidance.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
 import { VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 
 export { stableJson };
@@ -53,7 +53,7 @@ export type ProjectSkillsOptions = {
   onEvent?: (event: SkillProjectionEvent) => void;
 };
 
-type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface; changeChecks?: boolean; traceDependents?: import("../types.js").TraceDependentsMode };
+type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface; traceDependents?: import("../types.js").TraceDependentsMode };
 
 export const exactSourceToolNames: Record<ReviewToolSurface, string> = {
   current: "read_symbol, read_range, find_definition, or read_diff_blocks",
@@ -98,7 +98,6 @@ const DOCUMENTATION_IMPACT_GUIDANCE = "For documentation findings, identify the 
 const STAGE7_CANDIDATE_DEPENDENTS = "candidateDependents are unverified harness matches: unchanged code that may rely on or encode a changed contract. `lexical` entries matched text only and may be coincidences; `syntactic_use` entries use the exact name but may bind elsewhere. They are leads to inspect, not evidence. Report one only after you establish from source that it depends on the changed contract and that this change newly causes or makes reachable a concrete failure there. Otherwise ignore it.";
 
 // #504 replaces #405's free-text assignedEffects with a submitted attempt and traceable source.
-const CHANGE_CHECKS_BLOCK = "For each assigned hunk, compare the previous and new behavior at the nearest observer that depends on it, then choose the most plausible concrete way the change could break that guarantee and check it. Ask the question for its kind: acceptance — does it now admit an input it should reject, or reject one callers may still send? state or contract — can a new value reach a reader that cannot handle it, or a retired value still pass a boundary that should reject it? accounting — can one contribution be applied twice or missed across initialization, retry and rollback? lifetime — can work outlive its owner, or an owner release a resource a live user can still reach? completion — can a waiter, sibling or cleanup be skipped or completed twice on success, cancellation or partial failure? failure — can failure look like success, or a supported recovery now look like failure? conversion — is a raw value validated before a lossy conversion, and is a caller-visible bound still satisfiable after it? Record one changeChecks row per hunk (two only for distinct behavioral changes). ruled_out needs checkedAt: the inspected source outside the changed rows that defeats this specific attempt; if the deciding fact is missing, use question and give the followUpHint. A mechanical hunk may use no_behavior_change with the equivalence in before and after. Rows are a record of your check, not findings: report every defect, including ones a row points to, in findings as usual.";
 
 type PromptLedgerEntry = {
   surface: string;
@@ -142,7 +141,6 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     { surface: "six-tool source navigation", reason: "Names the active tools and points reporters to both sides of a change, callers, and tests using pinned selectors.", evidence: "#283 cg-01 sibling deletion and cg-10 enclosing-function replay" },
     { surface: "findings", reason: "A concrete defect is a finding; put unconfirmed facts in verification for the verifier.", evidence: "Plans 81, 84, and 92 rescue findings" },
     { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
-    { surface: "changeChecks and -cc.1 block", reason: "Records a bounded before/after break attempt and attests visibility of the source cited to rule it out.", evidence: "#405 showed complete assignedEffects rows could miss the causal behavior; #504 measures this replacement." },
     { surface: "followUpHints", reason: "Records a scoped concern only when no concrete wrong outcome can yet be named.", evidence: "Plan 92 attention records and run 50 near-miss" },
     { surface: "uncertainties", reason: "Records a scoped concern only when no concrete wrong outcome can yet be named.", evidence: "Plan 81 promotion lane retained by 2026-07-04 decision record" },
     { surface: "noFindingReason", reason: "Short no-finding conclusions avoid the essay payloads that created malformed or oversized submits.", evidence: "Plan 95 census: Stage-7 schema friction remains live" },
@@ -330,8 +328,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         ...(traceLeads ? [STAGE7_CANDIDATE_DEPENDENTS] : []),
         (six ? "Use read_change with a hunkId and context \"function\" to compare the enclosing function. Use read_definition with source {kind:\"base\"} for a declaration removed from head. Use find_usages for caller leads or scope \"tests\" for test leads. Tool budgets are targets; hard limits still apply." : "Use repository tools to read callers, definitions, tests and the base side of changed code when the packet is not enough; read_symbol and find_definition with source {kind:\"auto\"} search head and fall back to base. Tool budgets are targets; hard limits still apply."),
         ...(!packetHasRepositoryTools(packet) ? ["This packet has no repository tools; decide from the packet text."] : []),
-        "Skill guidance:\n" + projection.text,
-        ...(options.changeChecks ? [CHANGE_CHECKS_BLOCK] : [])
+        "Skill guidance:\n" + projection.text
       ];
       const built = buildPrompt(7, [
         ...guidance,
@@ -339,9 +336,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         ...patchNotice,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
-        submitReviewShapeGuidance(options.changeChecks ? packet.hunks[0]?.hunkId : undefined)
+        SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
-      const suffix = (options.changeChecks ? "-cc.1" : "") + (traceLeads ? "-dep.1" : "");
+      const suffix = traceLeads ? "-dep.1" : "";
       if (shortenedPatch) {
         const version = six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION;
         return { ...built, templateVersion: version + suffix };

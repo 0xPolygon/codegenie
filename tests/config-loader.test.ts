@@ -10,7 +10,7 @@ import {
   rawConfigSchema
 } from "../src/config/schema.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
-import { loadConfig } from "../src/config/config-loader.js";
+import { loadConfig, removeRetiredReviewOptions } from "../src/config/config-loader.js";
 import { loadEvalSuite } from "../src/evals/eval-runner.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
 import { CodegenieError } from "../src/util/errors.js";
@@ -50,22 +50,26 @@ describe("config loader", () => {
     const homeOverride = tempDir();
     const opts = { repoRoot, homeOverride, env: {} };
     writeFileSync(path.join(homeOverride, "config.toml"), '[review]\nstage7Instructions = "v1"\n');
-    expect(loadConfig(opts).config.review.changeChecks).toBe(false);
+    expect(loadConfig(opts).config.review).not.toHaveProperty("stage7Instructions");
     writeFileSync(path.join(homeOverride, "config.toml"), '[review]\nstage7Instructions = "v2"\n');
     expect(() => loadConfig(opts)).toThrow(expect.objectContaining({ code: "config_error" }));
   });
 
-  it("defaults changeChecks off and loads the user-scoped boolean", () => {
+  it("strips disabled changeChecks from an eval snapshot and rejects enabled", () => {
+    const snapshot = { review: { changeChecks: false, traceDependents: "leads" } };
+    removeRetiredReviewOptions(snapshot);
+    expect(snapshot.review).toEqual({ traceDependents: "leads" });
+    expect(() => removeRetiredReviewOptions({ review: { changeChecks: true } })).toThrow("review.changeChecks has been retired");
+  });
+
+  it.each(["user", "repo"] as const)("strips disabled and rejects enabled changeChecks in %s config", (source) => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
-    const opts = { repoRoot, homeOverride, env: {} };
-    expect(loadConfig(opts).config.review.changeChecks).toBe(false);
-    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nchangeChecks = true\n");
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nchangeChecks = false\n");
-    const loaded = loadConfig(opts);
-    expect(loaded.config.review.changeChecks).toBe(true);
-    expect(loaded.sources["review.changeChecks"]).toBe("user-config");
-    expect(rawConfigSchema.safeParse({ review: { changeChecks: "true" } }).success).toBe(false);
+    const file = source === "user" ? path.join(homeOverride, "config.toml") : path.join(repoRoot, "codegenie.toml");
+    writeFileSync(file, "[review]\nchangeChecks = false\n");
+    expect(loadConfig({ repoRoot, homeOverride, env: {} }).config.review).not.toHaveProperty("changeChecks");
+    writeFileSync(file, "[review]\nchangeChecks = true\n");
+    expect(() => loadConfig({ repoRoot, homeOverride, env: {} })).toThrow("review.changeChecks has been retired");
   });
 
   it("defaults tracing off and loads the available modes", () => {

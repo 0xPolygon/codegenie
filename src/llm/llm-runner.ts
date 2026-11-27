@@ -168,7 +168,6 @@ export type LlmStructuredRequest<T> = {
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
     buildPrompt?(input: LlmSchemaRepairInput): string;
-    onScheduled?(draft: unknown, classification?: LlmSubmitFailureClassification): void;
   };
   finalization?: {
     noResultInstruction?: string;
@@ -185,7 +184,6 @@ export type LlmSubmitFailureClassification =
   | "schema_invalid"
   | "recovery_content_changed"
   | "review_status_findings_mismatch"
-  | "change_check_invalid"
   | "missing_submit"
   | "multiple_submits"
   | "revise_without_revision_payload"

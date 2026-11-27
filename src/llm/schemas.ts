@@ -188,46 +188,6 @@ export const SubmitPacketReviewSchema = buildSubmitPacketReviewSchema(
   "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
 );
 
-// #504: closed rows plus a packet-specific enum. Cross-field and coverage
-// checks belong to the submit-validation seam, shared by initial and repair.
-export const CHANGE_CHECK_KINDS = [
-  "acceptance", "state_or_contract", "accounting", "lifetime", "completion",
-  "failure", "conversion", "other", "no_behavior_change"
-] as const;
-export const CHANGE_CHECK_RESULTS = ["finding", "question", "ruled_out", "no_behavior_change"] as const;
-
-function changeCheckRowSchema(hunkIds: readonly string[]) {
-  return Type.Object({
-    hunkId: StringEnum(hunkIds),
-    changeKind: StringEnum(CHANGE_CHECK_KINDS),
-    before: Type.String({ minLength: 1, maxLength: 120 }),
-    after: Type.String({ minLength: 1, maxLength: 120 }),
-    breakAttempt: Type.String({ maxLength: 160 }),
-    result: StringEnum(CHANGE_CHECK_RESULTS),
-    ref: Type.Optional(Type.Integer({ minimum: 0,
-      description: "Zero-based index into submitted findings (finding) or followUpHints (question)." })),
-    checkedAt: Type.Optional(Type.Object({
-      path: Type.String({ minLength: 1 }),
-      side: StringEnum(["base", "head"] as const),
-      lineRange: LineRangeSchema
-    }, { additionalProperties: false }))
-  }, { additionalProperties: false });
-}
-
-export type SubmittedChangeCheck = Static<ReturnType<typeof changeCheckRowSchema>>;
-
-export function submitPacketReviewSchema(changeCheckHunkIds?: readonly string[]) {
-  const base = SubmitPacketReviewSchema;
-  if (!changeCheckHunkIds) return base;
-  return Type.Object({
-    ...base.properties,
-    changeChecks: Type.Array(changeCheckRowSchema(changeCheckHunkIds), {
-      maxItems: 2 * changeCheckHunkIds.length,
-      description: "One row per assigned hunk after a completed review; at most two distinct rows per hunk."
-    })
-  }, { additionalProperties: false, description: SUBMIT_PACKET_REVIEW_DESCRIPTION });
-}
-
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;
 export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;
 
@@ -328,7 +288,7 @@ export const SubmitCompositionSchema = Type.Object(
 );
 
 export type SubmitPlan = Static<typeof SubmitPlanSchema>;
-export type SubmitPacketReview = Static<typeof SubmitPacketReviewSchema> & { changeChecks?: SubmittedChangeCheck[] };
+export type SubmitPacketReview = Static<typeof SubmitPacketReviewSchema>;
 export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictSchema>;
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
