@@ -1,6 +1,6 @@
 import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "typebox";
-import type { CodegenieConfig, RepositoryTools, ReviewRunStats, ReviewStage, ReviewToolSurface, ToolBudget, ToolResultMeta } from "../types.js";
+import type { CodegenieConfig, DeliveredSourceRange, RepositoryTools, ReviewRunStats, ReviewStage, ReviewToolSurface, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
@@ -50,9 +50,12 @@ export type ToolResultRecords = {
   /** A cursor for each record, used only for the first unread row. */
   cursors?: string[];
   searchExcerptFlags?: boolean[];
+  /** Complete source lines encoded by each record, excluding location-only rows. */
+  recordRanges?: DeliveredSourceRange[][];
 };
 
 export type ToolExecutionResult = {
+  deliveredRanges?: DeliveredSourceRange[];
   definitionPage?: import("../repo/definition-page.js").DefinitionPage;
   /** Six-tool usage results remain canonical until packed for the current caller. */
   usagePage?: { name: string; page: import("../repo/usage-search.js").UsagePage };
@@ -97,6 +100,7 @@ export interface ToolResultCache {
 }
 
 export type LlmToolResultSummary = {
+  deliveredRanges?: DeliveredSourceRange[];
   repositoryEvidence?: import("../types.js").RepositoryEvidence[];
   requestKey?: string;
   id: string;
@@ -164,7 +168,7 @@ export type LlmStructuredRequest<T> = {
   normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; attentionRefsRemoved?: number; reason: string } | undefined;
   validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
-    /** Top-level alternative encodings: explicitly supplying one replaces retained siblings. */
+    /** Explicit alternatives replace siblings. A singleton explicitly replaces its whole field. */
     replacementGroups?: readonly (readonly string[])[];
     /** Optional constrained patch contract; the runner still validates the full merged submission. */
     createFieldRepair?(schema: TSchema, retained: unknown): FieldRepair | undefined;
@@ -172,6 +176,7 @@ export type LlmStructuredRequest<T> = {
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
     buildPrompt?(input: LlmSchemaRepairInput): string;
+    onScheduled?(draft: unknown, classification?: LlmSubmitFailureClassification): void;
   };
   finalization?: {
     noResultInstruction?: string;
@@ -189,6 +194,7 @@ export type LlmSubmitFailureClassification =
   | "schema_invalid"
   | "recovery_content_changed"
   | "review_status_findings_mismatch"
+  | "change_check_invalid"
   | "missing_submit"
   | "multiple_submits"
   | "revise_without_revision_payload"

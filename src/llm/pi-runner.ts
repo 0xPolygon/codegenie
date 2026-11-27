@@ -1,8 +1,9 @@
+import { mergeDeliveredRanges } from "../util/delivered-source.js";
 import { assertRepositoryToolArguments, normalizeRepositoryToolArguments } from "./tool-definitions.js";
 import { withMeta } from "./repository-tool-guidance.js";
 import { isTextFallbackHit } from "../repo/repository-index.js";
 import { xmlSyntaxRepairTargets } from "./json-syntax-guidance.js";
-import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "./search-result-packing.js";
+import { packFileListToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult, searchHitRanges } from "./search-result-packing.js";
 import { packDefinitionToolResult } from "./definition-result-packing.js";
 import { packUsageToolResult } from "./usage-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
@@ -465,7 +466,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
         }
         const semanticRepairDetails = repair.cause instanceof SubmitSemanticValidationError
           ? fenceUntrusted(withoutRejectedArguments(repair.cause.message), "semantic-validation-error") : "";
-        const fieldPrompt = nextFieldRepair?.prompt ?? (nextFieldRepair ? `Call ${submitTool.name} exactly once to supply the missing or invalid field values listed below. You may return a nested partial update, the literal field-path keys shown in the diagnostics, or the full object. Prefer only the needed updates. Supplied values replace older overlapping values; omitted fields and existing object-array items are retained. Arrays of objects address the original indices; do not reorder or delete those objects. Supplied arrays of scalar values replace the entire list and may remove invalid entries. Optional schema fields remain optional unless stage validation conditionally requires them, as identified by the diagnostics or validation error. Required fields must exist in the final merged submission; fields already retained need not be repeated. Newly created objects and new array entries must include every required field. The tool schema describes an update, while each diagnostic describes the required final field shape. Alternative representation groups: ${stableJson(request.schemaRepair?.replacementGroups ?? [])}. Supplying exactly one member replaces any retained alternative; omit all to retain the existing representation. Check spelling, case and types. Do not call repository tools. Validation category: ${repair.repairClassification ?? "schema_invalid"}. ${semanticRepairDetails}\n${fenceUntrusted(stableJson(nextFieldRepair.diagnostics), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(nextFieldRepair.baseline), "retained-submission")}` : undefined);
+        const fieldPrompt = nextFieldRepair?.prompt ?? (nextFieldRepair ? `Call ${submitTool.name} exactly once to supply the missing or invalid field values listed below. You may return a nested partial update, the literal field-path keys shown in the diagnostics, or the full object. Prefer only the needed updates. Supplied values replace older overlapping values; omitted fields and existing object-array items are retained. Arrays of objects address the original indices; do not reorder or delete those objects. Supplied arrays of scalar values replace the entire list and may remove invalid entries. Optional schema fields remain optional unless stage validation conditionally requires them, as identified by the diagnostics or validation error. Required fields must exist in the final merged submission; fields already retained need not be repeated. Newly created objects and new array entries must include every required field. The tool schema describes an update, while each diagnostic describes the required final field shape. Alternative representation groups: ${stableJson(request.schemaRepair?.replacementGroups ?? [])}. Supplying exactly one member replaces any retained alternative; omit all to retain the existing representation.${request.schemaRepair?.replacementGroups?.some(group => group.length === 1) ? " For a one-member group, supplying the field replaces its full value. Preserve all valid items in that field." : ""} Check spelling, case and types. Do not call repository tools. Validation category: ${repair.repairClassification ?? "schema_invalid"}. ${semanticRepairDetails}\n${fenceUntrusted(stableJson(nextFieldRepair.diagnostics), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(nextFieldRepair.baseline), "retained-submission")}` : undefined);
         try {
           queueSchemaRepair({
             opts,
@@ -489,6 +490,7 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
           recordFinalArgumentRepairOutcome(schemaRepairUsed ? "terminal_invalid" : "not_dispatched");
           throw cause;
         }
+        request.schemaRepair?.onScheduled?.(obligation?.original, repair.repairClassification);
         fieldRepair = nextFieldRepair;
         if (fieldRepair) recordFidelity("field_repair_scheduled", { paths: fieldRepair.paths, obligationId: obligation!.id });
         if (obligation && !fieldRepair) messages.push({ role: "user", timestamp: 0, content:
@@ -842,7 +844,8 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 resolveObligation("deterministic_correction");
                 return recovery.validated as T;
               }
-              const repairClassification = recovery.repairClassification ?? semanticClassification;
+              const repairClassification = semanticClassification === "change_check_invalid"
+                ? semanticClassification : recovery.repairClassification ?? semanticClassification;
               scheduleModelRepair({
                 submitToolName: submitTool.name,
                 submitCalls,
@@ -991,9 +994,12 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                   sourceResultCharsUsed += resultText.length;
                 }
               }
-              recordToolCall(opts, request, providerResult.callId, toolCall, outcome);
+              const deliveredRanges = deliveredToolRanges(toolCall, outcome);
+              recordToolCall(opts, request, providerResult.callId, toolCall, outcome, deliveredRanges);
               toolResultSummaries.push(summarizeToolResult(toolCall, outcome, resultText));
-              recordedToolResultSummaries.push(summarizeToolResult(toolCall, outcome, resultText, true));
+              recordedToolResultSummaries.push({
+                ...summarizeToolResult(toolCall, outcome, resultText, true), deliveredRanges
+              });
               toolResults.push({
                 role: "toolResult",
                 toolCallId: toolCall.id,
@@ -1322,6 +1328,28 @@ function retainedToolEvidence(toolCall: PiToolCall, outcome: ToolRunOutcome, tex
     ...((toolCall.name === "read_range" || toolCall.name === "read_symbol") && outcome.result.sourceLineRange
       ? { lineRange: outcome.result.sourceLineRange } : {}),
     lookupStatus: "found", source, text: outcome.result.rawSource === undefined ? text : stripCredentials(outcome.result.rawSource) }];
+}
+
+// This runs on the final delivery, after caller-specific packing and refusal.
+function deliveredToolRanges(toolCall: PiToolCall, outcome: ToolRunOutcome): NonNullable<LlmToolResultSummary["deliveredRanges"]> {
+  const { result } = outcome;
+  const meta = result.meta;
+  if (outcome.status !== "ok" || result.isError || meta?.deliveryStatus === "empty") return [];
+  if (result.deliveredRanges) return result.deliveredRanges;
+  if (result.packable?.recordRanges) return mergeDeliveredRanges(result.packable.recordRanges.flat());
+  const source = toolCall.arguments.source as { kind?: string } | undefined;
+  const side = meta?.sourceUsed ?? (source?.kind === "auto" ? undefined : source?.kind === "base" ? "base" : "head");
+  if (!side) return [];
+  if (result.searchResults) return mergeDeliveredRanges(result.searchResults.flatMap(hit => searchHitRanges(hit, side)));
+  const outline = result.outline;
+  if (outline?.sourceText?.text) {
+    const { startLine, endLine } = outline.sourceText;
+    return [{ path: outline.path, side, lineRange: [startLine, endLine] }];
+  }
+  if (toolCall.name !== "read_range" && toolCall.name !== "read_symbol") return [];
+  const path = meta?.requestedRange?.path ?? outcome.args.path;
+  const lineRange = meta?.deliveredLineRange ?? result.sourceLineRange;
+  return lineRange && typeof path === "string" ? [{ path, side, lineRange }] : [];
 }
 
 function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string, recorded = false): LlmToolResultSummary {
@@ -2804,7 +2832,8 @@ function recordToolCall(
   request: LlmStructuredRequest<unknown>,
   modelCallId: string,
   toolCall: PiToolCall,
-  outcome: ToolRunOutcome
+  outcome: ToolRunOutcome,
+  deliveredRanges?: LlmToolResultSummary["deliveredRanges"]
 ): void {
   const meta = outcome.result.meta ?? defaultToolMeta();
   const searchOrListBudgetRefusal = outcome.errorCode === "budget_exhausted" &&
@@ -2818,6 +2847,7 @@ function recordToolCall(
     candidateId: request.telemetryContext?.candidateId,
     modelCallId,
     tool: toolCall.name,
+    deliveredRanges,
     ...(outcome.errorCode === "invalid_args" ? rawToolArgumentsForRecord(toolCall) : {}),
     args: toolArgsForRecord(meta.definitionScope ? { ...outcome.args, glob: meta.definitionScope.glob } : outcome.args),
     backend: preExecutionBudgetRefusal ? undefined : meta.backend,
@@ -2919,6 +2949,7 @@ function writeToolCallDebug(
       lookupStatus: record.lookupStatus,
       deliveryStatus: record.deliveryStatus,
       recovery: record.recovery,
+      deliveredRanges: record.deliveredRanges,
       resultChars: record.resultChars,
       cacheStatus: record.cacheStatus,
       backendExecuted: record.backendExecuted,
@@ -3202,7 +3233,7 @@ function queueSchemaRepair(input: {
     if (input.request.stage === 7) {
       const classification = isStage7SchemaInvalidKind(input.repairClassification)
         ? input.repairClassification
-        : classifyStage7SchemaInvalid(input.error, input.submitCalls.filter(isTrustedSubmitCall));
+        : classifyStage7SchemaInvalid(input.error, input.submitCalls.filter(isTrustedSubmitCall), input.request.schema);
       recordStage7SchemaRepairEvent({
         opts: input.opts,
         request: input.request,

@@ -1,3 +1,4 @@
+import { diffRowRanges } from "../util/delivered-source.js";
 import type { DiffRecordGroups, ToolResultRecords } from "../llm/llm-runner.js";
 import type { DiffFile, DiffHunk, DiffLine, ReviewPacket, ToolResultMeta, UnifiedDiff } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
@@ -41,6 +42,7 @@ export class DiffBlockRenderer {
     const records: string[] = [];
     const labels: string[] = [];
     const keepWithNext: boolean[] = [];
+    const recordRanges: NonNullable<ToolResultRecords["recordRanges"]> = [];
     const deliveredFiles = new Set<DiffFile>();
     const diffGroups: DiffRecordGroups = { rendered: [], lineEnds: [], omittedLabels: [] };
     let omittedCount = 0;
@@ -69,12 +71,14 @@ export class DiffBlockRenderer {
           records.push((blockGap ? "\n" : "") + header, ...rendered);
           labels.push(firstLabel);
           keepWithNext.push(true);
+          recordRanges.push([]);
           diffGroups.lineEnds.push([undefined, undefined]);
           let baseEnd: number | undefined;
           let headEnd: number | undefined;
           for (const line of hunk.lines.slice(0, rendered.length)) {
             labels.push(describeLine(file, hunk, line));
             keepWithNext.push(false);
+            recordRanges.push(diffRowRanges(file.path, file.oldPath, line.oldLineNumber, line.newLineNumber));
             baseEnd = line.oldLineNumber ?? baseEnd;
             headEnd = line.newLineNumber ?? headEnd;
             diffGroups.lineEnds.push([baseEnd, headEnd]);
@@ -103,7 +107,7 @@ export class DiffBlockRenderer {
     };
     return { blocks, meta, packable: {
       open: refused ? "No whole diff line fits the result limit." : "",
-      records, separator: "\n", close: "", labels, keepWithNext, diffGroups
+      records, separator: "\n", close: "", labels, keepWithNext, diffGroups, recordRanges
     } };
   }
 

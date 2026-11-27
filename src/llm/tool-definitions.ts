@@ -1,8 +1,8 @@
 import { withMeta, withSixToolMeta, renderSourceBlockHeader, numberSourceLine } from "./repository-tool-guidance.js";
-import { createPackableToolResult, renderOutlineToolResult } from "./search-result-packing.js";
+import { createPackableToolResult, renderOutlineToolResult, searchHitRanges } from "./search-result-packing.js";
 import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "typebox";
-import type { RepositoryTools, ReviewToolSurface, SearchPage, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
+import type { DeliveredSourceRange, RepositoryTools, ReviewToolSurface, SearchPage, SearchPageOptions, SourceFileMap, SourceSelector, SymbolLookupSourceSelector } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -241,6 +241,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
         const records: string[] = [];
         const labels: string[] = [];
         const keepWithNext: boolean[] = [];
+        const recordRanges: DeliveredSourceRange[][] = [];
         const index: string[] = [];
         for (const hit of result.definitions) {
           const { symbol, text, totalLines, deliveredLineRange, nextLine } = hit;
@@ -255,6 +256,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           records.push(header);
           labels.push(`${symbol.path}@${revision}:${deliveredLineRange[0]}`);
           keepWithNext.push(true);
+          recordRanges.push([]);
           for (let i = 0; i < lines.length; i++) {
             const line = deliveredLineRange[0] + i;
             const last = i === lines.length - 1 && (nextLine !== undefined || deliveredLineRange[0] !== symbol.lineRange[0] || deliveredLineRange[1] !== symbol.lineRange[1])
@@ -262,6 +264,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
             records.push(`${numberSourceLine(lines[i]!, line)}${last}`);
             labels.push(`${symbol.path}@${revision}:${line}`);
             keepWithNext.push(false);
+            recordRanges.push([{ path: symbol.path, side: revision, lineRange: [line, line] }]);
           }
         }
         if (records.length === 0) {
@@ -273,7 +276,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
         const only = result.definitions.length === 1 ? result.definitions[0] : undefined;
         const meta = only?.deliveredLineRange && only.totalLines !== undefined
           ? { ...result.meta, deliveredLineRange: only.deliveredLineRange, totalLines: only.totalLines } : result.meta;
-        return { ...createPackableToolResult({ open, records, separator: "\n", close: "", labels, keepWithNext }, meta), definitions: result.definitions };
+        return { ...createPackableToolResult({ open, records, separator: "\n", close: "", labels, keepWithNext, recordRanges }, meta), definitions: result.definitions };
       })
     },
     {
@@ -368,6 +371,8 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
               ? `Context omitted to fit the result budget; next: ${firstContext.path}@${revision}:${contextLine} (omitted context; inspect with read_range).\n` : "";
             const meta = !includeContext ? { ...result.meta, truncated: true, deliveryStatus: "truncated" as const } : result.meta;
             return createPackableToolResult({ open, records: records(includeContext), separator: "\n", close: "",
+              recordRanges: result.results.map(hit => searchHitRanges(includeContext ? hit
+                : { ...hit, contextBefore: [], contextAfter: [] }, revision, result.positioning!.fileLengths[hit.path])),
               labels: result.results.map(hit => `${hit.path}@${revision}:${hit.line - (includeContext ? hit.contextBefore?.length ?? 0 : 0)}`),
               ...(next ? { nextPage: `${next.path}@${revision}:${next.line}; inspect with read_range or narrow the search` } : {})
             }, meta);
@@ -739,6 +744,7 @@ function renderSearchRows(page: SearchPage, revision: SourceSelector["kind"], no
     labels: page.rows.map(({ hit }) => `${JSON.stringify(hit.path)}@${revision}:${hit.line}`),
     cursors: page.rows.map(row => row.cursor),
     searchExcerptFlags: page.rows.map(row => row.hit.excerpt === true),
+    recordRanges: page.rows.map(row => searchHitRanges(row.hit, revision, row.totalLines)),
     ...(page.next ? { nextPage: `${JSON.stringify(page.next.path)}@${revision}:${page.next.line}, cursor=${page.next.cursor}` } : {})
   }, page.meta), searchResults: page.rows.map(row => row.hit) };
 }

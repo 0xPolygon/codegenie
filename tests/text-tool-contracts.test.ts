@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textRepository } from "./helpers/text-repository.js";
 import { createToolResultCache } from "../src/llm/tool-result-cache.js";
-import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult } from "../src/llm/search-result-packing.js";
+import { createPackableToolResult, packOutlineToolResult, packSearchToolResult, packTextToolResult, searchHitRanges } from "../src/llm/search-result-packing.js";
 import { withMeta } from "../src/llm/repository-tool-guidance.js";
 import { assertRepositoryToolArguments, buildRepositoryToolDefinitions, buildSixReadRangeTool, buildSixSearchTool } from "../src/llm/tool-definitions.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
@@ -638,6 +638,8 @@ describe("search delivery accounting over committed source", () => {
       searchDelivery: { budgetContextStripped: true, scanIncomplete: false }
     });
     expect(rows.meta?.searchDelivery?.deliveredCount).toBe(rows.searchResults!.length);
+    expect(rows.packable?.recordRanges).toEqual(rows.searchResults?.map(hit => searchHitRanges(hit, "head")));
+    expect(rows.packable?.recordRanges?.flat().every(range => range.lineRange[0] === range.lineRange[1])).toBe(true);
     expect(rows.meta?.searchDelivery?.budgetOmittedCount).toBe(4 - rows.searchResults!.length);
     expect(rows.text).toContain("Context omitted to fit the result budget");
     if (rows.meta?.searchDelivery?.budgetOmittedCount) expect(rows.text).toMatch(/next: .+@head:\d+, cursor=/u);
@@ -647,6 +649,15 @@ describe("search delivery accounting over committed source", () => {
     expect(refused.text).toContain('First unread source: "cmd/serve/admin.go"@head:1, cursor=');
     expect(packSearchToolResult((await cache.execute(request)).result, 4000)).toEqual(full);
   });
+});
+
+it("does not attest the excerpted match or source from omitted search context", () => {
+  const hit = { path: "example.ts", line: 20, matchText: "partial", excerpt: true,
+    contextBefore: ["alpha"], contextAfter: ["omega"] };
+  expect(searchHitRanges(hit, "base", 21)).toEqual([
+    { path: "example.ts", side: "base", lineRange: [19, 19] }, { path: "example.ts", side: "base", lineRange: [21, 21] }
+  ]);
+  expect(searchHitRanges({ ...hit, contextBefore: [], contextAfter: [] }, "base")).toEqual([]);
 });
 
 describe("whole-record tool packing", () => {

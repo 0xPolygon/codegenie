@@ -58,13 +58,13 @@ describe("eval suite validation", () => {
     const file = path.join(suite, "case.yml");
     const writeCase = (setting: string) => writeFileSync(file, [
       "name: instruction-set", "repo:", "  fixture: repo",
-      "review:", `  stage7Instructions: ${setting}`
+      "review:", `  stage7Instructions: ${setting}`, "  changeChecks: true"
     ].join("\n"));
     writeFileSync(path.join(dir, "codegenie.toml"), '[review]\nmaxFindings = 5\n');
     writeCase("v2");
     const { cases } = await loadEvalSuite(suite);
     const result = resolveEvalCaseConfig(defaultConfig, cases[0]!.evalCase, dir, undefined);
-    expect(result.config.review).toMatchObject({ stage7Instructions: "v2", maxFindings: 5 });
+    expect(result.config.review).toMatchObject({ stage7Instructions: "v2", maxFindings: 5, changeChecks: true });
     writeCase("unknown");
     await expect(loadEvalSuite(suite)).rejects.toMatchObject({
       code: "config_error", context: { errors: [expect.stringContaining("review.stage7Instructions")] }

@@ -68,6 +68,19 @@ describe("config loader", () => {
     }));
   });
 
+  it("defaults changeChecks off and loads the user-scoped boolean", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    const opts = { repoRoot, homeOverride, env: {} };
+    expect(loadConfig(opts).config.review.changeChecks).toBe(false);
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nchangeChecks = true\n");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nchangeChecks = false\n");
+    const loaded = loadConfig(opts);
+    expect(loaded.config.review.changeChecks).toBe(true);
+    expect(loaded.sources["review.changeChecks"]).toBe("user-config");
+    expect(rawConfigSchema.safeParse({ review: { changeChecks: "true" } }).success).toBe(false);
+  });
+
   it("keeps stage settings user-scoped and lets per-run fields override them", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

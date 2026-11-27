@@ -1,3 +1,7 @@
+import { attestChangeChecks, sourcePointerStatus, validateChangeChecks } from "../src/pipeline/change-check-evidence.js";
+import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
+import { joinPacketText, packetSource, packetText, packetTextRanges, truncatePacketText } from "../src/pipeline/packet-text.js";
+import type { SubmittedChangeCheck, SubmitPacketReview } from "../src/llm/schemas.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
@@ -119,6 +123,273 @@ it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", a
   }, target, "registry")).not.toBe(templates["cache"]);
   templates["submit_review"] = sha256Hex(JSON.stringify(SubmitPacketReviewSchema));
   expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"abf942fbc26160c0d9d099dbd9a7a2feca7674cee3a1c0c4a6b2168949cde686"`);
+});
+
+describe("Stage 7 change checks", () => {
+  const empty = { findings: [], followUpHints: [], uncertainties: [] };
+  const unchanged: SubmittedChangeCheck = {
+    hunkId: "h1", changeKind: "no_behavior_change", before: "Returns the stored value.", after: "Returns the stored value.",
+    breakAttempt: "", result: "no_behavior_change"
+  };
+  const checked: SubmittedChangeCheck = {
+    ...unchanged, changeKind: "acceptance", breakAttempt: "Pass an empty value and observe whether validation is skipped.",
+    result: "ruled_out", checkedAt: { path: "app.ts", side: "head", lineRange: [2, 3] }
+  };
+  const question = (ref: number): SubmittedChangeCheck => {
+    const { checkedAt: _pointer, ...row } = checked;
+    return { ...row, changeKind: "failure", result: "question", ref };
+  };
+  const review = (changeChecks: SubmittedChangeCheck[], reviewStatus: SubmitPacketReview["reviewStatus"] = "no_findings"): SubmitPacketReview =>
+    ({ ...empty, reviewStatus, changeChecks });
+
+  it("validates coverage, row identity, array links and conditional fields", () => {
+    const hunks = new Set(["h1", "h2"]);
+    const second = { ...unchanged, hunkId: "h2" };
+    expect(validateChangeChecks(review([unchanged, second, checked]), hunks)).toEqual({ ok: true });
+    expect(validateChangeChecks(review([unchanged], "incomplete"), hunks)).toEqual({ ok: true });
+    const { checkedAt: _pointer, ...noPointer } = checked;
+    for (const rows of [
+      [unchanged], [unchanged, unchanged, second], [unchanged, checked, { ...checked, before: "Another behavior" }, second],
+      [unchanged, { ...second, hunkId: "foreign" }], [unchanged, second, question(0)], [noPointer, second],
+      [{ ...unchanged, breakAttempt: "Must be empty." }, second],
+      [{ ...checked, checkedAt: { path: "app.ts", side: "head" as const, lineRange: [3, 2] as [number, number] } }, second]
+    ]) {
+      expect(validateChangeChecks(review(rows), hunks)).toMatchObject({ ok: false, classification: "change_check_invalid" });
+    }
+  });
+
+  it("attests the entire inclusive interval with at least one unchanged line", () => {
+    const pointer = checked.checkedAt!;
+    const delivered = (start: number, end: number, path = pointer.path) =>
+      ({ path, side: pointer.side, lineRange: [start, end] as [number, number] });
+    expect(sourcePointerStatus(undefined, [], new Set())).toBe("pointer_missing");
+    expect(sourcePointerStatus(pointer, [delivered(2, 3, "elsewhere.ts")], new Set())).toBe("source_not_delivered");
+    expect(sourcePointerStatus(pointer, [delivered(2, 2), delivered(4, 5)], new Set())).toBe("line_clipped");
+    expect(sourcePointerStatus(pointer, [delivered(2, 3)], new Set([2, 3]))).toBe("inside_changed_rows");
+    expect(sourcePointerStatus(pointer, [delivered(2, 2), delivered(3, 3)], new Set([2]))).toBe("traceable");
+  });
+
+  it("uses deletion context on base and allows another delivered declaration for a whole-file addition", () => {
+    const deletion = fakePacket({ oldPath: "previous.ts", hunkLines: [
+      { kind: "delete", oldLine: 2, content: "old behavior" },
+      { kind: "context", oldLine: 3, newLine: 2, content: "return value" }
+    ], changedOldLineNumbers: [2] });
+    const wholeFile = { ...fakePacket(), kind: "whole-file" as const, fileStatus: "added" as const,
+      contextDeliveredRanges: [{ path: "consumer.ts", side: "head" as const, lineRange: [5, 6] as [number, number] }] };
+    const attest = (packet: ReviewPacket, checkedAt: SubmittedChangeCheck["checkedAt"]) =>
+      attestChangeChecks({ rows: [{ ...checked, checkedAt } as SubmittedChangeCheck], packet, diff: undefined, delivered: [], findings: [], hints: new Map() })[0]?.pointerStatus;
+    expect(attest(deletion, { path: "previous.ts", side: "base", lineRange: [2, 3] })).toBe("traceable");
+    expect(attest(wholeFile, { path: "consumer.ts", side: "head", lineRange: [5, 6] })).toBe("traceable");
+    const diff = parseDiff("diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -20 +20 @@\n-before\n+after\n");
+    const [result] = attestChangeChecks({ rows: [{ ...checked, checkedAt: { path: "app.ts", side: "head", lineRange: [20, 20] } }],
+      packet: fakePacket(), diff, delivered: [{ path: "app.ts", side: "head", lineRange: [20, 20] }], findings: [], hints: new Map() });
+    expect(result?.pointerStatus).toBe("inside_changed_rows");
+  });
+
+  it("carries only whole positioned lines from packet context through joins and clipping", () => {
+    const body = "alpha\nbeta\ngamma";
+    const source = packetSource("heading\n" + body, body, "app.ts", "base", [4, 6]);
+    const joined = joinPacketText([packetText("preface"), source], "\n");
+    const clipped = truncatePacketText(joined, joined.text.indexOf("gamma") + 3, "");
+    expect(packetTextRanges(clipped)).toEqual([{ path: "app.ts", side: "base", lineRange: [4, 5] }]);
+    expect(packetTextRanges(packetSource("heading\nalpha", "alpha", "app.ts", "base", [4, 4], "alpha  \n"))).toEqual([]);
+  });
+
+  it.each(["current", "six"] as const)("replaces a bad row in real %s repair while retaining findings and submitted hint indices", async toolSurface => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, toolSurface, stage7Instructions: "v2", changeChecks: true };
+    const packet = fakePacket();
+    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+    const hint = { question: "Can a caller bypass the new check?", files: ["app.ts"], symbols: [], suggestedLenses: [],
+      reason: "A different caller may invoke the helper directly.", confidence: "low" };
+    const { checkedAt: _pointer, ...unchecked } = checked;
+    const invalid = { ...review([question(0), unchecked], "findings"),
+      findings: [finding], followUpHints: [{ ...hint, files: [] }, hint, { ...hint, confidence: "high" }] };
+    const repaired = [{ ...question(0), ref: 0 }, { ...question(2), breakAttempt: "Allow a caller to bypass validation." }];
+    const events: string[] = [];
+    const telemetry = { ...nullTelemetry(), event(event: Parameters<ReturnType<typeof nullTelemetry>["event"]>[0]) {
+      if (event.message === "stage7_change_checks") events.push(JSON.stringify(event.data));
+    } };
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("initial", "submit_review", invalid)]),
+      assistantMessage([toolCall("repair", "submit_review", { changeChecks: repaired })]),
+    ]);
+    const adapter = { ...scripted, validateToolCall };
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(),
+      runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const registry = fakeLensRegistry();
+    const [outcome] = await runLensPackets([packet], fakeTools(), cfg, telemetry, {
+      runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry
+    });
+    expect(outcome?.status).toBe("completed");
+    expect(outcome?.findings).toEqual([expect.objectContaining(finding)]);
+    expect(outcome?.followUpHints.map(item => item.confidence)).toEqual(["high", "low"]);
+    expect(outcome?.changeChecks).toMatchObject([
+      { refIndex: 0, refDisposition: "dropped" },
+      { refIndex: 2, refDisposition: "kept", refId: `${packet.id}/hint-1` }
+    ]);
+    expect(scripted.calls).toBe(2);
+    expect(events.map(row => JSON.parse(row))).toMatchObject([{ rowsSubmitted: 2, rowCausedRepairs: 1 }]);
+  });
+
+  it("replaces an otherwise schema-valid semantic failure in real repair", async () => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, changeChecks: true };
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("initial", "submit_review", review([{ ...unchanged, breakAttempt: "Must be empty." }]))]),
+      assistantMessage([toolCall("repair", "submit_review", { changeChecks: [unchanged] })])
+    ]);
+    const adapter = { ...scripted, validateToolCall };
+    const telemetry = nullTelemetry();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    expect(result?.changeChecks).toEqual([unchanged]);
+    expect(scripted.calls).toBe(2);
+  });
+
+  it("preserves submitted rows in deterministic no-findings cleanup", async () => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, changeChecks: true };
+    const scripted = scriptedPiAdapter([assistantMessage([toolCall("initial", "submit_review", {
+      reviewStatus: "no_findings", noFindingReason: "Mechanical rename.", changeChecks: [unchanged]
+    })])]);
+    const telemetry = nullTelemetry();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter: { ...scripted, validateToolCall }, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    expect(result?.changeChecks).toEqual([unchanged]);
+    expect(scripted.calls).toBe(1);
+  });
+
+  it("keeps the row on forced finalize and attests packed prefixes plus continuation reads", async () => {
+    const packet = fakePacket();
+    packet.toolBudget.maxSingleToolResultChars = 500;
+    const cfg = config();
+    cfg.review = { ...cfg.review, changeChecks: true };
+    const rows = [{ ...checked, checkedAt: { path: "app.ts", side: "head" as const, lineRange: [2, 3] as [number, number] } }];
+    const telemetry = nullTelemetry();
+    const recorded: Array<Parameters<typeof telemetry.recordToolCall>[0]> = [];
+    telemetry.recordToolCall = record => { recorded.push(record); return "fixture"; };
+    const requests: boolean[] = [];
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("read", "read_range", { path: "app.ts", startLine: 2, endLine: 3 })]),
+      assistantMessage([toolCall("continue", "read_range", { path: "app.ts", startLine: 3, endLine: 3 })]),
+      assistantMessage([toolCall("finish", "submit_review", review(rows))])
+    ]);
+    const adapter: PiAiAdapter = { ...scripted, validateToolCall,
+      complete: (model, context, options) => {
+        requests.push(typeof options.toolChoice === "object" && options.toolChoice !== null && "type" in options.toolChoice && options.toolChoice.type === "tool");
+        return scripted.complete(model, context, options);
+      }
+    };
+    const tools = fakeTools();
+    tools.readRange = async (path, startLine, endLine) => ({
+      text: startLine === 2 ? "abc\n" + "effect".repeat(1000) : "const recovered = true;",
+      meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "head", lookupStatus: "found",
+        deliveryStatus: "full", totalLines: 4, deliveredLineRange: [startLine, endLine], requestedRange: { path, startLine, endLine } }
+    });
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const [result] = await runLensPackets([packet], tools, cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    expect(requests).toEqual([false, false, true]);
+    expect(recorded.map(record => record.deliveredRanges)).toEqual([
+      [{ path: "app.ts", side: "head", lineRange: [2, 2] }], [{ path: "app.ts", side: "head", lineRange: [3, 3] }]
+    ]);
+    expect(result?.changeChecks).toMatchObject([{ pointerStatus: "traceable" }]);
+  });
+
+  it("keeps worker source deliveries isolated", async () => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, changeChecks: true };
+    const packet = fakePacket();
+    const other = fakePacket({ id: "packet-other" });
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      if (request.telemetryContext?.packetId === packet.id) request.onToolResults?.([{
+        id: "read", tool: "read_range", target: "app.ts", resultChars: 30, status: "ok",
+        deliveredRanges: [{ path: "app.ts", side: "head", lineRange: [2, 3] }]
+      }]);
+      return review([checked]) as T;
+    } };
+    const results = await runLensPackets([packet, other], fakeTools(), cfg, nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+    expect(results.map(result => result.changeChecks?.[0]?.pointerStatus)).toEqual(["traceable", "line_clipped"]);
+  });
+
+  it("writes private rows without forwarding them to verification, composition or the public review", async () => {
+    const repo = initRepo();
+    const output = mkdtempSync(path.join(tmpdir(), "codegenie-change-checks-"));
+    try {
+      writeRepoFile(repo, "app.ts", "export const values = [1];\n");
+      const base = commitAll(repo, "base");
+      writeRepoFile(repo, "app.ts", "export const values: number[] = [];\n");
+      const head = commitAll(repo, "head");
+      const settings = config();
+      settings.review = { ...settings.review, changeChecks: true, stage7Instructions: "v2" };
+      settings.telemetry.enabled = true;
+      const runArtifactDir = path.join(output, "run");
+      const seen: number[] = [];
+      const result = await runReview({ mode: "head", baseRef: base, headRef: head }, settings, {
+        repoRoot: repo, runArtifactDir,
+        runner: { async runStructured<T>(request: LlmStructuredRequest<T>) {
+          seen.push(request.stage);
+          if (request.stage === 5) return {
+            diffUnderstanding: { declaredIntent: "Change default values", inferredBehavior: "The value array starts empty" }, coverage: []
+          } as T;
+          if (request.stage === 7) {
+            const packet = extractPromptJson<ReviewPacket>(request.prompt, "review-packet")!;
+            expect(request.templateVersion).toMatch(/-cc\.1$/u);
+            expect(request.prompt).toContain("Record one changeChecks row per hunk");
+            expect(request.prompt).not.toContain("contextDeliveredRanges");
+            const changed = packet.hunks[0]!;
+            const candidate = {
+              title: "The first value is no longer defined", severity: "medium", confidence: "high", category: "correctness",
+              path: packet.path, anchor: { path: packet.path, side: "RIGHT", line: changed.changedNewLineNumbers[0], hunkId: changed.hunkId },
+              evidence: { changedCode: "export const values: number[] = [];" }, failureMode: "The empty default hides the first value.",
+              whyThisMatters: "Callers get undefined.", verification: "The default literal is empty."
+            };
+            const value = { ...empty, reviewStatus: "findings", findings: [candidate], changeChecks: [{
+              ...question(0), hunkId: changed.hunkId, result: "finding", before: "PRIVATE_ATTEMPT", ref: 0
+            }] };
+            expect(request.validateSubmit?.(value as T)).toEqual({ ok: true });
+            return value as T;
+          }
+          expect(request.prompt).not.toContain("PRIVATE_ATTEMPT");
+          expect(JSON.stringify(request.schema)).not.toContain("changeChecks");
+          if (request.stage === 9) return {
+            verdict: "keep", reason: "The empty default hides the first value.", requiredEvidencePresent: true, falsePositiveRisk: "low",
+            proofAssessment: { status: "established", evidence: "Default literal has no values.", assumptions: [] }
+          } as T;
+          return { summary: "The value array starts empty.", composedFindings: [] } as T;
+        } }
+      });
+      expect(seen).toContain(9);
+      expect(seen).toContain(10);
+      const artifact = canonicalArtifactPath("change-checks.json");
+      expect(readFileSync(path.join(runArtifactDir, artifact), "utf8")).toContain("PRIVATE_ATTEMPT");
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_ATTEMPT");
+      expect(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")).not.toContain("PRIVATE_ATTEMPT");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(output, { recursive: true, force: true });
+    }
+  });
+
+  it("fits the 5-hunk, 10-row maximum through the schema and stream guard", () => {
+    const hunkIds = ["h1", "h2", "h3", "h4", "h5"];
+    const schema = submitPacketReviewSchema("v2", "six", hunkIds);
+    const rows = hunkIds.flatMap(hunkId => ["a", "b"].map(char => ({ ...checked, hunkId, before: char.repeat(120),
+      after: char.repeat(120), breakAttempt: char.repeat(160) })));
+    const value = review(rows);
+    expect(validateToolCall([{ name: "submit_review", description: "", parameters: schema }],
+      toolCall("full", "submit_review", value))).toEqual(value);
+    const args = JSON.stringify(value);
+    expect(createToolArgumentStreamGuard(7)!(0, args, args.length, true)).toBeUndefined();
+    expect(validateChangeChecks(value, new Set(hunkIds))).toEqual({ ok: true });
+  });
 });
 
 describe("experimental Stage 7 instructions", () => {

@@ -1,9 +1,11 @@
+import { attestChangeChecks, changeCheckCounts, validateChangeChecks } from "./change-check-evidence.js";
+import { submissionIssues } from "../llm/submit-preservation.js";
 import { packetHasRepositoryTools } from "../util/packet-tools.js";
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
-import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
+import type { LlmPostToolNudgeInput, LlmRunner, LlmSubmitFailureClassification, LlmToolResultSummary } from "../llm/llm-runner.js";
 import { submitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { exactSourceToolNames, projectedSkillIds, verifierOnlySkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
@@ -12,6 +14,7 @@ import type {
   AnchorSource,
   CandidateFinding,
   CodegenieConfig,
+  ChangeCheckReference,
   DiffAnchor,
   PacketReviewResult,
   RepositoryTools,
@@ -44,6 +47,7 @@ type NormalizedHints = {
   kept: PacketReviewResult["followUpHints"];
   submittedCount: number;
   droppedCount: number;
+  bySubmittedIndex: Map<number, ChangeCheckReference>;
 };
 type NormalizedUncertainties = {
   kept: PacketReviewResult["uncertainties"];
@@ -80,6 +84,7 @@ export async function runLensPackets(
     ...(opts.checkpoint !== undefined ? { checkpoint: opts.checkpoint } : {})
   });
   const retainedReads = new Map<string, RepositoryEvidence[]>();
+  const rowRepairs = new Map<string, number>();
   const tasks = packets.map((packet): WorkerTask<PacketReviewResult> => ({
     stage: 7,
     priority: packetPriority(packet),
@@ -90,7 +95,9 @@ export async function runLensPackets(
     repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
     awaitCancellation: true,
     retryOnTransient: true,
-    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads)
+    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, () => {
+      rowRepairs.set(packet.id, (rowRepairs.get(packet.id) ?? 0) + 1);
+    })
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const passResults = outcomes.map((outcome): PacketReviewResult => {
@@ -135,6 +142,13 @@ export async function runLensPackets(
   const results = packets.map((packet): PacketReviewResult => resultByPacket.get(packet.id) ?? {
     packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "failed"
   });
+  for (const [index, packet] of packets.entries()) {
+    const result = results[index]!;
+    telemetry.event({
+      stage: 7, level: "info", message: "stage7_change_checks", packetId: packet.id,
+      data: changeCheckCounts(result.changeChecks ?? [], packet.hunks.length, rowRepairs.get(packet.id) ?? 0, config.review.changeChecks === true)
+    });
+  }
   await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
     stage: 7,
@@ -164,7 +178,8 @@ export async function runLensPackets(
 function packetAttemptRunner(
   packet: ReviewPacket, tools: RepositoryTools, config: CodegenieConfig,
   opts: LensRunnerOptions, telemetry: TelemetryRecorder,
-  retained: Map<string, RepositoryEvidence[]>
+  retained: Map<string, RepositoryEvidence[]>,
+  recordRowRepair: () => void
 ): WorkerTask<PacketReviewResult>["run"] {
   const reads = new Map<string, RepositoryEvidence>();
   const observations = new Map<string, LlmToolResultSummary>();
@@ -187,7 +202,7 @@ function packetAttemptRunner(
       retained.set(packet.id, [...reads.values()]);
       return [...observations.values()];
     };
-    const result = await runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, collect);
+    const result = await runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, recordRowRepair, collect);
     result.repositoryEvidence = [...reads.values()];
     return result;
   };
@@ -201,6 +216,7 @@ async function runPacket(
   telemetry: TelemetryRecorder,
   workerId: string,
   signal: AbortSignal,
+  recordRowRepair: () => void,
   collect?: (results: LlmToolResultSummary[]) => LlmToolResultSummary[]
 ): Promise<PacketReviewResult> {
   const skills = skillsCompatibleWithLanguage(
@@ -220,12 +236,19 @@ async function runPacket(
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
       ...(currentHunks ? { currentHunks } : {}) });
+  const assigned = config.review.changeChecks === true ? new Set(packet.hunks.map(hunk => hunk.hunkId)) : undefined;
+  const schema = submitPacketReviewSchema(config.review.stage7Instructions, toolSurface, assigned ? [...assigned] : undefined);
   let toolResults: LlmToolResultSummary[] = [];
+  let attemptToolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
-    onToolResults: results => { toolResults = collect?.(results) ?? results; },
+    onToolResults: results => {
+      attemptToolResults = results;
+      toolResults = collect?.(results) ?? results;
+    },
     stage: 7,
     prompt: prompt.prompt,
-    schema: submitPacketReviewSchema(config.review.stage7Instructions, toolSurface),
+    schema,
+    ...(assigned ? { validateSubmit: (value: SubmitPacketReview) => validateChangeChecks(value, assigned) } : {}),
     signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
@@ -237,7 +260,14 @@ async function runPacket(
     // recoverInvalidSubmit seam like every other stage; the engine and its
     // telemetry live in stage7-submit-repair.ts.
     schemaRepair: {
-      recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id })
+      recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id }, schema),
+      ...(assigned ? {
+        replacementGroups: [["changeChecks"]],
+        onScheduled: (draft: unknown, classification?: LlmSubmitFailureClassification) => {
+          if (classification === "change_check_invalid" || (draft && submissionIssues(schema, draft)
+            .some(issue => issue.path === "changeChecks" || issue.path.startsWith("changeChecks.")))) recordRowRepair();
+        }
+      } : {})
     },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
@@ -274,11 +304,20 @@ async function runPacket(
       }
     });
   }
-  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, projectedIds, telemetry, workerId);
+  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, projectedIds, telemetry, workerId, assigned !== undefined);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, projectedIds, telemetry, workerId);
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
     ? unresolvedToolDiagnostic(7, toolResults, packet.id, reviewStatus !== "incomplete") : undefined;
+  const changeChecks = assigned && submitted.changeChecks ? attestChangeChecks({
+    rows: submitted.changeChecks,
+    packet,
+    delivered: attemptToolResults.flatMap(result => result.deliveredRanges ?? []),
+    diff: opts.diff,
+    findings: findings.map(finding => ({ refDisposition: "kept", refId: finding.id })),
+    hints: followUpHints.bySubmittedIndex
+  }) : undefined;
   const result: PacketReviewResult = {
+    ...(changeChecks ? { changeChecks } : {}),
     repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ?? []),
     ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
     packetId: packet.id,
@@ -308,10 +347,14 @@ function normalizeFollowUpHints(
   passSkillIds: readonly string[],
   projectedIds: readonly string[],
   telemetry: TelemetryRecorder,
-  workerId: string
+  workerId: string,
+  bindChangeCheckRefs: boolean
 ): NormalizedHints {
   const valid: PacketReviewResult["followUpHints"] = [];
-  for (const hint of hints) {
+  const submittedIndices = new Map<PacketReviewResult["followUpHints"][number], number>();
+  const bySubmittedIndex = new Map<number, ChangeCheckReference>();
+  for (const [index, hint] of hints.entries()) {
+    if (bindChangeCheckRefs) bySubmittedIndex.set(index, { refDisposition: "dropped" });
     const normalized = {
       ...hint,
       question: hint.question.trim(),
@@ -340,13 +383,16 @@ function normalizeFollowUpHints(
       continue;
     }
     valid.push(normalized);
+    if (bindChangeCheckRefs) submittedIndices.set(normalized, index);
   }
 
   const ranked = [...valid].sort((a, b) => followUpHintRank(b, packet) - followUpHintRank(a, packet) ||
     a.question.localeCompare(b.question));
   const kept = ranked.slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
   const dropped = ranked.slice(MAX_FOLLOW_UP_HINTS_PER_PACKET);
-  for (const hint of kept) {
+  for (const [index, hint] of kept.entries()) {
+    const hintId = bindChangeCheckRefs ? `${packet.id}/hint-${index + 1}` : undefined;
+    if (hintId !== undefined) bySubmittedIndex.set(submittedIndices.get(hint)!, { refDisposition: "kept", refId: hintId });
     telemetry.event({
       stage: 7,
       level: "info",
@@ -359,7 +405,8 @@ function normalizeFollowUpHints(
         symbols: hint.symbols,
         reason: hint.reason,
         confidence: hint.confidence,
-        projectedSkillIds: projectedIds
+        projectedSkillIds: projectedIds,
+        ...(hintId !== undefined ? { hintId } : {})
       }
     });
   }
@@ -385,6 +432,7 @@ function normalizeFollowUpHints(
   }
   return {
     kept,
+    bySubmittedIndex,
     submittedCount: hints.length,
     droppedCount: hints.length - kept.length
   };

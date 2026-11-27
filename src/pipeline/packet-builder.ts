@@ -1,9 +1,10 @@
+import { diffRowRanges, mergeDeliveredRanges } from "../util/delivered-source.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { credentialSafeCut } from "../telemetry/redaction.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { MAX_PATCH_CHARS, packPacketPatch } from "./packet-patch.js";
-import { CONTEXT_CUT_MARKER, joinPacketText, packetText, truncatePacketText, type PacketText } from "./packet-text.js";
+import { packetSource, packetTextRanges, CONTEXT_CUT_MARKER, joinPacketText, packetText, truncatePacketText, type PacketText } from "./packet-text.js";
 import { changedModuleBinding } from "./module-binding-change.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import { coverageEscalationReason } from "./coverage-escalation.js";
@@ -19,6 +20,7 @@ import type {
   PacketLine,
   PlannerDossier,
   RelatedChangedContext,
+  DeliveredSourceRange,
   RepositoryIndex,
   RepositoryToolsHost,
   ReviewPacket,
@@ -69,6 +71,7 @@ type PacketGroup = {
   kind: ReviewPacket["kind"];
   fileContext?: ReviewPacket["fileContext"];
   wholeFileText?: string;
+  wholeFileRange?: DeliveredSourceRange;
   degradationReason?: string;
 };
 
@@ -259,7 +262,8 @@ async function groupHunks(
           hunks: planned,
           kind: "whole-file",
           fileContext: { mode: "whole-file", reason: wholeFileReason },
-          wholeFileText: content.text
+          wholeFileText: content.text,
+          ...(content.range ? { wholeFileRange: content.range } : {})
         }];
       }
       return [{
@@ -348,7 +352,7 @@ async function buildPacket(
   const auxiliaryContextText = joinPacketText(
     [context.content, hintContext.content].filter(text => text.decisionText.trim().length > 0), "\n\n"
   );
-  const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
+  const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText, group.wholeFileRange);
   for (const entry of hintContext.emitted) {
     if (!renderedContext.content.decisionText.includes(entry.content.decisionText)) {
       hintContext.workerHints.push(toToolLookupHint(entry.hint));
@@ -486,6 +490,10 @@ async function buildPacket(
     symbolFacts,
     context: context.context,
     contextText: renderedContext.content.text,
+    contextDeliveredRanges: mergeDeliveredRanges([
+      ...packetTextRanges(renderedContext.content),
+      ...relatedChangedContext.flatMap(context => relatedSourceRanges.get(context) ?? [])
+    ]),
     contextQuality,
     ...(contextDegradationReasons.length > 0 ? { contextDegradationReasons } : {}),
     ...(testCoverageDelta !== undefined ? { testCoverageDelta } : {}),
@@ -1058,6 +1066,8 @@ async function buildRelatedChangedContext(
   return contexts;
 }
 
+const relatedSourceRanges = new WeakMap<RelatedChangedContext, DeliveredSourceRange[]>();
+
 async function relatedContextForTarget(
   target: PlannedHunk,
   edge: HunkRelationshipEdge,
@@ -1066,7 +1076,16 @@ async function relatedContextForTarget(
   telemetry: TelemetryRecorder
 ): Promise<RelatedChangedContext | undefined> {
   const fact = primarySymbolFactWithMergedChanges(target.symbolFacts);
-  const patchExcerpt = truncatePacketText(packetText(renderLines(target.hunk.lines.map(packetLine))), MAX_RELATED_CONTEXT_PATCH_CHARS);
+  const patchRows = target.hunk.lines.map(packetLine);
+  const patchText = renderLines(patchRows);
+  const patchExcerpt = truncatePacketText(packetText(patchText), MAX_RELATED_CONTEXT_PATCH_CHARS);
+  const deliveredChars = patchExcerpt.text === patchText ? patchText.length : patchExcerpt.text.length - CONTEXT_CUT_MARKER.length;
+  let rowEnd = 0;
+  const patchRanges = patchText.split("\n").flatMap((line, index) => {
+    rowEnd += line.length + (index === 0 ? 0 : 1);
+    const row = patchRows[index];
+    return rowEnd <= deliveredChars && row ? diffRowRanges(target.file.path, target.file.oldPath, row.oldLine, row.newLine) : [];
+  });
   recordBoundaryRetreat(telemetry, "relatedChangedContext.patchExcerpt", patchExcerpt, { hunkId: target.hunk.id });
   const base: RelatedChangedContext = {
     path: target.file.path,
@@ -1080,6 +1099,7 @@ async function relatedContextForTarget(
     sourceKind: relatedContextSourceKind(target),
     patchExcerpt: patchExcerpt.text
   };
+  relatedSourceRanges.set(base, patchRanges);
   if (fact === undefined) {
     return base;
   }
@@ -1098,15 +1118,18 @@ async function relatedContextForTarget(
     if (result.text === undefined || result.text.trim().length === 0) {
       return base;
     }
-    const sourceSnippet = truncatePacketText(packetText(result.text), MAX_RELATED_CONTEXT_SNIPPET_CHARS);
+    const sourceSnippet = truncatePacketText(packetSource(result.text, result.text, readPath, source.kind, result.meta.deliveredLineRange),
+      MAX_RELATED_CONTEXT_SNIPPET_CHARS);
     recordBoundaryRetreat(telemetry, "relatedChangedContext.sourceSnippet", sourceSnippet, { hunkId: target.hunk.id });
-    return {
+    const related = {
       ...base,
       path: readPath,
       ...(result.symbol?.name !== undefined ? { symbol: result.symbol.name } : {}),
       ...(result.symbol?.lineRange !== undefined ? { lineRange: result.symbol.lineRange } : {}),
       sourceSnippet: sourceSnippet.text
     };
+    relatedSourceRanges.set(related, [...patchRanges, ...packetTextRanges(sourceSnippet)]);
+    return related;
   } catch (error) {
     telemetry.event({
       stage: 6,
@@ -1535,7 +1558,7 @@ async function headContentProbe(
   file: DiffFile,
   repoIndex: RepositoryIndex,
   telemetry: TelemetryRecorder
-): Promise<{ fits: true; reason: string; text: string } | { fits: false; reason: string }> {
+): Promise<{ fits: true; reason: string; text: string; range?: DeliveredSourceRange } | { fits: false; reason: string }> {
   const source = file.status === "deleted" ? { kind: "base" as const } : { kind: "head" as const };
   const readPath = file.status === "deleted" ? file.oldPath ?? file.path : file.path;
   const sourceLabel = source.kind === "base" ? "base" : "head";
@@ -1552,7 +1575,8 @@ async function headContentProbe(
     const tooLarge = renderedWholeFileLength > MAX_CONTEXT_CHARS || result.meta.truncated === true;
     return tooLarge
       ? { fits: false, reason: `whole-file downgraded: rendered ${sourceLabel} content exceeds ${MAX_CONTEXT_CHARS} chars` }
-      : { fits: true, reason: `${sourceLabel} content fits whole-file context budget`, text: result.text };
+      : { fits: true, reason: `${sourceLabel} content fits whole-file context budget`, text: result.text,
+        ...(result.meta.deliveredLineRange ? { range: { path: readPath, side: source.kind, lineRange: result.meta.deliveredLineRange } } : {}) };
   } catch (error) {
     telemetry.event({
       stage: 6,
@@ -1568,7 +1592,8 @@ async function headContentProbe(
 function renderPacketContextText(
   path: string,
   wholeFileText: string | undefined,
-  context: PacketText
+  context: PacketText,
+  wholeFileRange?: DeliveredSourceRange
 ): { content: PacketText; auxiliaryContextDropped: boolean; contextTruncated: boolean } {
   if (wholeFileText === undefined) {
     if (context.decisionText.length > MAX_CONTEXT_CHARS) {
@@ -1576,15 +1601,18 @@ function renderPacketContextText(
     }
     return { content: context, auxiliaryContextDropped: false, contextTruncated: false };
   }
-  const wholeFileBlock = renderWholeFileBlock(path, wholeFileText);
+  const rendered = renderWholeFileBlock(path, wholeFileText);
+  const wholeFileBlock = wholeFileRange && wholeFileText.trim()
+    ? packetSource(rendered, wholeFileText, wholeFileRange.path, wholeFileRange.side, wholeFileRange.lineRange)
+    : packetText(rendered);
   if (context.decisionText.trim().length === 0) {
-    return { content: packetText(wholeFileBlock), auxiliaryContextDropped: false, contextTruncated: false };
+    return { content: wholeFileBlock, auxiliaryContextDropped: false, contextTruncated: false };
   }
-  const combined = joinPacketText([packetText(wholeFileBlock), context], "\n\n");
+  const combined = joinPacketText([wholeFileBlock, context], "\n\n");
   if (combined.decisionText.length <= MAX_CONTEXT_CHARS) {
     return { content: combined, auxiliaryContextDropped: false, contextTruncated: false };
   }
-  return { content: packetText(wholeFileBlock), auxiliaryContextDropped: true, contextTruncated: false };
+  return { content: wholeFileBlock, auxiliaryContextDropped: true, contextTruncated: false };
 }
 
 function renderWholeFileBlock(path: string, wholeFileText: string): string {
@@ -1814,10 +1842,13 @@ async function readEnclosingSymbolSource(
           reason: budget.reason
         }
       });
-      return { content: packetText(block), quality: "full", reasons: [] };
+      return { content: packetSource(block, result.text.trimEnd(), readPath, source.kind, result.meta.deliveredLineRange, result.text),
+        quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const content = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
+    const content = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts,
+      packetSource(result.text.trimEnd(), result.text.trimEnd(), readPath, source.kind, result.meta.deliveredLineRange, result.text),
+      budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -2177,8 +2208,8 @@ function renderSlicedSymbolContext(
   readPath: string,
   label: string,
   fact: HunkSymbolFacts,
-  excerpts: string[],
-  fallbackSource: string,
+  excerpts: PacketText[],
+  fallbackSource: PacketText,
   maxChars: number
 ): PacketText {
   const header = [
@@ -2192,18 +2223,18 @@ function renderSlicedSymbolContext(
   const bodyBudget = Math.max(0, maxChars - header.length - footer.length - 2);
   const excerptText = excerpts.length > 0
     ? fitSymbolExcerpts(excerpts, bodyBudget)
-    : truncateToBudget(packetText(fallbackSource.trimEnd()), Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));
+    : truncateToBudget(fallbackSource, Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));
   return joinPacketText([packetText(header), excerptText, packetText(footer)]
     .filter(part => part.decisionText.length > 0), "\n");
 }
 
-function fitSymbolExcerpts(excerpts: string[], maxChars: number): PacketText {
+function fitSymbolExcerpts(excerpts: PacketText[], maxChars: number): PacketText {
   if (maxChars <= 0) {
     return packetText("");
   }
   const separatorChars = Math.max(0, excerpts.length - 1) * 2;
   const perExcerptBudget = Math.max(0, Math.floor((maxChars - separatorChars) / Math.max(1, excerpts.length)));
-  const fitted = joinPacketText(excerpts.map(excerpt => truncateToBudget(packetText(excerpt), perExcerptBudget)), "\n\n");
+  const fitted = joinPacketText(excerpts.map(excerpt => truncateToBudget(excerpt, perExcerptBudget)), "\n\n");
   return truncateToBudget(fitted, maxChars);
 }
 
@@ -2217,10 +2248,10 @@ async function readChangedLineExcerpts(
   fact: HunkSymbolFacts,
   source: { kind: "base" } | { kind: "head" },
   telemetry: TelemetryRecorder
-): Promise<{ excerpts: string[]; missing: number }> {
+): Promise<{ excerpts: PacketText[]; missing: number }> {
   const allRanges = excerptRanges(fact);
   const ranges = allRanges.slice(0, MAX_SYMBOL_EXCERPT_RANGES);
-  const excerpts: string[] = [];
+  const excerpts: PacketText[] = [];
   // Ranges past the cap are changed lines the slice cannot show (#175).
   let missing = allRanges.length - ranges.length;
   for (const range of ranges) {
@@ -2244,7 +2275,9 @@ async function readChangedLineExcerpts(
         () => repoIndex.tools.readRange(readPath, normalized.startLine, normalized.endLine, source)
       );
       if (result.text.trim().length > 0) {
-        excerpts.push(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${result.text.trimEnd()}`);
+        const body = result.text.trimEnd();
+        excerpts.push(packetSource(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${body}`,
+          body, readPath, source.kind, result.meta.deliveredLineRange, result.text));
       } else {
         missing += 1;
       }
@@ -2419,7 +2452,7 @@ async function resolvePacketContextHint(
       { stage: 6, initiator: "harness" },
       () => repoIndex.tools.readRange(path, normalized.startLine, normalized.endLine, { kind: "head" })
     );
-    return { content: renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text), recovered: false };
+    return { content: renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text, result.meta.deliveredLineRange), recovered: false };
   }
   const symbol = hint.symbol;
   if (symbol !== undefined) {
@@ -2436,7 +2469,7 @@ async function resolvePacketContextHint(
       && (result.meta.lookupStatus === undefined || result.meta.lookupStatus === "found")) {
       if (result.meta.truncated) telemetry.event({ stage: 6, level: "info", message: "packet_context_hint_unresolved", file: path,
         data: { kind: hint.kind, reason: hint.reason, outcome: "symbol_truncated" } });
-      const content = renderHintContextBlock(hint, path, symbol, result.text);
+      const content = renderHintContextBlock(hint, path, symbol, result.text, result.meta.deliveredLineRange);
       return { content: result.meta.truncated && !content.decisionText.endsWith(CONTEXT_CUT_MARKER.trimStart())
         ? truncatePacketText(joinPacketText([content, packetText(CONTEXT_CUT_MARKER)], ""), MAX_HINT_CONTEXT_CHARS)
         : content, recovered: false };
@@ -2461,7 +2494,8 @@ async function resolvePacketContextHint(
     const text = [`Planner packet context (${hint.kind}) for ${definition.symbol.path}:${symbol}`, `Reason: ${hint.reason}`,
       renderSourceBlockHeader(definition.symbol.path, "head", definition.deliveredLineRange, definition.totalLines),
       ...lines.map((line, index) => numberSourceLine(line, first + index))].join("\n");
-    return { content: packetText(text), recovered: true };
+    const body = lines.map((line, index) => numberSourceLine(line, first + index)).join("\n");
+    return { content: packetSource(text, body, definition.symbol.path, "head", definition.deliveredLineRange), recovered: true };
   }
   return undefined;
 }
@@ -2531,7 +2565,8 @@ async function resolveCallSiteContextHint(
       hint,
       caller.path,
       `${caller.name}:${caller.lineRange[0]}-${caller.lineRange[1]}`,
-      result.text
+      result.text,
+      result.meta.deliveredLineRange
     ));
   }
 
@@ -2738,14 +2773,16 @@ function renderHintContextBlock(
   hint: SurroundingContextHint,
   path: string,
   locator: string,
-  text: string
+  text: string,
+  range?: [number, number]
 ): PacketText {
+  const body = text.trimEnd();
   return truncatePacketText(
-    packetText([
+    packetSource([
       `Planner packet context (${hint.kind}) for ${path}:${locator}`,
       `Reason: ${hint.reason}`,
-      text.trimEnd()
-    ].filter((part) => part.length > 0).join("\n")),
+      body
+    ].filter((part) => part.length > 0).join("\n"), body, path, "head", range, text),
     MAX_HINT_CONTEXT_CHARS
   );
 }
