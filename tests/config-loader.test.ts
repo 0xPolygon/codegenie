@@ -45,27 +45,14 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { toolSurface: "unknown" } }).success).toBe(false);
   });
 
-  it("defaults to v1 and keeps the Stage 7 instruction set user-scoped", () => {
+  it("accepts the retired v1 instruction selector and rejects v2", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
     const opts = { repoRoot, homeOverride, env: {} };
-    expect(loadConfig(opts).config.review.stage7Instructions).toBe("v1");
+    writeFileSync(path.join(homeOverride, "config.toml"), '[review]\nstage7Instructions = "v1"\n');
+    expect(loadConfig(opts).config.review.changeChecks).toBe(false);
     writeFileSync(path.join(homeOverride, "config.toml"), '[review]\nstage7Instructions = "v2"\n');
-    expect(loadConfig(opts).config.review.stage7Instructions).toBe("v2");
-    const repoConfig = path.join(repoRoot, "codegenie.toml");
-    writeFileSync(repoConfig, '[review]\nstage7Instructions = "v1"\n');
-    const loaded = loadConfig(opts);
-    expect(loaded.config.review.stage7Instructions).toBe("v2");
-    expect(loaded.sources["review.stage7Instructions"]).toBe("user-config");
-    expect(loaded.warnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: "repo-config", key: "review.stage7Instructions" })
-    ]));
-    writeFileSync(repoConfig, '[review]\nstage7Instructions = "unknown"\n');
-    expect(() => loadConfig(opts)).toThrow(expect.objectContaining({
-      code: "config_error", context: expect.objectContaining({
-        issues: [expect.objectContaining({ path: ["review", "stage7Instructions"] })]
-      })
-    }));
+    expect(() => loadConfig(opts)).toThrow(expect.objectContaining({ code: "config_error" }));
   });
 
   it("defaults changeChecks off and loads the user-scoped boolean", () => {

@@ -5,16 +5,21 @@ import { derivePacketTemplates, derivePacketTemplatesForConfig, expectedPacketTe
 const packet = (id: string, truncated: boolean) => ({ id, hunks: [{ hunkId: id, lines: [], truncated }], prSummary: '', path: 'a', language: 'javascript', lenses: [], labels: [], contextText: '', relevantTests: [], toolBudget: 3 });
 const kinds = ['initial', 'tool-continuation', 'repair', 'finalize'];
 
-it('derives full and shortened template families from each effective instruction arm', () => {
-  for (const [instructionSet, full, shortened] of [['v1', 'p7.16', 'p7.17'], ['v2', 'p7.18', 'p7.19']]) {
-    const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: { stage7Instructions: instructionSet } });
-    expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe(full);
-    expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe(shortened);
-    expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { instructionSet })).not.toThrow();
-    expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { instructionSet: instructionSet === 'v1' ? 'v2' : 'v1' })).toThrow('binding mismatch');
-    const bad = structuredClone(bindings); bad[0].templates.repair = shortened;
-    expect(() => validatePacketTemplates(bad, ['ordinary', 'shortened'], { instructionSet })).toThrow('binding mismatch');
-  }
+it('derives the full and shortened v1 template families', () => {
+  const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: {} });
+  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.16');
+  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.17');
+  expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'])).not.toThrow();
+  const bad = structuredClone(bindings); bad[0].templates.repair = 'p7.17';
+  expect(() => validatePacketTemplates(bad, ['ordinary', 'shortened'])).toThrow('binding mismatch');
+});
+
+it('retains changeChecks template bindings on the surviving instructions', () => {
+  const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: { changeChecks: true } });
+  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.16-cc.1');
+  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.17-cc.1');
+  expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { changeChecks: true })).not.toThrow();
+  expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { changeChecks: false })).toThrow('binding mismatch');
 });
 
 it('derives packet and kind bindings from the actual prompt builder', () => {

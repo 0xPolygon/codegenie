@@ -15,16 +15,16 @@ export function derivePacketTemplates(packets, builder = createPromptBuilder({},
 }
 
 export function derivePacketTemplatesForConfig(packets, config) {
-  const instructionSet = config?.review?.stage7Instructions ?? 'v1';
   const toolSurface = config?.review?.toolSurface ?? 'current';
-  if (!['v1', 'v2'].includes(instructionSet) || !['current', 'six'].includes(toolSurface)) throw new Error('invalid packet template configuration');
-  return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, stage7Instructions: instructionSet }));
+  if (!['current', 'six'].includes(toolSurface)) throw new Error('invalid packet template configuration');
+  return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, changeChecks: config?.review?.changeChecks === true }));
 }
 
-export function validatePacketTemplates(bindings, packetIds, { instructionSet = 'v1', toolSurface = 'current' } = {}) {
-  if (!['v1', 'v2'].includes(instructionSet) || !['current', 'six'].includes(toolSurface)) throw new Error('packet template binding mismatch');
+export function validatePacketTemplates(bindings, packetIds, { toolSurface = 'current', changeChecks } = {}) {
+  if (!['current', 'six'].includes(toolSurface)) throw new Error('packet template binding mismatch');
   const suffix = toolSurface === 'six' ? '-six.1' : '';
-  const allowed = (instructionSet === 'v2' ? ['p7.18', 'p7.19'] : ['p7.16', 'p7.17']).map((value) => value + suffix);
+  const checks = changeChecks === undefined ? ['', '-cc.1'] : [changeChecks ? '-cc.1' : ''];
+  const allowed = ['p7.16', 'p7.17'].flatMap((value) => checks.map((check) => value + suffix + check));
   if (!Array.isArray(bindings) || !Array.isArray(packetIds) || !packetIds.length || new Set(packetIds).size !== packetIds.length || bindings.length !== packetIds.length) throw new Error('packet template binding mismatch');
   const ids = new Set();
   for (const binding of bindings) {
@@ -49,8 +49,8 @@ export function resolveExpectedCall(expectedCalls, call, packetBindings) {
   return matching.length === 1 && (!packetCall || template !== undefined) ? { ...matching[0], ...(packetCall ? { templateVersion: template } : {}) } : {};
 }
 
-export function verifyPacketCalls({ bindings, packetIds, calls, modelCalls, readDebug, instructionSet = 'v1' }) {
-  validatePacketTemplates(bindings, packetIds, { instructionSet });
+export function verifyPacketCalls({ bindings, packetIds, calls, modelCalls, readDebug }) {
+  validatePacketTemplates(bindings, packetIds);
   if (!Array.isArray(calls) || !Array.isArray(modelCalls)) throw new Error('packet call evidence mismatch');
   const ordinary = modelCalls.filter((row) => {
     if (row.stage !== 7) return false;

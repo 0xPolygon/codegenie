@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256Hex } from "../util/hashing.js";
 import { CodegenieError } from "../util/errors.js";
-import type { Logger, Stage7Instructions } from "../types.js";
+import type { Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 
 export type SkillSectionName = "purpose" | "checks" | "falsePositives" | "safePatterns" | "examples";
@@ -45,12 +45,11 @@ export type SkillLoadResult = {
 export async function loadSkills(opts: {
   repoRoot: string;
   extraSkillPaths: Array<string | ExtraSkillPathSpec>;
-  instructionSet?: Stage7Instructions;
   logger: Logger;
   telemetry: TelemetryRecorder;
 }): Promise<SkillLoadResult> {
   const repoRoot = path.resolve(opts.repoRoot);
-  const bundledRoot = bundledSkillsRoot(opts.instructionSet ?? "v1");
+  const bundledRoot = bundledSkillsRoot();
   const repoSkillsRoot = path.join(repoRoot, ".codegenie", "skills");
   const failures: SkillLoadFailure[] = [];
   const skills: Skill[] = [];
@@ -96,9 +95,9 @@ export async function loadSkills(opts: {
   return { skills, failures };
 }
 
-function bundledSkillsRoot(instructionSet: Stage7Instructions): string {
+function bundledSkillsRoot(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const directory = instructionSet === "v2" ? "bundled-skills-v2" : "bundled-skills";
+  const directory = "bundled-skills";
   const candidates = [
     path.resolve(here, "../..", directory),
     path.resolve(here, "../../..", directory)

@@ -3,12 +3,11 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { applyRepoConfigLayer, clearStageOverridesForRun, removeRetiredAdaptiveThinking } from "../config/config-loader.js";
+import { applyRepoConfigLayer, clearStageOverridesForRun, removeRetiredReviewOptions } from "../config/config-loader.js";
 import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   reviewToolSurfaceSchema,
-  stage7InstructionsSchema,
   stageSelectionsSchema,
   severitySchema
 } from "../config/schema.js";
@@ -143,7 +142,6 @@ const caseSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
-        stage7Instructions: stage7InstructionsSchema.optional(),
         changeChecks: z.boolean().optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
@@ -743,7 +741,7 @@ async function loadCaseFile(filePath: string, suiteDir: string): Promise<EvalSui
       cause
     });
   }
-  removeRetiredAdaptiveThinking(parsed);
+  removeRetiredReviewOptions(parsed);
   const result = caseSchema.safeParse(parsed);
   if (!result.success) {
     throw new CodegenieError("config_error", `invalid eval case at ${filePath}`, {
@@ -768,7 +766,7 @@ async function rereadReplayCase(
       return { evalCase: entry.evalCase, caseHash: entry.caseHash, source: "yaml" };
     }
   }
-  removeRetiredAdaptiveThinking(sourceInfo.caseSnapshot);
+  removeRetiredReviewOptions(sourceInfo.caseSnapshot);
   return { evalCase: sourceInfo.caseSnapshot, caseHash: sourceInfo.caseHash, source: "snapshot" };
 }
 
@@ -901,9 +899,6 @@ function applyCaseReviewConfig(
   }
   if (review?.toolSurface !== undefined) {
     config.review.toolSurface = review.toolSurface;
-  }
-  if (review?.stage7Instructions !== undefined) {
-    config.review.stage7Instructions = review.stage7Instructions;
   }
   if (review?.changeChecks !== undefined) config.review.changeChecks = review.changeChecks;
   if (review?.compositionReasoningStepDown !== undefined) {

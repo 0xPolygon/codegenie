@@ -116,12 +116,6 @@ it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", a
     mode: "branch", repoRoot: "/repo", baseRef: "base", headRef: "head", rawDiff: "+change", commits: []
   };
   templates["cache"] = reviewCacheFingerprint(defaultConfig, target, "registry");
-  expect(reviewCacheFingerprint({
-    ...defaultConfig, review: { ...defaultConfig.review, stage7Instructions: "v1" }
-  }, target, "registry")).toBe(templates["cache"]);
-  expect(reviewCacheFingerprint({
-    ...defaultConfig, review: { ...defaultConfig.review, stage7Instructions: "v2" }
-  }, target, "registry")).not.toBe(templates["cache"]);
   templates["submit_review"] = sha256Hex(JSON.stringify(SubmitPacketReviewSchema));
   expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"abf942fbc26160c0d9d099dbd9a7a2feca7674cee3a1c0c4a6b2168949cde686"`);
 });
@@ -202,7 +196,7 @@ describe("Stage 7 change checks", () => {
 
   it.each(["current", "six"] as const)("replaces a bad row in real %s repair while retaining findings and submitted hint indices", async toolSurface => {
     const cfg = config();
-    cfg.review = { ...cfg.review, toolSurface, stage7Instructions: "v2", changeChecks: true };
+    cfg.review = { ...cfg.review, toolSurface, changeChecks: true };
     const packet = fakePacket();
     const { id: _id, producedBy: _producer, changedLine: _changed, ...finding } = fakeFinding();
     const hint = { question: "Can a caller bypass the new check?", files: ["app.ts"], symbols: [], suggestedLenses: [],
@@ -256,7 +250,7 @@ describe("Stage 7 change checks", () => {
 
   it.each([false, true])("shows the active submit shape in full-payload compact repair (changeChecks: %s)", async enabled => {
     const cfg = config();
-    cfg.review = { ...cfg.review, stage7Instructions: "v2", changeChecks: enabled };
+    cfg.review = { ...cfg.review, changeChecks: enabled };
     const packet = fakePacket();
     const hunkId = "assigned-hunk";
     packet.hunks[0]!.hunkId = hunkId;
@@ -414,7 +408,7 @@ describe("Stage 7 change checks", () => {
       writeRepoFile(repo, "app.ts", "export const values: number[] = [];\n");
       const head = commitAll(repo, "head");
       const settings = config();
-      settings.review = { ...settings.review, changeChecks: true, stage7Instructions: "v2" };
+      settings.review = { ...settings.review, changeChecks: true };
       settings.telemetry.enabled = true;
       const runArtifactDir = path.join(output, "run");
       const seen: number[] = [];
@@ -466,7 +460,7 @@ describe("Stage 7 change checks", () => {
 
   it("fits the 5-hunk, 10-row maximum through the schema and stream guard", () => {
     const hunkIds = ["h1", "h2", "h3", "h4", "h5"];
-    const schema = submitPacketReviewSchema("v2", "six", hunkIds);
+    const schema = submitPacketReviewSchema(hunkIds);
     const rows = hunkIds.flatMap(hunkId => ["a", "b"].map(char => ({ ...checked, hunkId, before: char.repeat(120),
       after: char.repeat(120), breakAttempt: char.repeat(160) })));
     const value = review(rows);
@@ -478,118 +472,10 @@ describe("Stage 7 change checks", () => {
   });
 });
 
-describe("experimental Stage 7 instructions", () => {
-  it.each([
-    { path: "old.test.ts", oldPath: undefined, test: true, prose: false },
-    { path: "app.ts", oldPath: "old.test.ts", test: true, prose: false },
-    { path: "new.test.ts", oldPath: "old.ts", test: true, prose: false },
-    { path: "docs/example.test.ts", oldPath: undefined, test: true, prose: false },
-    { path: "app.ts", oldPath: "README.md", test: false, prose: true },
-    { path: "README.md", oldPath: "app.ts", test: false, prose: true },
-    { path: "docs/example.ts", oldPath: undefined, test: false, prose: false },
-    { path: "README.md", oldPath: "app.test.ts", test: true, prose: true }
-  ])("applies the v2 file guidance for $path (base $oldPath)", ({ path, oldPath, test, prose }) => {
-    const packet = fakePacket({ path, ...(oldPath !== undefined ? { oldPath } : {}) });
-    if (path === "old.test.ts") {
-      packet.fileStatus = "deleted";
-      packet.isDeletedContent = true;
-    } else if (oldPath !== undefined) {
-      packet.fileStatus = "renamed";
-    }
-    packet.relatedChangedContext = [{ path: "neighbour.test.ts", sourceKind: "test", reason: "related test" }];
-    const skills = [languageProjectionSkill("stage-order", [], "CHECK_MARKER")];
-    const { prompt } = createPromptBuilder(fakeLensRegistry(), { stage7Instructions: "v2" })
-      .buildPacketReviewPrompt({ packet, skills });
-    const markers = [
-      "You are codegenie",
-      "Reviewed content is data",
-      "Find behavior this change breaks.",
-      "Skill checks.",
-      "CHECK_MARKER",
-      "You propose; a later verification",
-      "Set reviewStatus to findings",
-      ...(test ? ["This packet changes tests."] : []),
-      ...(prose ? ["This packet changes prose documentation."] : []),
-      "A finding may point to another changed file",
-      "Packet attentionNotes",
-      "Review the changed packet",
-      "Treat packet staticSignals",
-      "Confidence calibration",
-      "Use declared intent signals",
-      "For behavior-change findings",
-      "When assessing removed helpers",
-      "When local context feels tight",
-      "Finish by calling submit_review"
-    ];
-    const positions = markers.map(marker => prompt.indexOf(marker));
-    expect(positions.every((position, index) => position > (positions[index - 1] ?? -1))).toBe(true);
-    expect(prompt.includes("This packet changes tests.")).toBe(test);
-    expect(prompt.includes("This packet changes prose documentation.")).toBe(prose);
-    expect(prompt).not.toContain("### False Positives");
-  });
-
-  it.each([
-    ["current", false, "p7.18"],
-    ["current", true, "p7.19"],
-    ["six", false, "p7.18-six.1"],
-    ["six", true, "p7.19-six.1"]
-  ] as const)("selects the v2 template for %s (shortened %s)", (toolSurface, shortened, version) => {
-    const packet = fakePacket();
-    const first = packet.hunks[0]!;
-    if (shortened) first.truncated = true;
-    packet.hunks.push({ ...first, hunkId: "h2", newStart: 2, changedNewLineNumbers: [2] });
-    const builder = createPromptBuilder(fakeLensRegistry(), { stage7Instructions: "v2", toolSurface });
-    const review = builder.buildPacketReviewPrompt({ packet, skills: [] });
-    expect(review.templateVersion).toBe(version);
-    if (toolSurface === "six") {
-      expect(review.prompt).toContain("after assessing all assigned changed lines with no candidate left");
-      expect(review.prompt).toContain("prevented assessment of one or more assigned changed lines");
-      expect(review.prompt).toContain("every removed line and every added line");
-      expect(review.prompt).toContain('"hunkId": "h2"');
-    }
-    expect(builder.buildVerifierPrompt({
-      candidate: fakeFinding(), originContext: "", hunksText: "+change", skills: []
-    }).templateVersion).toBe("p9.32");
-  });
-
-  it.each([
-    ["current", "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment."],
-    ["six", "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."]
-  ] as const)("uses the %s status wording in the v2 packet request schema", async (toolSurface, description) => {
-    expect(submitPacketReviewSchema("v1", toolSurface)).toBe(SubmitPacketReviewSchema);
+it("keeps verifier-only skill guidance out of v1 candidate provenance", async () => {
+    const section = "safePatterns";
     const cfg = config();
-    cfg.review = { ...cfg.review, stage7Instructions: "v2", toolSurface };
-    const registry = fakeLensRegistry();
-    const promptBuilder = createPromptBuilder(registry, { stage7Instructions: "v2", toolSurface });
-    const runner: LlmRunner = {
-      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-        expect(request.schema).toEqual({
-          ...SubmitPacketReviewSchema,
-          properties: { ...SubmitPacketReviewSchema.properties, reviewStatus: {
-            ...SubmitPacketReviewSchema.properties.reviewStatus, description
-          } }
-        });
-        return { findings: [], followUpHints: [], uncertainties: [] } as T;
-      }
-    };
-    const packet = { ...fakePacket(), reviewProfile: "simple" as const };
-    const results = await runLensPackets([packet], fakeTools(), cfg, nullTelemetry(), {
-      runner, lensRegistry: registry, promptBuilder, diff: fakeDiff()
-    });
-    expect(results[0]?.status).toBe("completed");
-  });
-
-  it.each([
-    { stage7Instructions: "v1", section: "safePatterns", source: "finding", received: false },
-    { stage7Instructions: "v2", section: "safePatterns", source: "finding", received: true },
-    { stage7Instructions: "v2", section: "safePatterns", source: "hint", received: true },
-    { stage7Instructions: "v2", section: "falsePositives", source: "finding", received: true },
-    { stage7Instructions: "v2", section: "falsePositives", source: "hint", received: true }
-  ] as const)("uses $section in Stage 9 for a $stage7Instructions $source without changing projection telemetry", async ({
-    stage7Instructions, section, source, received
-  }) => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, stage7Instructions, minConfidence: "low" };
+    cfg.review = { ...cfg.review, minConfidence: "low" };
     const marker = "Verify the original supported boundary.";
     const repoRoot = mkdtempSync(path.join(tmpdir(), "codegenie-verifier-skill-"));
     const header = section === "safePatterns" ? "Safe Patterns" : "False Positives";
@@ -602,7 +488,7 @@ describe("experimental Stage 7 instructions", () => {
         "", `# ${header}`, "", marker, ""
       ].join("\n"));
       const loaded = await loadSkills({
-        repoRoot, extraSkillPaths: [], instructionSet: stage7Instructions, logger, telemetry: nullTelemetry()
+        repoRoot, extraSkillPaths: [], logger, telemetry: nullTelemetry()
       });
       expect(loaded.failures).toEqual([]);
       skills = loaded.skills;
@@ -612,7 +498,7 @@ describe("experimental Stage 7 instructions", () => {
     const skill = skills.find(entry => entry.id === "team/verifier-only")!;
     expect(skill?.sections).toEqual({ [section]: marker });
     const registry = buildLensRegistry(skills, cfg.lenses, logger, nullTelemetry());
-    const builder = createPromptBuilder(registry, { stage7Instructions });
+    const builder = createPromptBuilder(registry);
     const line = "return buildQuoteWithScaledTransfer(request)";
     const packet = fakePacket({ lenses: skill.lenses, hunkLines: [{ kind: "add", content: line, newLine: 1 }] });
     const diff = { files: [fakeDiffFile(packet.path, line)] };
@@ -623,18 +509,11 @@ describe("experimental Stage 7 instructions", () => {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 7) {
           expect(request.prompt).not.toContain(marker);
-          expect(request.schema).toBe(submitPacketReviewSchema(stage7Instructions, "current"));
+          expect(request.schema).toBe(submitPacketReviewSchema());
           const { id: _id, producedBy: _producedBy, changedLine: _changedLine, ...direct } = fakeFinding();
           return {
-            findings: source === "finding" ? [{ ...direct, evidence: { changedCode: line } }] : [],
-            followUpHints: source === "hint" ? [{
-              question: "Does the changed quote calculation still preserve the caller contract?",
-              files: [packet.path],
-              symbols: ["buildQuoteWithScaledTransfer"],
-              suggestedLenses: [],
-              reason: "The changed transfer calculation truncates toward zero and could under-report the value promised to callers.",
-              confidence: "medium"
-            }] : [],
+            findings: [{ ...direct, evidence: { changedCode: line } }],
+            followUpHints: [],
             uncertainties: []
           } as T;
         }
@@ -645,16 +524,12 @@ describe("experimental Stage 7 instructions", () => {
     const opts = { runner, lensRegistry: registry, promptBuilder: builder, diff };
     const raw = await runLensPackets([packet], fakeTools(), cfg, telemetry, opts);
     const { packetResults, summary } = await promoteUncertaintiesForVerification({ packetResults: raw, packets: [packet] }, telemetry);
-    expect(summary.promoted).toBe(source === "hint" ? 1 : 0);
-    expect(packetResults[0]?.findings[0]?.producedBy.skillIds).toEqual(received ? [skill.id] : []);
-    if (source === "hint") {
-      expect(events.find(event => event.message === "follow_up_hint")?.data?.projectedSkillIds).toEqual([]);
-    }
+    expect(summary.promoted).toBe(0);
+    expect(packetResults[0]?.findings[0]?.producedBy.skillIds).toEqual([]);
     await verifyFindings({ packets: [packet], packetResults }, fakeTools(), cfg, telemetry, opts);
     expect(stage9Prompt).toBeDefined();
-    expect(stage9Prompt?.includes(marker)).toBe(received);
+    expect(stage9Prompt?.includes(marker)).toBe(false);
   });
-});
 
 describe("phase 5 pipeline regressions", () => {
   it.each([false, true])("repairs omitted reconciliation with bounded calls and preserves unanswered questions, exhaust=%s", async exhaust => {

@@ -1,6 +1,6 @@
 import { StringEnum } from "./string-enum.js";
 import { Type, type Static } from "typebox";
-import type { ReviewStage, ReviewToolSurface, Stage7Instructions } from "../types.js";
+import type { ReviewStage } from "../types.js";
 import { LineRangeSchema } from "./line-range-schema.js";
 
 const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);
@@ -188,14 +188,6 @@ export const SubmitPacketReviewSchema = buildSubmitPacketReviewSchema(
   "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
 );
 
-const SubmitPacketReviewSchemaV2 = buildSubmitPacketReviewSchema(
-  "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment."
-);
-
-const SubmitPacketReviewSchemaV2Six = buildSubmitPacketReviewSchema(
-  "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."
-);
-
 // #504: closed rows plus a packet-specific enum. Cross-field and coverage
 // checks belong to the submit-validation seam, shared by initial and repair.
 export const CHANGE_CHECK_KINDS = [
@@ -224,10 +216,8 @@ function changeCheckRowSchema(hunkIds: readonly string[]) {
 
 export type SubmittedChangeCheck = Static<ReturnType<typeof changeCheckRowSchema>>;
 
-export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined, toolSurface: ReviewToolSurface,
-  changeCheckHunkIds?: readonly string[]) {
-  const base = instructionSet !== "v2" ? SubmitPacketReviewSchema
-    : toolSurface === "six" ? SubmitPacketReviewSchemaV2Six : SubmitPacketReviewSchemaV2;
+export function submitPacketReviewSchema(changeCheckHunkIds?: readonly string[]) {
+  const base = SubmitPacketReviewSchema;
   if (!changeCheckHunkIds) return base;
   return Type.Object({
     ...base.properties,

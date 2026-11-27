@@ -51,23 +51,20 @@ describe("eval suite validation", () => {
     });
   });
 
-  it("validates and applies an eval case's Stage 7 instructions after repo config", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-instructions-"));
-    const suite = path.join(dir, "suite");
-    mkdirSync(suite);
+  it("loads retired v1 case selectors and rejects v2", async () => {
+    const suite = mkdtempSync(path.join(tmpdir(), "codegenie-eval-retired-instructions-"));
     const file = path.join(suite, "case.yml");
     const writeCase = (setting: string) => writeFileSync(file, [
-      "name: instruction-set", "repo:", "  fixture: repo",
+      "name: retired-instruction-set", "repo:", "  fixture: repo",
       "review:", `  stage7Instructions: ${setting}`, "  changeChecks: true"
     ].join("\n"));
-    writeFileSync(path.join(dir, "codegenie.toml"), '[review]\nmaxFindings = 5\n');
-    writeCase("v2");
+    writeCase("v1");
     const { cases } = await loadEvalSuite(suite);
-    const result = resolveEvalCaseConfig(defaultConfig, cases[0]!.evalCase, dir, undefined);
-    expect(result.config.review).toMatchObject({ stage7Instructions: "v2", maxFindings: 5, changeChecks: true });
-    writeCase("unknown");
+    expect(cases[0]!.evalCase.review).toMatchObject({ changeChecks: true });
+    expect(cases[0]!.evalCase.review).not.toHaveProperty("stage7Instructions");
+    writeCase("v2");
     await expect(loadEvalSuite(suite)).rejects.toMatchObject({
-      code: "config_error", context: { errors: [expect.stringContaining("review.stage7Instructions")] }
+      code: "config_error", context: { errors: [expect.stringContaining("retired")] }
     });
   });
 
