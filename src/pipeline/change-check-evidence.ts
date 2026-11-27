@@ -63,7 +63,7 @@ export function attestChangeChecks(input: {
   rows: SubmittedChangeCheck[];
   packet: ReviewPacket;
   delivered: DeliveredSourceRange[];
-  diff: UnifiedDiff | undefined;
+  diff: UnifiedDiff;
   findings: ChangeCheckReference[];
   hints: Map<number, ChangeCheckReference>;
 }): ChangeCheckResult[] {
@@ -82,7 +82,7 @@ export function attestChangeChecks(input: {
       ...row,
       ...(ref !== undefined ? { refIndex: ref, ...reference } : {}),
       ...(row.result === "ruled_out"
-        ? { pointerStatus: sourcePointerStatus(pointer, delivered, pointer ? changedAt(input.diff, packet, pointer) : new Set()) }
+        ? { pointerStatus: sourcePointerStatus(pointer, delivered, pointer ? changedAt(input.diff, pointer) : new Set()) }
         : {})
     };
   });
@@ -93,13 +93,9 @@ function checkedRepoPath(path: string): string | undefined {
   try { return containPath("", path); } catch { return undefined; }
 }
 
-function changedAt(diff: UnifiedDiff | undefined, packet: ReviewPacket, pointer: DeliveredSourceRange): Set<number> {
+function changedAt(diff: UnifiedDiff, pointer: DeliveredSourceRange): Set<number> {
   const base = pointer.side === "base";
   const path = checkedRepoPath(pointer.path);
-  if (!diff) {
-    if (path !== (base ? packet.oldPath ?? packet.path : packet.path)) return new Set();
-    return new Set(packet.hunks.flatMap(hunk => base ? hunk.changedOldLineNumbers : hunk.changedNewLineNumbers));
-  }
   const files = diff.files.filter(file => (base ? file.oldPath ?? file.path : file.path) === path);
   const changed = new Set<number>();
   for (const file of files) for (const hunk of file.hunks) for (const row of hunk.lines) {

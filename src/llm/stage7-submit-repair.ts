@@ -4,7 +4,7 @@ import { SubmitPacketReviewSchema } from "./schemas.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
-import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
+import { submitReviewShapeGuidance } from "./submit-review-guidance.js";
 import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
@@ -214,8 +214,13 @@ export function stage7CompactSchemaRepairPrompt(
   submitToolName: string,
   error: string,
   classification: Stage7SchemaInvalidKind,
-  repairInput: LlmSchemaRepairInput
+  repairInput: LlmSchemaRepairInput,
+  schema: TSchema
 ): string {
+  const properties = (schema as {
+    properties?: { changeChecks?: { items?: { properties?: { hunkId?: { enum?: readonly string[] } } } } }
+  }).properties;
+  const exampleHunkId = properties?.changeChecks?.items?.properties?.hunkId?.enum?.[0];
   const invalidSubmitArgs = repairInput.submitCalls.map((call) => ({
     id: call.id,
     arguments: call.arguments
@@ -240,7 +245,7 @@ export function stage7CompactSchemaRepairPrompt(
     "- Do not write `<parameter>` tags.",
     "- Do not describe the schema.",
     "- Do not answer in plain text.",
-    SUBMIT_REVIEW_SHAPE_GUIDANCE
+    submitReviewShapeGuidance(exampleHunkId)
   ].join("\n");
 }
 

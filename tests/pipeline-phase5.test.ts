@@ -1,6 +1,7 @@
 import { attestChangeChecks, sourcePointerStatus, validateChangeChecks } from "../src/pipeline/change-check-evidence.js";
 import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import { joinPacketText, packetSource, packetText, packetTextRanges, truncatePacketText } from "../src/pipeline/packet-text.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../src/llm/submit-review-guidance.js";
 import type { SubmittedChangeCheck, SubmitPacketReview } from "../src/llm/schemas.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
 import { validateToolCall } from "./helpers/pi-validation.js";
@@ -176,8 +177,12 @@ describe("Stage 7 change checks", () => {
     ], changedOldLineNumbers: [2] });
     const wholeFile = { ...fakePacket(), kind: "whole-file" as const, fileStatus: "added" as const,
       contextDeliveredRanges: [{ path: "consumer.ts", side: "head" as const, lineRange: [5, 6] as [number, number] }] };
+    const deletionDiff = parseDiff([
+      "diff --git a/previous.ts b/app.ts", "--- a/previous.ts", "+++ b/app.ts",
+      "@@ -2,2 +2 @@", "-old behavior", " return value", ""
+    ].join("\n"));
     const attest = (packet: ReviewPacket, checkedAt: SubmittedChangeCheck["checkedAt"]) =>
-      attestChangeChecks({ rows: [{ ...checked, checkedAt } as SubmittedChangeCheck], packet, diff: undefined, delivered: [], findings: [], hints: new Map() })[0]?.pointerStatus;
+      attestChangeChecks({ rows: [{ ...checked, checkedAt } as SubmittedChangeCheck], packet, diff: deletionDiff, delivered: [], findings: [], hints: new Map() })[0]?.pointerStatus;
     expect(attest(deletion, { path: "previous.ts", side: "base", lineRange: [2, 3] })).toBe("traceable");
     expect(attest(wholeFile, { path: "consumer.ts", side: "head", lineRange: [5, 6] })).toBe("traceable");
     const diff = parseDiff("diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -20 +20 @@\n-before\n+after\n");
@@ -199,7 +204,7 @@ describe("Stage 7 change checks", () => {
     const cfg = config();
     cfg.review = { ...cfg.review, toolSurface, stage7Instructions: "v2", changeChecks: true };
     const packet = fakePacket();
-    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+    const { id: _id, producedBy: _producer, changedLine: _changed, ...finding } = fakeFinding();
     const hint = { question: "Can a caller bypass the new check?", files: ["app.ts"], symbols: [], suggestedLenses: [],
       reason: "A different caller may invoke the helper directly.", confidence: "low" };
     const { checkedAt: _pointer, ...unchecked } = checked;
@@ -219,7 +224,7 @@ describe("Stage 7 change checks", () => {
       runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
     const registry = fakeLensRegistry();
     const [outcome] = await runLensPackets([packet], fakeTools(), cfg, telemetry, {
-      runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry
+      runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry, diff: fakeDiff()
     });
     expect(outcome?.status).toBe("completed");
     expect(outcome?.findings).toEqual([expect.objectContaining(finding)]);
@@ -244,9 +249,59 @@ describe("Stage 7 change checks", () => {
     const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
       adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
     const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
     expect(result?.changeChecks).toEqual([unchanged]);
     expect(scripted.calls).toBe(2);
+  });
+
+  it.each([false, true])("shows the active submit shape in full-payload compact repair (changeChecks: %s)", async enabled => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, stage7Instructions: "v2", changeChecks: enabled };
+    const packet = fakePacket();
+    const hunkId = "assigned-hunk";
+    packet.hunks[0]!.hunkId = hunkId;
+    const diff = fakeDiff();
+    diff.files[0]!.hunks[0]!.id = hunkId;
+    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+    const submit = {
+      ...empty, reviewStatus: "findings",
+      findings: [{ ...finding, anchor: { path: packet.path, side: "RIGHT", line: 1, hunkId } }],
+      ...(enabled ? { changeChecks: [{ ...question(0), hunkId, result: "finding" }] } : {})
+    };
+    const invalid = { ...submit, findings: [{ ...submit.findings[0], evidence: null }] };
+    const scripted = scriptedPiAdapter([
+      assistantMessage([toolCall("initial", "submit_review", invalid)]),
+      assistantMessage([toolCall("repair", "submit_review", submit)])
+    ]);
+    const requests: Array<Parameters<PiAiAdapter["complete"]>[1]> = [];
+    const adapter: PiAiAdapter = { ...scripted, validateToolCall,
+      complete: (model, context, options) => {
+        requests.push(structuredClone(context));
+        return scripted.complete(model, context, options);
+      }
+    };
+    const telemetry = nullTelemetry();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const registry = fakeLensRegistry();
+    const [result] = await runLensPackets([packet], fakeTools(), cfg, telemetry,
+      { runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry, diff });
+
+    expect(result?.findings).toEqual([expect.objectContaining(finding)]);
+    expect(requests).toHaveLength(2);
+    const initial = requests[0]!;
+    const repair = requests[1]!;
+    const initialPrompt = (initial.messages[0] as { content: string }).content;
+    const repairPrompt = (repair.messages[0] as { content: string }).content;
+    expect(repairPrompt).toContain("Repair only the structured Stage 7 packet-review submit payload");
+    expect(repairPrompt).not.toContain("retained-submission");
+    const example = repairPrompt.split("\n").find(line => line.startsWith('{"reviewStatus":"findings"'))!;
+    expect(initialPrompt).toContain(example);
+    const schema = repair.tools!.find(tool => tool.name === "submit_review")!;
+    const args = JSON.parse(example);
+    expect(validateToolCall([schema], toolCall("example", "submit_review", args))).toEqual(args);
+    if (enabled) expect(args.changeChecks).toMatchObject([{ hunkId, result: "finding", ref: 0 }]);
+    else expect(repairPrompt).toContain(SUBMIT_REVIEW_SHAPE_GUIDANCE);
   });
 
   it("preserves submitted rows in deterministic no-findings cleanup", async () => {
@@ -259,7 +314,7 @@ describe("Stage 7 change checks", () => {
     const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
       adapter: { ...scripted, validateToolCall }, hooks: { checkpoint: () => "ok", onUsage() {} } });
     const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
     expect(result?.changeChecks).toEqual([unchanged]);
     expect(scripted.calls).toBe(1);
   });
@@ -294,7 +349,7 @@ describe("Stage 7 change checks", () => {
     const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
       adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
     const [result] = await runLensPackets([packet], tools, cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
     expect(requests).toEqual([false, false, true]);
     expect(recorded.map(record => record.deliveredRanges)).toEqual([
       [{ path: "app.ts", side: "head", lineRange: [2, 2] }], [{ path: "app.ts", side: "head", lineRange: [3, 3] }]
@@ -315,8 +370,39 @@ describe("Stage 7 change checks", () => {
       return review([checked]) as T;
     } };
     const results = await runLensPackets([packet, other], fakeTools(), cfg, nullTelemetry(),
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
     expect(results.map(result => result.changeChecks?.[0]?.pointerStatus)).toEqual(["traceable", "line_clipped"]);
+  });
+
+  it.each(["app.ts", "other.ts"])("requires the full diff to attest delivered lines outside the assigned hunk in %s", async path => {
+    const cfg = config();
+    cfg.review = { ...cfg.review, changeChecks: true };
+    const packet = fakePacket();
+    const row = { ...checked, checkedAt: { path, side: "head" as const, lineRange: [10, 10] as [number, number] } };
+    let modelCalls = 0;
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      modelCalls++;
+      request.onToolResults?.([{
+        id: "read-outside-assignment", tool: "read_range", target: path, resultChars: 20, status: "ok",
+        deliveredRanges: [row.checkedAt]
+      }]);
+      return review([row]) as T;
+    } };
+    const packets = [packet];
+    const args = [packets, fakeTools(), cfg, nullTelemetry()] as const;
+    const opts = { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() };
+    await expect(runLensPackets(...args, opts)).rejects.toMatchObject({
+      code: "config_error", message: "Stage 7 change checks require the full review diff."
+    });
+    expect(modelCalls).toBe(0);
+
+    const diff = fakeDiff();
+    const outside = fakeChangedLineDiff([{ path, hunkId: "outside", line: 10, content: "new behavior" }]).files[0]!;
+    if (path === packet.path) diff.files[0]!.hunks.push(outside.hunks[0]!);
+    else diff.files.push(outside);
+    const [result] = await runLensPackets(...args, { ...opts, diff });
+    expect(result?.changeChecks).toMatchObject([{ pointerStatus: "inside_changed_rows" }]);
+    expect(modelCalls).toBe(1);
   });
 
   it("writes private rows without forwarding them to verification, composition or the public review", async () => {

@@ -3278,7 +3278,7 @@ function queueSchemaRepair(input: {
     input.replaceConversationOverride === true &&
     isStage7SchemaInvalidKind(input.repairClassification);
   const instructions = input.promptOverride ?? (stage7CompactRepair
-    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput)
+    ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput, input.request.schema)
     : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
       defaultSchemaRepairPrompt(input.request, input.submitToolName, error));
   // Always include the latest rejection, including with custom prompts and

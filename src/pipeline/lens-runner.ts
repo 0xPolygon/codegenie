@@ -26,7 +26,7 @@ import type {
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
-import { isCodegenieError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
 import { normalizeStage7Submit, stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
@@ -75,6 +75,9 @@ export async function runLensPackets(
   telemetry: TelemetryRecorder,
   opts: LensRunnerOptions
 ): Promise<PacketReviewResult[]> {
+  if (config.review.changeChecks === true && opts.diff === undefined) {
+    throw new CodegenieError("config_error", "Stage 7 change checks require the full review diff.");
+  }
   telemetry.event({ stage: 7, level: "info", message: "stage_started", data: { packets: packets.length } });
   const workerRunner = createWorkerRunner({
     telemetry,
@@ -236,7 +239,8 @@ async function runPacket(
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
       ...(currentHunks ? { currentHunks } : {}) });
-  const assigned = config.review.changeChecks === true ? new Set(packet.hunks.map(hunk => hunk.hunkId)) : undefined;
+  const changeCheckDiff = config.review.changeChecks === true ? opts.diff : undefined;
+  const assigned = changeCheckDiff ? new Set(packet.hunks.map(hunk => hunk.hunkId)) : undefined;
   const schema = submitPacketReviewSchema(config.review.stage7Instructions, toolSurface, assigned ? [...assigned] : undefined);
   let toolResults: LlmToolResultSummary[] = [];
   let attemptToolResults: LlmToolResultSummary[] = [];
@@ -308,11 +312,11 @@ async function runPacket(
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, projectedIds, telemetry, workerId);
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
     ? unresolvedToolDiagnostic(7, toolResults, packet.id, reviewStatus !== "incomplete") : undefined;
-  const changeChecks = assigned && submitted.changeChecks ? attestChangeChecks({
+  const changeChecks = changeCheckDiff && submitted.changeChecks ? attestChangeChecks({
     rows: submitted.changeChecks,
     packet,
     delivered: attemptToolResults.flatMap(result => result.deliveredRanges ?? []),
-    diff: opts.diff,
+    diff: changeCheckDiff,
     findings: findings.map(finding => ({ refDisposition: "kept", refId: finding.id })),
     hints: followUpHints.bySubmittedIndex
   }) : undefined;
