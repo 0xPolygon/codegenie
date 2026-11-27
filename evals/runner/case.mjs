@@ -129,7 +129,7 @@ export async function workerBounds(configFile, caseConfigBytes, attemptPrefix, {
     if (!repoRoot || !existsSync(repoRoot)) throw new CampaignConfigurationError('binding_mismatch', 'stage selections require an existing review repository');
     effectiveConfig = resolveEvalCaseConfig(base, found[0].evalCase, repoRoot, false).config;
   }
-  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots,
+  return { timeoutMs, toolSurface: found[0].evalCase.review?.toolSurface ?? base.review.toolSurface ?? 'current', caseName: config.caseName, outputDir, reviewInputRoots, suiteCase: found[0].evalCase,
     ...(effectiveConfig === undefined ? {} : { effectiveConfig }) };
 
 }

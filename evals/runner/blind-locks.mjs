@@ -3,7 +3,7 @@ import { readCheckedFile } from './safe-read.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const isHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
-const classes = new Set(['introduced_real_defect', 'policy_or_reachability', 'pre_existing', 'wholly_false']);
+const classes = new Set(['introduced_real_defect', 'policy_or_reachability', 'pre_existing', 'wholly_false', 'unresolved']);
 const severityRank = { low: 0, medium: 1, high: 2, critical: 3 };
 const validSeverity = (value) => typeof value === 'string' && Object.hasOwn(severityRank, value);
 function checkedJson(file, expected) {
@@ -49,14 +49,22 @@ function verifyGrades(grades, manifest, sheets) {
     const published = grade.otherClaims.published;
     if (!sameIds(published.map((item) => item?.id), expectedPublished.map((item) => item.id)) || published.some((item) => {
       const expected = expectedPublished.find((candidate) => candidate.id === item.id);
-      return !expected || !classes.has(item.class) || typeof item.slug !== 'string' || !item.slug.trim() || item.severity !== expected.severity || item.summaryOnly !== expected.summaryOnly;
+      return !expected || !classes.has(item.class) || (item.class === 'unresolved' && (typeof item.missingEvidence !== 'string' || !item.missingEvidence.trim())) || typeof item.slug !== 'string' || !item.slug.trim() || item.severity !== expected.severity || item.summaryOnly !== expected.summaryOnly;
     })) throw new Error('published other-claim coverage mismatch');
     const surviving = (sheet.verification ?? []).filter((row) => ['keep', 'revise'].includes(row.verdict) && (severityRank[row.finalSeverity ?? row.severity] ?? -1) >= 1 && !linkedCandidates.has(row.candidateId));
     const other = grade.otherClaims.survivingMediumPlus;
     if (!sameIds(other.map((item) => item?.candidateId), surviving.map((row) => row.candidateId)) || other.some((item) => {
       const expected = surviving.find((row) => row.candidateId === item.candidateId);
-      return !expected || !classes.has(item.class) || typeof item.slug !== 'string' || !item.slug.trim() || item.severity !== (expected.finalSeverity ?? expected.severity);
+      return !expected || !classes.has(item.class) || (item.class === 'unresolved' && (typeof item.missingEvidence !== 'string' || !item.missingEvidence.trim())) || typeof item.slug !== 'string' || !item.slug.trim() || item.severity !== (expected.finalSeverity ?? expected.severity);
     })) throw new Error('surviving other-claim coverage mismatch');
+    const allPublished = [...inline, ...summary];
+    if (entry.role !== undefined && !Array.isArray(grade.assertions)) throw new Error('published assertions missing');
+    const assertions = grade.assertions ?? [];
+    if (!Array.isArray(assertions) || new Set(assertions.map((item) => item?.publishedId)).size !== assertions.length || assertions.some((item) => !allPublished.some((finding) => finding.id === item?.publishedId) ||
+        !['refuted', 'unresolved'].includes(item.status) || (item.status === 'refuted' ? typeof item.evidence !== 'string' || !item.evidence.trim() : typeof item.missingEvidence !== 'string' || !item.missingEvidence.trim()))) throw new Error('invalid published assertion');
+    const rejects = grade.rejects ?? [];
+    if (!Array.isArray(entry.rejects ?? []) || !Array.isArray(rejects) || !sameIds(rejects.map((item) => item?.rejectId), (entry.rejects ?? []).map((item) => item.id)) || rejects.some((item) => !Array.isArray(item.publishedIds) || new Set(item.publishedIds).size !== item.publishedIds.length || item.publishedIds.some((id) => !allPublished.some((finding) => finding.id === id) ||
+      !published.some((finding) => finding.id === id && finding.class === 'wholly_false') && !assertions.some((assertion) => assertion.publishedId === id && assertion.status === 'refuted')))) throw new Error('invalid reject judgment');
   }
 }
 
