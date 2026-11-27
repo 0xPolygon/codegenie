@@ -13,9 +13,12 @@ import { RecoveredResetLimitError, validateTerminal } from './terminal.mjs';
 import { assertIntegrity } from './integrity.mjs';
 import { verifyAllEvidence } from './boundary.mjs';
 import { exportFirstLock, revealPairing } from './blind-export.mjs';
-import { assertBlindPrivateInputs, assertOutsideSources, validateBlindInputs } from './blind-inputs.mjs';
+import { assertBlindPrivateInputs, assertOutsideSources, normalizeOracleCase, validateBlindInputs } from './blind-inputs.mjs';
+import { validateAdmissionAudit } from './admission-audit.mjs';
 import { validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
 import { readCheckedFile } from './safe-read.mjs';
+import { loadScoringBundle } from './score-bundle.mjs';
+import { scoreCampaign } from './score.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
@@ -87,7 +90,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   if (sha(scheduleBytes) !== config.scheduleSHA256) throw new Error('campaign schedule digest mismatch');
   const schedule = JSON.parse(scheduleBytes.toString('utf8'));
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
-  const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots);
+  const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots, { requireV2: !existsSync(config.supervisorPath) });
   const armSelections = config.blind?.stageSelections;
   if (armSelections !== undefined && (!armSelections || typeof armSelections !== 'object' || Array.isArray(armSelections) ||
       Object.keys(armSelections).sort().join(',') !== 'control,treatment' || ['control', 'treatment'].some((arm) => {
@@ -95,7 +98,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'modelId,provider,reasoning' ||
           ['provider', 'modelId', 'reasoning'].some((field) => typeof value[field] !== 'string' || !value[field]);
       }))) throw new Error('invalid blind stage selections');
-  const roots = new Map(), reviewInputRoots = [];
+  const roots = new Map(), reviewInputRoots = [], suiteCases = new Map();
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
     if (wc?.reviewOverride !== undefined) throw new Error('campaign review overrides are no longer supported');
@@ -115,6 +118,18 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
         !wc.integrity?.build || Object.keys(wc.integrity.build).some((key) => wc.integrity.build[key] !== config.build?.[key]) || Object.keys(config.build ?? {}).length !== Object.keys(wc.integrity.build).length) throw new Error('case integrity binding mismatch');
     assertIntegrity(wc.integrity);
     const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1), { resolveEffective: armSelections !== undefined && slot.blind !== undefined });
+    suiteCases.set(slot.caseId, bounds.suiteCase);
+    if (blindInputs && !existsSync(config.supervisorPath)) {
+      const location = blindInputs.locators.cases.find((item) => item.caseId === slot.caseId);
+      const oracle = blindInputs.oracles.cases.find((item) => item.caseId === slot.caseId);
+      const normalized = normalizeOracleCase(oracle, blindInputs.oracles.version);
+      if (normalized.role === 'negative-control') {
+        const auditBytes = readCheckedFile(location.admissionAudit.path);
+        if (sha(auditBytes) !== location.admissionAudit.sha256) throw new Error('blind admission audit changed');
+        const record = JSON.parse(auditBytes.toString('utf8'));
+        validateAdmissionAudit({ record, case: oracle, locator: location, suiteCase: bounds.suiteCase, checkout: location.sourceRoot, role: normalized.role, causes: normalized.causes });
+      }
+    }
     if (bounds.effectiveConfig !== undefined) assertExpectedCalls(bounds.effectiveConfig, wc.expectedCalls);
     if (slot.blind !== undefined && bounds.effectiveConfig !== undefined && armSelections === undefined) throw new Error('blind stage selections missing');
     if (slot.blind !== undefined && armSelections !== undefined) {
@@ -126,7 +141,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     reviewInputRoots.push(...bounds.reviewInputRoots);
   }
   for (const slot of schedule.slots) assertOutsideSources(slot.workerConfig.integrity.suiteDir, reviewInputRoots);
-  if (blindInputs) assertBlindPrivateInputs(config.blind, schedule.slots, blindInputs.locators, reviewInputRoots);
+  if (blindInputs) assertBlindPrivateInputs(config.blind, schedule.slots, blindInputs.locators, reviewInputRoots, { includeAudit: !existsSync(config.supervisorPath) });
   const protectedPaths = [config.supervisorPath, config.ledgerPath, config.receiptDirectory, config.evidenceDirectory, config.workDirectory];
   if (config.blind && protectedPaths.some((item) => config.blind.mappingFile === item || config.blind.mappingFile.startsWith(`${item}${path.sep}`) || item.startsWith(`${config.blind.mappingFile}${path.sep}`))) throw new Error('blind mapping overlaps campaign custody');
   for (const root of roots.values()) for (const protectedPath of [...protectedPaths, ...(config.blind ? [config.blind.mappingFile] : [])]) {
@@ -327,8 +342,10 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
           if (!/^mc-[A-Za-z0-9_-]+$/u.test(callId)) throw new Error('invalid model call id');
           return read(`debug/llm-calls/${callId}.request.json`);
         } });
+      const oracleCase = normalizeOracleCase(oracles.cases.find((item) => item.caseId === slot.caseId), oracles.version);
       return { slotId: slot.id, attempt: row.attempt_no, receiptSHA256: row.receipt_sha256, arm: slot.blind.arm, draw: slot.blind.draw,
         caseId: location.label, sourceLocator: location.sourceLocator, oracleLocator: location.oracleLocator, causes: oracles.cases.find((item) => item.caseId === slot.caseId).causes,
+        ...(oracles.version === 2 ? { role: oracleCase.role, rejects: oracleCase.rejects } : {}),
         evidence: { outcome: run.outcome?.status, hunkIdentifiers: [...hunkIdentifiers], privateIdentifiers: [run.runId, found.receipt.runDir, slot.workerConfig.caseConfig, location.sourceRoot, location.oraclePath, ...packetIdentifiers],
           candidates: read('stages/09-verification/candidate-findings.json'), promotion: read('stages/09-verification/uncertainty-promotion.json'),
           verification: read('stages/09-verification/verification.json'), finalReview: read('final-review.json') } };
@@ -360,12 +377,91 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     return revealPairing({ ...request, ...(authority.reconciliation_sha256 !== null ? { expectedReconciliationSHA256: authority.reconciliation_sha256 } : {}),
       bindPrepared: (reconciliationSHA256) => supervisor.bindReconciliation(reconciliationSHA256) });
   };
+  const score = async (request) => {
+    const { outcomes } = selectedForBlind();
+    if (!request || !Array.isArray(request.bundles) || !request.bundles.length) throw new Error('score bundles missing');
+    const bound = validateBlindInputs(config.blind, supervisor.slots);
+    const inventory = bound.oracles.cases.map((item) => ({ caseId: item.caseId,
+      caseLabel: bound.locators.cases.find((location) => location.caseId === item.caseId).label,
+      ...normalizeOracleCase(item, bound.oracles.version) }));
+    const assignments = supervisor.slots.map((slot) => ({ slotId: slot.id, caseId: slot.caseId, arm: slot.blind.arm, draw: slot.blind.draw }));
+    const candidates = new Map(outcomes.map((row) => [row.slot_id, [{ row, source: expectedSHA256 }]]));
+    const attempted = new Set(supervisor.db.prepare('SELECT DISTINCT slot_id FROM attempt').all().map((row) => row.slot_id));
+    const bundles = [];
+    for (const descriptor of request.bundles) {
+      const sourceFile = descriptor.campaignFile ?? configFile, sourceSHA256 = descriptor.campaignSHA256 ?? expectedSHA256;
+      const isCurrent = sourceSHA256 === expectedSHA256 && path.resolve(sourceFile) === path.resolve(configFile);
+      let other;
+      try {
+        other = isCurrent ? undefined : await openCampaign(sourceFile, sourceSHA256, { resumeOnly: true });
+        const source = other ?? { supervisor, ledger, verifiedOutcomes: () => outcomes };
+        const sourceConfig = isCurrent ? config : JSON.parse(readCheckedFile(sourceFile).toString('utf8'));
+        source.ledger.assertRestartSafe();
+        if (source.ledger.hasPendingMeter()) throw new Error('meter custody requires reconciliation');
+        verifyAllEvidence(source.ledger, listEvidenceFiles(sourceConfig.evidenceDirectory));
+        const sourceOutcomes = isCurrent ? outcomes : source.verifiedOutcomes();
+        for (const row of source.supervisor.db.prepare('SELECT DISTINCT slot_id FROM attempt').all()) {
+          if (!assignments.some((slot) => slot.slotId === row.slot_id)) throw new Error('foreign score attempt');
+          attempted.add(row.slot_id);
+        }
+        const authority = source.supervisor.db.prepare('SELECT mapping_sha256,manifest_sha256,reconciliation_sha256 FROM blind_export WHERE id=1').get();
+        const bundle = loadScoringBundle(descriptor);
+        if (!authority || authority.manifest_sha256 !== descriptor.manifestSHA256 || authority.mapping_sha256 !== bundle.manifest.mappingSHA256 ||
+            authority.reconciliation_sha256 !== descriptor.reconciliation.sha256 || bundle.mapping.bindingSHA256 !== sourceSHA256) throw new Error('score export authority mismatch');
+        for (const item of bundle.mapping.selections) {
+          const sourceSlot = source.supervisor.slots.find((slot) => slot.id === item.slotId);
+          const original = assignments.find((slot) => slot.slotId === item.slotId);
+          const originalSlot = supervisor.slots.find((slot) => slot.id === item.slotId);
+          const row = sourceOutcomes.find((outcome) => outcome.slot_id === item.slotId);
+          if (!sourceSlot || !original || !originalSlot || !row || row.state !== 'selected' || row.attempt_no !== item.attempt || row.receipt_sha256 !== item.receiptSHA256 ||
+              sourceSlot.caseId !== original.caseId || sourceSlot.blind?.arm !== original.arm || sourceSlot.blind?.draw !== original.draw ||
+              JSON.stringify(sourceSlot.expectedPacketIds) !== JSON.stringify(originalSlot.expectedPacketIds) ||
+              ['packetTemplates', 'plannerReplayBinding', 'expectedCalls'].some((key) => JSON.stringify(sourceSlot.workerConfig[key]) !== JSON.stringify(originalSlot.workerConfig[key])) ||
+              sourceSlot.workerConfig.integrity?.suiteSHA256 !== originalSlot.workerConfig.integrity?.suiteSHA256 ||
+              JSON.stringify(sourceSlot.workerConfig.integrity?.build) !== JSON.stringify(originalSlot.workerConfig.integrity?.build)) throw new Error('score source outcome mismatch');
+        }
+        if (!isCurrent) for (const row of sourceOutcomes) {
+          if (!assignments.some((slot) => slot.slotId === row.slot_id)) throw new Error('foreign score outcome');
+          const list = candidates.get(row.slot_id) ?? [];
+          list.push({ row, source: sourceSHA256 }); candidates.set(row.slot_id, list);
+        }
+        bundles.push(bundle);
+      } finally { other?.close(); }
+    }
+    const dispositions = assignments.map((slot) => {
+      const all = candidates.get(slot.slotId) ?? [], selected = all.filter(({ row }) => row.state === 'selected');
+      if (selected.length > 1) throw new Error('duplicate selected outcome');
+      if (!selected.length) {
+        if (all.some(({ row }) => row.state === 'excluded')) return { ...slot, state: 'failed' };
+        return { ...slot, state: attempted.has(slot.slotId) ? 'ungraded' : 'unrun' };
+      }
+      const outcome = selected[0].row;
+      const matches = bundles.flatMap((bundle, bundleIndex) => bundle.mapping.selections.filter((item) => item.slotId === slot.slotId).map(() => bundleIndex));
+      if (!matches.length) return { ...slot, state: 'ungraded' };
+      if (matches.length !== 1) throw new Error('duplicate graded slot');
+      return { ...slot, state: 'selected', bundleIndex: matches[0], attempt: outcome.attempt_no, receiptSHA256: outcome.receipt_sha256 };
+    });
+    const mixedAssertions = bundles.some((bundle) => bundle.reconciliation.grades.some((grade) => !Object.hasOwn(grade, 'assertions'))) ? 'unmeasured-class-only' : 'measured';
+    const auditCoverage = inventory.filter((item) => item.role === 'negative-control').map((item) => {
+      const location = bound.locators.cases.find((row) => row.caseId === item.caseId);
+      try {
+        if (bound.oracles.version !== 2 || !location.admissionAudit) throw new Error('audit unavailable');
+        const bytes = readCheckedFile(location.admissionAudit.path);
+        if (sha(bytes) !== location.admissionAudit.sha256) throw new Error('audit changed');
+        return { caseId: item.caseId, ...validateAdmissionAudit({ record: JSON.parse(bytes.toString('utf8')),
+          case: bound.oracles.cases.find((row) => row.caseId === item.caseId), locator: location, suiteCase: suiteCases.get(item.caseId), checkout: location.sourceRoot, role: item.role, causes: item.causes }) };
+      } catch { return { caseId: item.caseId, status: 'unavailable' }; }
+    });
+    return { ...scoreCampaign({ schedule: assignments, inventory, dispositions, bundles }), mixedAssertions, auditCoverage, campaignSHA256: expectedSHA256,
+      scheduleSHA256: config.scheduleSHA256, bundles: request.bundles.map((item) => ({ manifestSHA256: item.manifestSHA256,
+        reconciliationSHA256: item.reconciliation.sha256, revealSHA256: item.revealSHA256 })) };
+  };
   const progressFingerprint = () => sha(JSON.stringify({ totals: ledger.totals(),
     attempts: supervisor.db.prepare('SELECT slot_id,attempt_no,state FROM attempt ORDER BY slot_id,attempt_no').all(),
     outcomes: supervisor.db.prepare('SELECT slot_id,state,receipt_sha256 FROM outcome ORDER BY slot_id').all(),
     polls: ledger.db.prepare('SELECT boundary_id,attempts,pending FROM meter_poll ORDER BY boundary_id').all(),
     snapshots: ledger.db.prepare('SELECT COUNT(*) AS count FROM key_snapshot').get().count }));
-  return { step, exportBlind, reveal, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, verifiedOutcomes() {
+  return { step, exportBlind, reveal, score, supervisor, ledger, progressFingerprint, stopNoProgress() { ledger.stop('no_progress'); }, verifiedOutcomes() {
     supervisor.assertDriver();
     return supervisor.checkedOutcomes(verifyReceipt, verifyRetry, ledger);
   }, releaseCheckpoint() {

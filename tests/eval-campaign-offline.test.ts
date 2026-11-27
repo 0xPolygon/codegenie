@@ -32,7 +32,7 @@ it('runs an 80-slot synthetic bound campaign through pause, release and restart 
     const sourceBranch = execFileSync('git', ['-C', sourceRoot, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
     const sourceRevision = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const caseOracle = path.join(dir, 'oracle.txt'); writeFileSync(caseOracle, 'synthetic oracle');
-    const oraclePath = path.join(dir, 'oracle-manifest.json'), oracleBytes = Buffer.from(JSON.stringify({ cases: caseIds.map((caseId) => ({ caseId, sha256: sha(readFileSync(caseOracle)), causes: [] })) })); writeFileSync(oraclePath, oracleBytes);
+    const oraclePath = path.join(dir, 'oracle-manifest.json'), oracleBytes = Buffer.from(JSON.stringify({ version: 2, cases: caseIds.map((caseId) => ({ caseId, sha256: sha(readFileSync(caseOracle)), role: 'positive', rejects: [], causes: [] })) })); writeFileSync(oraclePath, oracleBytes);
     const locatorPath = path.join(dir, 'locators.json'), locatorBytes = Buffer.from(JSON.stringify({ cases: caseIds.map((caseId) => ({ caseId, label: caseId, sourceLocator: `source/${caseId}`, oracleLocator: `oracle/${caseId}`, sourceRoot, sourceRevision, oraclePath: caseOracle, oracleSHA256: sha(readFileSync(caseOracle)) })) })); writeFileSync(locatorPath, locatorBytes);
     const suiteDir = path.join(process.cwd(), 'evals/fixtures'), caseFile = path.join(dir, 'case.json');
     const caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') })); writeFileSync(caseFile, caseBytes);

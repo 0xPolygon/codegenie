@@ -46,11 +46,25 @@ describe('campaign driver', () => {
       writeFileSync(path.join(sourceRoot, 'source.txt'), 'fixture');
       expect(spawnSync('git', ['-C', sourceRoot, 'add', 'source.txt']).status).toBe(0);
       expect(spawnSync('git', ['-C', sourceRoot, 'commit', '-qm', 'fixture']).status).toBe(0);
+      const sourceBase = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      writeFileSync(path.join(sourceRoot, 'source.txt'), 'changed fixture');
+      expect(spawnSync('git', ['-C', sourceRoot, 'commit', '-qam', 'head']).status).toBe(0);
       const sourceRevision = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('  branch: feature\n', '').replace('base: main', `base: ${sourceBase}\n  head: ${sourceRevision}`));
       const oracle = path.join(dir, 'oracle.txt'); writeFileSync(oracle, 'fixture oracle');
-      const oracleBytes = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', sha256: sha(readFileSync(oracle)), causes: [] }] }));
-      const locatorBytes = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', label: 'fixture', sourceLocator: 'source/fixture', oracleLocator: 'oracle/fixture', sourceRoot, sourceRevision, oraclePath: oracle, oracleSHA256: sha(readFileSync(oracle)) }] }));
+      const oracleBytes = Buffer.from(JSON.stringify({ version: 2, cases: [{ caseId: 'fixture', sha256: sha(readFileSync(oracle)), role: 'negative-control', rejects: [], causes: [] }] }));
+      const auditPath = path.join(dir, 'audit.json');
+      const audit = { version: 1, caseId: 'fixture', baseRevision: sourceBase, headRevision: sourceRevision,
+        diffSHA256: sha(spawnSync('git', ['-C', sourceRoot, 'diff', '--binary', sourceBase, sourceRevision, '--']).stdout),
+        analyst: 'one', curator: 'two', scope: [{ path: 'source.txt', side: 'head', coverage: 'changed_hunks' }], findings: [], disposition: 'negative-control', oracleSHA256: sha(readFileSync(oracle)) };
+      let locatorBytes = Buffer.alloc(0);
       const oracleManifestPath = path.join(dir, 'oracle.json'), locatorManifestPath = path.join(dir, 'locators.json'); writeFileSync(oracleManifestPath, oracleBytes); writeFileSync(locatorManifestPath, locatorBytes);
+      const bindAudit = (value: unknown) => {
+        const bytes = Buffer.from(JSON.stringify(value)); writeFileSync(auditPath, bytes);
+        locatorBytes = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', label: 'fixture', sourceLocator: 'source/fixture', oracleLocator: 'oracle/fixture', sourceRoot, sourceRevision, oraclePath: oracle, oracleSHA256: sha(readFileSync(oracle)), admissionAudit: { path: auditPath, sha256: sha(bytes) } }] }));
+        writeFileSync(locatorManifestPath, locatorBytes);
+      };
+      bindAudit(audit);
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') })); writeFileSync(caseFile, caseBytes);
       const bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01');
       const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.16' });
@@ -70,6 +84,39 @@ describe('campaign driver', () => {
         writeFileSync(configPath, config); return sha(config);
       };
       const fetchImpl = vi.fn(async () => { throw new Error('unexpected network'); });
+      for (const invalid of [{ ...audit, scope: [] }, { ...audit, scope: [{ ...audit.scope[0], path: 'unrelated.txt' }] },
+        { ...audit, findings: [{ ref: 'finding', verified: true }] }, { ...audit, caseId: 'other' }, { ...audit, baseRevision: sourceRevision }, { ...audit, curator: 'ONE' }]) {
+        bindAudit(invalid);
+        await expect(openCampaign(configPath, writeConfig(), { fetchImpl })).rejects.toThrow();
+        expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      }
+      bindAudit(audit);
+      writeConfig();
+      const legacyOracle = Buffer.from(JSON.stringify({ cases: [{ caseId: 'fixture', sha256: sha(readFileSync(oracle)), causes: [] }] }));
+      const legacyPath = path.join(dir, 'legacy-oracle.json'); writeFileSync(legacyPath, legacyOracle);
+      const legacyConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+      legacyConfig.blind.oracleManifestPath = legacyPath; legacyConfig.blind.oracleManifestSHA256 = sha(legacyOracle);
+      legacyConfig.blind.stageSelections.control = legacyConfig.blind.stageSelections.treatment;
+      const legacyBytes = Buffer.from(JSON.stringify(legacyConfig)); writeFileSync(configPath, legacyBytes);
+      await expect(openCampaign(configPath, sha(legacyBytes), { fetchImpl })).rejects.toThrow('blind oracle v2 required');
+      expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      // A pre-existing v1 namespace remains reopenable and its export remains stable.
+      // @ts-expect-error Development-only ESM has no emitted types.
+      const { CampaignSupervisor } = await import('../evals/runner/supervisor.mjs');
+      // @ts-expect-error Development-only ESM has no emitted types.
+      const { CampaignLedger } = await import('../evals/runner/ledger.mjs');
+      mkdirSync(legacyConfig.evidenceDirectory, { recursive: true }); mkdirSync(legacyConfig.workDirectory, { recursive: true });
+      const oldSupervisor = new CampaignSupervisor(worker.supervisorPath, { binding: 'campaign', scheduleBytes: readFileSync(schedulePath),
+        scheduleSHA256: legacyConfig.scheduleSHA256, configSHA256: sha(legacyBytes), receiptDirectory: legacyConfig.receiptDirectory,
+        runRootFor: (id: string, attempt: number) => path.join(dir, 'output', id, `attempt-${String(attempt).padStart(2, '0')}`) });
+      oldSupervisor.close();
+      const oldLedger = new CampaignLedger(worker.ledgerPath, { binding: 'campaign', limitMicros: worker.limitMicros, reserveMicros: worker.reserveMicros, errorHoldMicros: worker.errorHoldMicros });
+      oldLedger.stop('budget_limit'); oldLedger.close();
+      const legacyCampaign = await openCampaign(configPath, sha(legacyBytes), { fetchImpl, resumeOnly: true });
+      const legacyExport = { outputDirectory: path.join(dir, 'legacy-blind'), mappingFile: legacyConfig.blind.mappingFile };
+      const legacyResult = legacyCampaign.exportBlind(legacyExport);
+      expect(legacyCampaign.exportBlind(legacyExport)).toEqual(legacyResult); legacyCampaign.close();
+      for (const item of [worker.supervisorPath, worker.ledgerPath, `${worker.supervisorPath}-wal`, `${worker.supervisorPath}-shm`, `${worker.ledgerPath}-wal`, `${worker.ledgerPath}-shm`, legacyConfig.evidenceDirectory, legacyConfig.workDirectory, legacyConfig.receiptDirectory, legacyConfig.blind.mappingFile, legacyExport.outputDirectory]) rmSync(item, { recursive: true, force: true });
       await expect(openCampaign(configPath, writeConfig(), { fetchImpl })).rejects.toThrow('blind arm stage selection mismatch');
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
@@ -313,7 +360,7 @@ describe('campaign driver', () => {
         const sourceRoot = path.join(baseline.runDir, 'fixture-repo');
         const revision = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'feature'], { encoding: 'utf8' }).stdout.trim();
         const oraclePath = path.join(dir, 'oracle.txt'); writeFileSync(oraclePath, 'Synthetic oracle.');
-        const oracleManifestPath = path.join(dir, 'oracle-manifest.json'); writeFileSync(oracleManifestPath, JSON.stringify({ cases: [{ caseId: 'case1', sha256: sha(readFileSync(oraclePath)), causes: scenario === 'positive' ? [{ id: 'required-cause', optional: false, anchors: [{ path: 'src/core.js', lineRange: [1, 1] }] }] : [] }] }));
+        const oracleManifestPath = path.join(dir, 'oracle-manifest.json'); writeFileSync(oracleManifestPath, JSON.stringify({ version: 2, cases: [{ caseId: 'case1', sha256: sha(readFileSync(oraclePath)), role: 'positive', rejects: [], causes: scenario === 'positive' ? [{ id: 'required-cause', optional: false, anchors: [{ path: 'src/core.js', lineRange: [1, 1] }] }] : [] }] }));
         const locatorManifestPath = path.join(dir, 'locators.json');
         writeFileSync(locatorManifestPath, JSON.stringify({ cases: [{ caseId: 'case1', label: 'case-01', sourceLocator: 'source/case-01', oracleLocator: 'oracle/case-01', sourceRoot, sourceRevision: revision, oraclePath, oracleSHA256: sha(readFileSync(oraclePath)) }] }));
         blind = { locatorManifestPath, locatorManifestSHA256: sha(readFileSync(locatorManifestPath)), oracleManifestPath, oracleManifestSHA256: sha(readFileSync(oracleManifestPath)), mappingFile: path.join(dir, 'sealed', 'mapping.json') };
@@ -505,14 +552,31 @@ describe('campaign driver', () => {
         if (scenario === 'treatment') {
           const lock = (name: string, value: unknown) => { const bytes = Buffer.from(JSON.stringify(value)), dest = path.join(dir, name); writeFileSync(dest, bytes); return { path: dest, sha256: sha(bytes) }; };
           const sheetId = manifest.sheets[0].id;
-          const grades = [{ id: sheetId, noApplicableCauses: true, causes: [], otherClaims: { survivingMediumPlus: [], published: [] } }];
+          const grades = [{ id: sheetId, noApplicableCauses: true, causes: [], assertions: [], otherClaims: { survivingMediumPlus: [], published: [] } }];
           const a = lock('lock-a.json', { analyst: 'a', manifestSHA256: result.manifestSHA256, grades });
           const b = lock('lock-b.json', { analyst: 'b', manifestSHA256: result.manifestSHA256, grades });
           const reconciliation = lock('reconciliation.json', { manifestSHA256: result.manifestSHA256, lockSHA256: [a.sha256, b.sha256], grades });
           const reveal = { manifestFile: path.join(exportArgs.outputDirectory, 'manifest.json'), manifestSHA256: result.manifestSHA256, mappingFile: exportArgs.mappingFile, locks: [a, b], reconciliation, outputFile: path.join(dir, 'reveal', 'pairing.json') };
           await expect(reopened.reveal({ ...reveal, reconciliation: undefined })).rejects.toThrow();
           expect(existsSync(reveal.outputFile)).toBe(false);
-          expect((await reopened.reveal(reveal)).reviewCount).toBe(1);
+          const firstReveal = await reopened.reveal(reveal);
+          expect(firstReveal.reviewCount).toBe(1);
+          const scoreRequest = { bundles: [{ ...reveal, revealFile: reveal.outputFile, revealSHA256: firstReveal.revealSHA256 }] };
+          const score = await reopened.score(scoreRequest);
+          expect(score).toMatchObject({ rule: 'clean-control.v2', complete: true, campaignSHA256: sha(config) });
+          expect(await reopened.score(scoreRequest)).toEqual(score);
+          const scoreOutput = path.join(dir, 'score', 'result.json'), scoreFile = path.join(dir, 'score-request.json');
+          const scoreBytes = Buffer.from(JSON.stringify({ ...scoreRequest, outputFile: scoreOutput })); writeFileSync(scoreFile, scoreBytes);
+          reopened.close();
+          const scoreArgs = [path.join(process.cwd(), 'evals/runner/main.mjs'), 'score', '--campaign', file, '--sha256', sha(config), '--request', scoreFile, '--request-sha256', sha(scoreBytes)];
+          const scoreCommand = spawnSync(process.execPath, scoreArgs, { encoding: 'utf8' });
+          expect(scoreCommand.status).toBe(0); expect(JSON.parse(readFileSync(scoreOutput, 'utf8'))).toEqual(score);
+          const scoreAgain = spawnSync(process.execPath, scoreArgs, { encoding: 'utf8' });
+          expect(scoreAgain.status).toBe(0); expect(scoreAgain.stdout).toBe(scoreCommand.stdout);
+          chmodSync(scoreOutput, 0o644);
+          expect(spawnSync(process.execPath, scoreArgs, { encoding: 'utf8' }).status).not.toBe(0);
+          chmodSync(scoreOutput, 0o600);
+          reopened = await openCampaign(file, sha(config), { fetchImpl, models });
           const changedReconciliation = lock('changed-reconciliation.json', { manifestSHA256: result.manifestSHA256, lockSHA256: [a.sha256, b.sha256], grades, changed: true });
           reopened.close(); reopened = await openCampaign(file, sha(config), { fetchImpl, models });
           const changedOutput = path.join(dir, 'changed-reveal', 'pairing.json');

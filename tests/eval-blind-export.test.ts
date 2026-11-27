@@ -184,3 +184,37 @@ it('exports registered hunk prose and refuses residual identifiers before publis
     expect(containsSlotId('slotX01', 'slot.01')).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('exports v2 role and neutral reject anchors without private propositions', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-v2-'));
+  try {
+    const evidence = { outcome: 'completed_full', candidates: [], promotion: { decisions: [] }, verification: [], finalReview: { findings: [] } };
+    const options = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0,
+      outputDirectory: path.join(dir, 'blind'), mappingFile: path.join(dir, 'private', 'mapping.json'),
+      selections: [{ slotId: 'slot-01', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'control', draw: 1, caseId: 'case-01', sourceLocator: 'source/one', oracleLocator: 'oracle/one', causes: [], role: 'negative-control',
+        rejects: [{ id: 'reject-1', anchors: [{ path: 'src/file.ts', lineRange: [1, 2], privateText: 'secret proposition' }], privateText: 'secret proposition' }], evidence }] };
+    const first = exportFirstLock(options); expect(exportFirstLock(options)).toEqual(first);
+    const manifest = JSON.parse(readFileSync(path.join(options.outputDirectory, 'manifest.json'), 'utf8'));
+    expect(manifest.sheets[0]).toMatchObject({ role: 'negative-control', rejects: [{ id: 'reject-1', anchors: [{ path: 'src/file.ts', lineRange: [1, 2] }] }] });
+    const sheet = readFileSync(path.join(options.outputDirectory, `${manifest.sheets[0].id}.json`), 'utf8');
+    expect(sheet).not.toContain('secret proposition');
+    expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'bad-mapping'), outputDirectory: path.join(dir, 'bad'), selections: [{ ...options.selections[0], rejects: [{ id: 'treatment arm', anchors: [] }] }] })).toThrow('role');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('reproduces a frozen v1 mapping and manifest from before v2', async () => {
+  const { createHmac } = await import('node:crypto');
+  const dir = mkdtempSync(path.join(tmpdir(), 'eval-blind-v1-frozen-'));
+  try {
+    const key = '11'.repeat(32), bindingSHA256 = 'a'.repeat(64), oracleManifestSHA256 = 'b'.repeat(64);
+    const item = { slotId: 'slot-01', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'control', draw: 1, caseId: 'case-01', sourceLocator: 'source/one', oracleLocator: 'oracle/one', causes: [] };
+    const id = createHmac('sha256', Buffer.from(key, 'hex')).update(JSON.stringify([bindingSHA256, item.slotId, item.attempt, item.receiptSHA256])).digest('hex').slice(0, 24);
+    const mappingFile = path.join(dir, 'private', 'mapping.json'); mkdirSync(path.dirname(mappingFile));
+    writeFileSync(mappingFile, `${JSON.stringify({ version: 1, bindingSHA256, oracleManifestSHA256, excludedCount: 0, campaignState: 'completed', key, selections: [{ ...item, id }] })}\n`, { mode: 0o600 });
+    const evidence = { outcome: 'completed_full', candidates: [], promotion: { decisions: [] }, verification: [], finalReview: { findings: [] } };
+    expect(exportFirstLock({ bindingSHA256, oracleManifestSHA256, selections: [{ ...item, evidence }], excludedCount: 0, campaignState: 'completed', outputDirectory: path.join(dir, 'blind'), mappingFile })).toMatchObject({
+      manifestSHA256: 'c4f2ff1b4837b6d16ff6a400bc6dba68d8dc22d6fffe9a155b64135981761f42',
+      mappingSHA256: '83753772929088391e9c55cfd8adc9b46426388c28e9c7da54f71f74c7c83673'
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
