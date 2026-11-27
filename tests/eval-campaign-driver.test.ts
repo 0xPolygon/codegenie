@@ -84,6 +84,18 @@ describe('campaign driver', () => {
         writeFileSync(configPath, config); return sha(config);
       };
       const fetchImpl = vi.fn(async () => { throw new Error('unexpected network'); });
+      for (const badCase of [
+        { caseId: 'fixture', sha256: sha(readFileSync(oracle)), role: 'positive', causes: [{ id: 'cause', optional: false, anchors: [] }], rejects: [] },
+        { caseId: 'fixture', sha256: sha(readFileSync(oracle)), role: 'positive', causes: [], rejects: [{ id: 'reject', anchors: [] }] }
+      ]) {
+        const badOracle = Buffer.from(JSON.stringify({ version: 2, cases: [badCase] }));
+        const badPath = path.join(dir, 'unanchored-oracle.json'); writeFileSync(badPath, badOracle);
+        writeConfig(); const badConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+        badConfig.blind.oracleManifestPath = badPath; badConfig.blind.oracleManifestSHA256 = sha(badOracle);
+        const badBytes = Buffer.from(JSON.stringify(badConfig)); writeFileSync(configPath, badBytes);
+        await expect(openCampaign(configPath, sha(badBytes), { fetchImpl })).rejects.toThrow('invalid blind oracle v2');
+        expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      }
       for (const invalid of [{ ...audit, scope: [] }, { ...audit, scope: [{ ...audit.scope[0], path: 'unrelated.txt' }] },
         { ...audit, findings: [{ ref: 'finding', verified: true }] }, { ...audit, caseId: 'other' }, { ...audit, baseRevision: sourceRevision }, { ...audit, curator: 'ONE' }]) {
         bindAudit(invalid);

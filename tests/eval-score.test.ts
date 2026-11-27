@@ -15,6 +15,8 @@ describe('clean-control.v2 scoring', () => {
   it('counts linked unresolved assertions in the upper bound without losing optional credit', () => {
     const args = fixture(), result = scoreCampaign(args);
     expect(result.arms.treatment).toMatchObject({ E1: { published: 0, required: 0 }, E2: { lower: 0, upper: 1, reviews: 1 }, E3: { lower: 0, upper: 1 }, optionalPublished: 1 });
+    expect(result.perDraw).toMatchObject({ '1': { treatment: { E2: { lower: 0, upper: 1 } } } });
+    expect(Array.isArray(result.perDraw)).toBe(false);
     expect(gatePasses({ upper: 1 }, { lower: 1 })).toBe(true);
     expect(gatePasses({ upper: 1 }, { lower: 0 })).toBe(false);
     expect(JSON.stringify(scoreCampaign(args))).toBe(JSON.stringify(result));
@@ -70,6 +72,25 @@ it('marks historical fallback roles ambiguous and absent assertion annotations u
   const args = fixture(); delete (args.inventory[0] as { role?: string }).role;
   delete (args.bundles[0].manifest.sheets[0] as { role?: string }).role;
   delete (args.bundles[0].reconciliation.grades[0] as { assertions?: unknown }).assertions;
+  args.bundles[0].reconciliation.lockSHA256 = ['a'.repeat(64), 'b'.repeat(64)];
   const out = scoreHistorical({ ...args, componentHashes: ['c'.repeat(64)] });
   expect(out).toMatchObject({ source: 'historical-adapter', roleAmbiguous: true, mixedAssertions: 'unmeasured-class-only' });
+});
+
+it('retains unavailable historical studies without inventing scores', async () => {
+  // @ts-expect-error Development runner has no TypeScript declarations.
+  const { scoreHistoricalStudies } = await import('../evals/runner/score-historical.mjs');
+  const args = fixture();
+  const empty = { ...args, bundles: [], dispositions: [{ ...args.dispositions[0], state: 'failed' }], componentHashes: ['c'.repeat(64)] };
+  const invalid = { ...args, componentHashes: ['c'.repeat(64)] }; // Missing the two verified lock digests.
+  const report = scoreHistoricalStudies([{ studyId: 'missing', ...empty }, { studyId: 'incompatible', ...invalid }, { studyId: 'offline', unavailable: { reason: 'locks not retained' } }]);
+  expect(report.studies).toEqual([
+    { studyId: 'missing', status: 'unavailable', reason: 'historical evidence missing or incompatible' },
+    { studyId: 'incompatible', status: 'unavailable', reason: 'historical evidence missing or incompatible' },
+    { studyId: 'offline', status: 'unavailable', reason: 'locks not retained' }
+  ]);
+  expect(report.studies.every((study: Record<string, unknown>) => !('result' in study) && !('arms' in study))).toBe(true);
+  args.bundles[0].reconciliation.lockSHA256 = ['a'.repeat(64), 'b'.repeat(64)];
+  const scored = scoreHistoricalStudies([{ studyId: 'verified', ...args, componentHashes: ['c'.repeat(64)] }]);
+  expect(scored.studies[0]).toMatchObject({ studyId: 'verified', status: 'scored', result: { complete: true } });
 });

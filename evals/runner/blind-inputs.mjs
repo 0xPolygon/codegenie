@@ -17,7 +17,7 @@ export function normalizeOracleCase(item, version) {
   if (version !== 2 || !ROLES.includes(item.role) || !Array.isArray(item.rejects)) throw new Error('invalid blind oracle version');
   return { role: item.role, causes: item.causes, rejects: item.rejects };
 }
-const anchorsValid = (anchors) => Array.isArray(anchors) && anchors.every((anchor) => anchor && neutral(anchor.path) && Array.isArray(anchor.lineRange) && anchor.lineRange.length === 2 && anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) && anchor.lineRange[0] <= anchor.lineRange[1]);
+const anchorsValid = (anchors) => Array.isArray(anchors) && anchors.length > 0 && anchors.every((anchor) => anchor && neutral(anchor.path) && Array.isArray(anchor.lineRange) && anchor.lineRange.length === 2 && anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) && anchor.lineRange[0] <= anchor.lineRange[1]);
 // Evaluate real paths so a symlinked parent cannot hide private evidence in a
 // repository that the review worker can read.
 export function assertOutsideSources(value, roots) {

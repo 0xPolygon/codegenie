@@ -199,6 +199,7 @@ it('exports v2 role and neutral reject anchors without private propositions', ()
     const sheet = readFileSync(path.join(options.outputDirectory, `${manifest.sheets[0].id}.json`), 'utf8');
     expect(sheet).not.toContain('secret proposition');
     expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'bad-mapping'), outputDirectory: path.join(dir, 'bad'), selections: [{ ...options.selections[0], rejects: [{ id: 'treatment arm', anchors: [] }] }] })).toThrow('role');
+    expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'empty-mapping'), outputDirectory: path.join(dir, 'empty'), selections: [{ ...options.selections[0], rejects: [{ id: 'reject-1', anchors: [] }] }] })).toThrow('role');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
