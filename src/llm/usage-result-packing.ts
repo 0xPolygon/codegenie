@@ -1,3 +1,4 @@
+import { mergeDeliveredRanges } from "../util/delivered-source.js";
 import type { UsageEntry, UsagePage } from "../repo/usage-search.js";
 import type { ToolExecutionResult } from "./llm-runner.js";
 
@@ -13,7 +14,9 @@ export function packUsageToolResult(input: ToolExecutionResult, allowance: numbe
     ...(originalMeta.usageDelivery ? { usageDelivery: { ...originalMeta.usageDelivery, deliveredRows: delivery.deliveredCount } } : {}),
     ...(delivery.nextCursor ? { truncated: true, ...(!originalMeta.degraded && delivery.deliveredCount < input.usagePage.page.entries.length
       ? { degradationReason: "tool_result_budget" } : {}) } : {}) };
-  return { ...canonical, text: delivery.text, meta, ...(delivery.isError ? { isError: true as const, errorCode: "budget_exhausted" as const } : {}) };
+  const deliveredRanges = mergeDeliveredRanges(input.usagePage.page.entries.slice(0, delivery.deliveredCount).flatMap(({ row }) =>
+    row.excerpt !== undefined ? [{ path: row.path, side: row.revision, lineRange: [row.line, row.line] }] : []));
+  return { ...canonical, text: delivery.text, meta, deliveredRanges, ...(delivery.isError ? { isError: true as const, errorCode: "budget_exhausted" as const } : {}) };
 }
 
 /** Render only complete usage rows. A cut resumes with the first unread row's cursor. */

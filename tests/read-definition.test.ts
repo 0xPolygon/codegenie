@@ -326,6 +326,7 @@ describe("read_definition delivery", () => {
       expect(oneBody?.text).toContain("3. src/methods.ts@head C.run");
       expect(oneBody?.text).not.toContain("More declarations:");
       expect(oneBody?.rawSource).toBeUndefined();
+      expect(oneBody?.deliveredRanges).toEqual([{ path: "src/methods.ts", side: "head", lineRange: [1, 1] }]);
       const many = await tool.execute({ name: "run", path: "src/many.ts" }, new AbortController().signal);
       expect(many.definitionPage?.hits).toHaveLength(25);
       const firstPage = packDefinitionPage(many.definitionPage!, 1_000);

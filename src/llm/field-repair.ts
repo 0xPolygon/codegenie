@@ -65,14 +65,14 @@ export function mergeSubmissionDraft(before: unknown, update: unknown): unknown 
   return structuredClone(update);
 }
 
-// Only explicitly declared alternative encodings may replace one another.
+// Explicit alternatives may replace one another. A singleton group replaces its whole field.
 // Ordinary omitted fields and evidence continue to be retained.
 export function mergeRepairDraft(before: Record<string, unknown>, update: Record<string, unknown>, replacementGroups: readonly (readonly string[])[] = []): Record<string, unknown> {
   const retained = structuredClone(before);
   for (const group of replacementGroups) {
     const selected = group.filter(key => Object.hasOwn(update, key));
     if (selected.length === 1) {
-      for (const key of group) if (key !== selected[0]) delete retained[key];
+      for (const key of group) if (group.length === 1 || key !== selected[0]) delete retained[key];
     }
   }
   return mergeSubmissionDraft(retained, update) as Record<string, unknown>;
@@ -102,9 +102,11 @@ export function createFieldRepair(schema: TSchema, original: unknown, allowSeman
   const diagnostics = focusedRepairDiagnostics(schema, original, semanticIssues);
   const issues = diagnostics.issues;
   if ((!issues.length && !allowSemanticRepair) || issues.length > 64) return;
+  const replacedFields = new Set(replacementGroups.filter(group => group.length === 1).map(group => group[0]!));
   const properties: Record<string, TSchema> = Object.create(null);
   for (const issue of issues) {
     const parts = issue.path.split(".");
+    if (replacedFields.has(parts[0]!)) continue;
     if (!issue.path || issue.kind === "unknown" || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) return;
     let shape: Schema | undefined = schema as Schema;
     let value: unknown = baseline;
@@ -126,6 +128,13 @@ export function createFieldRepair(schema: TSchema, original: unknown, allowSeman
   const paths = Object.keys(properties);
   if (paths.some(path => paths.some(other => other !== path && other.startsWith(`${path}.`)))) return;
   const partial = updateSchema(schema as Schema, baseline, new Set(semanticIssues.filter(issue => issue.kind === "missing").map(issue => issue.path)));
+  for (const key of replacedFields) {
+    const fullField = (schema as Schema).properties?.[key];
+    if (fullField && partial.properties) partial.properties[key] = {
+      ...structuredClone(fullField),
+      description: `${fullField.description ?? ""} When supplied, this field replaces the entire retained field. Include unchanged valid items along with corrections.`.trim()
+    };
+  }
   partial.description = "Partial or full update to a retained submission. Omitted fields are retained; supplied fields replace earlier values. Final required fields are checked after merging.";
   // Nested partial objects and full submissions use the ordinary keys. Literal
   // path keys additionally let the model address a particular array item.

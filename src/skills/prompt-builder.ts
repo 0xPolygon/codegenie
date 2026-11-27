@@ -15,7 +15,7 @@ import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
 import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
-import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
+import { submitReviewShapeGuidance } from "../llm/submit-review-guidance.js";
 import { VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 
 export { stableJson };
@@ -56,7 +56,7 @@ export type ProjectSkillsOptions = {
   onEvent?: (event: SkillProjectionEvent) => void;
 };
 
-type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface };
+type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface; changeChecks?: boolean };
 
 export const exactSourceToolNames: Record<ReviewToolSurface, string> = {
   current: "read_symbol, read_range, find_definition, or read_diff_blocks",
@@ -115,6 +115,8 @@ const STAGE7_STATIC_SIGNALS = "Treat packet staticSignals as hints to investigat
 const STAGE7_V2_FRAME = "You are codegenie, a correctness-first senior code reviewer performing packet review. You propose candidate defects; a later stage verifies them before anything is published.";
 const STAGE7_V2_TASK = "Find behavior this change breaks. Start at an assigned changed line: what reached its caller, persisted state or next operation before the change, and what reaches it now? Choose a concrete input, state, dependency result or ordering that separates the two, and follow it to an observable result. Check both directions: something previously accepted, counted, completed or protected that no longer is, and something previously rejected, retired or released that is now accepted, counted twice or still used. For refactor-like changes, a changed validation predicate, fallback path, conversion or boundary matters when it can alter caller-visible behavior. Inspect the base side, callers, effective guards and tests when they can decide the outcome.";
 const STAGE7_V2_SKILL_HEADER = "Skill checks. Use the applicable checks to choose what to try, and test the neighboring case that could disprove your first explanation:";
+// #504 replaces #405's free-text assignedEffects with a submitted attempt and traceable source.
+const CHANGE_CHECKS_BLOCK = "For each assigned hunk, compare the previous and new behavior at the nearest observer that depends on it, then choose the most plausible concrete way the change could break that guarantee and check it. Ask the question for its kind: acceptance — does it now admit an input it should reject, or reject one callers may still send? state or contract — can a new value reach a reader that cannot handle it, or a retired value still pass a boundary that should reject it? accounting — can one contribution be applied twice or missed across initialization, retry and rollback? lifetime — can work outlive its owner, or an owner release a resource a live user can still reach? completion — can a waiter, sibling or cleanup be skipped or completed twice on success, cancellation or partial failure? failure — can failure look like success, or a supported recovery now look like failure? conversion — is a raw value validated before a lossy conversion, and is a caller-visible bound still satisfiable after it? Record one changeChecks row per hunk (two only for distinct behavioral changes). ruled_out needs checkedAt: the inspected source outside the changed rows that defeats this specific attempt; if the deciding fact is missing, use question and give the followUpHint. A mechanical hunk may use no_behavior_change with the equivalence in before and after. Rows are a record of your check, not findings: report every defect, including ones a row points to, in findings as usual.";
 const STAGE7_V2_CONTRACT = "You propose; a later verification stage decides what is proven and publishable. Submit a candidate finding when the changed code supports a specific trigger and wrong outcome. In failureMode give the trigger and what the changed code does; in whyThisMatters give the broken contract and the observable consequence; in verification cite the source facts you checked and any remaining decisive assumption. If one specific fact could remove the defect and you cannot resolve it, still submit the candidate and name that fact, or give a pointer-rich followUpHint or uncertainty with its file or symbol. Do not invent an execution, caller or contract, and do not emit broad reminders such as \"check if this is safe\".";
 const STAGE7_V2_STATUS_CURRENT = "Set reviewStatus to findings when you submit a candidate, and to no_findings after assessing the changed lines with no candidate left; scoped followUpHints or uncertainties may remain with no_findings. Use incomplete only when a tool or budget limit stopped assessment of the changed lines. An incomplete review counts as unreviewed coverage; do not use it to hedge. Keep output compact: noFindingReason is a short conclusion, not a review report.";
 const STAGE7_V2_TEST_BLOCK = "This packet changes tests. Identify the behavior a changed or deleted assertion protects, compare what the old and new tests exercise, and describe a concrete regression the inspected tests would now accept, or a supported behavior they would now reject. Missing-coverage claims need inspected test evidence: distinguish no tests from tests that miss one branch, value or contract, and scope absence claims to the tests you inspected. If relevant tests exist but you cannot inspect enough, give a pointer-rich followUpHint with the exact unresolved predicate.";
@@ -162,6 +164,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     { surface: "six-tool source navigation", reason: "Names the active tools and points reporters to both sides of a change, callers, and tests using pinned selectors.", evidence: "#283 cg-01 sibling deletion and cg-10 enclosing-function replay" },
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
     { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
+    { surface: "changeChecks and -cc.1 block", reason: "Records a bounded before/after break attempt and attests visibility of the source cited to rule it out.", evidence: "#405 showed complete assignedEffects rows could miss the causal behavior; #504 measures this replacement." },
     { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
     { surface: "uncertainties", reason: "Structured uncertainty gives uncertainty promotion a bounded predicate shape rather than free-form review notes.", evidence: "Plan 81 promotion lane retained by 2026-07-04 decision record" },
     { surface: "noFindingReason", reason: "Short no-finding conclusions avoid the essay payloads that created malformed or oversized submits.", evidence: "Plan 95 census: Stage-7 schema friction remains live" },
@@ -380,6 +383,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         injectionInstruction(),
         STAGE7_V2_TASK,
         STAGE7_V2_SKILL_HEADER + "\n" + projection.text,
+        ...(options.changeChecks ? [CHANGE_CHECKS_BLOCK] : []),
         STAGE7_V2_CONTRACT,
         six ? STAGE7_V2_STATUS_SIX : STAGE7_V2_STATUS_CURRENT,
         isPacketReviewTestPath(packet.path) || (packet.oldPath !== undefined && isPacketReviewTestPath(packet.oldPath))
@@ -418,7 +422,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         STAGE7_INTENT,
         STAGE7_INTENT_FIELDS,
         ...toolGuidance,
-        "Skill guidance:\n" + projection.text
+        "Skill guidance:\n" + projection.text,
+        ...(options.changeChecks ? [CHANGE_CHECKS_BLOCK] : [])
       ];
       const built = buildPrompt(7, [
         ...guidance,
@@ -426,18 +431,21 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         ...patchNotice,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
-        SUBMIT_REVIEW_SHAPE_GUIDANCE
+        submitReviewShapeGuidance(options.changeChecks ? packet.hunks[0]?.hunkId : undefined)
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
+      const suffix = options.changeChecks ? "-cc.1" : "";
       if (v2) {
-        const templateVersion = shortenedPatch
+        const version = shortenedPatch
           ? (six ? SIX_SHORTENED_PATCH_V2_PROMPT_VERSION : SHORTENED_PATCH_V2_PROMPT_VERSION)
           : (six ? SIX_STAGE7_V2_PROMPT_VERSION : STAGE7_V2_PROMPT_VERSION);
-        return { ...built, templateVersion };
+        return { ...built, templateVersion: version + suffix };
       }
       if (shortenedPatch) {
-        return { ...built, templateVersion: six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION };
+        const version = six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION;
+        return { ...built, templateVersion: version + suffix };
       }
-      return six ? { ...built, templateVersion: SIX_STAGE7_PROMPT_VERSION } : built;
+      const version = six ? SIX_STAGE7_PROMPT_VERSION : built.templateVersion;
+      return { ...built, templateVersion: version + suffix };
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);

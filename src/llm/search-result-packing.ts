@@ -1,5 +1,5 @@
 import type { DiffRecordGroups, ToolExecutionResult, ToolResultRecords } from "./llm-runner.js";
-import type { FileOutline, ToolResultMeta } from "../types.js";
+import type { DeliveredSourceRange, FileOutline, SearchResult, ToolResultMeta } from "../types.js";
 import { MAX_OMITTED_DIFF_LABELS } from "../repo/diff-blocks.js";
 import { earlierSearchPosition, hasSearchContext, searchContextPosition, searchCutNotice, searchDeliveryMeta } from "../repo/search.js";
 import { MISSING_FILE_GUIDANCE, numberSourceLine, renderSourceBlockHeader, withMeta } from "./repository-tool-guidance.js";
@@ -144,6 +144,7 @@ export function packTextToolResult(input: ToolExecutionResult, allowance: number
         ...(keepWithNext ? { keepWithNext: keepWithNext.slice(0, count) } : {}),
         ...(packable.cursors ? { cursors: packable.cursors.slice(0, count) } : {}),
         ...(packable.searchExcerptFlags ? { searchExcerptFlags: packable.searchExcerptFlags.slice(0, count) } : {}),
+        ...(packable.recordRanges ? { recordRanges: packable.recordRanges.slice(0, count) } : {}),
         ...(diffCut ? { diffGroups: { ...diffCut.groups, lineEnds: diffCut.groups.lineEnds.slice(0, count) } } : {}) };
       return {
         ...result,
@@ -294,8 +295,21 @@ export function packSearchToolResult(input: ToolExecutionResult, allowance: numb
       : "Search results could not fit the remaining result budget. Narrow pathGlob or read a known range; this is not a zero-match result.", isError: true, errorCode: "budget_exhausted",
       meta: reportedMeta ?? { ...meta, degraded: true, truncated: true, deliveryStatus: "budget_rejected" } };
   }
-  return { ...input, text, meta: reportedMeta ?? { ...meta,
+  return { ...input, text, searchResults: results, meta: reportedMeta ?? { ...meta,
     ...(omitted || shortened ? { degraded: meta.degraded || omitted > (meta.omittedCount ?? 0), truncated: true, omittedCount: omitted, omittedCountIsLowerBound: true } : {}) } };
+}
+
+/** An excerpt proves visibility of its surrounding whole lines only. */
+export function searchHitRanges(hit: SearchResult, side: DeliveredSourceRange["side"], totalLines = Infinity): DeliveredSourceRange[] {
+  const before = hit.contextBefore?.length ?? 0;
+  const after = Math.min(hit.contextAfter?.length ?? 0, totalLines - hit.line);
+  const ranges: DeliveredSourceRange[] = [];
+  if (!hit.excerpt) ranges.push({ path: hit.path, side, lineRange: [hit.line - before, hit.line + after] });
+  else {
+    if (before) ranges.push({ path: hit.path, side, lineRange: [hit.line - before, hit.line - 1] });
+    if (after > 0) ranges.push({ path: hit.path, side, lineRange: [hit.line + 1, hit.line + after] });
+  }
+  return ranges;
 }
 
 /** Keep outlines parseable under local caps; never present a chopped sourceText as complete. */
@@ -370,5 +384,5 @@ export function packOutlineToolResult(input: ToolExecutionResult, allowance: num
     return { text: withMeta("Outline cannot fit the remaining result budget. Use a known read_range; this is not an empty file.", refusalMeta),
       isError: true, errorCode: "budget_exhausted", meta: refusalMeta };
   }
-  return { ...input, text: render(), meta: meta() };
+  return { ...input, text: render(), outline, meta: meta() };
 }
