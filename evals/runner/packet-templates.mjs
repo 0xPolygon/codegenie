@@ -17,14 +17,18 @@ export function derivePacketTemplates(packets, builder = createPromptBuilder({},
 export function derivePacketTemplatesForConfig(packets, config) {
   const toolSurface = config?.review?.toolSurface ?? 'current';
   if (!['current', 'six'].includes(toolSurface)) throw new Error('invalid packet template configuration');
-  return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, changeChecks: config?.review?.changeChecks === true }));
+  const traceDependents = config?.review?.traceDependents ?? 'off';
+  if (!['off', 'leads'].includes(traceDependents)) throw new Error('invalid packet template configuration');
+  return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, traceDependents, changeChecks: config?.review?.changeChecks === true }));
 }
 
-export function validatePacketTemplates(bindings, packetIds, { toolSurface = 'current', changeChecks } = {}) {
+export function validatePacketTemplates(bindings, packetIds, { toolSurface = 'current', changeChecks, traceDependents } = {}) {
   if (!['current', 'six'].includes(toolSurface)) throw new Error('packet template binding mismatch');
   const suffix = toolSurface === 'six' ? '-six.1' : '';
   const checks = changeChecks === undefined ? ['', '-cc.1'] : [changeChecks ? '-cc.1' : ''];
-  const allowed = ['p7.16', 'p7.17'].flatMap((value) => checks.map((check) => value + suffix + check));
+  if (traceDependents !== undefined && !['off', 'leads'].includes(traceDependents)) throw new Error('packet template binding mismatch');
+  const traces = traceDependents === undefined ? ['', '-dep.1'] : [traceDependents === 'leads' ? '-dep.1' : ''];
+  const allowed = ['p7.16', 'p7.17'].flatMap((value) => checks.flatMap((check) => traces.map((trace) => value + suffix + check + trace)));
   if (!Array.isArray(bindings) || !Array.isArray(packetIds) || !packetIds.length || new Set(packetIds).size !== packetIds.length || bindings.length !== packetIds.length) throw new Error('packet template binding mismatch');
   const ids = new Set();
   for (const binding of bindings) {

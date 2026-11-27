@@ -68,6 +68,20 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { changeChecks: "true" } }).success).toBe(false);
   });
 
+  it("defaults tracing off and loads the available modes", () => {
+    const opts = { repoRoot: tempDir(), homeOverride: tempDir(), env: {} };
+    expect(loadConfig(opts).config.review.traceDependents).toBe("off");
+    for (const mode of ["leads", "off"] as const) {
+      writeFileSync(path.join(opts.homeOverride, "config.toml"), `[review]\ntraceDependents = "${mode}"\n`);
+      const loaded = loadConfig(opts);
+      expect(loaded.config.review.traceDependents).toBe(mode);
+      expect(loaded.sources["review.traceDependents"]).toBe("user-config");
+    }
+    for (const invalid of ["dependencies", "all", true]) {
+      expect(rawConfigSchema.safeParse({ review: { traceDependents: invalid } }).success).toBe(false);
+    }
+  });
+
   it("keeps stage settings user-scoped and lets per-run fields override them", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

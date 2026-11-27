@@ -66,10 +66,10 @@ export class SourceResolver {
     return paths.filter((filePath) => isMatch(filePath));
   }
 
-  async grepFiles(literal: string, glob?: string, source: SourceSelector = { kind: "head" }): Promise<string[]> {
+  async grepFiles(literal: string, glob?: string, source: SourceSelector = { kind: "head" }, signal?: AbortSignal): Promise<string[]> {
     const containedGlob = glob === undefined ? undefined : containGlob(this.repoRoot, glob);
     if (!this.git.grepFiles) throw new CodegenieError("git_ref_missing", "pinned filename search is unavailable");
-    const files = await this.git.grepFiles(this.resolveSource(source), literal);
+    const files = await this.git.grepFiles(this.resolveSource(source), literal, signal);
     if (containedGlob === undefined) return files;
     const matches = matchRepositoryGlob(containedGlob);
     return files.filter(file => matches(file));
@@ -88,6 +88,7 @@ export class SourceResolver {
       word?: boolean;
       startAt?: GrepPosition;
       positioned?: boolean;
+      timeoutMs?: number;
     } = {}
   ): Promise<import("../git/git-client.js").GrepResults> {
     const commit = this.resolveSource(opts.source);
@@ -101,7 +102,8 @@ export class SourceResolver {
       ...(opts.fixedString !== undefined ? { fixedString: opts.fixedString } : {}),
       ...(opts.word !== undefined ? { word: opts.word } : {}),
       ...(opts.startAt ? { startAt: opts.startAt } : {}),
-      ...(opts.positioned ? { positioned: true } : {})
+      ...(opts.positioned ? { positioned: true } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {})
     });
     if (paths?.length === 0) results.emptyScope = true;
     return results;

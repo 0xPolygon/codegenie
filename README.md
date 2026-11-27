@@ -259,6 +259,12 @@ toolSurface = "six"
 
 Set `toolSurface = "current"` or remove the setting to return to the default. In a small development comparison, the current surface published more required findings and used fewer calls and tokens.
 
+### Experimental dependent tracing
+
+`review.traceDependents` defaults to `"off"`. Set it to `"leads"` to attach bounded candidate snippets from unchanged code that may depend on a changed declaration. Stage 7 checks the link and looks for a failure introduced or made reachable by the change. The attached snippets are unverified leads.
+
+Value-set extraction covers TypeScript, TSX, JavaScript and Go. For packets in other languages, Stage 6 records `valueSetCoverage: "unsupported_language"` and can still attach other kinds of leads.
+
 ### Experimental change checks
 
 `review.changeChecks` adds experimental per-hunk checks to Stage 7 and defaults to `false`. When enabled, packet reviewers record a before-and-after comparison, a concrete break attempt, and the inspected source for ruled-out attempts. The checks are private telemetry and do not appear in review output.

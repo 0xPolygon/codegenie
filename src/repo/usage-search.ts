@@ -7,7 +7,17 @@ import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { classifyUsageSyntax, type UsageOccurrence } from "./usage-syntax.js";
 import pathUtil from "node:path";
 
-export type UsageSearchOptions = { source?: SourceSelector; scope?: "all" | "tests"; pathGlob?: string; cursor?: string; maxRows?: number; signal?: AbortSignal };
+export type UsageSearchOptions = {
+  source?: SourceSelector;
+  scope?: "all" | "tests";
+  pathGlob?: string;
+  cursor?: string;
+  maxRows?: number;
+  signal?: AbortSignal;
+  // Stage 6 shares a file and path budget across its usage lookups.
+  maxFilesScanned?: number;
+  acceptsPath?: (path: string) => boolean;
+};
 export type UsageRow = UsageOccurrence & { revision: "head" | "base"; fileLines: number; excerpt?: string; excerptOmitted?: true };
 export type TextUsageRow = { revision: "head" | "base"; path: string; line: number; column: number; fileLines: number; excerpt?: string; excerptOmitted?: true };
 export type UsageEntry = { kind: "syntactic"; row: UsageRow; cursor: string } | { kind: "text"; row: TextUsageRow; cursor: string };
@@ -38,16 +48,17 @@ export async function findUsages(
   // Prefer supported source files over text-only leads so documentation does not
   // consume the first pages before syntactic callers are offered.
   const segments = [...new Set(normalizedName.split("."))];
-  let candidates = await resolver.grepFiles(segments.at(-1)!, options.pathGlob, source);
+  let candidates = await resolver.grepFiles(segments.at(-1)!, options.pathGlob, source, options.signal);
   for (const segment of segments.slice(0, -1)) {
     checkAbort(options.signal);
     if (candidates.length === 0) break;
-    const containing = new Set(await resolver.grepFiles(segment, options.pathGlob, source));
+    const containing = new Set(await resolver.grepFiles(segment, options.pathGlob, source, options.signal));
     candidates = candidates.filter(path => containing.has(path));
   }
-  const paths = candidates.filter(path => scope === "all" || isRepositoryTestPath(path))
+  const paths = candidates.filter(path => (scope === "all" || isRepositoryTestPath(path)) && (options.acceptsPath?.(path) ?? true))
     .sort((a, b) => Number(!isSupportedSource(a)) - Number(!isSupportedSource(b)) || (a < b ? -1 : a > b ? 1 : 0));
   checkAbort(options.signal);
+  const fileLimit = Math.min(MAX_FILES_PER_PAGE, options.maxFilesScanned ?? MAX_FILES_PER_PAGE);
   const start = cursor ? paths.indexOf(cursor.path) : 0;
   if (start < 0) throw new CodegenieError("invalid_args", "cursor path is not present in the selected tree and scope");
   let repositoryPaths: Set<string> | undefined;
@@ -66,7 +77,7 @@ export async function findUsages(
       nextLocation: { path: next.path, line: next.line, column: next.column, kind: next.startFile ? "file" as const : "row" as const } } : {}), omissions, omittedDiagnostics });
   for (const path of paths.slice(start)) {
     checkAbort(options.signal);
-    if (filesScanned >= MAX_FILES_PER_PAGE) return page({ path, line: 1, column: 1, startFile: true }, "file_scan_limit");
+    if (filesScanned >= fileLimit) return page({ path, line: 1, column: 1, startFile: true }, "file_scan_limit");
     filesScanned++;
     const file = await resolver.readFile(path, source);
     checkAbort(options.signal);

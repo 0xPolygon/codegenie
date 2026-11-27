@@ -22,6 +22,7 @@ type GrepOptions = {
   glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean;
   startAt?: GrepPosition;
   positioned?: boolean;
+  timeoutMs?: number;
 };
 
 export interface GitClient {
@@ -53,7 +54,7 @@ export type GitTreeEntry = {
 };
 
 export interface InternalGitClient extends GitClient {
-  grepFiles?(ref: string, literal: string): Promise<string[]>;
+  grepFiles?(ref: string, literal: string, signal?: AbortSignal): Promise<string[]>;
   currentBranch(): Promise<string | undefined>;
   isInsideWorktree(): Promise<boolean>;
   repoRoot(): Promise<string>;
@@ -104,10 +105,11 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     runGitCapped(repoRoot, args, { ...options, ...environment });
 
   return {
-    async grepFiles(ref: string, literal: string): Promise<string[]> {
+    async grepFiles(ref: string, literal: string, signal?: AbortSignal): Promise<string[]> {
       assertSafeRef(ref);
       const stdout = await run(["grep", "-I", "-l", "-z", "-F", "-e", literal, ref, "--"], {
-        allowedExitCodes: [0, 1], stripFinalNewline: false, errorCode: "git_ref_missing", maxBuffer: 8 * 1024 * 1024
+        allowedExitCodes: [0, 1], stripFinalNewline: false, errorCode: "git_ref_missing", maxBuffer: 8 * 1024 * 1024,
+        ...(signal ? { signal } : {})
       });
       const prefix = `${ref}:`;
       return splitNul(stdout).map(entry => {
@@ -219,6 +221,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
                 if (hit) results.firstOmitted = { path: hit.path, line: hit.line };
               }
             },
+            ...(grepOpts.timeoutMs !== undefined ? { timeoutMs: grepOpts.timeoutMs } : {}),
             allowedExitCodes: [0, 1], errorCode: "git_ref_missing"
           });
         } catch (error) {

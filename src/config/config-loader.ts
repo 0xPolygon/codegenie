@@ -60,6 +60,7 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.extraSkillPaths",
   "review.verify",
   "review.changeChecks",
+  "review.traceDependents",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
   "review.maxFindings",
@@ -303,6 +304,10 @@ function applyRawConfig(
   if (raw.review?.toolSurface !== undefined) {
     config.review.toolSurface = raw.review.toolSurface;
     sources["review.toolSurface"] = source;
+  }
+  if (raw.review?.traceDependents !== undefined) {
+    config.review.traceDependents = raw.review.traceDependents;
+    sources["review.traceDependents"] = source;
   }
   if (raw.review?.changeChecks !== undefined) {
     config.review.changeChecks = raw.review.changeChecks;
