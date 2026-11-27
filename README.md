@@ -259,8 +259,7 @@ toolSurface = "six"
 
 Set `toolSurface = "current"` or remove the setting to return to the default. In a small development comparison, the current surface published more required findings and used fewer calls and tokens.
 
-### Experimental Stage 7 instructions
-
+### Experimental change checks
 
 `review.changeChecks` adds experimental per-hunk checks to Stage 7 and defaults to `false`. When enabled, packet reviewers record a before-and-after comparison, a concrete break attempt, and the inspected source for ruled-out attempts. The checks are private telemetry and do not appear in review output.
 
