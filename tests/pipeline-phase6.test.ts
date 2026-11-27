@@ -383,7 +383,7 @@ describe("phase 6 live review path", () => {
     const fallback = adapter.complete;
     adapter.complete = async (model, context, options) => {
       const prompt = firstPrompt(context);
-      if (prompt.includes("packet review")) {
+      if (prompt.includes("reviewing one packet of a pull request")) {
         const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet")!;
         const review = packetReviewFromPacket(packet);
         const [finding] = review.findings as Record<string, unknown>[];
@@ -539,7 +539,7 @@ function liveReviewAdapter({ exerciseRecovery = true }: { exerciseRecovery?: boo
         }
         return assistant([toolCall("submit-plan-live", "submit_plan", planFromDossier(dossier))]);
       }
-      if (prompt.includes("packet review")) {
+      if (prompt.includes("reviewing one packet of a pull request")) {
         callsByPrompt.packetReview += 1;
         if (exerciseRecovery && callsByPrompt.packetReview === 1) {
           return assistant([toolCall("submit-review-invalid", "submit_review", {})]);
@@ -623,7 +623,7 @@ function partialBudgetAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner"
         }
         return assistant([toolCall("submit-plan-partial", "submit_plan", planFromDossier(dossier))]);
       }
-      if (prompt.includes("packet review")) {
+      if (prompt.includes("reviewing one packet of a pull request")) {
         callsByPrompt.packetReview += 1;
         return assistant([toolCall("submit-review-empty", "submit_review", {
           reviewStatus: "no_findings",

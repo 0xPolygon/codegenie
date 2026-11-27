@@ -148,7 +148,7 @@ describe("Plan 98 Python vertical slice", () => {
     const promptBuilder = createPromptBuilder(lenses);
     const stage7 = promptBuilder.buildPacketReviewPrompt({ packet, skills: compatibleSkills });
     expect(stage7.prompt).toContain("Mutable defaults");
-    expect(stage7.prompt).toContain("Fixed argv with `shell=False`");
+    expect(stage7.prompt).not.toContain("Fixed argv with `shell=False`");
     expect(stage7.prompt).not.toContain("Reachable panic paths");
     expect(stage7.prompt).not.toContain("Floating promises");
     expect(stage7.prompt).not.toContain("Goroutine leaks");
@@ -265,7 +265,7 @@ describe("Plan 98 Python vertical slice", () => {
     ]);
   });
 
-  it("holds every Python skill check to an independently parsed owner matrix", async () => {
+  it("holds every Python skill check to an failure and example format", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
       extraSkillPaths: [],
@@ -286,14 +286,11 @@ describe("Plan 98 Python vertical slice", () => {
     const checks = python?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(8);
     for (const check of checks) {
-      const matrix = parseOwnerMatrix(check);
+      const matrix = parseCheckExample(check);
       expect(matrix.failure.length, check).toBeGreaterThan(15);
-      expect(matrix.materiality, check).toMatch(/severity/iu);
       expect(matrix.unsafe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).not.toBe(matrix.unsafe);
-      expect(matrix.mitigation.length, check).toBeGreaterThan(20);
-      expect(matrix.mitigation, check).not.toBe(matrix.safe);
       if (check.includes("Invalid `None`")) {
         expect(matrix.safe, check).toContain("raise LookupError");
       }
@@ -314,10 +311,10 @@ describe("Plan 98 Python vertical slice", () => {
   });
 });
 
-function parseOwnerMatrix(check: string): Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string> {
-  const match = /Failure: (?<failure>.*?) Materiality: (?<materiality>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*?) Mitigation: (?<mitigation>.*)$/u.exec(check);
+function parseCheckExample(check: string): Record<"failure" | "unsafe" | "safe", string> {
+  const match = /Failure: (?<failure>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*)$/u.exec(check);
   expect(match?.groups, check).toBeDefined();
-  return match!.groups as Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string>;
+  return match!.groups as Record<"failure" | "unsafe" | "safe", string>;
 }
 
 function fixture(fileName: string): string {

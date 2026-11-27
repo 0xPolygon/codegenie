@@ -1000,10 +1000,8 @@ describe("stage 9 eval diagnostics and prompts", () => {
       skills: []
     }).prompt;
 
-    expect(packetPrompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
-    expect(packetPrompt).toContain("verifier-resolvable predicate remains");
-    expect(packetPrompt).toContain("specific instruction or decision the reader would get wrong");
-    expect(packetPrompt).toContain("hypothetical monitoring/implementation mistake alone does not establish material impact");
+    expect(packetPrompt).toContain("Confidence is high when the failure follows from code you read");
+    expect(packetPrompt).toContain("Documentation: report it when a reader who follows the changed text would get a wrong or unsafe result.");
     expect(verifierPrompt).toContain("As a final verification decision, assess each final suggestion");
     expect(verifierPrompt).toContain("Select one concrete supported remedy");
     expect(verifierPrompt).toContain("findingUpdates.suggestedFix containing only the supported branch");
@@ -1035,9 +1033,7 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("verify the concrete predicate preserved in provenance");
     expect(verifierPrompt).toContain("Commit titles, PR text, and intent signals are context, not proof");
     // Issue 73: caller-visible guarantee / deliverability nudges
-    expect(packetPrompt).toContain("caller-visible");
-    expect(packetPrompt).toContain("deliverable/satisfiable");
-    expect(packetPrompt).toContain("internally consistent");
+    expect(packetPrompt).toContain("look for an input, state or ordering that now produces a wrong result");
     expect(verifierPrompt).toContain("promoted lossy-transform");
     expect(verifierPrompt).toContain("caller-visible");
     expect(verifierPrompt).toContain("transformed value");
