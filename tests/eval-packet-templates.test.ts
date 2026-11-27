@@ -1,9 +1,21 @@
 import { expect, it } from 'vitest';
 // @ts-expect-error Development-only ESM has no emitted types.
-import { derivePacketTemplates, expectedPacketTemplate, resolveExpectedCall, validatePacketTemplates, verifyPacketCalls } from '../evals/runner/packet-templates.mjs';
+import { derivePacketTemplates, derivePacketTemplatesForConfig, expectedPacketTemplate, resolveExpectedCall, validatePacketTemplates, verifyPacketCalls } from '../evals/runner/packet-templates.mjs';
 
 const packet = (id: string, truncated: boolean) => ({ id, hunks: [{ hunkId: id, lines: [], truncated }], prSummary: '', path: 'a', language: 'javascript', lenses: [], labels: [], contextText: '', relevantTests: [], toolBudget: 3 });
 const kinds = ['initial', 'tool-continuation', 'repair', 'finalize'];
+
+it('derives full and shortened template families from each effective instruction arm', () => {
+  for (const [instructionSet, full, shortened] of [['v1', 'p7.16', 'p7.17'], ['v2', 'p7.18', 'p7.19']]) {
+    const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: { stage7Instructions: instructionSet } });
+    expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe(full);
+    expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe(shortened);
+    expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { instructionSet })).not.toThrow();
+    expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { instructionSet: instructionSet === 'v1' ? 'v2' : 'v1' })).toThrow('binding mismatch');
+    const bad = structuredClone(bindings); bad[0].templates.repair = shortened;
+    expect(() => validatePacketTemplates(bad, ['ordinary', 'shortened'], { instructionSet })).toThrow('binding mismatch');
+  }
+});
 
 it('derives packet and kind bindings from the actual prompt builder', () => {
   const bindings = derivePacketTemplates([packet('ordinary', false), packet('shortened', true)]);
