@@ -192,14 +192,15 @@ it('exports v2 role and neutral reject anchors without private propositions', ()
     const options = { bindingSHA256: 'a'.repeat(64), oracleManifestSHA256: 'b'.repeat(64), campaignState: 'completed', excludedCount: 0,
       outputDirectory: path.join(dir, 'blind'), mappingFile: path.join(dir, 'private', 'mapping.json'),
       selections: [{ slotId: 'slot-01', attempt: 1, receiptSHA256: 'c'.repeat(64), arm: 'control', draw: 1, caseId: 'case-01', sourceLocator: 'source/one', oracleLocator: 'oracle/one', causes: [], role: 'negative-control',
-        rejects: [{ id: 'reject-1', anchors: [{ path: 'src/file.ts', lineRange: [1, 2], privateText: 'secret proposition' }], privateText: 'secret proposition' }], evidence }] };
+        rejects: [{ id: 'reject-1', anchors: [{ path: 'cmd/serve/openai.go', lineRange: [1, 2], privateText: 'secret proposition' }], privateText: 'secret proposition' }], evidence }] };
     const first = exportFirstLock(options); expect(exportFirstLock(options)).toEqual(first);
     const manifest = JSON.parse(readFileSync(path.join(options.outputDirectory, 'manifest.json'), 'utf8'));
-    expect(manifest.sheets[0]).toMatchObject({ role: 'negative-control', rejects: [{ id: 'reject-1', anchors: [{ path: 'src/file.ts', lineRange: [1, 2] }] }] });
+    expect(manifest.sheets[0]).toMatchObject({ role: 'negative-control', rejects: [{ id: 'reject-1', anchors: [{ path: 'cmd/serve/openai.go', lineRange: [1, 2] }] }] });
     const sheet = readFileSync(path.join(options.outputDirectory, `${manifest.sheets[0].id}.json`), 'utf8');
     expect(sheet).not.toContain('secret proposition');
     expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'bad-mapping'), outputDirectory: path.join(dir, 'bad'), selections: [{ ...options.selections[0], rejects: [{ id: 'treatment arm', anchors: [] }] }] })).toThrow('role');
     expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'empty-mapping'), outputDirectory: path.join(dir, 'empty'), selections: [{ ...options.selections[0], rejects: [{ id: 'reject-1', anchors: [] }] }] })).toThrow('role');
+    expect(() => exportFirstLock({ ...options, mappingFile: path.join(dir, 'traversal-mapping'), outputDirectory: path.join(dir, 'traversal'), selections: [{ ...options.selections[0], rejects: [{ id: 'reject-1', anchors: [{ path: '../openai.go', lineRange: [1, 2] }] }] }] })).toThrow('role');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

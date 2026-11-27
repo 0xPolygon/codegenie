@@ -7,8 +7,11 @@ import { readCheckedFile } from './safe-read.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const hash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
-const neutral = (value) => typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !/^[a-z]:/iu.test(value) && !value.includes('\\') &&
-  !value.split('/').includes('..') && !/(?:assigned.?effects|openrouter|openai|\b(?:control|treatment)\b|\barm[-_ ]|\bdraw[-_ ]|attempt[-_ ]|\bp7\.)/iu.test(value);
+const safeRelative = (value) => typeof value === 'string' && value.length > 0 && value.length < 512 && !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith('/') && !/^[a-z]:/iu.test(value) && !value.includes('\\') && !value.split('/').includes('..');
+const armMarker = /(?:assigned.?effects|\b(?:control|treatment)\b|\barm[-_ ]|\bdraw[-_ ]|attempt[-_ ]|\bp7\.)/iu;
+const neutral = (value) => safeRelative(value) && !armMarker.test(value) && !/(?:openrouter|openai)/iu.test(value);
+// Source filenames can legitimately name a provider without identifying an arm.
+export const neutralAnchorPath = (value) => safeRelative(value) && !armMarker.test(value);
 const caseIdValid = (value) => typeof value === 'string' && value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
 export const ROLES = ['positive', 'negative-control', 'contaminated-control', 'compatibility-question'];
 export function normalizeOracleCase(item, version) {
@@ -17,7 +20,7 @@ export function normalizeOracleCase(item, version) {
   if (version !== 2 || !ROLES.includes(item.role) || !Array.isArray(item.rejects)) throw new Error('invalid blind oracle version');
   return { role: item.role, causes: item.causes, rejects: item.rejects };
 }
-const anchorsValid = (anchors) => Array.isArray(anchors) && anchors.length > 0 && anchors.every((anchor) => anchor && neutral(anchor.path) && Array.isArray(anchor.lineRange) && anchor.lineRange.length === 2 && anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) && anchor.lineRange[0] <= anchor.lineRange[1]);
+const anchorsValid = (anchors) => Array.isArray(anchors) && anchors.length > 0 && anchors.every((anchor) => anchor && neutralAnchorPath(anchor.path) && Array.isArray(anchor.lineRange) && anchor.lineRange.length === 2 && anchor.lineRange.every((line) => Number.isSafeInteger(line) && line > 0) && anchor.lineRange[0] <= anchor.lineRange[1]);
 // Evaluate real paths so a symlinked parent cannot hide private evidence in a
 // repository that the review worker can read.
 export function assertOutsideSources(value, roots) {
