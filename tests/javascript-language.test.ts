@@ -255,7 +255,7 @@ describe("Plan 98 JavaScript vertical slice", () => {
     ]);
   });
 
-  it("holds every JavaScript skill check to the owner matrix and keeps TypeScript guidance separate", async () => {
+  it("holds every JavaScript skill check to the failure and example format and keeps TypeScript guidance separate", async () => {
     const { skills, failures } = await loadSkills({
       repoRoot: process.cwd(),
       extraSkillPaths: [],
@@ -279,14 +279,11 @@ describe("Plan 98 JavaScript vertical slice", () => {
     const checks = javascript?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(8);
     for (const check of checks) {
-      const matrix = parseOwnerMatrix(check);
+      const matrix = parseCheckExample(check);
       expect(matrix.failure.length, check).toBeGreaterThan(15);
-      expect(matrix.materiality, check).toMatch(/require/iu);
-      expect(matrix.materiality, check).toMatch(/severity/iu);
       expect(matrix.unsafe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).not.toBe(matrix.unsafe);
-      expect(matrix.mitigation.length, check).toBeGreaterThan(20);
     }
     expect(javascript?.sections.falsePositives).toContain("Detached promises are safe when rejection/lifetime are contained");
     expect(javascript?.sections.falsePositives).toContain("deliberate dual-package exports");
@@ -305,10 +302,10 @@ describe("Plan 98 JavaScript vertical slice", () => {
   });
 });
 
-function parseOwnerMatrix(check: string): Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string> {
-  const match = /Failure: (?<failure>.*?) Materiality: (?<materiality>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*?) Mitigation: (?<mitigation>.*)$/u.exec(check);
+function parseCheckExample(check: string): Record<"failure" | "unsafe" | "safe", string> {
+  const match = /Failure: (?<failure>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*)$/u.exec(check);
   expect(match?.groups, check).toBeDefined();
-  return match!.groups as Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string>;
+  return match!.groups as Record<"failure" | "unsafe" | "safe", string>;
 }
 
 function fixture(fileName: string): string {

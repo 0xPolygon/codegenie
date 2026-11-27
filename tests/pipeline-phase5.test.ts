@@ -76,7 +76,7 @@ import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 import { textRepository } from "./helpers/text-repository.js";
 
-it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", async () => {
+it("pins Stage 5, lean Stage 7, Stage 9 and submit schema renders", async () => {
   const { skills } = await loadSkills({
     repoRoot: "/unused-golden-repo", extraSkillPaths: [], logger: fakeLogger(), telemetry: nullTelemetry()
   });
@@ -117,7 +117,7 @@ it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", a
   };
   templates["cache"] = reviewCacheFingerprint(defaultConfig, target, "registry");
   templates["submit_review"] = sha256Hex(JSON.stringify(SubmitPacketReviewSchema));
-  expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"abf942fbc26160c0d9d099dbd9a7a2feca7674cee3a1c0c4a6b2168949cde686"`);
+  expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"2b6e94a2487262cba0fe3bd7bebe93d3ca8c1ede388bed66ec1b91eaea86cbff"`);
 });
 
 it("qualifies the default and enabled dependent-lead prompt and cache contracts", () => {
@@ -150,7 +150,7 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
   expect(reviewCacheFingerprint({ ...defaultConfig, review: { ...review, traceDependents: "leads" } }, target, "registry")).not.toBe(
     reviewCacheFingerprint(defaultConfig, target, "registry")
   );
-  expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"3ac55955516cc6760c33dff099e37c5dea2c7412570098e2f3d3bb2f827c1dd9"`);
+  expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"8cb23f32b08e2ebf9af941274964cb5f21802b0bad2b17243779052a8524c2c1"`);
 });
 
 describe("Stage 7 change checks", () => {
@@ -5140,7 +5140,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
     for (const toolSurface of ["current", "six"] as const) {
       const built = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet, skills: [] });
-      expect(built.templateVersion).toBe(toolSurface === "six" ? "p7.17-six.1" : "p7.17");
+      expect(built.templateVersion).toBe(toolSurface === "six" ? "p7.21-six.1" : "p7.21");
       expect(built.prompt).toContain("Context loss: some patch text was omitted");
       expect(built.prompt).toContain(toolSurface === "six" ? "read_change using hunkId" : "read_diff_blocks using packetId");
       expect(extractPromptJson<ReviewPacket>(built.prompt, "review-packet")?.hunks[0]?.omittedChangedRanges).toEqual({ old: [], new: [[1, 1]] });
@@ -8159,7 +8159,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
     expect(prompt.prompt).toContain("correctness/lossy-conversion-before-validation");
-    expect(prompt.prompt).toContain("Validate raw external/provider/API/config/database values before lossy conversion");
+    expect(prompt.prompt).toContain("staticSignals are harness leads to inspect");
   });
 
   it("keeps Stage 7 packet prompts recall-oriented while leaving verification as the precision gate", () => {
@@ -8181,13 +8181,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).not.toContain("followUpHints: [], uncertainties: []");
     expect(prompt).not.toContain("At most two followUpHints");
     expect(prompt).not.toContain("instead of continuing broad exploration");
-    expect(prompt).toContain("A later verification stage filters false positives");
-    expect(prompt).toContain("verifier-bound hint");
-    expect(prompt).toContain("behavior-preserving refactors");
-    expect(prompt).toContain("validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries");
-    expect(prompt).toContain("When returning no_findings with related context attached");
-    expect(prompt).toContain("why that related context does not change the observable behavior");
-    expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
+    expect(prompt).toContain("A later stage verifies every finding before anything is published.");
+    expect(prompt).toContain("do not move a concrete defect into followUpHints or uncertainties");
+    expect(prompt).toContain("Finding one defect does not end the review");
+    expect(prompt).not.toContain("When returning no_findings with related context attached");
   });
 
   it("detects generic test rewrites that replace boundary coverage with helper-level tests", () => {
@@ -8359,7 +8356,7 @@ describe("phase 5 pipeline regressions", () => {
     const packetPrompt = builder.buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
     const packetBlock = extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-packet");
     expect(packetBlock?.intentSignals).toMatchObject({ refactorLike: true, behaviorChangeLike: true });
-    expect(packetPrompt.prompt).toContain("intentional_needs_confirmation");
+    expect(packetPrompt.prompt).toContain("set behaviorChange and give short intentEvidence");
 
     const verifierPrompt = builder.buildVerifierPrompt({
       candidate: { ...fakeFinding(), behaviorChange: "intentional_needs_confirmation" },
@@ -8396,38 +8393,17 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
-  it("preserves the current prompt and scopes six-tool completion to assigned rows", () => {
+  it("uses lean guidance for six-tool and no-tool packets", () => {
     const packet = fakePacket();
     const simple: ReviewPacket = { ...packet, reviewProfile: "simple", toolBudget: { ...packet.toolBudget, maxToolCalls: 0 } };
-    const current = createPromptBuilder(fakeLensRegistry(), { toolSurface: "current" });
-    const six = createPromptBuilder(fakeLensRegistry(), { toolSurface: "six" });
-    for (const [input, hash] of [
-      [packet, "7e18f944bb1daf37108f431fdbfe3f733546544c37d953323e0a12d6c8099ada"],
-      [simple, "855470e3a7e6d05ffaa8f4b521ea266fe49e3bd0a116463c27e6d563a7fc595e"]
-    ] as const) {
-      const old = current.buildPacketReviewPrompt({ packet: input, skills: [] });
-      expect(sha256Hex(old.prompt)).toBe(hash);
-      expect(old.templateVersion).toBe("p7.16");
-      const { prompt, templateVersion } = six.buildPacketReviewPrompt({ packet: input, skills: [fakeTestsSkill()],
-        changeDirectory: "app.ts h1 [current packet]\nsibling.ts h2" });
-      expect(templateVersion).toBe("p7.16-six.1");
-      expect(prompt.match(/every removed line and every added line in this packet's hunks/gu)).toHaveLength(1);
-      expect(prompt).toContain("Unread sibling hunks alone do not make this review incomplete");
-      expect(prompt).toContain("Use incomplete if the missing evidence prevents assessment of an assigned changed line");
-      expect(prompt).toContain("Local budgets are targets, not stop signals");
-      expect(prompt).toContain("real defects only");
-      expect(prompt).toContain("Return no findings when there is no concrete failure mode");
-      expect(prompt).toContain("followUpHint/uncertainty");
-      expect(prompt).toContain("### False Positives");
+    for (const input of [packet, simple]) {
+      const { prompt, templateVersion } = createPromptBuilder(fakeLensRegistry(), { toolSurface: "six" }).buildPacketReviewPrompt({ packet: input, skills: [fakeTestsSkill()], changeDirectory: "app.ts h1" });
+      expect(templateVersion).toBe("p7.20-six.1");
+      expect(prompt).toContain("Finding one defect does not end the review");
+      expect(prompt).toContain('read_change with a hunkId and context "function"');
+      expect(prompt).not.toContain("### False Positives");
       expect(prompt).toContain("untrusted-data label=review-packet");
-      expect(extractPromptJson<ReviewPacket>(prompt, "review-packet")?.hunks.map(hunk => hunk.hunkId)).toEqual(["h1"]);
-      expect(prompt).not.toMatch(/(?:author-claims|must be emitted as a followUpHint|This packet is classified|For light\/simple review|Avoid broad exploration)/u);
-      if (input === simple) {
-        expect(prompt).toContain("This packet has no repository tools; decide from the packet text.");
-        expect(prompt).not.toContain("Other hunks in the change directory are context you may inspect");
-      } else {
-        expect(prompt).toContain("Other hunks in the change directory are context you may inspect; they are not part of what you must finish");
-      }
+      expect(prompt.includes("This packet has no repository tools; decide from the packet text.")).toBe(input === simple);
     }
   });
 

@@ -25,8 +25,26 @@ import { loadSkills, type Skill } from "../src/skills/skill-loader.js";
 import type { Logger, LogEvent, TelemetryEvent } from "../src/types.js";
 import type { TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { CodegenieError } from "../src/util/errors.js";
+import { sha256Hex } from "../src/util/hashing.js";
 
 describe("Phase 4 skills, lenses, and prompts", () => {
+  it("preserves the pre-#515 Stage 9 skill projection goldens", async () => {
+    const harness = phase4Harness();
+    const { skills, failures } = await loadSkills({ repoRoot: tempDir(), extraSkillPaths: [], logger: harness.logger, telemetry: harness.telemetry });
+    expect(failures).toEqual([]);
+    const hashes = Object.fromEntries(skills.map(skill => [skill.id, sha256Hex(projectSkills([skill], 9).text)]));
+    expect(hashes).toEqual({
+      "core/code-review": "44697a955bb2f8ebf4f032a36690024e4244d4e16c36db603091a60676367835",
+      "core/tests": "bb2b614154da2362f221b130c90b440502b41f2cf0be1289756933ac539b8d7e",
+      "lang/go": "995c14098767d3df621bb086ec36bee1682fa95d8f0a6c1e2f661476e82026e2",
+      "lang/javascript": "d051e8a0775e5d7c30fe3153665d2a4dd9858fcba830c559901fc83b88a9a502",
+      "lang/python": "8224abca2d438f9cc27615d3e65c167a840b023f297ecab95e4183d3634ee095",
+      "lang/rust": "0b885c29a6b2d491571c49a6b223b0b9f37cf5f5184b401d861fada0de667e20",
+      "lang/solidity": "e438cbf55c68485a2eeac1e793be86a5a58e551257b2e341a47d2475ddeab076",
+      "lang/typescript": "e26159e6d9134863db4412da60bfd891b2664b92f21c92cd240985933f0c1be4"
+    });
+  });
+
   it("loads the bundled skill inventory with deterministic ids and guidance", async () => {
     const harness = phase4Harness();
     const result = await loadSkills({
@@ -54,7 +72,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
       expect(skill.sections.checks?.length).toBeGreaterThan(100);
       expect(skill.summaryLine.length).toBeGreaterThan(10);
     }
-    expect(result.skills.find((skill) => skill.id === "core/tests")?.sections.checks).toContain("Helper-level tests");
+    expect(result.skills.find((skill) => skill.id === "core/tests")?.sections.checks).toContain("Deleted or weakened tests");
   });
 
   it("reports malformed and duplicate skills without blocking valid siblings", async () => {
@@ -287,7 +305,7 @@ Exercise normal YAML list frontmatter.
     expect(first).toEqual(second);
     expect(first.perSkill[0]).toMatchObject({
       skillId: "team/long",
-      includedSections: ["checks", "falsePositives", "examples"],
+      includedSections: ["checks", "examples"],
       omitted: false
     });
     expect(first.perSkill[0]?.truncatedChars).toBeGreaterThan(0);

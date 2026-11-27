@@ -28,7 +28,7 @@ export function validatePacketTemplates(bindings, packetIds, { toolSurface = 'cu
   const checks = changeChecks === undefined ? ['', '-cc.1'] : [changeChecks ? '-cc.1' : ''];
   if (traceDependents !== undefined && !['off', 'leads'].includes(traceDependents)) throw new Error('packet template binding mismatch');
   const traces = traceDependents === undefined ? ['', '-dep.1'] : [traceDependents === 'leads' ? '-dep.1' : ''];
-  const allowed = ['p7.16', 'p7.17'].flatMap((value) => checks.flatMap((check) => traces.map((trace) => value + suffix + check + trace)));
+  const allowed = ['p7.16', 'p7.17', 'p7.20', 'p7.21'].flatMap((value) => checks.flatMap((check) => traces.map((trace) => value + suffix + check + trace)));
   if (!Array.isArray(bindings) || !Array.isArray(packetIds) || !packetIds.length || new Set(packetIds).size !== packetIds.length || bindings.length !== packetIds.length) throw new Error('packet template binding mismatch');
   const ids = new Set();
   for (const binding of bindings) {

@@ -191,7 +191,7 @@ describe("Plan 98 Rust vertical slice", () => {
     });
   });
 
-  it("holds every Rust skill check to the owner failure/materiality/example/mitigation matrix", async () => {
+  it("holds every Rust skill check to the failure and example format", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
       extraSkillPaths: [],
@@ -212,24 +212,17 @@ describe("Plan 98 Rust vertical slice", () => {
     expect(checks).toHaveLength(7);
     for (const check of checks) {
       expect(check).toMatch(/Failure:/u);
-      expect(check).toMatch(/Materiality:/u);
-      expect(check).toMatch(/Materiality:[^.]*severity/iu);
       expect(check).toMatch(/Unsafe:/u);
       expect(check).not.toContain("Safe/mitigation:");
       const unsafeStart = check.indexOf("Unsafe:");
       const safeStart = check.indexOf("Safe:");
-      const mitigationStart = check.indexOf("Mitigation:");
-      expect(unsafeStart, check).toBeGreaterThan(check.indexOf("Materiality:"));
+      expect(unsafeStart, check).toBeGreaterThan(check.indexOf("Failure:"));
       expect(safeStart, check).toBeGreaterThan(unsafeStart);
-      expect(mitigationStart, check).toBeGreaterThan(safeStart);
       const unsafeExample = check.slice(unsafeStart, safeStart).trim();
-      const safeCounterexample = check.slice(safeStart, mitigationStart).trim();
-      const mitigation = check.slice(mitigationStart).trim();
+      const safeCounterexample = check.slice(safeStart).trim();
       expect(unsafeExample, check).toMatch(/Unsafe: `[^`]+`/u);
       expect(safeCounterexample, check).toMatch(/Safe: `[^`]+`/u);
       expect(unsafeExample, check).not.toBe(safeCounterexample);
-      expect(mitigation.length, check).toBeGreaterThan("Mitigation:".length + 20);
-      expect(mitigation, check).not.toBe(safeCounterexample);
     }
     expect(rust?.sections.falsePositives).toContain("Compiler-rejected lifetime");
     expect(rust?.sections.falsePositives).toContain("Widening/nonnumeric/bounded casts");
