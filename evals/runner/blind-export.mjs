@@ -4,6 +4,7 @@ import path from 'node:path';
 import { outsideCheckout } from './case.mjs';
 import { readCheckedFile } from './safe-read.mjs';
 import { projectBlindSheet, TreatmentLeakError } from './blind-sheet.mjs';
+import { ROLES } from './blind-inputs.mjs';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const json = (value) => Buffer.from(`${JSON.stringify(value)}\n`);
@@ -54,8 +55,10 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
   const descriptors = selections.map((entry) => {
     if (!entry || typeof entry.slotId !== 'string' || !Number.isSafeInteger(entry.attempt) || entry.attempt < 1 || !validHash(entry.receiptSHA256) ||
         !['control', 'treatment'].includes(entry.arm) || !Number.isSafeInteger(entry.draw) || entry.draw < 1 || !neutral(entry.caseId) || !neutral(entry.sourceLocator) || !neutral(entry.oracleLocator) || !Array.isArray(entry.causes) || new Set(entry.causes.map((cause) => cause.id)).size !== entry.causes.length || entry.causes.some((cause) => !cause || !neutral(cause.id) || typeof cause.optional !== 'boolean')) throw new Error('invalid selected review');
+    if (entry.role !== undefined && (!ROLES.includes(entry.role) || !Array.isArray(entry.rejects) || new Set(entry.rejects.map((reject) => reject?.id)).size !== entry.rejects.length || entry.rejects.some((reject) => !neutral(reject?.id) || !Array.isArray(reject.anchors) || reject.anchors.some((anchor) => !neutral(anchor?.path) || !Array.isArray(anchor.lineRange) || anchor.lineRange.length !== 2 || anchor.lineRange.some((line) => !Number.isSafeInteger(line) || line < 1) || anchor.lineRange[0] > anchor.lineRange[1])))) throw new Error('invalid selected review role');
     return { slotId: entry.slotId, attempt: entry.attempt, receiptSHA256: entry.receiptSHA256, arm: entry.arm, draw: entry.draw,
-      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator, causes: entry.causes.map(({ id, optional }) => ({ id, optional })) };
+      caseId: entry.caseId, sourceLocator: entry.sourceLocator, oracleLocator: entry.oracleLocator, causes: entry.causes.map(({ id, optional }) => ({ id, optional })),
+      ...(entry.role === undefined ? {} : { role: entry.role, rejects: entry.rejects.map(({ id, anchors }) => ({ id, anchors: anchors.map(({ path: anchorPath, lineRange }) => ({ path: anchorPath, lineRange })) })) }) };
   });
   if (new Set(descriptors.map((entry) => entry.slotId)).size !== descriptors.length) throw new Error('duplicate selected slot');
   let key;
@@ -75,16 +78,18 @@ export function exportFirstLock({ bindingSHA256, oracleManifestSHA256, selection
     const descriptor = mapped[index]; let sheet;
     try { sheet = projectBlindSheet({ ...entry.evidence, key, id: descriptor.id, caseId: descriptor.caseId }); }
     catch (error) { if (!(error instanceof TreatmentLeakError)) throw error; affectedSheets++; hits += error.hits; continue; }
-    const bytes = json({ ...sheet, causes: descriptor.causes, sourceLocator: descriptor.sourceLocator, oracleLocator: descriptor.oracleLocator });
+    const bytes = json({ ...sheet, causes: descriptor.causes, sourceLocator: descriptor.sourceLocator, oracleLocator: descriptor.oracleLocator,
+      ...(descriptor.role === undefined ? {} : { role: descriptor.role, rejects: descriptor.rejects }) });
     const visible = bytes.toString('utf8');
     const privateValues = [entry.slotId, entry.receiptSHA256, ...(entry.evidence.privateIdentifiers ?? [])].filter((value) => typeof value === 'string' && value.length >= 8);
     if (containsSlotId(visible, entry.slotId) || privateValues.some((value) => visible.includes(value)) || /(?:^|[\s"'])\/(?:home|tmp|private|Users)\//u.test(visible)) throw new Error('private identifier in first-lock sheet');
-    sheets.push({ case: descriptor.caseId, id: descriptor.id, causes: descriptor.causes, terminal: entry.evidence.outcome, bytes, sha256: digest(bytes) });
+    sheets.push({ case: descriptor.caseId, id: descriptor.id, causes: descriptor.causes, terminal: entry.evidence.outcome, bytes, sha256: digest(bytes),
+      ...(descriptor.role === undefined ? {} : { role: descriptor.role, rejects: descriptor.rejects }) });
   }
   if (hits) throw new TreatmentLeakError(hits, affectedSheets);
   sheets.sort((a, b) => a.case < b.case ? -1 : a.case > b.case ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const manifestBytes = json({ version: 1, campaignBinding: bindingSHA256, oracleManifestSHA256, mappingSHA256: digest(mappingBytes), campaignState, selectedCount: sheets.length, excludedCount,
-    sheets: sheets.map(({ case: caseName, id, causes, terminal, sha256 }) => ({ case: caseName, id, causes, sha256, terminal })) });
+    sheets: sheets.map(({ case: caseName, id, causes, terminal, sha256, role, rejects }) => ({ case: caseName, id, causes, sha256, terminal, ...(role === undefined ? {} : { role, rejects }) })) });
   if ((expectedMappingSHA256 !== undefined && digest(mappingBytes) !== expectedMappingSHA256) ||
       (expectedManifestSHA256 !== undefined && digest(manifestBytes) !== expectedManifestSHA256)) throw new Error('blind export binding changed');
   const expectedFiles = new Map(sheets.map((sheet) => [`${sheet.id}.json`, sheet.bytes]));
@@ -110,7 +115,7 @@ function readBound(file, expected) {
   return JSON.parse(bytes.toString('utf8'));
 }
 
-function verifyPrimaryBundle(manifestFile, manifest, mapping) {
+export function verifyPrimaryBundle(manifestFile, manifest, mapping) {
   if (mapping.bindingSHA256 !== manifest.campaignBinding || !Array.isArray(mapping.selections) || !Array.isArray(manifest.sheets) || !/^[a-f0-9]{64}$/u.test(mapping.key ?? '') || mapping.selections.length !== manifest.sheets.length) throw new Error('invalid first-lock manifest');
   if (path.basename(manifestFile) !== 'manifest.json') throw new Error('invalid first-lock manifest path');
   const key = Buffer.from(mapping.key, 'hex'), sheets = [], expectedFiles = new Map([['manifest.json', readCheckedFile(manifestFile)]]);
@@ -121,7 +126,8 @@ function verifyPrimaryBundle(manifestFile, manifest, mapping) {
     if (digest(bytes) !== sheet.sha256) throw new Error('first-lock sheet mismatch');
     expectedFiles.set(`${item.id}.json`, bytes);
     const parsed = JSON.parse(bytes.toString('utf8'));
-    if (parsed.id !== item.id || parsed.case !== sheet.case || JSON.stringify(sheet.causes) !== JSON.stringify(item.causes)) throw new Error('first-lock sheet mismatch');
+    if (parsed.id !== item.id || parsed.case !== sheet.case || JSON.stringify(sheet.causes) !== JSON.stringify(item.causes) ||
+        (item.role !== undefined && (sheet.role !== item.role || parsed.role !== item.role || JSON.stringify(sheet.rejects) !== JSON.stringify(item.rejects) || JSON.stringify(parsed.rejects) !== JSON.stringify(item.rejects)))) throw new Error('first-lock sheet mismatch');
     sheets.push(parsed);
   }
   checkDestination(path.dirname(manifestFile), expectedFiles);
