@@ -182,7 +182,10 @@ export function applyRepoConfigLayer(
 export function removeRetiredReviewOptions(parsed: unknown): void {
   if (parsed && typeof parsed === "object" && "review" in parsed && parsed.review &&
       typeof parsed.review === "object" && "changeChecks" in parsed.review) {
-    throw new CodegenieError("config_error", "review.changeChecks has been retired");
+    if (parsed.review.changeChecks === false) delete parsed.review.changeChecks;
+    else if (parsed.review.changeChecks === true) {
+      throw new CodegenieError("config_error", "review.changeChecks has been retired");
+    }
   }
   if (parsed && typeof parsed === "object" && "review" in parsed && parsed.review &&
       typeof parsed.review === "object" && "stage7Instructions" in parsed.review) {

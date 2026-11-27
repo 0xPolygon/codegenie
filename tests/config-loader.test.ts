@@ -55,18 +55,21 @@ describe("config loader", () => {
     expect(() => loadConfig(opts)).toThrow(expect.objectContaining({ code: "config_error" }));
   });
 
-  it.each([true, false])("rejects retired changeChecks=%s in a stored eval snapshot", (value) => {
-    expect(() => removeRetiredReviewOptions({ review: { changeChecks: value } })).toThrow("review.changeChecks has been retired");
+  it("strips disabled changeChecks from an eval snapshot and rejects enabled", () => {
+    const snapshot = { review: { changeChecks: false, traceDependents: "leads" } };
+    removeRetiredReviewOptions(snapshot);
+    expect(snapshot.review).toEqual({ traceDependents: "leads" });
+    expect(() => removeRetiredReviewOptions({ review: { changeChecks: true } })).toThrow("review.changeChecks has been retired");
   });
 
-  it.each(["true", "false"])("rejects retired changeChecks=%s in user and repo config", (value) => {
-    for (const source of ["user", "repo"] as const) {
-      const repoRoot = tempDir();
-      const homeOverride = tempDir();
-      const file = source === "user" ? path.join(homeOverride, "config.toml") : path.join(repoRoot, "codegenie.toml");
-      writeFileSync(file, `[review]\nchangeChecks = ${value}\n`);
-      expect(() => loadConfig({ repoRoot, homeOverride, env: {} })).toThrow("review.changeChecks has been retired");
-    }
+  it.each(["user", "repo"] as const)("strips disabled and rejects enabled changeChecks in %s config", (source) => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    const file = source === "user" ? path.join(homeOverride, "config.toml") : path.join(repoRoot, "codegenie.toml");
+    writeFileSync(file, "[review]\nchangeChecks = false\n");
+    expect(loadConfig({ repoRoot, homeOverride, env: {} }).config.review).not.toHaveProperty("changeChecks");
+    writeFileSync(file, "[review]\nchangeChecks = true\n");
+    expect(() => loadConfig({ repoRoot, homeOverride, env: {} })).toThrow("review.changeChecks has been retired");
   });
 
   it("defaults tracing off and loads the available modes", () => {
