@@ -20,8 +20,6 @@ const stageFixture = {
     "  if (value < 1 || value > 3) throw new Error('range');",
     "}",
     "export function checkLength(length: number) { return length >= 1 && length <= 3; }",
-    "export function PreviewStage() { return true; }",
-    "export function isReviewStageLabel(label: string) { return label === 'ready'; }",
     "export function unrelated() { return false; }"
   ].join("\n") + "\n",
   "tests/range.test.ts": "function testGuard(x: number) { return x >= 1 && x <= 3; }\n",
@@ -51,7 +49,7 @@ function allHunks(files: DiffFile[]): string[] {
 }
 
 describe("Stage 6 dependent leads", () => {
-  it("finds stale guard bodies and keeps unrelated bounds and name collisions lexical", async () => {
+  it("finds stale guard bodies and keeps unrelated bounds lexical", async () => {
     const repo = await fixture(stageFixture, head);
     try {
       const result = await trace(repo);
@@ -61,12 +59,25 @@ describe("Stage 6 dependent leads", () => {
           lineRange: [1, 3], text: expect.stringContaining("value >= 1 && value <= 3") }),
         expect.objectContaining({ relation: "value_set", enclosing: "checkBudget", match: "lexical",
           lineRange: [4, 6], text: expect.stringContaining("value < 1 || value > 3") }),
-        expect.objectContaining({ relation: "value_set", enclosing: "checkLength", match: "lexical" }),
-        expect.objectContaining({ relation: "name_family", enclosing: "isReviewStageLabel", match: "lexical" })
+        expect.objectContaining({ relation: "value_set", enclosing: "checkLength", match: "lexical" })
       ]);
-      expect(counts).toEqual({ preCap: { "value_set:lexical": 3, "name_family:lexical": 1 },
-        attached: { "value_set:lexical": 3, "name_family:lexical": 1 }, omitted: {} });
+      expect(counts).toEqual({ preCap: { "value_set:lexical": 3 },
+        attached: { "value_set:lexical": 3 }, omitted: {} });
       expect(result.telemetry.failures).toBe(0);
+    } finally { repo.dispose(); }
+  });
+
+  it("does not attach a lead for a name-only match to a changed contract", async () => {
+    const repo = await fixture({
+      "types.ts": stageFixture["types.ts"],
+      "consumer.ts": "export function isReviewStageLabel(label: string) { return label === 'ready'; }\n"
+    }, head);
+    try {
+      const result = await trace(repo);
+      expect(selectPacketDependents(result, allHunks(repo.files))).toEqual({
+        candidates: [], counts: { preCap: {}, attached: {}, omitted: {} }
+      });
+      expect(result.telemetry.contracts).toEqual({ value_set: 1 });
     } finally { repo.dispose(); }
   });
 
@@ -198,8 +209,15 @@ describe("Stage 6 dependent leads", () => {
     } finally { repo.dispose(); }
 
     const files = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`f-${index}.ts`, "// first\n"]));
-    const large = await fixture(files, Object.fromEntries(Object.keys(files).map(path => [path, "// second\n"])));
+    const updatedFiles = Object.fromEntries(Object.keys(files).map(path => [path, "// second\n"]));
+    const large = await fixture(files, updatedFiles);
     try {
+      // Isolate the file cap from the wall-clock cap on a loaded test host.
+      vi.spyOn(large.resolver, "readFile").mockImplementation(async (path, source = { kind: "head" }) => {
+        const commit = large.resolver.resolveSource(source);
+        const content = (source.kind === "base" ? files : updatedFiles)[path]!;
+        return { path, source, commit, content, contentSha: commit };
+      });
       const result = await trace(large);
       expect(result.telemetry.filesParsed).toBe(200);
       expect(result.telemetry.caps).toContain("files");

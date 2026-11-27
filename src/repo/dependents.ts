@@ -22,7 +22,7 @@ type Side = "base" | "head";
 type ContractSide = { name: string; kind?: SymbolInfo["kind"]; members?: ContractMember[] };
 type Contract = { path: string; hunks: Set<string>; before?: ContractSide; after?: ContractSide };
 type FileView = { file: ParsedFile; symbols: SymbolInfo[]; lines: string[] };
-type Lead = Omit<CandidateDependent, "hunkId"> & { declaration: boolean };
+type Lead = Omit<CandidateDependent, "hunkId">;
 type Hit = { path: string; line: number; range?: Range; enclosing?: string };
 type Counts = Partial<Record<Relation, number>>;
 type Caps = "contracts" | "queries" | "files" | "time" | "aborted";
@@ -124,10 +124,10 @@ export async function traceDependents(input: TraceInput): Promise<DependentTrace
     memo.set(key, result);
     return result;
   };
-  const grep = async (pattern: string, caseSensitive = true): Promise<SearchResult[]> => {
+  const grep = async (pattern: string): Promise<SearchResult[]> => {
     query();
     const results = await withinTime(input.resolver.grep(pattern, {
-      maxResults: MAX_MATCHES, caseSensitive, timeoutMs: Math.max(1, Math.floor(MAX_MS - (performance.now() - started)))
+      maxResults: MAX_MATCHES, timeoutMs: Math.max(1, Math.floor(MAX_MS - (performance.now() - started)))
     }).catch(() => { throw new TraceFailure("grep_failed"); }));
     if (results.length >= MAX_MATCHES || results.omittedLines) telemetry.scanLimitedQueries++;
     return results.filter(hit => acceptsPath(hit.path) && !overlaps([hit.line, hit.line], changed.get(hit.path) ?? []));
@@ -175,8 +175,7 @@ export async function traceDependents(input: TraceInput): Promise<DependentTrace
       if (!text.trim()) continue;
       leads.push({ path: hit.path, lineRange: range, text, ...(enclosing ? { enclosing } : {}), relation,
         match: relation === "caller" || relation === "stale_reference" ? "syntactic_use" : "lexical",
-        contract: name, contractPath: contract.path,
-        declaration: relation === "name_family" && at?.[0] === hit.line });
+        contract: name, contractPath: contract.path });
     }
     return leads;
   };
@@ -196,11 +195,6 @@ export async function traceDependents(input: TraceInput): Promise<DependentTrace
         count("value_set");
         const hits = await findValueSetHits(before, after, grep, view);
         leads.push(...await attach(hits, "value_set", contract, name));
-      }
-      if (name.length >= 6) {
-        count("name_family");
-        const hits = await grep(identifierParts(name).map(escapeEre).join("_*"), false);
-        leads.push(...await attach(hits.filter(hit => hasNameFamily(hit.matchText, name)), "name_family", contract, name));
       }
       const relation = !contract.after ? "stale_reference"
         : contract.after.kind === "function" || contract.after.kind === "method" ? "caller" : undefined;
@@ -331,21 +325,6 @@ function escapeEre(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function identifierParts(value: string): string[] {
-  return value.replace(/([A-Z])([A-Z][a-z])/gu, "$1_$2").replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
-    .split(/[_$]+/u).filter(Boolean).map(part => part.toLowerCase());
-}
-
-function hasNameFamily(line: string, name: string): boolean {
-  const sought = identifierParts(name);
-  return [...line.matchAll(/[A-Za-z_$][\w$]*/gu)].some(([word]) => {
-    const parts = identifierParts(word);
-    if (word.toLowerCase() === name.toLowerCase()) return false;
-    return parts.some((_, offset) => sought.every((part, i) =>
-      parts[offset + i] === part || (i === sought.length - 1 && parts[offset + i] === part + "s")));
-  });
-}
-
 function memberPattern(member: ContractMember): string {
   if (member.qualified) return `(^|[^[:alnum:]_$])${escapeEre(member.qualified)}([^[:alnum:]_$]|$)`;
   if (member.key.startsWith("string:")) {
@@ -397,16 +376,16 @@ async function findValueSetHits(
   return hits;
 }
 
-const ranks: Record<Relation, number> = { value_set: 0, name_family: 1, stale_reference: 2, caller: 3 };
+const ranks: Record<Relation, number> = { value_set: 0, stale_reference: 1, caller: 2 };
 
 export function selectPacketDependents(trace: DependentTrace, hunkIds: string[]) {
   const ranked = hunkIds.flatMap(hunkId => (trace.byHunk.get(hunkId) ?? []).map(lead => ({ ...lead, hunkId })))
-    .sort((a, b) => ranks[a.relation] - ranks[b.relation] || Number(b.declaration) - Number(a.declaration)
+    .sort((a, b) => ranks[a.relation] - ranks[b.relation]
       || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) || a.lineRange[0] - b.lineRange[0]);
   const seen = new Set<string>();
   const counts: Record<"preCap" | "attached" | "omitted", Record<string, number>> = { preCap: {}, attached: {}, omitted: {} };
   const candidates: CandidateDependent[] = [];
-  for (const { declaration: _declaration, ...lead } of ranked) {
+  for (const lead of ranked) {
     const key = `${lead.hunkId}:${lead.contract}:${lead.path}:${lead.lineRange.join(":")}`;
     if (seen.has(key)) continue;
     seen.add(key);
