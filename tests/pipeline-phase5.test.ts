@@ -21,7 +21,7 @@ import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema, submitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
-import { closeNudgeThreshold, runLensPackets } from "../src/pipeline/lens-runner.js";
+import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
@@ -5043,14 +5043,6 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("sets the Stage 7 close nudge from coverage and profile alone (#129)", () => {
-    expect(closeNudgeThreshold({ coverage: "light", reviewProfile: "investigate" })).toBe(1);
-    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "simple" })).toBe(1);
-    expect(closeNudgeThreshold({ coverage: "deep", reviewProfile: "standard" })).toBe(3);
-    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "investigate" })).toBe(3);
-    expect(closeNudgeThreshold({ coverage: "normal", reviewProfile: "standard" })).toBe(2);
-  });
-
   it("keeps unrelated simple packets on the no-tool profile in a large change", async () => {
     const files = Array.from({ length: 100 }, (_, index) => fakeDiffFile(`src/module-${index}.ts`, `"step ${index}"`));
     const plan: ReviewPlan = {
@@ -8427,11 +8419,9 @@ describe("phase 5 pipeline regressions", () => {
       expect(result?.followUpHints[0]?.question).toContain("sibling update");
       if (toolSurface === "six") {
         expect(directory).toHaveBeenCalledWith(["h1"], true);
-        expect(captured?.finalization?.buildPostToolNudge).toBeUndefined();
         expect(captured?.finalization?.softTargetNotice).toContain("a removed or added line in this packet's hunks");
       } else {
         expect(directory).not.toHaveBeenCalled();
-        expect(captured?.finalization?.buildPostToolNudge).toBeTypeOf("function");
         expect(captured?.finalization?.softTargetNotice).toBeUndefined();
       }
     }

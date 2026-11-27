@@ -1042,31 +1042,6 @@ function buildPiRunner(runnerOpts: CreateRunnerOptions, adapter: PiCompletionAda
                 candidateDrafted,
                 reason: "tool_budget_exhausted"
               });
-            } else {
-              const nudge = request.finalization?.buildPostToolNudge?.({
-                submitToolName: submitTool.name,
-                toolCallsUsed,
-                investigationRounds,
-                resultCharsUsed,
-                lastToolResults: toolResultSummaries.slice(-toolCalls.length)
-              });
-              if (nudge !== undefined && nudge.trim().length > 0) {
-                messages.push({ role: "user", content: nudge.trim(), timestamp: 0 });
-                opts.telemetry.event(definedRecord({
-                  stage: request.stage,
-                  level: "debug",
-                  message: "post_tool_close_nudge",
-                  workerId: request.telemetryContext?.workerId,
-                  packetId: request.telemetryContext?.packetId,
-                  data: definedRecord({
-                    investigationRounds,
-                    toolCallsUsed,
-                    resultCharsUsed,
-                    nudgeChars: nudge.trim().length,
-                    candidateId: request.telemetryContext?.candidateId
-                  })
-                }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-              }
             }
             continue;
           }

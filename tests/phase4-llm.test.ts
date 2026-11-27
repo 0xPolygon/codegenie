@@ -5322,7 +5322,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("keeps sink-only secret variants in nudge and retained evidence while redacting their persisted copy", async () => {
+  it("keeps sink-only secret variants in model context and retained evidence while redacting their persisted copy", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codegenie-sink-variant-"));
     const escaped = "secret\\u003cinside\\u003elong-value";
     const component = "short-key-123";
@@ -5334,7 +5334,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "head", deliveryStatus: "full", lookupStatus: "found" } }) };
     const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: { path: source } }]),
       assistant([validSubmitReviewCall("done")])]);
-    let target = "";
     const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
     try {
       const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, debugTrace: true } });
@@ -5344,12 +5343,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
       await runner.runStructured({ ...submitReviewRequest("sink-variants"), tools: [tool],
         toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
-        finalization: { buildPostToolNudge: ({ lastToolResults }) => { target = lastToolResults[0]?.target ?? ""; return `inspect ${target}`; } },
         onToolResults: rows => captured.push(...rows) });
-      expect(target).toContain(source);
       expect(adapter.contexts[1]).toContain(component);
       expect(captured[0]?.repositoryEvidence?.[0]?.text).toBe(source);
-      await run.recorder.writeDebug("llm-calls", "variant-evidence", { target, evidence: captured[0]?.repositoryEvidence });
+      await run.recorder.writeDebug("llm-calls", "variant-evidence", { target: source, evidence: captured[0]?.repositoryEvidence });
       await run.finalize({ status: "completed_full", exitCode: 0 });
       const folder = path.join(attached.runDir, "debug", "llm-calls");
       const stored = readdirSync(folder).map(file => readFileSync(path.join(folder, file), "utf8")).join("\n");
@@ -5535,7 +5532,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         assistant([validSubmitReviewCall("valid")])
       ]);
       const summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
-      let modelPreview: string | undefined;
       const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
         telemetry: run.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
         hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
@@ -5543,13 +5539,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         parameters: Type.Object({ name: Type.String(), pathGlob: Type.String() }),
         execute: async () => ({ text: "x".repeat(227) + secret + " trailing text" }) }],
         toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 4_000 },
-        finalization: { buildPostToolNudge: ({ lastToolResults }) => { modelPreview = lastToolResults[0]?.preview; return ""; } },
         onToolResults: rows => summaries.push(...rows) });
       await run.finalize({ status: "completed_full", exitCode: 0 });
       const calls = readFileSync(path.join(attached.runDir, "tool-calls.jsonl"), "utf8");
       expect(calls).not.toContain(secret.slice(0, 13));
       expect(JSON.stringify(summaries)).not.toContain(secret.slice(0, 13));
-      expect(modelPreview).toContain(secret.slice(0, 10)); // Preserve the pre-existing model-facing nudge input.
+      expect(adapter.contexts[1]).toContain(secret.slice(0, 10)); // Model-facing tool content is unchanged.
     } finally { clearRegisteredSecretsForTests(); rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -5930,46 +5925,23 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
-  it("adds configured post-tool close nudges before continuing packet review", async () => {
+  it("continues after three tool rounds without an extra close-out instruction", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
-      assistant([
-        {
-          type: "toolCall",
-          id: "tool-before-nudge",
-          name: "read_range",
-          arguments: { path: "src/a.ts" }
-        }
-      ]),
-      assistant([validSubmitReviewCall("submit-after-nudge")])
+      ...[1, 2, 3].map(i => assistant([{ type: "toolCall" as const, id: `read-${i}`, name: "read_range", arguments: { path: `src/${i}.ts` } }])),
+      assistant([validSubmitReviewCall("done")])
     ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
-
-    await runner.runStructured({
-      ...submitReviewRequest("packet-nudge"),
-      tools: [{
-        name: "read_range",
-        description: "read",
-        parameters: Type.Object({ path: Type.String() }),
-        execute: vi.fn(async () => ({ text: "line 1", meta: { backend: "text" as const, precision: "exact" as const, degraded: false } }))
-      }],
-      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 1000 },
-      finalization: {
-        buildPostToolNudge: () => "NUDGE: submit no findings unless the next tool is decisive."
-      }
-    });
-    expect(adapter.contexts[1]).toContain("NUDGE: submit no findings");
-    expect(adapter.contexts[1]).toContain("Local investigation target remaining: 2 tool calls; 2 investigation rounds; 994 result characters");
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: "post_tool_close_nudge" })
-    ]));
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("packet-no-closeout"), tools: [{
+      name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({ text: "line 1", meta: { backend: "text" as const, precision: "exact" as const, degraded: false } }))
+    }], toolBudget: { maxToolCalls: 20, maxInvestigationRounds: 6, maxResultChars: 48000 } });
+    expect(adapter.contexts).toHaveLength(4);
+    expect(adapter.contexts[3]).toContain("Local investigation target remaining: 17 tool calls; 3 investigation rounds");
+    expect(adapter.contexts[3]).not.toContain("Only continue if the next repository tool call");
+    expect(telemetry.events.some(event => event.message === "post_tool_close_nudge")).toBe(false);
   });
 
   it("allows a source-read recovery after crossing the outline batch soft target", async () => {
