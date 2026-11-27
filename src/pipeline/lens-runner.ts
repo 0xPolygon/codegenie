@@ -217,6 +217,7 @@ async function runPacket(
   const repositoryTools = !hasTools
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
+      includeDependency: config.review.traceDependents === "dependencies" || config.review.traceDependents === "all",
       ...(currentHunks ? { currentHunks } : {}) });
   let toolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
