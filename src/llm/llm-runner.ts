@@ -119,14 +119,6 @@ export type LlmToolResultSummary = {
   recovery?: ToolResultMeta["recovery"];
 };
 
-export type LlmPostToolNudgeInput = {
-  submitToolName: string;
-  toolCallsUsed: number;
-  investigationRounds: number;
-  resultCharsUsed: number;
-  lastToolResults: LlmToolResultSummary[];
-};
-
 export type ToolDefinition = {
   name: string;
   description: string;
@@ -180,7 +172,6 @@ export type LlmStructuredRequest<T> = {
   };
   finalization?: {
     noResultInstruction?: string;
-    buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
     softTargetNotice?: string;
   };
 };

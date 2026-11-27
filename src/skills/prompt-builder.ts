@@ -155,7 +155,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
     { surface: "behaviorChange/intentEvidence", reason: "Preserves explicit framing for refactor-like or mixed-intent behavior changes through verification and composition.", evidence: "Plan 82 unknown-demotion fix and Plan 74 confidence calibration" },
     { surface: "staticSignals/lossy-transform guidance", reason: "Keeps validation-before-conversion and deliverable-bound checks visible where regressions have clustered.", evidence: "Fable D10 static-signal watch and Wave-era relay/hyperlane cases" },
     { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" },
-    { surface: "six-tool packet-scoped finish and no close nudges", reason: "Allow investigation to continue while an assigned row is unassessed.", evidence: "Plan 134 depth: 0/28/54 packets with at least 20 calls; C incomplete 4/48" }
+    { surface: "six-tool packet-scoped finish", reason: "Allow investigation to continue while an assigned row is unassessed.", evidence: "Plan 134 depth: 0/28/54 packets with at least 20 calls; C incomplete 4/48" }
   ],
   9: [
     { surface: "collected source evidence and bounded test claims", reason: "Reuse relevant complete tool deliveries across packets and distinguish a proven local assertion gap from global absence.", evidence: "OMSX 205254: validator body collected elsewhere but verifier only inspected search hits; 214916 overstates absence of transport validation." },

@@ -551,7 +551,7 @@ Outcome handling:
 ### Stage 7: Lens Execution
 
 
-`runLensPackets` converts packets into validated `PacketReviewResult`s through the worker runner.
+`runLensPackets` converts packets into validated `PacketReviewResult`s through the worker runner. The worker receives budget guidance but no separate close-out instruction after a fixed number of investigation rounds.
 
 Execution rules:
 
