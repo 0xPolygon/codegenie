@@ -296,7 +296,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
     },
     buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
-      const traceLeads = options.traceDependents === "leads";
+      const traceLeads = options.traceDependents === "leads" || options.traceDependents === "all";
       const shortenedPatch = packet.hunks.some(hunk => hunk.truncated);
       const missingChangedRows = packet.hunks.some(hunk => (hunk.omittedChangedLineCount ?? 0) > 0);
       const patchNotice = shortenedPatch ? [
