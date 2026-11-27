@@ -1,6 +1,6 @@
 import { StringEnum } from "./string-enum.js";
 import { Type, type Static } from "typebox";
-import type { ReviewStage } from "../types.js";
+import type { ReviewStage, ReviewToolSurface, Stage7Instructions } from "../types.js";
 import { LineRangeSchema } from "./line-range-schema.js";
 
 const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);
@@ -157,28 +157,47 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
-export const SubmitPacketReviewSchema = Type.Object(
-  {
-    reviewStatus: Type.Optional(StringEnum(["findings", "no_findings", "incomplete"] as const, {
-      description: "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
-    })),
-    findings: Type.Array(SubmittedFindingSchema, { maxItems: 20, description: "Array of finding objects, never JSON-encoded strings or fragments. Use [] when there are no findings." }),
-    followUpHints: Type.Array(FollowUpHintSchema, {
-      maxItems: 20,
-      description: "Concrete unresolved predicates only. Do not use broad reminders or essay-style notes."
-    }),
-    uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
-    noFindingReason: Type.Optional(Type.String({
-      minLength: 1,
-      maxLength: 1000,
-      description: "Short no-finding conclusion, preferably 2-4 sentences. Do not repeat inspected code. Do not include XML, markdown wrappers, or <parameter> tags."
-    }))
-  },
-  {
-    additionalProperties: false,
-    description: "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields."
-  }
+function buildSubmitPacketReviewSchema(description: string) {
+  return Type.Object(
+    {
+      reviewStatus: Type.Optional(StringEnum(["findings", "no_findings", "incomplete"] as const, {
+        description
+      })),
+      findings: Type.Array(SubmittedFindingSchema, { maxItems: 20, description: "Array of finding objects, never JSON-encoded strings or fragments. Use [] when there are no findings." }),
+      followUpHints: Type.Array(FollowUpHintSchema, {
+        maxItems: 20,
+        description: "Concrete unresolved predicates only. Do not use broad reminders or essay-style notes."
+      }),
+      uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
+      noFindingReason: Type.Optional(Type.String({
+        minLength: 1,
+        maxLength: 1000,
+        description: "Short no-finding conclusion, preferably 2-4 sentences. Do not repeat inspected code. Do not include XML, markdown wrappers, or <parameter> tags."
+      }))
+    },
+    {
+      additionalProperties: false,
+      description: "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields."
+    }
+  );
+}
+
+export const SubmitPacketReviewSchema = buildSubmitPacketReviewSchema(
+  "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
 );
+
+const SubmitPacketReviewSchemaV2 = buildSubmitPacketReviewSchema(
+  "Use findings when you submit a candidate, no_findings after assessing the changed lines with no candidate left, and incomplete only when a limit stopped that assessment."
+);
+
+const SubmitPacketReviewSchemaV2Six = buildSubmitPacketReviewSchema(
+  "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."
+);
+
+export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined, toolSurface: ReviewToolSurface) {
+  if (instructionSet !== "v2") return SubmitPacketReviewSchema;
+  return toolSurface === "six" ? SubmitPacketReviewSchemaV2Six : SubmitPacketReviewSchemaV2;
+}
 
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;
 export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;

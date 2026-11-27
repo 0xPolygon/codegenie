@@ -8,7 +8,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
 import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
-import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
+import { loadEvalSuite, replayFromArtifacts, resolveEvalCaseConfig, runEvalCase } from "../src/evals/eval-runner.js";
 import { aggregateRepeatScores, assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
 import * as reviewRunner from "../src/pipeline/review-runner.js";
 import type {
@@ -48,6 +48,26 @@ describe("eval suite validation", () => {
 
     await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
       code: "config_error"
+    });
+  });
+
+  it("validates and applies an eval case's Stage 7 instructions after repo config", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-instructions-"));
+    const suite = path.join(dir, "suite");
+    mkdirSync(suite);
+    const file = path.join(suite, "case.yml");
+    const writeCase = (setting: string) => writeFileSync(file, [
+      "name: instruction-set", "repo:", "  fixture: repo",
+      "review:", `  stage7Instructions: ${setting}`
+    ].join("\n"));
+    writeFileSync(path.join(dir, "codegenie.toml"), '[review]\nmaxFindings = 5\n');
+    writeCase("v2");
+    const { cases } = await loadEvalSuite(suite);
+    const result = resolveEvalCaseConfig(defaultConfig, cases[0]!.evalCase, dir, undefined);
+    expect(result.config.review).toMatchObject({ stage7Instructions: "v2", maxFindings: 5 });
+    writeCase("unknown");
+    await expect(loadEvalSuite(suite)).rejects.toMatchObject({
+      code: "config_error", context: { errors: [expect.stringContaining("review.stage7Instructions")] }
     });
   });
 

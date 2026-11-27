@@ -4,9 +4,9 @@ import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
-import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
+import { submitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
-import { exactSourceToolNames, projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
+import { exactSourceToolNames, projectedSkillIds, verifierOnlySkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   AnchorSource,
@@ -212,7 +212,10 @@ async function runPacket(
   const currentHunks = toolSurface === "six" ? packet.hunks.map(hunk => hunk.hunkId) : undefined;
   const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
-  const passSkillIds = projectedSkillIds(prompt.projection);
+  const projectedIds = projectedSkillIds(prompt.projection);
+  const passSkillIds = config.review.stage7Instructions === "v2"
+    ? [...new Set([...projectedIds, ...verifierOnlySkillIds(skills)])]
+    : projectedIds;
   const repositoryTools = !hasTools
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
@@ -222,7 +225,7 @@ async function runPacket(
     onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
     prompt: prompt.prompt,
-    schema: SubmitPacketReviewSchema,
+    schema: submitPacketReviewSchema(config.review.stage7Instructions, toolSurface),
     signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
@@ -271,8 +274,8 @@ async function runPacket(
       }
     });
   }
-  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, telemetry, workerId);
-  const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, telemetry, workerId);
+  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, projectedIds, telemetry, workerId);
+  const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, projectedIds, telemetry, workerId);
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
     ? unresolvedToolDiagnostic(7, toolResults, packet.id, reviewStatus !== "incomplete") : undefined;
   const result: PacketReviewResult = {
@@ -303,6 +306,7 @@ function normalizeFollowUpHints(
   hints: SubmittedFollowUpHint[],
   packet: ReviewPacket,
   passSkillIds: readonly string[],
+  projectedIds: readonly string[],
   telemetry: TelemetryRecorder,
   workerId: string
 ): NormalizedHints {
@@ -355,7 +359,7 @@ function normalizeFollowUpHints(
         symbols: hint.symbols,
         reason: hint.reason,
         confidence: hint.confidence,
-        projectedSkillIds: hint.projectedSkillIds
+        projectedSkillIds: projectedIds
       }
     });
   }
@@ -390,6 +394,7 @@ function normalizeUncertainties(
   uncertainties: SubmittedUncertainty[],
   packet: ReviewPacket,
   passSkillIds: readonly string[],
+  projectedIds: readonly string[],
   telemetry: TelemetryRecorder,
   workerId: string
 ): NormalizedUncertainties {
@@ -424,7 +429,7 @@ function normalizeUncertainties(
       message: "uncertainty",
       packetId: packet.id,
       workerId,
-      data: uncertainty
+      data: { ...uncertainty, projectedSkillIds: projectedIds }
     });
   }
   if (dropped.length > 0) {

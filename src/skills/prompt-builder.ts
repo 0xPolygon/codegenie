@@ -1,3 +1,4 @@
+import { isPacketReviewTestPath, isProsePath } from "../util/path-roles.js";
 import { packetHasRepositoryTools } from "../util/packet-tools.js";
 import type {
   CandidateFinding,
@@ -6,7 +7,8 @@ import type {
   ReviewPacket,
   ReviewStage,
   ReviewToolSurface,
-  RunCoverageStatus
+  RunCoverageStatus,
+  Stage7Instructions
 } from "../types.js";
 import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
@@ -49,6 +51,7 @@ export type SkillProjectionEvent = {
 };
 
 export type ProjectSkillsOptions = {
+  stage7Instructions?: Stage7Instructions;
   telemetry?: Pick<TelemetryRecorder, "event">;
   onEvent?: (event: SkillProjectionEvent) => void;
 };
@@ -91,10 +94,32 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
 const SIX_STAGE7_PROMPT_VERSION = "p7.16-six.1";
 const SHORTENED_PATCH_PROMPT_VERSION = "p7.17";
 const SIX_SHORTENED_PATCH_PROMPT_VERSION = "p7.17-six.1";
+const STAGE7_V2_PROMPT_VERSION = "p7.18";
+const SIX_STAGE7_V2_PROMPT_VERSION = "p7.18-six.1";
+const SHORTENED_PATCH_V2_PROMPT_VERSION = "p7.19";
+const SIX_SHORTENED_PATCH_V2_PROMPT_VERSION = "p7.19-six.1";
+const VERIFIER_V2_PROMPT_VERSION = "p9.32";
 
 export const TEST_COVERAGE_GUIDANCE = "A missing test for a new branch alone is not a finding. Establish a material behavioral requirement from callers, boundary tests or an explicit contract, identify a concrete violating regression, and show why inspected relevant tests would accept it. A currently correct production guard may still need an important rejection test; no existing production bug or executed mutation is required. Inspect likely sister tests and transport validation where relevant. Scope absence claims to inspected evidence: a bounded or unsuccessful search cannot prove repository-wide absence. Neither neighboring test style, a commit title, nor an unsupported client-visible label establishes material consequence. Omit optional extra coverage rather than turning it into human-attention noise. A proposed regression test must exercise a reachable boundary, reject weakened requirements, and accept valid remedies.";
 
 const DOCUMENTATION_IMPACT_GUIDANCE = "For documentation findings, identify the specific instruction or decision the reader would get wrong and the concrete consequence supported by inspected evidence. Read the surrounding example and corrective instructions before treating an isolated wording or arithmetic inconsistency as a defect. A possible future misunderstanding or hypothetical monitoring/implementation mistake alone does not establish material impact. Do not promote wording-only corrections as findings; retain documentation findings that demonstrably prescribe an unsafe action or violate an established requirement.";
+
+const STAGE7_PLACEMENT = "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.";
+const STAGE7_ATTENTION_NOTES = "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.";
+const STAGE7_RELATED_CONTEXT = "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, inspect attached related context as part of the changed behavior path before concluding no findings. When returning no_findings with related context attached, noFindingReason should briefly state why that related context does not change the observable behavior.";
+const STAGE7_CONFIDENCE = "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.";
+const STAGE7_INTENT = "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.";
+const STAGE7_INTENT_FIELDS = "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.";
+const STAGE7_STATIC_SIGNALS = "Treat packet staticSignals as hints to investigate, not automatic findings.";
+
+const STAGE7_V2_FRAME = "You are codegenie, a correctness-first senior code reviewer performing packet review. You propose candidate defects; a later stage verifies them before anything is published.";
+const STAGE7_V2_TASK = "Find behavior this change breaks. Start at an assigned changed line: what reached its caller, persisted state or next operation before the change, and what reaches it now? Choose a concrete input, state, dependency result or ordering that separates the two, and follow it to an observable result. Check both directions: something previously accepted, counted, completed or protected that no longer is, and something previously rejected, retired or released that is now accepted, counted twice or still used. For refactor-like changes, a changed validation predicate, fallback path, conversion or boundary matters when it can alter caller-visible behavior. Inspect the base side, callers, effective guards and tests when they can decide the outcome.";
+const STAGE7_V2_SKILL_HEADER = "Skill checks. Use the applicable checks to choose what to try, and test the neighboring case that could disprove your first explanation:";
+const STAGE7_V2_CONTRACT = "You propose; a later verification stage decides what is proven and publishable. Submit a candidate finding when the changed code supports a specific trigger and wrong outcome. In failureMode give the trigger and what the changed code does; in whyThisMatters give the broken contract and the observable consequence; in verification cite the source facts you checked and any remaining decisive assumption. If one specific fact could remove the defect and you cannot resolve it, still submit the candidate and name that fact, or give a pointer-rich followUpHint or uncertainty with its file or symbol. Do not invent an execution, caller or contract, and do not emit broad reminders such as \"check if this is safe\".";
+const STAGE7_V2_STATUS_CURRENT = "Set reviewStatus to findings when you submit a candidate, and to no_findings after assessing the changed lines with no candidate left; scoped followUpHints or uncertainties may remain with no_findings. Use incomplete only when a tool or budget limit stopped assessment of the changed lines. An incomplete review counts as unreviewed coverage; do not use it to hedge. Keep output compact: noFindingReason is a short conclusion, not a review report.";
+const STAGE7_V2_TEST_BLOCK = "This packet changes tests. Identify the behavior a changed or deleted assertion protects, compare what the old and new tests exercise, and describe a concrete regression the inspected tests would now accept, or a supported behavior they would now reject. Missing-coverage claims need inspected test evidence: distinguish no tests from tests that miss one branch, value or contract, and scope absence claims to the tests you inspected. If relevant tests exist but you cannot inspect enough, give a pointer-rich followUpHint with the exact unresolved predicate.";
+const STAGE7_V2_DOC_BLOCK = "This packet changes prose documentation. Identify the instruction a reader would follow, the requirement it conflicts with, and the action or decision that results; read the surrounding example and any nearby correction first. Wording preferences are not defects.";
+const STAGE7_V2_STATUS_SIX = "Set reviewStatus to findings when you submit a candidate, and to no_findings after assessing all assigned changed lines with no candidate left; scoped followUpHints or uncertainties may remain with no_findings. Use incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines. Unread sibling hunks alone do not make this review incomplete. An incomplete review counts as unreviewed coverage; do not use it to hedge. Keep output compact: noFindingReason is a short conclusion, not a review report.";
 
 type PromptLedgerEntry = {
   surface: string;
@@ -187,6 +212,18 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
 // Bundled-skill provenance (plan 95 standing rule extended to skills,
 // 2026-07-06): each non-obvious check carries its motivating case so future
 // trims are lookups, not archaeology. Guarded by tests/shared-utils.test.ts.
+export const PROMPT_TEMPLATE_WHY_LEDGER_V2 = {
+  ...PROMPT_TEMPLATE_WHY_LEDGER,
+  7: [
+    ...PROMPT_TEMPLATE_WHY_LEDGER[7].map(entry => entry.surface === "staticSignals/lossy-transform guidance"
+      ? { ...entry, surface: "core/code-review check 10" }
+      : entry),
+    { surface: "Task", reason: "Lead with the changed contract, a concrete trigger, and its observable effect.", evidence: "#496 and #503" },
+    { surface: "Stage contract", reason: "Reserve publication proof for Stage 9 while preserving precise unresolved predicates.", evidence: "#496 and #503" },
+    { surface: "conditional test/doc blocks", reason: "Give file-specific discovery guidance when the packet changes that file kind.", evidence: "#496 and #503" }
+  ]
+};
+
 export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
   "core/code-review": [
     { surface: "caller-visible guarantees after transformation", reason: "Rounding/narrowing that overstates a caller-visible promise is a repeatedly-proven miss class; one check + one example, deliberately compact.", evidence: "Wave-era exact-output rounding family; cross-model study finding 5" },
@@ -216,7 +253,7 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
     { surface: "runtime failure predicates", reason: "Rust review must distinguish reachable panics, boundary failures, and materially lost Results from idiomatic syntax that has no observable failure.", evidence: "Plan 98 §2.2 owner-accepted positive and required false-positive cases, 2026-07-23" },
     { surface: "unsafe invariant discipline", reason: "Unsafe syntax is only actionable when a named aliasing, lifetime, initialization, layout, thread-safety, or ownership invariant is violated.", evidence: "Plan 98 bundled-skill owner matrix and Rust acceptance gate, 2026-07-23" },
     { surface: "async blocking and suspension", reason: "Runtime blocking and synchronization across await are valid only with executor placement, suspension, and conflict evidence; compiler-rejected Send/lifetime claims are excluded.", evidence: "Plan 98 §2.2 async materiality and false-positive contract, 2026-07-23" },
-    { surface: "inline examples without meta Examples", reason: "Each retained Rust check already owns distinct unsafe/safe/mitigation fields, so the old meta-only Examples paragraph added no decision information.", evidence: "Plan 101 optional Examples content contract" }
+    { surface: "inline examples without meta Examples", reason: "Each retained Rust check already owns distinct unsafe/safe fields, so the old meta-only Examples paragraph added no decision information.", evidence: "Plan 101 optional Examples content contract" }
   ],
   "lang/python": [
     { surface: "state, absence, and exception predicates", reason: "Python review must connect mutable defaults, None propagation, and broad exception handling to a reachable cross-call or caller-visible failure instead of flagging syntax alone.", evidence: "Plan 98 §3.2 owner-accepted failure and false-positive cases, 2026-07-23" },
@@ -269,9 +306,22 @@ const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   9: ["falsePositives", "safePatterns"]
 };
 
+const STAGE_SECTION_MAP_V2: Partial<Record<ReviewStage, SkillSectionName[]>> = {
+  ...STAGE_SECTION_MAP,
+  7: ["checks", "examples"]
+};
+
+export function verifierOnlySkillIds(skills: Skill[]): string[] {
+  return skills
+    .filter(skill => !STAGE_SECTION_MAP_V2[7]!.some(section => skill.sections[section]?.trim()) &&
+      STAGE_SECTION_MAP_V2[9]!.some(section => skill.sections[section]?.trim()))
+    .map(skill => skill.id);
+}
+
 export function createPromptBuilder(_registry: LensRegistry, options: PromptBuilderOptions = {}): PromptBuilder {
   const toolSurface = options.toolSurface ?? "current";
   const six = toolSurface === "six";
+  const v2 = options.stage7Instructions === "v2";
   return {
     renderDossier: (dossier) => fenceUntrusted(stableJson(plannerDossierPromptProjection(dossier)), "planner-dossier"),
     buildPlannerPrompt: ({ dossier, lenses, skills }) => {
@@ -307,29 +357,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
         fenceUntrusted(renderPacket(packet), "review-packet")
       ].filter(Boolean);
-      const built = buildPrompt(7, [
-        reviewerFrame("packet review"),
-        injectionInstruction(),
-        "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
-        DOCUMENTATION_IMPACT_GUIDANCE,
-        TEST_COVERAGE_GUIDANCE,
-        "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.",
-        "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
-        "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
-        (six
-          ? "reviewStatus:\"incomplete\" means the review was cut off before this packet's hunks could be evaluated (tool or budget exhaustion mid-investigation). Unread sibling hunks alone do not make this review incomplete. Use incomplete if the missing evidence prevents assessment of an assigned changed line."
-          : "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation).")
-          + " If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
-        "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
-        "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
-        "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
-        "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, inspect attached related context as part of the changed behavior path before concluding no findings. When returning no_findings with related context attached, noFindingReason should briefly state why that related context does not change the observable behavior.",
-        "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
-        "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
-        "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
-        "For lossy transformations that feed caller-visible outputs or bounds, check whether the published value remains deliverable/satisfiable, not only whether units or fields are internally consistent.",
-        "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
-        "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.",
+      const toolGuidance = [
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. "
           + (six
             ? "Use read_change with a hunkId and context \"function\" to compare the enclosing function. Use read_definition with source {kind:\"base\"} for a declaration removed from head. Use find_usages for caller leads or scope \"tests\" for test leads."
@@ -346,13 +374,66 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
               : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
           depthCloseGuidance(packet)
         ]),
-        "Skill guidance:\n" + projection.text,
+      ];
+      const guidance = v2 ? [
+        STAGE7_V2_FRAME,
+        injectionInstruction(),
+        STAGE7_V2_TASK,
+        STAGE7_V2_SKILL_HEADER + "\n" + projection.text,
+        STAGE7_V2_CONTRACT,
+        six ? STAGE7_V2_STATUS_SIX : STAGE7_V2_STATUS_CURRENT,
+        isPacketReviewTestPath(packet.path) || (packet.oldPath !== undefined && isPacketReviewTestPath(packet.oldPath))
+          ? STAGE7_V2_TEST_BLOCK : "",
+        isProsePath(packet.path) || (packet.oldPath !== undefined && isProsePath(packet.oldPath))
+          ? STAGE7_V2_DOC_BLOCK : "",
+        STAGE7_PLACEMENT,
+        STAGE7_ATTENTION_NOTES,
+        STAGE7_RELATED_CONTEXT,
+        STAGE7_STATIC_SIGNALS,
+        STAGE7_CONFIDENCE,
+        STAGE7_INTENT,
+        STAGE7_INTENT_FIELDS,
+        ...toolGuidance
+      ] : [
+        reviewerFrame("packet review"),
+        injectionInstruction(),
+        "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        DOCUMENTATION_IMPACT_GUIDANCE,
+        TEST_COVERAGE_GUIDANCE,
+        STAGE7_PLACEMENT,
+        "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
+        "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
+        (six
+          ? "reviewStatus:\"incomplete\" means the review was cut off before this packet's hunks could be evaluated (tool or budget exhaustion mid-investigation). Unread sibling hunks alone do not make this review incomplete. Use incomplete if the missing evidence prevents assessment of an assigned changed line."
+          : "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation).")
+          + " If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
+        "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
+        "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
+        STAGE7_ATTENTION_NOTES,
+        STAGE7_RELATED_CONTEXT,
+        "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
+        STAGE7_CONFIDENCE,
+        "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late." + " " + STAGE7_STATIC_SIGNALS,
+        "For lossy transformations that feed caller-visible outputs or bounds, check whether the published value remains deliverable/satisfiable, not only whether units or fields are internally consistent.",
+        STAGE7_INTENT,
+        STAGE7_INTENT_FIELDS,
+        ...toolGuidance,
+        "Skill guidance:\n" + projection.text
+      ];
+      const built = buildPrompt(7, [
+        ...guidance,
         ...(changeDirectory ? [fenceUntrusted(changeDirectory, "change-directory")] : []),
         ...patchNotice,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
+      if (v2) {
+        const templateVersion = shortenedPatch
+          ? (six ? SIX_SHORTENED_PATCH_V2_PROMPT_VERSION : SHORTENED_PATCH_V2_PROMPT_VERSION)
+          : (six ? SIX_STAGE7_V2_PROMPT_VERSION : STAGE7_V2_PROMPT_VERSION);
+        return { ...built, templateVersion };
+      }
       if (shortenedPatch) {
         return { ...built, templateVersion: six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION };
       }
@@ -370,7 +451,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         collectedSourceEvidence?.length ? fenceUntrusted(stableJson(collectedSourceEvidence), "collected-source-evidence") : "",
         fenceUntrusted(hunksText, "diff-hunks")
       ].filter(Boolean);
-      return buildPrompt(9, [
+      const built = buildPrompt(9, [
         reviewerFrame("verification"),
         injectionInstruction(),
         "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for changes to finding content or placement; top-level behaviorChange and intentEvidence are applied automatically even with keep; a revision must include findingUpdates or revisedAnchor (legacy complete finalFinding is also accepted) because prose in reason does not change the candidate.",
@@ -411,6 +492,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text.",
         VERIFIER_SUBMIT_SHAPE_GUIDANCE
       ], projection, blocks.length);
+      return v2 ? { ...built, templateVersion: VERIFIER_V2_PROMPT_VERSION } : built;
     },
     buildComposerPrompt: ({ groupedFindingsJson, intent, coverage, followUpHintNotes, attentionReconciliationJson }) => {
       const blocks = [
@@ -672,9 +754,10 @@ export function projectSkills(skills: Skill[], stage: ReviewStage, options: Proj
   const perSkill: SkillProjection["perSkill"] = [];
   const projected: string[] = [];
   let totalChars = 0;
+  const sectionMap = options.stage7Instructions === "v2" ? STAGE_SECTION_MAP_V2 : STAGE_SECTION_MAP;
 
   for (const skill of dedupeSkills(skills)) {
-    const rendered = renderSkillProjection(skill, stage);
+    const rendered = renderSkillProjection(skill, stage, sectionMap);
     if (!rendered.text) {
       perSkill.push({
         skillId: skill.id,
@@ -825,7 +908,8 @@ function renderPacket(packet: ReviewPacket): string {
 
 function renderSkillProjection(
   skill: Skill,
-  stage: ReviewStage
+  stage: ReviewStage,
+  sectionMap: Partial<Record<ReviewStage, SkillSectionName[]>>
 ): { text: string; includedSections: SkillSectionName[] } {
   if (stage === 5) {
     return {
@@ -834,7 +918,7 @@ function renderSkillProjection(
     };
   }
 
-  const sections = STAGE_SECTION_MAP[stage] ?? [];
+  const sections = sectionMap[stage] ?? [];
   const included = sections.filter((section) => Boolean(skill.sections[section]?.trim()));
   if (included.length === 0) {
     return { text: "", includedSections: [] };
