@@ -620,7 +620,7 @@ export type CandidateDependent = {
   lineRange: [number, number];
   text: string;
   enclosing?: string;
-  relation: "value_set" | "name_family" | "stale_reference" | "caller";
+  relation: "value_set" | "stale_reference" | "caller";
   match: "syntactic_use" | "lexical";
   contract: string;
   contractPath: string;
