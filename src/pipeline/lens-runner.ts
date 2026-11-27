@@ -236,6 +236,7 @@ async function runPacket(
   const repositoryTools = !hasTools
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
+      includeDependency: config.review.traceDependents === "dependencies" || config.review.traceDependents === "all",
       ...(currentHunks ? { currentHunks } : {}) });
   const changeCheckDiff = config.review.changeChecks === true ? opts.diff : undefined;
   const assigned = changeCheckDiff ? new Set(packet.hunks.map(hunk => hunk.hunkId)) : undefined;

@@ -136,6 +136,10 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
       const options = { toolSurface, traceDependents: "leads", changeChecks: true } as const;
       const lead = createPromptBuilder(fakeLensRegistry(), options).buildPacketReviewPrompt({ packet: input, skills: [] });
       expect(lead.templateVersion).toBe(baseline.templateVersion + "-cc.1-dep.1");
+      expect(createPromptBuilder(fakeLensRegistry(), { ...options, traceDependents: "all" })
+        .buildPacketReviewPrompt({ packet: input, skills: [] })).toEqual(lead);
+      expect(createPromptBuilder(fakeLensRegistry(), { toolSurface, traceDependents: "dependencies" })
+        .buildPacketReviewPrompt({ packet: input, skills: [] })).toEqual(baseline);
       expect(lead.prompt).toContain("candidateDependents are unverified harness matches");
       expect(lead.prompt).toContain("guard.ts");
       expect(lead.prompt).toContain("after you establish from source that it depends on the changed contract");
@@ -151,6 +155,36 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
     reviewCacheFingerprint(defaultConfig, target, "registry")
   );
   expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"3ac55955516cc6760c33dff099e37c5dea2c7412570098e2f3d3bb2f827c1dd9"`);
+});
+
+it.each(["current", "six"] as const)("exposes installed dependency reads only at enabled review and verification calls (%s)", async toolSurface => {
+  const line = "return buildQuoteWithScaledTransfer(request)";
+  const packet = fakePacket({ hunkLines: [{ kind: "add", content: line, newLine: 1 }] });
+  const diff = { files: [fakeDiffFile(packet.path, line)] };
+  const base = config();
+  const telemetry = nullTelemetry();
+  for (const traceDependents of ["off", "leads", "dependencies", "all"] as const) {
+    const cfg = { ...base, review: { ...base.review, toolSurface, traceDependents } };
+    const installed = { ...fakeTools(), readDependency: vi.fn() };
+    const available = traceDependents === "dependencies" || traceDependents === "all";
+    const stages: number[] = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        stages.push(request.stage);
+        expect(request.tools?.some(tool => tool.name === "read_dependency") ?? false).toBe(available);
+        if (request.stage === 7) {
+          const { id: _id, producedBy: _worker, changedLine: _line, ...candidate } = fakeFinding();
+          return { findings: [{ ...candidate, path: packet.path, evidence: { changedCode: line } }], followUpHints: [], uncertainties: [] } as T;
+        }
+        return { verdict: "reject", reason: "Synthetic refutation.", requiredEvidencePresent: true, falsePositiveRisk: "high" } as T;
+      }
+    };
+    const lensRegistry = fakeLensRegistry();
+    const opts = { runner, lensRegistry, promptBuilder: createPromptBuilder(lensRegistry, { toolSurface, traceDependents }), diff };
+    const packetResults = await runLensPackets([packet], installed, cfg, telemetry, opts);
+    await verifyFindings({ packets: [packet], packetResults }, installed, cfg, telemetry, opts);
+    expect(stages).toEqual([7, 9]);
+  }
 });
 
 describe("Stage 7 change checks", () => {

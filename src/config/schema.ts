@@ -30,7 +30,7 @@ export const pathRuleSchema = z
   })
   .strict();
 
-export const traceDependentsSchema = z.enum(["off", "leads"]);
+export const traceDependentsSchema = z.enum(["off", "leads", "dependencies", "all"]);
 
 export const rawConfigSchema = z
   .object({
