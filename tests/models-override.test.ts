@@ -127,6 +127,45 @@ describe("OpenAI Responses tool and effort framing", () => {
     }
   });
 
+  it("preserves OpenRouter reasoning details across a tool continuation", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "fixture-key");
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", async (_url: string, request: RequestInit) => {
+      bodies.push(JSON.parse(request.body as string));
+      if (bodies.length > 1) return new Response("offline capture", { status: 400 });
+      const common = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna" };
+      const chunks = [
+        { ...common, choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "Inspect the caller.",
+          reasoning_details: [{ type: "reasoning.encrypted", id: "rs-fixture", data: "encrypted-fixture" }] }, finish_reason: null }] },
+        { ...common, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function",
+          function: { name: "read_range", arguments: '{"path":"src/file.ts"}' } }] }, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }
+      ];
+      return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } });
+    });
+    try {
+      const adapter = createRealPiAiAdapter({ models: getCodegeniePiModels() });
+      const model = (await adapter.resolveModel({ provider: "openrouter", model: "openai/gpt-6-luna" }))!;
+      const user = { role: "user", content: "Review the change.", timestamp: 0 };
+      const tools = [{ name: "read_range", description: "Read source", parameters: Type.Object({ path: Type.String() }) }];
+      const options = { reasoning: "high", submitToolName: "submit_review", maxRetries: 0 };
+      const first = await adapter.complete(model, { messages: [user], tools }, options);
+      expect(first.stopReason).toBe("toolUse");
+      expect(first.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "toolCall", id: "call-1", name: "read_range" })]));
+      await adapter.complete(model, { messages: [user, first, { role: "toolResult", toolCallId: "call-1", toolName: "read_range",
+        content: [{ type: "text", text: "source" }], isError: false, timestamp: 1 }], tools }, options);
+      expect(bodies).toHaveLength(2);
+      const messages = bodies[1]!.messages as Array<Record<string, unknown>>;
+      expect(messages.find(message => message.role === "assistant")).toMatchObject({
+        reasoning_details: [{ type: "reasoning.encrypted", id: "rs-fixture", data: "encrypted-fixture" }],
+        tool_calls: [expect.objectContaining({ id: "call-1" })]
+      });
+      expect(messages.find(message => message.role === "tool")).toMatchObject({ tool_call_id: "call-1" });
+      expect(bodies[1]!.reasoning).toEqual({ effort: "high" });
+    } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
   it.each([
     ["openrouter", "openai/gpt-6-luna"],
     ["azure", "gpt-6-luna"]
