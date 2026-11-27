@@ -120,6 +120,39 @@ it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", a
   expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"abf942fbc26160c0d9d099dbd9a7a2feca7674cee3a1c0c4a6b2168949cde686"`);
 });
 
+it("qualifies the default and enabled dependent-lead prompt and cache contracts", () => {
+  const packet: ReviewPacket = { ...fakePacket({ path: "app.ts" }), candidateDependents: [{
+    path: "guard.ts", lineRange: [3, 5], text: "function guard(value) {\n  return value >= 1 && value <= 3;\n}",
+    relation: "value_set", match: "lexical", contract: "ReviewStage", contractPath: "app.ts", hunkId: "h1"
+  }] };
+  const enabled: Record<string, string> = {};
+  for (const toolSurface of ["current", "six"] as const) {
+    for (const shortened of [false, true]) {
+      const input = shortened ? { ...packet, hunks: [{ ...packet.hunks[0]!, truncated: true, omittedChangedLineCount: 1 }] } : packet;
+      const { candidateDependents: _leads, ...withoutLeads } = input;
+      const baseline = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet: withoutLeads, skills: [] });
+      const off = createPromptBuilder(fakeLensRegistry(), { toolSurface, traceDependents: "off" }).buildPacketReviewPrompt({ packet: input, skills: [] });
+      expect(off).toEqual(baseline);
+      const options = { toolSurface, traceDependents: "leads", changeChecks: true } as const;
+      const lead = createPromptBuilder(fakeLensRegistry(), options).buildPacketReviewPrompt({ packet: input, skills: [] });
+      expect(lead.templateVersion).toBe(baseline.templateVersion + "-cc.1-dep.1");
+      expect(lead.prompt).toContain("candidateDependents are unverified harness matches");
+      expect(lead.prompt).toContain("guard.ts");
+      expect(lead.prompt).toContain("after you establish from source that it depends on the changed contract");
+      enabled[`${toolSurface}:${shortened}`] = sha256Hex(JSON.stringify(lead));
+    }
+  }
+  const target: ResolvedReviewInput = { mode: "branch", repoRoot: "/repo", baseRef: "base", headRef: "head", rawDiff: "+change", commits: [] };
+  const { traceDependents: _off, ...review } = defaultConfig.review;
+  expect(reviewCacheFingerprint(defaultConfig, target, "registry")).toBe(
+    reviewCacheFingerprint({ ...defaultConfig, review }, target, "registry")
+  );
+  expect(reviewCacheFingerprint({ ...defaultConfig, review: { ...review, traceDependents: "leads" } }, target, "registry")).not.toBe(
+    reviewCacheFingerprint(defaultConfig, target, "registry")
+  );
+  expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"3ac55955516cc6760c33dff099e37c5dea2c7412570098e2f3d3bb2f827c1dd9"`);
+});
+
 describe("Stage 7 change checks", () => {
   const empty = { findings: [], followUpHints: [], uncertainties: [] };
   const unchanged: SubmittedChangeCheck = {

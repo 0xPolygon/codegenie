@@ -30,6 +30,8 @@ export const pathRuleSchema = z
   })
   .strict();
 
+export const traceDependentsSchema = z.enum(["off", "leads"]);
+
 export const rawConfigSchema = z
   .object({
     lenses: z
@@ -44,6 +46,7 @@ export const rawConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         changeChecks: z.boolean().optional(),
+        traceDependents: traceDependentsSchema.optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
@@ -133,6 +136,7 @@ export const codegenieConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         changeChecks: z.boolean().optional(),
+        traceDependents: traceDependentsSchema.optional(),
         verify: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
         skipSvgReview: z.boolean(),
@@ -206,6 +210,7 @@ export const defaultConfig: CodegenieConfig = {
   },
   review: {
     changeChecks: false,
+    traceDependents: "off",
     verify: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,

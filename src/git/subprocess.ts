@@ -18,6 +18,7 @@ export type GitCommandOptions = {
   errorCode?: CodegenieErrorCode;
   input?: string | Uint8Array | Readable;
   maxBuffer?: number;
+  signal?: AbortSignal;
 };
 
 export type GitCappedCommandOptions = {
@@ -220,6 +221,7 @@ async function runCommand(
       stripFinalNewline: opts.stripFinalNewline ?? true,
       timeout: opts.timeoutMs ?? (opts.network ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS),
       maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
+      ...(opts.signal ? { cancelSignal: opts.signal } : {}),
       ...(opts.input !== undefined ? { input: opts.input } : {})
     });
 

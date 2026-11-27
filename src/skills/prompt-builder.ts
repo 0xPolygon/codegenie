@@ -53,7 +53,7 @@ export type ProjectSkillsOptions = {
   onEvent?: (event: SkillProjectionEvent) => void;
 };
 
-type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface; changeChecks?: boolean };
+type PromptBuilderOptions = ProjectSkillsOptions & { toolSurface?: ReviewToolSurface; changeChecks?: boolean; traceDependents?: import("../types.js").TraceDependentsMode };
 
 export const exactSourceToolNames: Record<ReviewToolSurface, string> = {
   current: "read_symbol, read_range, find_definition, or read_diff_blocks",
@@ -97,6 +97,7 @@ const DOCUMENTATION_IMPACT_GUIDANCE = "For documentation findings, identify the 
 
 const STAGE7_PLACEMENT = "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.";
 const STAGE7_ATTENTION_NOTES = "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.";
+const STAGE7_CANDIDATE_DEPENDENTS = "candidateDependents are unverified harness matches: unchanged code that may rely on or encode a changed contract. `lexical` entries matched text only and may be coincidences; `syntactic_use` entries use the exact name but may bind elsewhere. They are leads to inspect, not evidence. Report one only after you establish from source that it depends on the changed contract and that this change newly causes or makes reachable a concrete failure there. Otherwise ignore it.";
 const STAGE7_RELATED_CONTEXT = "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, inspect attached related context as part of the changed behavior path before concluding no findings. When returning no_findings with related context attached, noFindingReason should briefly state why that related context does not change the observable behavior.";
 const STAGE7_CONFIDENCE = "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.";
 const STAGE7_INTENT = "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.";
@@ -304,6 +305,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
     },
     buildPacketReviewPrompt: ({ packet, skills, changeDirectory }) => {
       const projection = projectSkills(skills, 7, options);
+      const traceLeads = options.traceDependents === "leads";
       const shortenedPatch = packet.hunks.some(hunk => hunk.truncated);
       const missingChangedRows = packet.hunks.some(hunk => (hunk.omittedChangedLineCount ?? 0) > 0);
       const patchNotice = shortenedPatch ? [
@@ -316,7 +318,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
       const blocks = [
         fenceUntrusted(packet.prSummary, "pr-summary"),
         packet.intentText ? fenceUntrusted(packet.intentText, "declared-intent") : "",
-        fenceUntrusted(renderPacket(packet), "review-packet")
+        fenceUntrusted(renderPacket(packet, traceLeads), "review-packet")
       ].filter(Boolean);
       const toolGuidance = [
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. "
@@ -352,6 +354,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         STAGE7_ATTENTION_NOTES,
+        ...(traceLeads ? [STAGE7_CANDIDATE_DEPENDENTS] : []),
         STAGE7_RELATED_CONTEXT,
         "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
         STAGE7_CONFIDENCE,
@@ -371,7 +374,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         submitReviewShapeGuidance(options.changeChecks ? packet.hunks[0]?.hunkId : undefined)
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
-      const suffix = options.changeChecks ? "-cc.1" : "";
+      const suffix = (options.changeChecks ? "-cc.1" : "") + (traceLeads ? "-dep.1" : "");
       if (shortenedPatch) {
         const version = six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION;
         return { ...built, templateVersion: version + suffix };
@@ -815,7 +818,7 @@ function renderLensList(lenses: LensDescriptor[]): string {
   return `Available lenses:\n${lines.join("\n") || "- none"}`;
 }
 
-function renderPacket(packet: ReviewPacket): string {
+function renderPacket(packet: ReviewPacket, traceLeads: boolean): string {
   return stableJson({
     id: packet.id,
     kind: packet.kind,
@@ -833,6 +836,7 @@ function renderPacket(packet: ReviewPacket): string {
     attentionNotes: packet.attentionNotes,
     contextText: packet.contextText,
     relatedChangedContext: packet.relatedChangedContext,
+    ...(traceLeads && packet.candidateDependents ? { candidateDependents: packet.candidateDependents } : {}),
     testCoverageDelta: packet.testCoverageDelta,
     intentSignals: packet.intentSignals,
     relevantTests: packet.relevantTests,

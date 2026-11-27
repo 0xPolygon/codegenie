@@ -1,6 +1,7 @@
 import { diffRowRanges, mergeDeliveredRanges } from "../util/delivered-source.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { credentialSafeCut } from "../telemetry/redaction.js";
+import { selectPacketDependents } from "../repo/dependents.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { packetDiffLine as packetLine, renderNumberedDiffLine } from "../repo/numbered-diff.js";
 import { MAX_PATCH_CHARS, packPacketPatch } from "./packet-patch.js";
@@ -47,6 +48,7 @@ import { numberSourceLine, renderSourceBlockHeader } from "../llm/repository-too
 type PacketBuildOptions = {
   config: CodegenieConfig;
   enabledLenses: string[];
+  signal?: AbortSignal;
   reviewContext?: PacketReviewContext;
 };
 
@@ -193,6 +195,8 @@ export async function buildReviewPackets(
     }
   }
 
+  const trace = opts.config.review.traceDependents === "leads" ? await repoIndex.traceDependents?.(filtered, opts.signal) : undefined;
+  const perPacket = [];
   const relationshipGraph = await buildHunkRelationshipGraph(allPlanned, effectiveByHunk, repoIndex, telemetry);
 
   for (const file of filtered) {
@@ -204,8 +208,23 @@ export async function buildReviewPackets(
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
       const packet = await buildPacket(group.hunks, groupDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
+      if (trace) {
+        const { candidates, counts } = selectPacketDependents(trace, packet.hunks.map(hunk => hunk.hunkId));
+        if (candidates.length) packet.candidateDependents = candidates;
+        perPacket.push({ packetId: packet.id, ...counts });
+      }
       packets.push(packet);
     }
+  }
+
+  if (trace) {
+    const totals = { preCap: {} as Record<string, number>, attached: {} as Record<string, number>, omitted: {} as Record<string, number> };
+    for (const packet of perPacket) {
+      for (const key of ["preCap", "attached", "omitted"] as const) {
+        for (const [kind, count] of Object.entries(packet[key])) totals[key][kind] = (totals[key][kind] ?? 0) + count;
+      }
+    }
+    telemetry.event({ stage: 6, level: "info", message: "dependents_traced", data: { ...trace.telemetry, ...totals, perPacket } });
   }
 
   for (const packet of packets) {

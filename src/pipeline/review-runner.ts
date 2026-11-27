@@ -243,7 +243,8 @@ export async function runReview(
       await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
         config,
         enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
-        reviewContext: packetReviewContextFromDossier(dossier)
+        reviewContext: packetReviewContextFromDossier(dossier),
+        signal: run.abort.signal
       }),
       plannerResult.plan,
       run.telemetry
@@ -829,7 +830,8 @@ async function createPipelineServices(
   const promptBuilder = createPromptBuilder(lensRegistry, {
     telemetry: run.telemetry,
     toolSurface: config.review.toolSurface ?? "current",
-    changeChecks: config.review.changeChecks === true
+    changeChecks: config.review.changeChecks === true,
+    traceDependents: config.review.traceDependents ?? "off"
   });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
@@ -906,7 +908,7 @@ export function reviewCacheFingerprint(
   // #504 changes the Stage 7 prompt and schema, which are already in that call's
   // cache key. Keep other stages shareable when their actual input is identical.
   const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout,
-    toolSurface, changeChecks: _changeChecks, ...review } = config.review;
+    toolSurface, changeChecks: _changeChecks, traceDependents, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,
@@ -922,7 +924,8 @@ export function reviewCacheFingerprint(
       lenses,
       review: {
         ...review,
-        ...(toolSurface === "six" ? { toolSurface } : {})
+        ...(toolSurface === "six" ? { toolSurface } : {}),
+        ...(traceDependents === "leads" ? { traceDependents } : {})
       },
       classification: config.classification,
       llm

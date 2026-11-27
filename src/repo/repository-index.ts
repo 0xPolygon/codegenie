@@ -1,3 +1,5 @@
+import { traceDependents } from "./dependents.js";
+import { effectiveConfiguredSkip } from "../git/file-classifier.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isOrderedLineRange } from "../util/line-range.js";
 import pLimit from "p-limit";
@@ -130,7 +132,6 @@ export async function buildRepositoryIndex(
   telemetry: TelemetryRecorder,
   opts: BuildRepositoryIndexOptions = {}
 ): Promise<RepositoryIndex> {
-  void config;
   const startedAt = Date.now();
   telemetry.event({ stage: 4, level: "info", message: "stage_started", data: { name: "repository_index" } });
   const git = opts.git ?? createGitClient(resolved.repoRoot);
@@ -158,7 +159,20 @@ export async function buildRepositoryIndex(
     message: "stage_completed",
     data: { symbolFacts: symbolFacts.length, staticSignals: staticSignals.length }
   });
-  return { facts, symbolFacts, staticSignals, tools };
+  return {
+    facts, symbolFacts, staticSignals, tools,
+    ...(config.review.traceDependents === "leads" ? {
+      traceDependents: (files: DiffFile[], signal?: AbortSignal) => {
+        const changed = new Map(diff.files.map(file => [file.path, file]));
+        const skipped = new Set(facts.filter(fact => fact.processingMode === "skip").map(fact => fact.path));
+        return tools.withToolCallContext({ stage: 6, initiator: "harness" }, () => traceDependents({
+          resolver, registry, tools, files, symbolFacts, changedFiles: diff.files,
+          skipsPath: path => skipped.has(path) || effectiveConfiguredSkip(changed.get(path) ?? { path }, config.classification.pathRules) !== undefined,
+          ...(signal ? { signal } : {})
+        }));
+      }
+    } : {})
+  };
 }
 
 export class RepositoryToolsFacade implements RepositoryToolsHost {

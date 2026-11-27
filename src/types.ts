@@ -1,6 +1,7 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 export type ReviewToolSurface = "current" | "six";
+export type TraceDependentsMode = "off" | "leads";
 
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -39,6 +40,7 @@ export type CodegenieConfig = {
   review: {
     toolSurface?: ReviewToolSurface;
     changeChecks?: boolean;
+    traceDependents?: TraceDependentsMode;
     verify: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
@@ -613,6 +615,18 @@ export type TestCoverageDelta = {
   summary: string;
 };
 
+export type CandidateDependent = {
+  path: string;
+  lineRange: [number, number];
+  text: string;
+  enclosing?: string;
+  relation: "value_set" | "name_family" | "stale_reference" | "caller";
+  match: "syntactic_use" | "lexical";
+  contract: string;
+  contractPath: string;
+  hunkId: string;
+};
+
 export type ReviewPacket = {
   id: string;
   dispatchRank: [number, number];
@@ -645,6 +659,7 @@ export type ReviewPacket = {
   labels: string[];
   attentionNotes: string[];
   relatedChangedContext: RelatedChangedContext[];
+  candidateDependents?: CandidateDependent[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
   /** Real context loss (#175); internal, never rendered to models. */
@@ -776,6 +791,7 @@ export type RepositoryIndex = {
   symbolFacts: HunkSymbolFacts[];
   staticSignals: StaticSignal[];
   tools: RepositoryTools;
+  traceDependents?: (files: DiffFile[], signal?: AbortSignal) => Promise<import("./repo/dependents.js").DependentTrace>;
 };
 
 export type DiffAnchor = {
@@ -1200,6 +1216,7 @@ export type EvalCase = {
   review?: {
     toolSurface?: ReviewToolSurface;
     changeChecks?: boolean;
+    traceDependents?: TraceDependentsMode;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
