@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@earendil-works/pi-ai':
-        specifier: 1.6.1
-        version: 1.6.1(@smithy/signature-v4@5.7.0)(google-auth-library@10.9.1)(ws@8.21.3)(zod@4.6.7)
+        specifier: 1.7.0
+        version: 1.7.0(@smithy/signature-v4@5.7.0)(google-auth-library@10.9.1)(ws@8.21.3)(zod@4.6.7)
       commander:
         specifier: 15.1.0
         version: 15.1.0
@@ -172,17 +172,17 @@ packages:
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
 
-  '@earendil-works/pi-ai@1.6.1':
-    resolution: {integrity: sha512-EyorgVyA2s4MxNl7YOapzOpdxrc8HUgxHEIOo8QRMK35P7PCOsSiWzMLf6ixKl3/obkg7I3wGJWHq+FdbUz43g==}
+  '@earendil-works/pi-ai@1.7.0':
+    resolution: {integrity: sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-schema@1.6.1':
-    resolution: {integrity: sha512-Q/6W4IiDdIQUochCuvXFpglTByNTFTuMYvMqXjcRiOnxOl/3mQYLAZpZTpBSRWiS4WgeV7NyH/8dQp6ipYZeNg==}
+  '@earendil-works/pi-schema@1.7.0':
+    resolution: {integrity: sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-telemetry@1.6.1':
-    resolution: {integrity: sha512-3gyjVQlVrPwEq7ZCea8++prMwUkuNXM3v/mzTJ9knJAhqrYLxSVAjYzA1iC3KLq8ismmSQIcnFp++qTwQwNToA==}
+  '@earendil-works/pi-telemetry@1.7.0':
+    resolution: {integrity: sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==}
     engines: {node: '>=22.19.0'}
 
   '@emnapi/core@2.0.0-beta.2':
@@ -1530,13 +1530,13 @@ snapshots:
 
   '@babel/runtime@7.29.7': {}
 
-  '@earendil-works/pi-ai@1.6.1(@smithy/signature-v4@5.7.0)(google-auth-library@10.9.1)(ws@8.21.3)(zod@4.6.7)':
+  '@earendil-works/pi-ai@1.7.0(@smithy/signature-v4@5.7.0)(google-auth-library@10.9.1)(ws@8.21.3)(zod@4.6.7)':
     dependencies:
       '@anthropic-ai/sdk': 0.129.0(zod@4.6.7)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
       '@aws-sdk/credential-provider-node': 3.972.82
-      '@earendil-works/pi-schema': 1.6.1
-      '@earendil-works/pi-telemetry': 1.6.1
+      '@earendil-works/pi-schema': 1.7.0
+      '@earendil-works/pi-telemetry': 1.7.0
       '@google/genai': 3.6.1
       '@smithy/node-http-handler': 4.12.1
       http-proxy-agent: 9.1.0
@@ -1556,9 +1556,9 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-schema@1.6.1': {}
+  '@earendil-works/pi-schema@1.7.0': {}
 
-  '@earendil-works/pi-telemetry@1.6.1': {}
+  '@earendil-works/pi-telemetry@1.7.0': {}
 
   '@emnapi/core@2.0.0-beta.2':
     dependencies:

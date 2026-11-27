@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { defaultConfig } from "../src/config/schema.js";
@@ -65,6 +65,35 @@ async function pnpmFixture({ workspace = false, corrupt }: {
 }
 
 describe("installed dependency source", () => {
+  it("resolves the installed Pi package against the actual pnpm lock identity", async () => {
+    const module = "@earendil-works/pi-ai";
+    const sourceFile = "dist/api/openai-codex-responses.js";
+    const actualRoot = realpathSync(join(process.cwd(), "node_modules", module));
+    const location = relative(process.cwd(), actualRoot).replaceAll("\\", "/");
+    expect(location).toMatch(/^node_modules\/\.pnpm\//u);
+    const manifestBytes = readFileSync(join(actualRoot, "package.json"), "utf8");
+    const version = JSON.parse(manifestBytes).version as string;
+    const sourceBytes = readFileSync(join(actualRoot, sourceFile), "utf8");
+    const trackedLock = readFileSync("pnpm-lock.yaml", "utf8");
+    const installedLock = readFileSync("node_modules/.pnpm/lock.yaml", "utf8");
+    const repo = await identityFixture({
+      "package.json": JSON.stringify({ packageManager: "pnpm@12.0.0" }),
+      "pnpm-lock.yaml": trackedLock,
+      [importer]: `import { stream } from "${module}";\nexport const old = stream;\n`
+    }, { [importer]: "export const current = 1;\n" });
+    try {
+      writeRepoFile(repo.repo, "node_modules/.pnpm/lock.yaml", installedLock);
+      writeRepoFile(repo.repo, `${location}/package.json`, manifestBytes);
+      writeRepoFile(repo.repo, `${location}/${sourceFile}`, sourceBytes);
+      writeRepoFile(repo.repo, "node_modules/@earendil-works/.fixture", "");
+      symlinkSync(join(repo.repo, location), join(repo.repo, "node_modules", module), "dir");
+      const available = await index(repo);
+      const result = await available.tools.readDependency!({ importer, module, path: sourceFile });
+      expect(result).toMatchObject({ version, lockfile: "pnpm-lock.yaml", location, identity: "lockfile-matched; bytes as installed" });
+      expect(result.rows[0]).toMatchObject({ path: sourceFile, line: 1, text: sourceBytes.split("\n")[0] });
+    } finally { repo.dispose(); }
+  });
+
   it.each([false, true])("uses the tracked pnpm importer and installed identity (workspace=%s)", async workspace => {
     const repo = await pnpmFixture({ workspace });
     try {
