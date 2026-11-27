@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join, posix, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parse } from "yaml";
 import { CodegenieError } from "../util/errors.js";
-import { dependencyPaths, dependencyRealpath, readDependencyBytes, withDependencyFile } from "./dependency-files.js";
+import { dependencyRealpath, readDependencyBytes, withDependencyFile } from "./dependency-files.js";
 import type { SourceResolver } from "./source-resolver.js";
 
 export type DependencyIdentity = {
@@ -23,6 +23,8 @@ type RecordValue = Record<string, unknown>;
 const lockGroups = ["dependencies", "devDependencies", "optionalDependencies"];
 const metadataLimit = 20_000_000;
 const manifestLimit = 2_000_000;
+const GO_IDENTITY_MAX_ENTRIES = 5_000;
+const GO_IDENTITY_MAX_BYTES = 20_000_000;
 
 const asRecord = (value: unknown): RecordValue | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : undefined;
@@ -228,6 +230,41 @@ function goEscape(value: string): string {
   return value.replace(/[A-Z]/gu, letter => "!" + letter.toLowerCase());
 }
 
+async function hashGoTree(root: string, signal?: AbortSignal): Promise<Map<string, string>> {
+  const hashes = new Map<string, string>();
+  const directories = [""];
+  let entries = 0;
+  let remaining = GO_IDENTITY_MAX_BYTES;
+  while (directories.length > 0) {
+    signal?.throwIfAborted();
+    const dir = directories.pop()!;
+    const physical = dir ? await dependencyRealpath(root, join(root, dir)) : root;
+    for await (const entry of await opendir(physical)) {
+      signal?.throwIfAborted();
+      if (++entries > GO_IDENTITY_MAX_ENTRIES) dependencyUnavailable("Go module exceeds the 5,000-entry identity scan limit.");
+      const path = dir ? dir + "/" + entry.name : entry.name;
+      if (entry.isDirectory()) {
+        directories.push(path);
+        continue;
+      }
+      if (!entry.isFile()) dependencyUnavailable("Go module tree contains a symlink or a special file.");
+      const digest = await withDependencyFile(root, join(root, path), async (handle, size) => {
+        if (size > remaining) dependencyUnavailable("Go module exceeds the 20 MB identity scan limit.");
+        const hash = createHash("sha256");
+        // Read one byte past the allowance to detect a file that grew after stat.
+        for await (const chunk of handle.createReadStream({ autoClose: false, end: remaining, signal })) {
+          remaining -= chunk.length;
+          if (remaining < 0) dependencyUnavailable("Go module exceeds the 20 MB identity scan limit.");
+          hash.update(chunk);
+        }
+        return hash.digest("hex");
+      });
+      hashes.set(path, digest);
+    }
+  }
+  return hashes;
+}
+
 export async function resolveGoDependency(
   module: string, go: GoDependencies, sum: string, signal?: AbortSignal
 ): Promise<DependencyIdentity> {
@@ -239,6 +276,7 @@ export async function resolveGoDependency(
   const replaced = go.replaces.get(module);
   if (replaced?.has("*") || replaced?.has(version)) dependencyUnavailable("The tracked go.mod replaces this module.");
   const entries = sum.split(/\r?\n/u).map(line => line.trim().split(/\s+/u));
+  // Go writes the original module path to go.sum. It escapes case only in cache paths.
   const integrity = entries.find(([name, at]) => name === module && at === version)?.[2];
   if (!integrity?.startsWith("h1:")) dependencyUnavailable("No module integrity in the tracked go.sum.");
   const gopath = process.env.GOPATH?.split(delimiter)[0] || join(homedir(), "go");
@@ -246,18 +284,7 @@ export async function resolveGoDependency(
   const prefix = `${module}@${version}`;
   const path = goEscape(prefix);
   const root = await dependencyRealpath(cache, join(cache, path));
-  const fileHashes = new Map<string, string>();
-  for await (const file of dependencyPaths(root)) {
-    signal?.throwIfAborted();
-    const absolute = join(root, file);
-    if (!(await lstat(absolute)).isFile()) dependencyUnavailable("Go module tree contains a symlink or a special file.");
-    const digest = await withDependencyFile(root, absolute, async handle => {
-      const hash = createHash("sha256");
-      for await (const chunk of handle.createReadStream({ autoClose: false, signal })) hash.update(chunk);
-      return hash.digest("hex");
-    });
-    fileHashes.set(file, digest);
-  }
+  const fileHashes = await hashGoTree(root, signal);
   const names = [...fileHashes.keys()].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
   const hash = createHash("sha256");
   for (const name of names) hash.update(`${fileHashes.get(name)}  ${prefix}/${name}\n`);

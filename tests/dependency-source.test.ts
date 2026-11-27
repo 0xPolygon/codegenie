@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import { packTextToolResult } from "../src/llm/search-result-packing.js";
 import { assertRepositoryToolArguments, buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import { buildRepositoryIndex } from "../src/repo/repository-index.js";
+import { goDependencies, resolveGoDependency } from "../src/repo/dependency-identity.js";
 import type { ResolvedReviewInput, TraceDependentsMode } from "../src/types.js";
 import { git, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 import { textRepository } from "./helpers/text-repository.js";
@@ -206,7 +207,7 @@ describe("installed dependency source", () => {
     } finally { repo.dispose(); }
   });
 
-  it("checks Go's extracted dirhash, case escaping, mutation and replace", async () => {
+  it("checks Go's raw go.sum path against its case-escaped cache and detects mutation and replace", async () => {
     const cache = mkdtempSync(join(tmpdir(), "codegenie-gomod-"));
     vi.stubEnv("GOMODCACHE", cache);
     const module = "example.com/Acme/Dep";
@@ -240,4 +241,28 @@ describe("installed dependency source", () => {
       rmSync(cache, { recursive: true, force: true });
     }
   });
+
+  it.each(["entries", "bytes"] as const)("bounds Go identity verification by total %s", async bound => {
+    const cache = mkdtempSync(join(tmpdir(), "codegenie-gomod-limit-"));
+    vi.stubEnv("GOMODCACHE", cache);
+    try {
+      const module = "example.com/dep";
+      const dir = join(cache, module + "@v1.0.0");
+      mkdirSync(dir, { recursive: true });
+      if (bound === "entries") {
+        for (let i = 0; i < 5_001; i++) writeFileSync(join(dir, String(i)), "");
+      } else {
+        const source = join(dir, "oversize.txt");
+        writeFileSync(source, "");
+        truncateSync(source, 20_000_001);
+      }
+      await expect(resolveGoDependency(module, goDependencies("require " + module + " v1.0.0"),
+        module + " v1.0.0 h1:fixture")).rejects.toMatchObject({
+        code: "dependency_unavailable", message: expect.stringContaining(bound === "entries" ? "5,000-entry" : "20 MB")
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(cache, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

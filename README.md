@@ -265,7 +265,7 @@ Set `toolSurface = "current"` or remove the setting to return to the default. In
 
 Value-set extraction covers TypeScript, TSX, JavaScript and Go. For packets in other languages, Stage 6 records `valueSetCoverage: "unsupported_language"` and can still attach other kinds of leads.
 
-Set `review.traceDependents` to `"dependencies"` to let Stages 7 and 9 inspect locally installed dependencies imported by changed files. Use `"all"` to enable both features. The tool checks the pinned review's lock records and never installs or downloads dependencies. Go source is checked against `go.sum`. Node source from pnpm v9 or npm v2/v3 lockfiles is labelled **lockfile-matched; bytes as installed**. These two modes bypass the model-call cache because installed source can change independently of the review revision.
+Set `review.traceDependents` to `"dependencies"` to let Stages 7 and 9 inspect locally installed dependencies imported by changed files. Use `"all"` to enable both features. The tool checks the pinned review's lock records and never installs or downloads dependencies. Go source is checked against `go.sum`, with a per-module identity scan cap of 5,000 entries or 20 MB. Node source from pnpm v9 or npm v2/v3 lockfiles is labelled **lockfile-matched; bytes as installed**. These two modes bypass the model-call cache because installed source can change independently of the review revision.
 
 ### Experimental change checks
 
