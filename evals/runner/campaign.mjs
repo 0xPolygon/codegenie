@@ -16,6 +16,7 @@ import { exportFirstLock, revealPairing } from './blind-export.mjs';
 import { assertBlindPrivateInputs, assertOutsideSources, normalizeOracleCase, validateBlindInputs } from './blind-inputs.mjs';
 import { validateAdmissionAudit } from './admission-audit.mjs';
 import { validatePacketTemplates, verifyPacketCalls } from './packet-templates.mjs';
+import { assertInstructionBinding, validateInstructionArms } from './instruction-binding.mjs';
 import { readCheckedFile } from './safe-read.mjs';
 import { loadScoringBundle } from './score-bundle.mjs';
 import { scoreCampaign } from './score.mjs';
@@ -92,6 +93,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
   if (!Array.isArray(schedule.slots) || !schedule.slots.length) throw new Error('invalid campaign schedule');
   const blindInputs = config.blind === undefined ? undefined : validateBlindInputs(config.blind, schedule.slots, { requireV2: !existsSync(config.supervisorPath) });
   const armSelections = config.blind?.stageSelections;
+  const instructionArms = validateInstructionArms(config.blind);
   if (armSelections !== undefined && (!armSelections || typeof armSelections !== 'object' || Array.isArray(armSelections) ||
       Object.keys(armSelections).sort().join(',') !== 'control,treatment' || ['control', 'treatment'].some((arm) => {
         const value = armSelections[arm];
@@ -99,14 +101,16 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
           ['provider', 'modelId', 'reasoning'].some((field) => typeof value[field] !== 'string' || !value[field]);
       }))) throw new Error('invalid blind stage selections');
   const roots = new Map(), reviewInputRoots = [], suiteCases = new Map();
+  let instructionPolicy;
   for (const slot of schedule.slots) {
     const wc = slot.workerConfig;
+    if (instructionArms && !slot.blind) throw new Error('instruction arm binding missing');
     if (wc?.reviewOverride !== undefined) throw new Error('campaign review overrides are no longer supported');
     if (slot.blind !== undefined) {
       const packetCalls = wc?.expectedCalls?.filter((call) => call.stage === 7 && call.purpose !== 'location_clarification');
       if (!['control', 'treatment'].includes(slot.blind.arm) || !Array.isArray(packetCalls) || !packetCalls.some((call) => call.kind === 'initial') ||
           wc.expectedCalls.some((call) => call.stage === 7 && call.purpose === 'location_clarification' && call.templateVersion !== 'location-clarification-v1')) throw new Error('campaign packet template binding mismatch');
-      validatePacketTemplates(wc.packetTemplates, slot.expectedPacketIds);
+      validatePacketTemplates(wc.packetTemplates, slot.expectedPacketIds, { instructionSet: instructionArms?.[slot.blind.arm] ?? 'v1' });
     }
     if (!wc || slot.boundaryId === `final-${sha(config.binding)}` || typeof slot.caseId !== 'string' || !slot.caseId || !Array.isArray(slot.expectedPacketIds) || slot.provider !== 'openrouter' ||
         wc.supervisorPath !== config.supervisorPath || wc.ledgerPath !== config.ledgerPath || wc.ledgerBinding !== config.binding || wc.boundaryId !== slot.boundaryId ||
@@ -117,7 +121,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
     if (typeof caseConfig.caseDir !== 'string' || wc.integrity?.suiteDir !== path.resolve(path.dirname(wc.caseConfig), caseConfig.caseDir) ||
         !wc.integrity?.build || Object.keys(wc.integrity.build).some((key) => wc.integrity.build[key] !== config.build?.[key]) || Object.keys(config.build ?? {}).length !== Object.keys(wc.integrity.build).length) throw new Error('case integrity binding mismatch');
     assertIntegrity(wc.integrity);
-    const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1), { resolveEffective: armSelections !== undefined && slot.blind !== undefined });
+    const bounds = await workerBounds(wc.caseConfig, caseBytes, attemptPrefix(slot.id, 1), { resolveEffective: (armSelections !== undefined || instructionArms !== undefined) && slot.blind !== undefined });
     suiteCases.set(slot.caseId, bounds.suiteCase);
     if (blindInputs && !existsSync(config.supervisorPath)) {
       const location = blindInputs.locators.cases.find((item) => item.caseId === slot.caseId);
@@ -131,10 +135,16 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       }
     }
     if (bounds.effectiveConfig !== undefined) assertExpectedCalls(bounds.effectiveConfig, wc.expectedCalls);
-    if (slot.blind !== undefined && bounds.effectiveConfig !== undefined && armSelections === undefined) throw new Error('blind stage selections missing');
+    if (slot.blind !== undefined && bounds.suiteCase.llm?.stages !== undefined && armSelections === undefined) throw new Error('blind stage selections missing');
+    if (slot.blind !== undefined && bounds.suiteCase.review?.stage7Instructions !== undefined && instructionArms === undefined) throw new Error('blind instruction selections missing');
     if (slot.blind !== undefined && armSelections !== undefined) {
       const actual = reviewStageSelection(bounds.effectiveConfig?.llm), expected = armSelections[slot.blind.arm];
       if (actual.provider !== expected.provider || actual.modelId !== expected.modelId || actual.reasoning !== expected.reasoning) throw new Error('blind arm stage selection mismatch');
+    }
+    if (instructionArms) {
+      const actualPolicy = assertInstructionBinding(bounds.effectiveConfig, wc.expectedCalls, instructionArms[slot.blind.arm]);
+      if (instructionPolicy !== undefined && instructionPolicy !== actualPolicy) throw new Error('instruction effort policy mismatch');
+      instructionPolicy = actualPolicy;
     }
     if (slot.blind !== undefined && bounds.toolSurface !== 'current') throw new Error('campaign arm surface mismatch');
     roots.set(slot.id, path.dirname(bounds.outputDir));
@@ -338,6 +348,7 @@ export async function openCampaign(configFile, expectedSHA256, { fetchImpl = glo
       const packetCalls = JSON.parse(readBytes(path.join(found.receipt.runDir, 'packet-calls.json')).toString('utf8'));
       const modelCalls = readBytes(path.join(root, 'model-calls.jsonl')).toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
       verifyPacketCalls({ bindings: slot.workerConfig.packetTemplates, packetIds: slot.expectedPacketIds, calls: packetCalls, modelCalls,
+        instructionSet: instructionArms?.[slot.blind.arm] ?? 'v1',
         readDebug: (callId) => {
           if (!/^mc-[A-Za-z0-9_-]+$/u.test(callId)) throw new Error('invalid model call id');
           return read(`debug/llm-calls/${callId}.request.json`);

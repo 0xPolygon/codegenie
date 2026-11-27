@@ -141,6 +141,30 @@ describe('campaign driver', () => {
       expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
       const campaign = await openCampaign(configPath, writeConfig(), { fetchImpl }); campaign.close();
       expect(fetchImpl).not.toHaveBeenCalled();
+      for (const item of [worker.supervisorPath, worker.ledgerPath, `${worker.supervisorPath}-wal`, `${worker.supervisorPath}-shm`, `${worker.ledgerPath}-wal`, `${worker.ledgerPath}-shm`, legacyConfig.evidenceDirectory, legacyConfig.workDirectory, legacyConfig.receiptDirectory]) rmSync(item, { recursive: true, force: true });
+      // A v2 arm must resolve to its sealed instruction set. Packet families
+      // and high-effort policy are checked before either campaign store exists.
+      vi.stubEnv('CODEGENIE_REASONING', 'high');
+      writeFileSync(yaml, readFileSync(yaml, 'utf8').replace('review:\n', 'review:\n  stage7Instructions: v2\n').replace('      reasoning: high\n', ''));
+      const v2Bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01', { resolveEffective: true });
+      worker.integrity.suiteSHA256 = treeDigest(suiteDir);
+      worker.expectedCalls = deriveExpectedCalls(v2Bounds.effectiveConfig, { 5: 'p5.9', 7: 'p7.18', 9: 'p9.32', 10: 'p10.25' });
+      worker.packetTemplates[0]!.templates = Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.18']));
+      const withInstructions = () => {
+        writeConfig(); const value = JSON.parse(readFileSync(configPath, 'utf8'));
+        value.blind.instructionSets = { control: 'v1', treatment: 'v2' }; value.blind.effortPolicy = 'global-high';
+        const bytes = Buffer.from(JSON.stringify(value)); writeFileSync(configPath, bytes); return sha(bytes);
+      };
+      slot.blind.arm = 'control';
+      await expect(openCampaign(configPath, withInstructions(), { fetchImpl })).rejects.toThrow('packet template binding mismatch');
+      expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      slot.blind.arm = 'treatment';
+      vi.stubEnv('CODEGENIE_REASONING', 'low');
+      await expect(openCampaign(configPath, withInstructions(), { fetchImpl })).rejects.toThrow('effective expected calls mismatch');
+      expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      vi.stubEnv('CODEGENIE_REASONING', 'high');
+      const v2Campaign = await openCampaign(configPath, withInstructions(), { fetchImpl }); v2Campaign.close();
+      expect(fetchImpl).not.toHaveBeenCalled();
     } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
   });
   it('refuses swapped per-stage expectations before any admission', async () => {

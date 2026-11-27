@@ -27,7 +27,7 @@ export function treeDigest(directory) {
 export function buildDigest() {
   const pi = realpathSync(path.join(checkout, 'node_modules/@earendil-works/pi-ai'));
   return { dist: treeDigest(path.join(checkout, 'dist')), runner: treeDigest(path.join(checkout, 'evals/runner')),
-    skills: treeDigest(path.join(checkout, 'bundled-skills')), grammars: treeDigest(path.join(checkout, 'bundled-grammars')),
+    skills: treeDigest(path.join(checkout, 'bundled-skills')), skillsV2: treeDigest(path.join(checkout, 'bundled-skills-v2')), grammars: treeDigest(path.join(checkout, 'bundled-grammars')),
     models: digest(readFileSync(path.join(checkout, 'models.md'))), pi: treeDigest(path.join(pi, 'dist')), piPackage: digest(readFileSync(path.join(pi, 'package.json'))),
     lockfile: digest(readFileSync(path.join(checkout, 'pnpm-lock.yaml'))), package: digest(readFileSync(path.join(checkout, 'package.json'))) };
 }
