@@ -1,4 +1,3 @@
-import { isPacketReviewTestPath, isProsePath } from "../util/path-roles.js";
 import { packetHasRepositoryTools } from "../util/packet-tools.js";
 import type {
   CandidateFinding,
@@ -7,8 +6,7 @@ import type {
   ReviewPacket,
   ReviewStage,
   ReviewToolSurface,
-  RunCoverageStatus,
-  Stage7Instructions
+  RunCoverageStatus
 } from "../types.js";
 import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
@@ -51,7 +49,6 @@ export type SkillProjectionEvent = {
 };
 
 export type ProjectSkillsOptions = {
-  stage7Instructions?: Stage7Instructions;
   telemetry?: Pick<TelemetryRecorder, "event">;
   onEvent?: (event: SkillProjectionEvent) => void;
 };
@@ -94,12 +91,6 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
 const SIX_STAGE7_PROMPT_VERSION = "p7.16-six.1";
 const SHORTENED_PATCH_PROMPT_VERSION = "p7.17";
 const SIX_SHORTENED_PATCH_PROMPT_VERSION = "p7.17-six.1";
-const STAGE7_V2_PROMPT_VERSION = "p7.18";
-const SIX_STAGE7_V2_PROMPT_VERSION = "p7.18-six.1";
-const SHORTENED_PATCH_V2_PROMPT_VERSION = "p7.19";
-const SIX_SHORTENED_PATCH_V2_PROMPT_VERSION = "p7.19-six.1";
-const VERIFIER_V2_PROMPT_VERSION = "p9.32";
-
 export const TEST_COVERAGE_GUIDANCE = "A missing test for a new branch alone is not a finding. Establish a material behavioral requirement from callers, boundary tests or an explicit contract, identify a concrete violating regression, and show why inspected relevant tests would accept it. A currently correct production guard may still need an important rejection test; no existing production bug or executed mutation is required. Inspect likely sister tests and transport validation where relevant. Scope absence claims to inspected evidence: a bounded or unsuccessful search cannot prove repository-wide absence. Neither neighboring test style, a commit title, nor an unsupported client-visible label establishes material consequence. Omit optional extra coverage rather than turning it into human-attention noise. A proposed regression test must exercise a reachable boundary, reject weakened requirements, and accept valid remedies.";
 
 const DOCUMENTATION_IMPACT_GUIDANCE = "For documentation findings, identify the specific instruction or decision the reader would get wrong and the concrete consequence supported by inspected evidence. Read the surrounding example and corrective instructions before treating an isolated wording or arithmetic inconsistency as a defect. A possible future misunderstanding or hypothetical monitoring/implementation mistake alone does not establish material impact. Do not promote wording-only corrections as findings; retain documentation findings that demonstrably prescribe an unsafe action or violate an established requirement.";
@@ -112,16 +103,8 @@ const STAGE7_INTENT = "Use declared intent signals to frame behavior changes pre
 const STAGE7_INTENT_FIELDS = "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.";
 const STAGE7_STATIC_SIGNALS = "Treat packet staticSignals as hints to investigate, not automatic findings.";
 
-const STAGE7_V2_FRAME = "You are codegenie, a correctness-first senior code reviewer performing packet review. You propose candidate defects; a later stage verifies them before anything is published.";
-const STAGE7_V2_TASK = "Find behavior this change breaks. Start at an assigned changed line: what reached its caller, persisted state or next operation before the change, and what reaches it now? Choose a concrete input, state, dependency result or ordering that separates the two, and follow it to an observable result. Check both directions: something previously accepted, counted, completed or protected that no longer is, and something previously rejected, retired or released that is now accepted, counted twice or still used. For refactor-like changes, a changed validation predicate, fallback path, conversion or boundary matters when it can alter caller-visible behavior. Inspect the base side, callers, effective guards and tests when they can decide the outcome.";
-const STAGE7_V2_SKILL_HEADER = "Skill checks. Use the applicable checks to choose what to try, and test the neighboring case that could disprove your first explanation:";
 // #504 replaces #405's free-text assignedEffects with a submitted attempt and traceable source.
 const CHANGE_CHECKS_BLOCK = "For each assigned hunk, compare the previous and new behavior at the nearest observer that depends on it, then choose the most plausible concrete way the change could break that guarantee and check it. Ask the question for its kind: acceptance — does it now admit an input it should reject, or reject one callers may still send? state or contract — can a new value reach a reader that cannot handle it, or a retired value still pass a boundary that should reject it? accounting — can one contribution be applied twice or missed across initialization, retry and rollback? lifetime — can work outlive its owner, or an owner release a resource a live user can still reach? completion — can a waiter, sibling or cleanup be skipped or completed twice on success, cancellation or partial failure? failure — can failure look like success, or a supported recovery now look like failure? conversion — is a raw value validated before a lossy conversion, and is a caller-visible bound still satisfiable after it? Record one changeChecks row per hunk (two only for distinct behavioral changes). ruled_out needs checkedAt: the inspected source outside the changed rows that defeats this specific attempt; if the deciding fact is missing, use question and give the followUpHint. A mechanical hunk may use no_behavior_change with the equivalence in before and after. Rows are a record of your check, not findings: report every defect, including ones a row points to, in findings as usual.";
-const STAGE7_V2_CONTRACT = "You propose; a later verification stage decides what is proven and publishable. Submit a candidate finding when the changed code supports a specific trigger and wrong outcome. In failureMode give the trigger and what the changed code does; in whyThisMatters give the broken contract and the observable consequence; in verification cite the source facts you checked and any remaining decisive assumption. If one specific fact could remove the defect and you cannot resolve it, still submit the candidate and name that fact, or give a pointer-rich followUpHint or uncertainty with its file or symbol. Do not invent an execution, caller or contract, and do not emit broad reminders such as \"check if this is safe\".";
-const STAGE7_V2_STATUS_CURRENT = "Set reviewStatus to findings when you submit a candidate, and to no_findings after assessing the changed lines with no candidate left; scoped followUpHints or uncertainties may remain with no_findings. Use incomplete only when a tool or budget limit stopped assessment of the changed lines. An incomplete review counts as unreviewed coverage; do not use it to hedge. Keep output compact: noFindingReason is a short conclusion, not a review report.";
-const STAGE7_V2_TEST_BLOCK = "This packet changes tests. Identify the behavior a changed or deleted assertion protects, compare what the old and new tests exercise, and describe a concrete regression the inspected tests would now accept, or a supported behavior they would now reject. Missing-coverage claims need inspected test evidence: distinguish no tests from tests that miss one branch, value or contract, and scope absence claims to the tests you inspected. If relevant tests exist but you cannot inspect enough, give a pointer-rich followUpHint with the exact unresolved predicate.";
-const STAGE7_V2_DOC_BLOCK = "This packet changes prose documentation. Identify the instruction a reader would follow, the requirement it conflicts with, and the action or decision that results; read the surrounding example and any nearby correction first. Wording preferences are not defects.";
-const STAGE7_V2_STATUS_SIX = "Set reviewStatus to findings when you submit a candidate, and to no_findings after assessing all assigned changed lines with no candidate left; scoped followUpHints or uncertainties may remain with no_findings. Use incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines. Unread sibling hunks alone do not make this review incomplete. An incomplete review counts as unreviewed coverage; do not use it to hedge. Keep output compact: noFindingReason is a short conclusion, not a review report.";
 
 type PromptLedgerEntry = {
   surface: string;
@@ -215,18 +198,6 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntr
 // Bundled-skill provenance (plan 95 standing rule extended to skills,
 // 2026-07-06): each non-obvious check carries its motivating case so future
 // trims are lookups, not archaeology. Guarded by tests/shared-utils.test.ts.
-export const PROMPT_TEMPLATE_WHY_LEDGER_V2 = {
-  ...PROMPT_TEMPLATE_WHY_LEDGER,
-  7: [
-    ...PROMPT_TEMPLATE_WHY_LEDGER[7].map(entry => entry.surface === "staticSignals/lossy-transform guidance"
-      ? { ...entry, surface: "core/code-review check 10" }
-      : entry),
-    { surface: "Task", reason: "Lead with the changed contract, a concrete trigger, and its observable effect.", evidence: "#496 and #503" },
-    { surface: "Stage contract", reason: "Reserve publication proof for Stage 9 while preserving precise unresolved predicates.", evidence: "#496 and #503" },
-    { surface: "conditional test/doc blocks", reason: "Give file-specific discovery guidance when the packet changes that file kind.", evidence: "#496 and #503" }
-  ]
-};
-
 export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
   "core/code-review": [
     { surface: "caller-visible guarantees after transformation", reason: "Rounding/narrowing that overstates a caller-visible promise is a repeatedly-proven miss class; one check + one example, deliberately compact.", evidence: "Wave-era exact-output rounding family; cross-model study finding 5" },
@@ -309,22 +280,9 @@ const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   9: ["falsePositives", "safePatterns"]
 };
 
-const STAGE_SECTION_MAP_V2: Partial<Record<ReviewStage, SkillSectionName[]>> = {
-  ...STAGE_SECTION_MAP,
-  7: ["checks", "examples"]
-};
-
-export function verifierOnlySkillIds(skills: Skill[]): string[] {
-  return skills
-    .filter(skill => !STAGE_SECTION_MAP_V2[7]!.some(section => skill.sections[section]?.trim()) &&
-      STAGE_SECTION_MAP_V2[9]!.some(section => skill.sections[section]?.trim()))
-    .map(skill => skill.id);
-}
-
 export function createPromptBuilder(_registry: LensRegistry, options: PromptBuilderOptions = {}): PromptBuilder {
   const toolSurface = options.toolSurface ?? "current";
   const six = toolSurface === "six";
-  const v2 = options.stage7Instructions === "v2";
   return {
     renderDossier: (dossier) => fenceUntrusted(stableJson(plannerDossierPromptProjection(dossier)), "planner-dossier"),
     buildPlannerPrompt: ({ dossier, lenses, skills }) => {
@@ -378,27 +336,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
           depthCloseGuidance(packet)
         ]),
       ];
-      const guidance = v2 ? [
-        STAGE7_V2_FRAME,
-        injectionInstruction(),
-        STAGE7_V2_TASK,
-        STAGE7_V2_SKILL_HEADER + "\n" + projection.text,
-        ...(options.changeChecks ? [CHANGE_CHECKS_BLOCK] : []),
-        STAGE7_V2_CONTRACT,
-        six ? STAGE7_V2_STATUS_SIX : STAGE7_V2_STATUS_CURRENT,
-        isPacketReviewTestPath(packet.path) || (packet.oldPath !== undefined && isPacketReviewTestPath(packet.oldPath))
-          ? STAGE7_V2_TEST_BLOCK : "",
-        isProsePath(packet.path) || (packet.oldPath !== undefined && isProsePath(packet.oldPath))
-          ? STAGE7_V2_DOC_BLOCK : "",
-        STAGE7_PLACEMENT,
-        STAGE7_ATTENTION_NOTES,
-        STAGE7_RELATED_CONTEXT,
-        STAGE7_STATIC_SIGNALS,
-        STAGE7_CONFIDENCE,
-        STAGE7_INTENT,
-        STAGE7_INTENT_FIELDS,
-        ...toolGuidance
-      ] : [
+      const guidance = [
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
@@ -434,12 +372,6 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         submitReviewShapeGuidance(options.changeChecks ? packet.hunks[0]?.hunkId : undefined)
       ], projection, blocks.length + Number(Boolean(changeDirectory)));
       const suffix = options.changeChecks ? "-cc.1" : "";
-      if (v2) {
-        const version = shortenedPatch
-          ? (six ? SIX_SHORTENED_PATCH_V2_PROMPT_VERSION : SHORTENED_PATCH_V2_PROMPT_VERSION)
-          : (six ? SIX_STAGE7_V2_PROMPT_VERSION : STAGE7_V2_PROMPT_VERSION);
-        return { ...built, templateVersion: version + suffix };
-      }
       if (shortenedPatch) {
         const version = six ? SIX_SHORTENED_PATCH_PROMPT_VERSION : SHORTENED_PATCH_PROMPT_VERSION;
         return { ...built, templateVersion: version + suffix };
@@ -500,7 +432,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: PromptBuil
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text.",
         VERIFIER_SUBMIT_SHAPE_GUIDANCE
       ], projection, blocks.length);
-      return v2 ? { ...built, templateVersion: VERIFIER_V2_PROMPT_VERSION } : built;
+      return built;
     },
     buildComposerPrompt: ({ groupedFindingsJson, intent, coverage, followUpHintNotes, attentionReconciliationJson }) => {
       const blocks = [
@@ -762,7 +694,7 @@ export function projectSkills(skills: Skill[], stage: ReviewStage, options: Proj
   const perSkill: SkillProjection["perSkill"] = [];
   const projected: string[] = [];
   let totalChars = 0;
-  const sectionMap = options.stage7Instructions === "v2" ? STAGE_SECTION_MAP_V2 : STAGE_SECTION_MAP;
+  const sectionMap = STAGE_SECTION_MAP;
 
   for (const skill of dedupeSkills(skills)) {
     const rendered = renderSkillProjection(skill, stage, sectionMap);

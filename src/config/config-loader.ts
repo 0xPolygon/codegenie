@@ -59,7 +59,6 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.restrictTo",
   "lenses.extraSkillPaths",
   "review.verify",
-  "review.stage7Instructions",
   "review.changeChecks",
   "review.compositionReasoningStepDown",
   "review.skipSvgReview",
@@ -179,8 +178,15 @@ export function applyRepoConfigLayer(
   return { config: validated.data as CodegenieConfig, warnings };
 }
 
-/** Allow stored configs from the retired effort experiment to load. */
-export function removeRetiredAdaptiveThinking(parsed: unknown): void {
+/** Preserve retired v1 settings while rejecting the removed v2 instructions. */
+export function removeRetiredReviewOptions(parsed: unknown): void {
+  if (parsed && typeof parsed === "object" && "review" in parsed && parsed.review &&
+      typeof parsed.review === "object" && "stage7Instructions" in parsed.review) {
+    if (parsed.review.stage7Instructions === "v1") delete parsed.review.stage7Instructions;
+    else if (parsed.review.stage7Instructions === "v2") {
+      throw new CodegenieError("config_error", "review.stage7Instructions v2 has been retired");
+    }
+  }
   if (parsed && typeof parsed === "object" && "review" in parsed &&
       parsed.review && typeof parsed.review === "object" && "adaptiveThinking" in parsed.review) {
     delete parsed.review.adaptiveThinking;
@@ -206,7 +212,7 @@ function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodegen
     assertNoCredentialKeys(parsed, filePath);
   }
 
-  removeRetiredAdaptiveThinking(parsed);
+  removeRetiredReviewOptions(parsed);
   const result = rawConfigSchema.safeParse(parsed);
   if (!result.success) {
     const unknownKeys = result.error.issues.flatMap(issue => issue.code === "unrecognized_keys"
@@ -301,10 +307,6 @@ function applyRawConfig(
   if (raw.review?.changeChecks !== undefined) {
     config.review.changeChecks = raw.review.changeChecks;
     sources["review.changeChecks"] = source;
-  }
-  if (raw.review?.stage7Instructions !== undefined) {
-    config.review.stage7Instructions = raw.review.stage7Instructions;
-    sources["review.stage7Instructions"] = source;
   }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {

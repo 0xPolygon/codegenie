@@ -9,7 +9,6 @@
   "files": [
     "dist",
     "bundled-skills",
-    "bundled-skills-v2",
     "bundled-grammars",
     "models.md"
   ],

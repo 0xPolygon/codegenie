@@ -5,8 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { validateToolCall } from "@earendil-works/pi-ai";
 
-const [baseline, candidate, stage7Instructions = "v1"] = process.argv.slice(2);
-assert(["v1", "v2"].includes(stage7Instructions), "Choose v1 or v2.");
+const [baseline, candidate] = process.argv.slice(2);
 assert(baseline && candidate, "Supply the two compiled dist directories.");
 globalThis.fetch = async () => { throw new Error("This comparison must run offline."); };
 
@@ -116,8 +115,8 @@ async function capture(dist) {
   });
   for (const toolSurface of ["current", "six"]) {
     const baseConfig = structuredClone(defaultConfig);
-    const config = { ...baseConfig, review: { ...baseConfig.review, toolSurface, stage7Instructions, verify: true, concurrency: 1 } };
-    const promptBuilder = createPromptBuilder(registry, { toolSurface, stage7Instructions });
+    const config = { ...baseConfig, review: { ...baseConfig.review, toolSurface, verify: true, concurrency: 1 } };
+    const promptBuilder = createPromptBuilder(registry, { toolSurface });
     const packetRun = (selected) => async (runner, telemetry) => {
       // Older compiled baselines accepted an unused plan argument.
       assert([5, 6].includes(runLensPackets.length));

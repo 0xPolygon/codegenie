@@ -822,7 +822,6 @@ async function createPipelineServices(
   const skillsResult = await loadSkills({
     repoRoot,
     extraSkillPaths: config.lenses.extraSkillPaths,
-    instructionSet: config.review.stage7Instructions ?? "v1",
     logger: run.logger,
     telemetry: run.telemetry
   });
@@ -830,7 +829,6 @@ async function createPipelineServices(
   const promptBuilder = createPromptBuilder(lensRegistry, {
     telemetry: run.telemetry,
     toolSurface: config.review.toolSurface ?? "current",
-    stage7Instructions: config.review.stage7Instructions ?? "v1",
     changeChecks: config.review.changeChecks === true
   });
   const cache = overrides.runner === undefined
@@ -858,7 +856,6 @@ async function validateExplicitCliLensesForZeroWork(
   const skillsResult = await loadSkills({
     repoRoot,
     extraSkillPaths: config.lenses.extraSkillPaths,
-    instructionSet: config.review.stage7Instructions ?? "v1",
     logger: run.logger,
     telemetry: run.telemetry
   });
@@ -909,7 +906,7 @@ export function reviewCacheFingerprint(
   // #504 changes the Stage 7 prompt and schema, which are already in that call's
   // cache key. Keep other stages shareable when their actual input is identical.
   const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout,
-    toolSurface, stage7Instructions, changeChecks: _changeChecks, ...review } = config.review;
+    toolSurface, changeChecks: _changeChecks, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,
@@ -925,8 +922,7 @@ export function reviewCacheFingerprint(
       lenses,
       review: {
         ...review,
-        ...(toolSurface === "six" ? { toolSurface } : {}),
-        ...(stage7Instructions === "v2" ? { stage7Instructions } : {})
+        ...(toolSurface === "six" ? { toolSurface } : {})
       },
       classification: config.classification,
       llm

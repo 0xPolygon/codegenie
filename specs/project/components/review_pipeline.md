@@ -550,7 +550,6 @@ Outcome handling:
 
 ### Stage 7: Lens Execution
 
-The experimental `review.stage7Instructions` setting defaults to `"v1"`. With `"v2"`, the task starts with before/after behavior and concrete failure triggers, followed by Checks and Examples. Test and prose guidance depends on the packet's old or new path. The v2 bundled skills move materiality checks into Stage 9 and preserve the existing submission fields.
 
 Under v2, finding and question provenance also includes selected verifier-only skills with False Positives or Safe Patterns. Stage 7 projection telemetry and question events report only what Stage 7 received. Stage 9 can use the additional guidance for direct and promoted candidates.
 

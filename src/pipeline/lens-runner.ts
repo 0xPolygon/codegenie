@@ -8,7 +8,7 @@ import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner, LlmSubmitFailureClassification, LlmToolResultSummary } from "../llm/llm-runner.js";
 import { submitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
-import { exactSourceToolNames, projectedSkillIds, verifierOnlySkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
+import { exactSourceToolNames, projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   AnchorSource,
@@ -232,16 +232,14 @@ async function runPacket(
   const changeDirectory = currentHunks && tools.readChangePromptDirectory?.(currentHunks, hasTools);
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills, ...(changeDirectory ? { changeDirectory } : {}) });
   const projectedIds = projectedSkillIds(prompt.projection);
-  const passSkillIds = config.review.stage7Instructions === "v2"
-    ? [...new Set([...projectedIds, ...verifierOnlySkillIds(skills)])]
-    : projectedIds;
+  const passSkillIds = projectedIds;
   const repositoryTools = !hasTools
     ? []
     : buildRepositoryToolDefinitions(tools, { toolSurface, includeLikelyTests: shouldExposeLikelyTestsForPacket(packet),
       ...(currentHunks ? { currentHunks } : {}) });
   const changeCheckDiff = config.review.changeChecks === true ? opts.diff : undefined;
   const assigned = changeCheckDiff ? new Set(packet.hunks.map(hunk => hunk.hunkId)) : undefined;
-  const schema = submitPacketReviewSchema(config.review.stage7Instructions, toolSurface, assigned ? [...assigned] : undefined);
+  const schema = submitPacketReviewSchema(assigned ? [...assigned] : undefined);
   let toolResults: LlmToolResultSummary[] = [];
   let attemptToolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
