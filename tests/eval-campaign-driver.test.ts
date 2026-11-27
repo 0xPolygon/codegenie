@@ -158,6 +158,15 @@ describe('campaign driver', () => {
       slot.blind.arm = 'control';
       await expect(openCampaign(configPath, withInstructions(), { fetchImpl })).rejects.toThrow('packet template binding mismatch');
       expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      // Even if the packet-family and model labels are changed to match the
+      // swapped arm, the resolved case is still v2 and must refuse pre-store.
+      worker.packetTemplates[0]!.templates = Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16']));
+      withInstructions(); const swapped = JSON.parse(readFileSync(configPath, 'utf8'));
+      swapped.blind.stageSelections.control = swapped.blind.stageSelections.treatment;
+      const swappedBytes = Buffer.from(JSON.stringify(swapped)); writeFileSync(configPath, swappedBytes);
+      await expect(openCampaign(configPath, sha(swappedBytes), { fetchImpl })).rejects.toThrow('instruction arm mismatch');
+      expect(fetchImpl).not.toHaveBeenCalled(); expect(existsSync(worker.ledgerPath)).toBe(false); expect(existsSync(worker.supervisorPath)).toBe(false);
+      worker.packetTemplates[0]!.templates = Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.18']));
       slot.blind.arm = 'treatment';
       vi.stubEnv('CODEGENIE_REASONING', 'low');
       await expect(openCampaign(configPath, withInstructions(), { fetchImpl })).rejects.toThrow('effective expected calls mismatch');
