@@ -267,10 +267,6 @@ Value-set extraction covers TypeScript, TSX, JavaScript and Go. For packets in o
 
 Set `review.traceDependents` to `"dependencies"` to let Stages 7 and 9 inspect locally installed dependencies imported by changed files. Use `"all"` to enable both features. The tool checks the pinned review's lock records and never installs or downloads dependencies. Go source is checked against `go.sum`, with a per-module identity scan cap of 5,000 entries or 20 MB. Node source from pnpm v9 or npm v2/v3 lockfiles is labelled **lockfile-matched; bytes as installed**. These two modes bypass the model-call cache because installed source can change independently of the review revision.
 
-### Experimental change checks
-
-`review.changeChecks` adds experimental per-hunk checks to Stage 7 and defaults to `false`. When enabled, packet reviewers record a before-and-after comparison, a concrete break attempt, and the inspected source for ruled-out attempts. The checks are private telemetry and do not appear in review output.
-
 ### Advanced: per-stage models
 
 Per-stage selection is an advanced option. Mixed-model review quality has not been measured, and there is no recommended mix yet.
@@ -351,7 +347,7 @@ Autonomy still lives where it earns its keep — *inside* the stages, where revi
 
 **Focused context beats big context.** A model handed a 100k-token diff reviews everything a little and nothing well. Small dense packets plus targeted tools invert that.
 
-**Skills are checks, not personas.** A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Guidance is projected per stage so it lands where it changes behavior.
+**Skills are checks, not personas.** A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Stage 7 receives Checks and Examples; Stage 9 receives False Positives and Safe Patterns. The packet reviewer checks every hunk and reports each concrete defect the change introduces or makes reachable.
 
 **Built to be evaluated.** With telemetry enabled, every run writes typed artifacts — plan, packets, candidates, verdicts, selections, budgets, per-call cost. `codegenie eval` replays real repos against expected findings and scores misses *by loss stage*. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 

@@ -56,16 +56,25 @@ describe("eval suite validation", () => {
     const file = path.join(suite, "case.yml");
     const writeCase = (setting: string) => writeFileSync(file, [
       "name: retired-instruction-set", "repo:", "  fixture: repo",
-      "review:", `  stage7Instructions: ${setting}`, "  changeChecks: true"
+      "review:", `  stage7Instructions: ${setting}`
     ].join("\n"));
     writeCase("v1");
     const { cases } = await loadEvalSuite(suite);
-    expect(cases[0]!.evalCase.review).toMatchObject({ changeChecks: true });
     expect(cases[0]!.evalCase.review).not.toHaveProperty("stage7Instructions");
     writeCase("v2");
     await expect(loadEvalSuite(suite)).rejects.toMatchObject({
       code: "config_error", context: { errors: [expect.stringContaining("retired")] }
     });
+  });
+
+  it("strips disabled and rejects enabled changeChecks in eval cases", async () => {
+    const suite = mkdtempSync(path.join(tmpdir(), "codegenie-eval-retired-checks-"));
+    const file = path.join(suite, "case.yml");
+    const writeCase = (value: string) => writeFileSync(file, ["name: retired-checks", "repo:", "  fixture: repo", "review:", `  changeChecks: ${value}`].join("\n"));
+    writeCase("false");
+    expect((await loadEvalSuite(suite)).cases[0]!.evalCase.review).not.toHaveProperty("changeChecks");
+    writeCase("true");
+    await expect(loadEvalSuite(suite)).rejects.toMatchObject({ code: "config_error", context: { errors: [expect.stringContaining("review.changeChecks has been retired")] } });
   });
 
   it("rejects command fields on artifact-backed cases", async () => {
@@ -1832,6 +1841,25 @@ describe("eval artifacts", () => {
 });
 
 describe("artifact replay", () => {
+  it.each([false, true])("handles retired changeChecks=%s in an actual replay snapshot", async (enabled) => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-retired-checks-replay-"));
+    const sourceRun = path.join(suiteDir, "logs", "1");
+    writeArtifactSet(path.join(sourceRun, "telemetry"), [], []);
+    const caseSnapshot = { name: "retired-snapshot", artifacts: { path: "logs/1" }, review: { changeChecks: enabled } };
+    writeFileSync(path.join(sourceRun, "info.json"), JSON.stringify({
+      runNumber: 1, caseName: "retired-snapshot", caseHash: "old", caseSnapshot, mode: "replay",
+      cache: { enabled: false, source: "config" }, startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:01.000Z", score: passingScore()
+    }));
+    if (enabled) {
+      await expect(replayFromArtifacts(sourceRun, { config: defaultConfig })).rejects.toThrow("review.changeChecks has been retired");
+    } else {
+      const result = await replayFromArtifacts(sourceRun, { config: defaultConfig });
+      expect(result.info.replay).toMatchObject({ caseSource: "snapshot" });
+      expect(result.info.caseSnapshot.review).not.toHaveProperty("changeChecks");
+    }
+  });
+
   it("records configured recommendation scoring as not run during offline artifact evaluation", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "codegenie-offline-judge-"));
     const telemetry = path.join(dir, "source", "telemetry");

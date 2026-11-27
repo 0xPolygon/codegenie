@@ -1,8 +1,5 @@
-import { attestChangeChecks, sourcePointerStatus, validateChangeChecks } from "../src/pipeline/change-check-evidence.js";
-import { createToolArgumentStreamGuard } from "../src/llm/tool-argument-stream-limit.js";
 import { joinPacketText, packetSource, packetText, packetTextRanges, truncatePacketText } from "../src/pipeline/packet-text.js";
 import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../src/llm/submit-review-guidance.js";
-import type { SubmittedChangeCheck, SubmitPacketReview } from "../src/llm/schemas.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
@@ -18,7 +15,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import { maybePublishToGitHub } from "../src/github/publisher.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
 import { createFakeRunner } from "../src/llm/fake-runner.js";
-import { SubmitPacketReviewSchema, submitPacketReviewSchema } from "../src/llm/schemas.js";
+import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
@@ -76,7 +73,7 @@ import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 import { textRepository } from "./helpers/text-repository.js";
 
-it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", async () => {
+it("pins Stage 5, lean Stage 7, Stage 9 and submit schema renders", async () => {
   const { skills } = await loadSkills({
     repoRoot: "/unused-golden-repo", extraSkillPaths: [], logger: fakeLogger(), telemetry: nullTelemetry()
   });
@@ -117,7 +114,7 @@ it("preserves the Stage 5, 7 and 9 v1 renders and submit schema from 796e59b", a
   };
   templates["cache"] = reviewCacheFingerprint(defaultConfig, target, "registry");
   templates["submit_review"] = sha256Hex(JSON.stringify(SubmitPacketReviewSchema));
-  expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"abf942fbc26160c0d9d099dbd9a7a2feca7674cee3a1c0c4a6b2168949cde686"`);
+  expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"2b6e94a2487262cba0fe3bd7bebe93d3ca8c1ede388bed66ec1b91eaea86cbff"`);
 });
 
 it("qualifies the default and enabled dependent-lead prompt and cache contracts", () => {
@@ -133,9 +130,9 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
       const baseline = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet: withoutLeads, skills: [] });
       const off = createPromptBuilder(fakeLensRegistry(), { toolSurface, traceDependents: "off" }).buildPacketReviewPrompt({ packet: input, skills: [] });
       expect(off).toEqual(baseline);
-      const options = { toolSurface, traceDependents: "leads", changeChecks: true } as const;
+      const options = { toolSurface, traceDependents: "leads" } as const;
       const lead = createPromptBuilder(fakeLensRegistry(), options).buildPacketReviewPrompt({ packet: input, skills: [] });
-      expect(lead.templateVersion).toBe(baseline.templateVersion + "-cc.1-dep.1");
+      expect(lead.templateVersion).toBe(baseline.templateVersion + "-dep.1");
       expect(createPromptBuilder(fakeLensRegistry(), { ...options, traceDependents: "all" })
         .buildPacketReviewPrompt({ packet: input, skills: [] })).toEqual(lead);
       expect(createPromptBuilder(fakeLensRegistry(), { toolSurface, traceDependents: "dependencies" })
@@ -154,7 +151,7 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
   expect(reviewCacheFingerprint({ ...defaultConfig, review: { ...review, traceDependents: "leads" } }, target, "registry")).not.toBe(
     reviewCacheFingerprint(defaultConfig, target, "registry")
   );
-  expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"3ac55955516cc6760c33dff099e37c5dea2c7412570098e2f3d3bb2f827c1dd9"`);
+  expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"a57cf8189b3ec0ad71e2fcbcf8cb67f13e2b7332245b142fe7e9b2ec751383dd"`);
 });
 
 it.each(["current", "six"] as const)("exposes installed dependency reads only at enabled review and verification calls (%s)", async toolSurface => {
@@ -187,356 +184,52 @@ it.each(["current", "six"] as const)("exposes installed dependency reads only at
   }
 });
 
-describe("Stage 7 change checks", () => {
-  const empty = { findings: [], followUpHints: [], uncertainties: [] };
-  const unchanged: SubmittedChangeCheck = {
-    hunkId: "h1", changeKind: "no_behavior_change", before: "Returns the stored value.", after: "Returns the stored value.",
-    breakAttempt: "", result: "no_behavior_change"
+it("preserves the submit example in full-payload compact repair", async () => {
+  const cfg = config();
+  const packet = fakePacket();
+  const hunkId = "assigned-hunk";
+  packet.hunks[0]!.hunkId = hunkId;
+  const diff = fakeDiff();
+  diff.files[0]!.hunks[0]!.id = hunkId;
+  const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+  const submit = {
+    followUpHints: [], uncertainties: [], reviewStatus: "findings",
+    findings: [{ ...finding, anchor: { path: packet.path, side: "RIGHT", line: 1, hunkId } }]
   };
-  const checked: SubmittedChangeCheck = {
-    ...unchanged, changeKind: "acceptance", breakAttempt: "Pass an empty value and observe whether validation is skipped.",
-    result: "ruled_out", checkedAt: { path: "app.ts", side: "head", lineRange: [2, 3] }
-  };
-  const question = (ref: number): SubmittedChangeCheck => {
-    const { checkedAt: _pointer, ...row } = checked;
-    return { ...row, changeKind: "failure", result: "question", ref };
-  };
-  const review = (changeChecks: SubmittedChangeCheck[], reviewStatus: SubmitPacketReview["reviewStatus"] = "no_findings"): SubmitPacketReview =>
-    ({ ...empty, reviewStatus, changeChecks });
-
-  it("validates coverage, row identity, array links and conditional fields", () => {
-    const hunks = new Set(["h1", "h2"]);
-    const second = { ...unchanged, hunkId: "h2" };
-    expect(validateChangeChecks(review([unchanged, second, checked]), hunks)).toEqual({ ok: true });
-    expect(validateChangeChecks(review([unchanged], "incomplete"), hunks)).toEqual({ ok: true });
-    const { checkedAt: _pointer, ...noPointer } = checked;
-    for (const rows of [
-      [unchanged], [unchanged, unchanged, second], [unchanged, checked, { ...checked, before: "Another behavior" }, second],
-      [unchanged, { ...second, hunkId: "foreign" }], [unchanged, second, question(0)], [noPointer, second],
-      [{ ...unchanged, breakAttempt: "Must be empty." }, second],
-      [{ ...checked, checkedAt: { path: "app.ts", side: "head" as const, lineRange: [3, 2] as [number, number] } }, second]
-    ]) {
-      expect(validateChangeChecks(review(rows), hunks)).toMatchObject({ ok: false, classification: "change_check_invalid" });
+  const invalid = { ...submit, findings: [{ ...submit.findings[0], evidence: null }] };
+  const scripted = scriptedPiAdapter([
+    assistantMessage([toolCall("initial", "submit_review", invalid)]),
+    assistantMessage([toolCall("repair", "submit_review", submit)])
+  ]);
+  const requests: Array<Parameters<PiAiAdapter["complete"]>[1]> = [];
+  const adapter: PiAiAdapter = { ...scripted, validateToolCall,
+    complete: (model, context, options) => {
+      requests.push(structuredClone(context));
+      return scripted.complete(model, context, options);
     }
-  });
+  };
+  const telemetry = nullTelemetry();
+  const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
+    adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+  const registry = fakeLensRegistry();
+  const [result] = await runLensPackets([packet], fakeTools(), cfg, telemetry,
+    { runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry, diff });
 
-  it("attests the entire inclusive interval with at least one unchanged line", () => {
-    const pointer = checked.checkedAt!;
-    const delivered = (start: number, end: number, path = pointer.path) =>
-      ({ path, side: pointer.side, lineRange: [start, end] as [number, number] });
-    expect(sourcePointerStatus(undefined, [], new Set())).toBe("pointer_missing");
-    expect(sourcePointerStatus(pointer, [delivered(2, 3, "elsewhere.ts")], new Set())).toBe("source_not_delivered");
-    expect(sourcePointerStatus(pointer, [delivered(2, 2), delivered(4, 5)], new Set())).toBe("line_clipped");
-    expect(sourcePointerStatus(pointer, [delivered(2, 3)], new Set([2, 3]))).toBe("inside_changed_rows");
-    expect(sourcePointerStatus(pointer, [delivered(2, 2), delivered(3, 3)], new Set([2]))).toBe("traceable");
-  });
-
-  it("uses deletion context on base and allows another delivered declaration for a whole-file addition", () => {
-    const deletion = fakePacket({ oldPath: "previous.ts", hunkLines: [
-      { kind: "delete", oldLine: 2, content: "old behavior" },
-      { kind: "context", oldLine: 3, newLine: 2, content: "return value" }
-    ], changedOldLineNumbers: [2] });
-    const wholeFile = { ...fakePacket(), kind: "whole-file" as const, fileStatus: "added" as const,
-      contextDeliveredRanges: [{ path: "consumer.ts", side: "head" as const, lineRange: [5, 6] as [number, number] }] };
-    const deletionDiff = parseDiff([
-      "diff --git a/previous.ts b/app.ts", "--- a/previous.ts", "+++ b/app.ts",
-      "@@ -2,2 +2 @@", "-old behavior", " return value", ""
-    ].join("\n"));
-    const attest = (packet: ReviewPacket, checkedAt: SubmittedChangeCheck["checkedAt"]) =>
-      attestChangeChecks({ rows: [{ ...checked, checkedAt } as SubmittedChangeCheck], packet, diff: deletionDiff, delivered: [], findings: [], hints: new Map() })[0]?.pointerStatus;
-    expect(attest(deletion, { path: "previous.ts", side: "base", lineRange: [2, 3] })).toBe("traceable");
-    expect(attest(wholeFile, { path: "consumer.ts", side: "head", lineRange: [5, 6] })).toBe("traceable");
-    const diff = parseDiff("diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -20 +20 @@\n-before\n+after\n");
-    const [result] = attestChangeChecks({ rows: [{ ...checked, checkedAt: { path: "app.ts", side: "head", lineRange: [20, 20] } }],
-      packet: fakePacket(), diff, delivered: [{ path: "app.ts", side: "head", lineRange: [20, 20] }], findings: [], hints: new Map() });
-    expect(result?.pointerStatus).toBe("inside_changed_rows");
-  });
-
-  it("carries only whole positioned lines from packet context through joins and clipping", () => {
-    const body = "alpha\nbeta\ngamma";
-    const source = packetSource("heading\n" + body, body, "app.ts", "base", [4, 6]);
-    const joined = joinPacketText([packetText("preface"), source], "\n");
-    const clipped = truncatePacketText(joined, joined.text.indexOf("gamma") + 3, "");
-    expect(packetTextRanges(clipped)).toEqual([{ path: "app.ts", side: "base", lineRange: [4, 5] }]);
-    expect(packetTextRanges(packetSource("heading\nalpha", "alpha", "app.ts", "base", [4, 4], "alpha  \n"))).toEqual([]);
-  });
-
-  it.each(["current", "six"] as const)("replaces a bad row in real %s repair while retaining findings and submitted hint indices", async toolSurface => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, toolSurface, changeChecks: true };
-    const packet = fakePacket();
-    const { id: _id, producedBy: _producer, changedLine: _changed, ...finding } = fakeFinding();
-    const hint = { question: "Can a caller bypass the new check?", files: ["app.ts"], symbols: [], suggestedLenses: [],
-      reason: "A different caller may invoke the helper directly.", confidence: "low" };
-    const { checkedAt: _pointer, ...unchecked } = checked;
-    const invalid = { ...review([question(0), unchecked], "findings"),
-      findings: [finding], followUpHints: [{ ...hint, files: [] }, hint, { ...hint, confidence: "high" }] };
-    const repaired = [{ ...question(0), ref: 0 }, { ...question(2), breakAttempt: "Allow a caller to bypass validation." }];
-    const events: string[] = [];
-    const telemetry = { ...nullTelemetry(), event(event: Parameters<ReturnType<typeof nullTelemetry>["event"]>[0]) {
-      if (event.message === "stage7_change_checks") events.push(JSON.stringify(event.data));
-    } };
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("initial", "submit_review", invalid)]),
-      assistantMessage([toolCall("repair", "submit_review", { changeChecks: repaired })]),
-    ]);
-    const adapter = { ...scripted, validateToolCall };
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(),
-      runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const registry = fakeLensRegistry();
-    const [outcome] = await runLensPackets([packet], fakeTools(), cfg, telemetry, {
-      runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry, diff: fakeDiff()
-    });
-    expect(outcome?.status).toBe("completed");
-    expect(outcome?.findings).toEqual([expect.objectContaining(finding)]);
-    expect(outcome?.followUpHints.map(item => item.confidence)).toEqual(["high", "low"]);
-    expect(outcome?.changeChecks).toMatchObject([
-      { refIndex: 0, refDisposition: "dropped" },
-      { refIndex: 2, refDisposition: "kept", refId: `${packet.id}/hint-1` }
-    ]);
-    expect(scripted.calls).toBe(2);
-    expect(events.map(row => JSON.parse(row))).toMatchObject([{ rowsSubmitted: 2, rowCausedRepairs: 1 }]);
-  });
-
-  it("replaces an otherwise schema-valid semantic failure in real repair", async () => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: true };
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("initial", "submit_review", review([{ ...unchanged, breakAttempt: "Must be empty." }]))]),
-      assistantMessage([toolCall("repair", "submit_review", { changeChecks: [unchanged] })])
-    ]);
-    const adapter = { ...scripted, validateToolCall };
-    const telemetry = nullTelemetry();
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    expect(result?.changeChecks).toEqual([unchanged]);
-    expect(scripted.calls).toBe(2);
-  });
-
-  it.each([false, true])("shows the active submit shape in full-payload compact repair (changeChecks: %s)", async enabled => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: enabled };
-    const packet = fakePacket();
-    const hunkId = "assigned-hunk";
-    packet.hunks[0]!.hunkId = hunkId;
-    const diff = fakeDiff();
-    diff.files[0]!.hunks[0]!.id = hunkId;
-    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
-    const submit = {
-      ...empty, reviewStatus: "findings",
-      findings: [{ ...finding, anchor: { path: packet.path, side: "RIGHT", line: 1, hunkId } }],
-      ...(enabled ? { changeChecks: [{ ...question(0), hunkId, result: "finding" }] } : {})
-    };
-    const invalid = { ...submit, findings: [{ ...submit.findings[0], evidence: null }] };
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("initial", "submit_review", invalid)]),
-      assistantMessage([toolCall("repair", "submit_review", submit)])
-    ]);
-    const requests: Array<Parameters<PiAiAdapter["complete"]>[1]> = [];
-    const adapter: PiAiAdapter = { ...scripted, validateToolCall,
-      complete: (model, context, options) => {
-        requests.push(structuredClone(context));
-        return scripted.complete(model, context, options);
-      }
-    };
-    const telemetry = nullTelemetry();
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const registry = fakeLensRegistry();
-    const [result] = await runLensPackets([packet], fakeTools(), cfg, telemetry,
-      { runner, promptBuilder: createPromptBuilder(registry, { ...cfg.review }), lensRegistry: registry, diff });
-
-    expect(result?.findings).toEqual([expect.objectContaining(finding)]);
-    expect(requests).toHaveLength(2);
-    const initial = requests[0]!;
-    const repair = requests[1]!;
-    const initialPrompt = (initial.messages[0] as { content: string }).content;
-    const repairPrompt = (repair.messages[0] as { content: string }).content;
-    expect(repairPrompt).toContain("Repair only the structured Stage 7 packet-review submit payload");
-    expect(repairPrompt).not.toContain("retained-submission");
-    const example = repairPrompt.split("\n").find(line => line.startsWith('{"reviewStatus":"findings"'))!;
-    expect(initialPrompt).toContain(example);
-    const schema = repair.tools!.find(tool => tool.name === "submit_review")!;
-    const args = JSON.parse(example);
-    expect(validateToolCall([schema], toolCall("example", "submit_review", args))).toEqual(args);
-    if (enabled) expect(args.changeChecks).toMatchObject([{ hunkId, result: "finding", ref: 0 }]);
-    else expect(repairPrompt).toContain(SUBMIT_REVIEW_SHAPE_GUIDANCE);
-  });
-
-  it("preserves submitted rows in deterministic no-findings cleanup", async () => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: true };
-    const scripted = scriptedPiAdapter([assistantMessage([toolCall("initial", "submit_review", {
-      reviewStatus: "no_findings", noFindingReason: "Mechanical rename.", changeChecks: [unchanged]
-    })])]);
-    const telemetry = nullTelemetry();
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter: { ...scripted, validateToolCall }, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const [result] = await runLensPackets([fakePacket()], fakeTools(), cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    expect(result?.changeChecks).toEqual([unchanged]);
-    expect(scripted.calls).toBe(1);
-  });
-
-  it("keeps the row on forced finalize and attests packed prefixes plus continuation reads", async () => {
-    const packet = fakePacket();
-    packet.toolBudget.maxSingleToolResultChars = 500;
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: true };
-    const rows = [{ ...checked, checkedAt: { path: "app.ts", side: "head" as const, lineRange: [2, 3] as [number, number] } }];
-    const telemetry = nullTelemetry();
-    const recorded: Array<Parameters<typeof telemetry.recordToolCall>[0]> = [];
-    telemetry.recordToolCall = record => { recorded.push(record); return "fixture"; };
-    const requests: boolean[] = [];
-    const scripted = scriptedPiAdapter([
-      assistantMessage([toolCall("read", "read_range", { path: "app.ts", startLine: 2, endLine: 3 })]),
-      assistantMessage([toolCall("continue", "read_range", { path: "app.ts", startLine: 3, endLine: 3 })]),
-      assistantMessage([toolCall("finish", "submit_review", review(rows))])
-    ]);
-    const adapter: PiAiAdapter = { ...scripted, validateToolCall,
-      complete: (model, context, options) => {
-        requests.push(typeof options.toolChoice === "object" && options.toolChoice !== null && "type" in options.toolChoice && options.toolChoice.type === "tool");
-        return scripted.complete(model, context, options);
-      }
-    };
-    const tools = fakeTools();
-    tools.readRange = async (path, startLine, endLine) => ({
-      text: startLine === 2 ? "abc\n" + "effect".repeat(1000) : "const recovered = true;",
-      meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "head", lookupStatus: "found",
-        deliveryStatus: "full", totalLines: 4, deliveredLineRange: [startLine, endLine], requestedRange: { path, startLine, endLine } }
-    });
-    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry, logger: fakeLogger(), runSignal: new AbortController().signal,
-      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
-    const [result] = await runLensPackets([packet], tools, cfg, telemetry,
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    expect(requests).toEqual([false, false, true]);
-    expect(recorded.map(record => record.deliveredRanges)).toEqual([
-      [{ path: "app.ts", side: "head", lineRange: [2, 2] }], [{ path: "app.ts", side: "head", lineRange: [3, 3] }]
-    ]);
-    expect(result?.changeChecks).toMatchObject([{ pointerStatus: "traceable" }]);
-  });
-
-  it("keeps worker source deliveries isolated", async () => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: true };
-    const packet = fakePacket();
-    const other = fakePacket({ id: "packet-other" });
-    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
-      if (request.telemetryContext?.packetId === packet.id) request.onToolResults?.([{
-        id: "read", tool: "read_range", target: "app.ts", resultChars: 30, status: "ok",
-        deliveredRanges: [{ path: "app.ts", side: "head", lineRange: [2, 3] }]
-      }]);
-      return review([checked]) as T;
-    } };
-    const results = await runLensPackets([packet, other], fakeTools(), cfg, nullTelemetry(),
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
-    expect(results.map(result => result.changeChecks?.[0]?.pointerStatus)).toEqual(["traceable", "line_clipped"]);
-  });
-
-  it.each(["app.ts", "other.ts"])("requires the full diff to attest delivered lines outside the assigned hunk in %s", async path => {
-    const cfg = config();
-    cfg.review = { ...cfg.review, changeChecks: true };
-    const packet = fakePacket();
-    const row = { ...checked, checkedAt: { path, side: "head" as const, lineRange: [10, 10] as [number, number] } };
-    let modelCalls = 0;
-    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
-      modelCalls++;
-      request.onToolResults?.([{
-        id: "read-outside-assignment", tool: "read_range", target: path, resultChars: 20, status: "ok",
-        deliveredRanges: [row.checkedAt]
-      }]);
-      return review([row]) as T;
-    } };
-    const packets = [packet];
-    const args = [packets, fakeTools(), cfg, nullTelemetry()] as const;
-    const opts = { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() };
-    await expect(runLensPackets(...args, opts)).rejects.toMatchObject({
-      code: "config_error", message: "Stage 7 change checks require the full review diff."
-    });
-    expect(modelCalls).toBe(0);
-
-    const diff = fakeDiff();
-    const outside = fakeChangedLineDiff([{ path, hunkId: "outside", line: 10, content: "new behavior" }]).files[0]!;
-    if (path === packet.path) diff.files[0]!.hunks.push(outside.hunks[0]!);
-    else diff.files.push(outside);
-    const [result] = await runLensPackets(...args, { ...opts, diff });
-    expect(result?.changeChecks).toMatchObject([{ pointerStatus: "inside_changed_rows" }]);
-    expect(modelCalls).toBe(1);
-  });
-
-  it("writes private rows without forwarding them to verification, composition or the public review", async () => {
-    const repo = initRepo();
-    const output = mkdtempSync(path.join(tmpdir(), "codegenie-change-checks-"));
-    try {
-      writeRepoFile(repo, "app.ts", "export const values = [1];\n");
-      const base = commitAll(repo, "base");
-      writeRepoFile(repo, "app.ts", "export const values: number[] = [];\n");
-      const head = commitAll(repo, "head");
-      const settings = config();
-      settings.review = { ...settings.review, changeChecks: true };
-      settings.telemetry.enabled = true;
-      const runArtifactDir = path.join(output, "run");
-      const seen: number[] = [];
-      const result = await runReview({ mode: "head", baseRef: base, headRef: head }, settings, {
-        repoRoot: repo, runArtifactDir,
-        runner: { async runStructured<T>(request: LlmStructuredRequest<T>) {
-          seen.push(request.stage);
-          if (request.stage === 5) return {
-            diffUnderstanding: { declaredIntent: "Change default values", inferredBehavior: "The value array starts empty" }, coverage: []
-          } as T;
-          if (request.stage === 7) {
-            const packet = extractPromptJson<ReviewPacket>(request.prompt, "review-packet")!;
-            expect(request.templateVersion).toMatch(/-cc\.1$/u);
-            expect(request.prompt).toContain("Record one changeChecks row per hunk");
-            expect(request.prompt).not.toContain("contextDeliveredRanges");
-            const changed = packet.hunks[0]!;
-            const candidate = {
-              title: "The first value is no longer defined", severity: "medium", confidence: "high", category: "correctness",
-              path: packet.path, anchor: { path: packet.path, side: "RIGHT", line: changed.changedNewLineNumbers[0], hunkId: changed.hunkId },
-              evidence: { changedCode: "export const values: number[] = [];" }, failureMode: "The empty default hides the first value.",
-              whyThisMatters: "Callers get undefined.", verification: "The default literal is empty."
-            };
-            const value = { ...empty, reviewStatus: "findings", findings: [candidate], changeChecks: [{
-              ...question(0), hunkId: changed.hunkId, result: "finding", before: "PRIVATE_ATTEMPT", ref: 0
-            }] };
-            expect(request.validateSubmit?.(value as T)).toEqual({ ok: true });
-            return value as T;
-          }
-          expect(request.prompt).not.toContain("PRIVATE_ATTEMPT");
-          expect(JSON.stringify(request.schema)).not.toContain("changeChecks");
-          if (request.stage === 9) return {
-            verdict: "keep", reason: "The empty default hides the first value.", requiredEvidencePresent: true, falsePositiveRisk: "low",
-            proofAssessment: { status: "established", evidence: "Default literal has no values.", assumptions: [] }
-          } as T;
-          return { summary: "The value array starts empty.", composedFindings: [] } as T;
-        } }
-      });
-      expect(seen).toContain(9);
-      expect(seen).toContain(10);
-      const artifact = canonicalArtifactPath("change-checks.json");
-      expect(readFileSync(path.join(runArtifactDir, artifact), "utf8")).toContain("PRIVATE_ATTEMPT");
-      expect(JSON.stringify(result)).not.toContain("PRIVATE_ATTEMPT");
-      expect(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")).not.toContain("PRIVATE_ATTEMPT");
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-      rmSync(output, { recursive: true, force: true });
-    }
-  });
-
-  it("fits the 5-hunk, 10-row maximum through the schema and stream guard", () => {
-    const hunkIds = ["h1", "h2", "h3", "h4", "h5"];
-    const schema = submitPacketReviewSchema(hunkIds);
-    const rows = hunkIds.flatMap(hunkId => ["a", "b"].map(char => ({ ...checked, hunkId, before: char.repeat(120),
-      after: char.repeat(120), breakAttempt: char.repeat(160) })));
-    const value = review(rows);
-    expect(validateToolCall([{ name: "submit_review", description: "", parameters: schema }],
-      toolCall("full", "submit_review", value))).toEqual(value);
-    const args = JSON.stringify(value);
-    expect(createToolArgumentStreamGuard(7)!(0, args, args.length, true)).toBeUndefined();
-    expect(validateChangeChecks(value, new Set(hunkIds))).toEqual({ ok: true });
-  });
+  expect(result?.findings).toEqual([expect.objectContaining(finding)]);
+  expect(requests).toHaveLength(2);
+  const initial = requests[0]!;
+  const repair = requests[1]!;
+  const initialPrompt = (initial.messages[0] as { content: string }).content;
+  const repairPrompt = (repair.messages[0] as { content: string }).content;
+  expect(repairPrompt).toContain("Repair only the structured Stage 7 packet-review submit payload");
+  expect(repairPrompt).not.toContain("retained-submission");
+  const example = repairPrompt.split("\n").find(line => line.startsWith('{"reviewStatus":"findings"'))!;
+  expect(initialPrompt).toContain(example);
+  const schema = repair.tools!.find(tool => tool.name === "submit_review")!;
+  const args = JSON.parse(example);
+  expect(validateToolCall([schema], toolCall("example", "submit_review", args))).toEqual(args);
+  expect(repairPrompt).toContain(SUBMIT_REVIEW_SHAPE_GUIDANCE);
+  expect(args).not.toHaveProperty("changeChecks");
 });
 
 it("keeps verifier-only skill guidance out of v1 candidate provenance", async () => {
@@ -576,7 +269,7 @@ it("keeps verifier-only skill guidance out of v1 candidate provenance", async ()
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 7) {
           expect(request.prompt).not.toContain(marker);
-          expect(request.schema).toBe(submitPacketReviewSchema());
+          expect(request.schema).toBe(SubmitPacketReviewSchema);
           const { id: _id, producedBy: _producedBy, changedLine: _changedLine, ...direct } = fakeFinding();
           return {
             findings: [{ ...direct, evidence: { changedCode: line } }],
@@ -5174,7 +4867,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
     for (const toolSurface of ["current", "six"] as const) {
       const built = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet, skills: [] });
-      expect(built.templateVersion).toBe(toolSurface === "six" ? "p7.17-six.1" : "p7.17");
+      expect(built.templateVersion).toBe(toolSurface === "six" ? "p7.21-six.1" : "p7.21");
       expect(built.prompt).toContain("Context loss: some patch text was omitted");
       expect(built.prompt).toContain(toolSurface === "six" ? "read_change using hunkId" : "read_diff_blocks using packetId");
       expect(extractPromptJson<ReviewPacket>(built.prompt, "review-packet")?.hunks[0]?.omittedChangedRanges).toEqual({ old: [], new: [[1, 1]] });
@@ -8193,7 +7886,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
     expect(prompt.prompt).toContain("correctness/lossy-conversion-before-validation");
-    expect(prompt.prompt).toContain("Validate raw external/provider/API/config/database values before lossy conversion");
+    expect(prompt.prompt).toContain("staticSignals are harness leads to inspect");
   });
 
   it("keeps Stage 7 packet prompts recall-oriented while leaving verification as the precision gate", () => {
@@ -8215,13 +7908,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).not.toContain("followUpHints: [], uncertainties: []");
     expect(prompt).not.toContain("At most two followUpHints");
     expect(prompt).not.toContain("instead of continuing broad exploration");
-    expect(prompt).toContain("A later verification stage filters false positives");
-    expect(prompt).toContain("verifier-bound hint");
-    expect(prompt).toContain("behavior-preserving refactors");
-    expect(prompt).toContain("validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries");
-    expect(prompt).toContain("When returning no_findings with related context attached");
-    expect(prompt).toContain("why that related context does not change the observable behavior");
-    expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
+    expect(prompt).toContain("A later stage verifies every finding before anything is published.");
+    expect(prompt).toContain("do not move a concrete defect into followUpHints or uncertainties");
+    expect(prompt).toContain("Finding one defect does not end the review");
+    expect(prompt).not.toContain("When returning no_findings with related context attached");
   });
 
   it("detects generic test rewrites that replace boundary coverage with helper-level tests", () => {
@@ -8393,7 +8083,7 @@ describe("phase 5 pipeline regressions", () => {
     const packetPrompt = builder.buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
     const packetBlock = extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-packet");
     expect(packetBlock?.intentSignals).toMatchObject({ refactorLike: true, behaviorChangeLike: true });
-    expect(packetPrompt.prompt).toContain("intentional_needs_confirmation");
+    expect(packetPrompt.prompt).toContain("set behaviorChange and give short intentEvidence");
 
     const verifierPrompt = builder.buildVerifierPrompt({
       candidate: { ...fakeFinding(), behaviorChange: "intentional_needs_confirmation" },
@@ -8430,38 +8120,17 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
-  it("preserves the current prompt and scopes six-tool completion to assigned rows", () => {
+  it("uses lean guidance for six-tool and no-tool packets", () => {
     const packet = fakePacket();
     const simple: ReviewPacket = { ...packet, reviewProfile: "simple", toolBudget: { ...packet.toolBudget, maxToolCalls: 0 } };
-    const current = createPromptBuilder(fakeLensRegistry(), { toolSurface: "current" });
-    const six = createPromptBuilder(fakeLensRegistry(), { toolSurface: "six" });
-    for (const [input, hash] of [
-      [packet, "7e18f944bb1daf37108f431fdbfe3f733546544c37d953323e0a12d6c8099ada"],
-      [simple, "855470e3a7e6d05ffaa8f4b521ea266fe49e3bd0a116463c27e6d563a7fc595e"]
-    ] as const) {
-      const old = current.buildPacketReviewPrompt({ packet: input, skills: [] });
-      expect(sha256Hex(old.prompt)).toBe(hash);
-      expect(old.templateVersion).toBe("p7.16");
-      const { prompt, templateVersion } = six.buildPacketReviewPrompt({ packet: input, skills: [fakeTestsSkill()],
-        changeDirectory: "app.ts h1 [current packet]\nsibling.ts h2" });
-      expect(templateVersion).toBe("p7.16-six.1");
-      expect(prompt.match(/every removed line and every added line in this packet's hunks/gu)).toHaveLength(1);
-      expect(prompt).toContain("Unread sibling hunks alone do not make this review incomplete");
-      expect(prompt).toContain("Use incomplete if the missing evidence prevents assessment of an assigned changed line");
-      expect(prompt).toContain("Local budgets are targets, not stop signals");
-      expect(prompt).toContain("real defects only");
-      expect(prompt).toContain("Return no findings when there is no concrete failure mode");
-      expect(prompt).toContain("followUpHint/uncertainty");
-      expect(prompt).toContain("### False Positives");
+    for (const input of [packet, simple]) {
+      const { prompt, templateVersion } = createPromptBuilder(fakeLensRegistry(), { toolSurface: "six" }).buildPacketReviewPrompt({ packet: input, skills: [fakeTestsSkill()], changeDirectory: "app.ts h1" });
+      expect(templateVersion).toBe("p7.20-six.1");
+      expect(prompt).toContain("Finding one defect does not end the review");
+      expect(prompt).toContain('read_change with a hunkId and context "function"');
+      expect(prompt).not.toContain("### False Positives");
       expect(prompt).toContain("untrusted-data label=review-packet");
-      expect(extractPromptJson<ReviewPacket>(prompt, "review-packet")?.hunks.map(hunk => hunk.hunkId)).toEqual(["h1"]);
-      expect(prompt).not.toMatch(/(?:author-claims|must be emitted as a followUpHint|This packet is classified|For light\/simple review|Avoid broad exploration)/u);
-      if (input === simple) {
-        expect(prompt).toContain("This packet has no repository tools; decide from the packet text.");
-        expect(prompt).not.toContain("Other hunks in the change directory are context you may inspect");
-      } else {
-        expect(prompt).toContain("Other hunks in the change directory are context you may inspect; they are not part of what you must finish");
-      }
+      expect(prompt.includes("This packet has no repository tools; decide from the packet text.")).toBe(input === simple);
     }
   });
 

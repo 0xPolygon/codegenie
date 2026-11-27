@@ -45,7 +45,6 @@ export const rawConfigSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
-        changeChecks: z.boolean().optional(),
         traceDependents: traceDependentsSchema.optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
@@ -135,7 +134,6 @@ export const codegenieConfigSchema = z
     review: z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
-        changeChecks: z.boolean().optional(),
         traceDependents: traceDependentsSchema.optional(),
         verify: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
@@ -209,7 +207,6 @@ export const defaultConfig: CodegenieConfig = {
     extraSkillPaths: []
   },
   review: {
-    changeChecks: false,
     traceDependents: "off",
     verify: true,
     compositionReasoningStepDown: true,

@@ -154,7 +154,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     }
   });
 
-  it("keeps Examples optional and uses inline owner matrices for language skills", async () => {
+  it("keeps Examples optional and uses inline failure and example guidance for language skills", async () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
@@ -169,14 +169,12 @@ describe("bundled skills: provenance ledger and projection caps", () => {
       const checks = skill.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
       expect(checks.length, skill.id).toBeGreaterThan(0);
       for (const check of checks) {
-        const matrix = /Failure: (?<failure>.*?) Materiality: (?<materiality>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*?) Mitigation: (?<mitigation>.*)$/u.exec(check)?.groups;
+        const matrix = /Failure: (?<failure>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*)$/u.exec(check)?.groups;
         expect(matrix, `${skill.id}: ${check}`).toBeDefined();
         expect(matrix!.failure!.length, check).toBeGreaterThan(15);
-        expect(matrix?.materiality, check).toMatch(/severity/iu);
         expect(matrix?.unsafe, check).toMatch(/^`[^`]+`/u);
         expect(matrix?.safe, check).toMatch(/^`[^`]+`/u);
         expect(matrix?.safe, check).not.toBe(matrix?.unsafe);
-        expect(matrix!.mitigation!.length, check).toBeGreaterThan(20);
       }
     }
     expect(loaded.skills.find((skill) => skill.id === "core/code-review")?.sections.examples).toBeDefined();

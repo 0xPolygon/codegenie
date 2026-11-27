@@ -207,7 +207,7 @@ describe("Plan 98 Solidity vertical slice", () => {
     const promptBuilder = createPromptBuilder(lenses);
     const stage7 = promptBuilder.buildPacketReviewPrompt({ packet, skills: compatibleSkills });
     expect(stage7.prompt).toContain("Repeated full `msg.value`");
-    expect(stage7.prompt).toContain("Typed reverting calls");
+    expect(stage7.prompt).not.toContain("Typed reverting calls");
     expect(stage7.prompt).not.toContain("Mutable defaults");
     expect(stage7.prompt).not.toContain("Reachable panic paths");
     expect(stage7.projection?.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0)).toBe(true);
@@ -316,7 +316,7 @@ describe("Plan 98 Solidity vertical slice", () => {
     expect(symbols.find((symbol) => symbol.name === "FILE_LIMIT")).toBeUndefined();
   });
 
-  it("holds every Solidity skill check to an independently enforced owner matrix", async () => {
+  it("holds every Solidity skill check to an failure and example format", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
       extraSkillPaths: [],
@@ -337,15 +337,11 @@ describe("Plan 98 Solidity vertical slice", () => {
     const checks = solidity?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(9);
     for (const check of checks) {
-      const matrix = parseOwnerMatrix(check);
+      const matrix = parseCheckExample(check);
       expect(matrix.failure.length, check).toBeGreaterThan(15);
-      expect(matrix.materiality, check).toMatch(/require/iu);
-      expect(matrix.materiality, check).toMatch(/severity/iu);
       expect(matrix.unsafe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).toMatch(/^`[^`]+`/u);
       expect(matrix.safe, check).not.toBe(matrix.unsafe);
-      expect(matrix.mitigation.length, check).toBeGreaterThan(20);
-      expect(matrix.mitigation, check).not.toBe(matrix.safe);
       expect(matrix.unsafe, check).not.toContain("...");
       expect(matrix.safe, check).not.toContain("...");
     }
@@ -357,7 +353,7 @@ describe("Plan 98 Solidity vertical slice", () => {
     expect(delegatecall).toContain("Impl.slot0=total");
     expect(delegatecall).toContain("delegatecall");
     expect(delegatecall).toContain("ProxyStorage");
-    const delegatecallMatrix = parseOwnerMatrix(delegatecall);
+    const delegatecallMatrix = parseCheckExample(delegatecall);
     expect(delegatecallMatrix.safe).toContain("Proxy and Impl inherit ProxyStorage");
     expect(delegatecallMatrix.safe).toContain("target is allowlisted");
     const oracle = checks.find((check) => check.includes("Invalid oracle data")) ?? "";
@@ -383,10 +379,10 @@ describe("Plan 98 Solidity vertical slice", () => {
   });
 });
 
-function parseOwnerMatrix(check: string): Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string> {
-  const match = /Failure: (?<failure>.*?) Materiality: (?<materiality>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*?) Mitigation: (?<mitigation>.*)$/u.exec(check);
+function parseCheckExample(check: string): Record<"failure" | "unsafe" | "safe", string> {
+  const match = /Failure: (?<failure>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*)$/u.exec(check);
   expect(match?.groups, check).toBeDefined();
-  return match!.groups as Record<"failure" | "materiality" | "unsafe" | "safe" | "mitigation", string>;
+  return match!.groups as Record<"failure" | "unsafe" | "safe", string>;
 }
 
 function fixture(fileName: string): string {

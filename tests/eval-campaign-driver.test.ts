@@ -67,10 +67,10 @@ describe('campaign driver', () => {
       bindAudit(audit);
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') })); writeFileSync(caseFile, caseBytes);
       const bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01');
-      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.16' });
+      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.20' });
       const build = buildDigest(), worker = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'one',
         evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls,
-        packetTemplates: [{ packetId: 'packet', templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16'])) }], integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
+        packetTemplates: [{ packetId: 'packet', templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.20'])) }], integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
       const slot = { id: 'one', caseId: 'fixture', boundaryId: 'one', provider: 'openrouter', expectedPacketIds: ['packet'], blind: { arm: 'control', draw: 1 }, workerConfig: worker };
       const schedulePath = path.join(dir, 'schedule.json'), configPath = path.join(dir, 'campaign.json');
       const writeConfig = () => {
@@ -156,7 +156,7 @@ describe('campaign driver', () => {
       const caseFile = path.join(dir, 'case.json'), caseBytes = Buffer.from(JSON.stringify({ caseDir: suiteDir, caseName: 'fixture-core-lens', outputDir: path.join(dir, 'output') }));
       writeFileSync(caseFile, caseBytes);
       const bounds = await workerBounds(caseFile, caseBytes, 'one/attempt-01');
-      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.16' });
+      const expectedCalls = deriveExpectedCalls(bounds.effectiveConfig, { 7: 'p7.20' });
       expectedCalls[0].modelId = 'openai/gpt-6-luna';
       const build = buildDigest(), worker = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign',
         boundaryId: 'one', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 2_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000,
@@ -379,14 +379,14 @@ describe('campaign driver', () => {
         blind = { locatorManifestPath, locatorManifestSHA256: sha(readFileSync(locatorManifestPath)), oracleManifestPath, oracleManifestSHA256: sha(readFileSync(oracleManifestPath)), mappingFile: path.join(dir, 'sealed', 'mapping.json') };
       }
       const build = buildDigest(), expected = { api: 'openai-completions', destination: 'https://openrouter.ai/api/v1/chat/completions', provider: 'openrouter', modelId: 'openai/gpt-6-luna', reasoningSelected: 'high', wireEffort: 'high' };
-      const calls = [[5, 'p5.9'], [7, 'p7.16'], [9, 'p9.31'], [10, 'p10.25']].map(([stage, templateVersion]) => ({ ...expected, stage, kind: 'initial', templateVersion }));
+      const calls = [[5, 'p5.9'], [7, 'p7.20'], [9, 'p9.31'], [10, 'p10.25']].map(([stage, templateVersion]) => ({ ...expected, stage, kind: 'initial', templateVersion }));
       if (['single', 'positive', 'treatment', 'stopped', 'worker-stop'].includes(scenario)) calls.push({ ...expected, stage: 7, kind: 'initial', purpose: 'location_clarification', templateVersion: 'location-clarification-v1' } as typeof calls[number]);
       const base = { supervisorPath: path.join(dir, 'supervisor.db'), ledgerPath: path.join(dir, 'ledger.db'), ledgerBinding: 'campaign', boundaryId: 'case1', evidenceDirectory: path.join(dir, 'evidence'), limitMicros: 15_000_000, reserveMicros: 400_000, errorHoldMicros: 50_000, caseConfig: caseFile, caseConfigSHA256: sha(caseBytes), expectedCalls: calls, ...(plannerReplayBinding ? { plannerReplayBinding } : {}), integrity: { suiteDir, suiteSHA256: treeDigest(suiteDir), build } };
       const slots = Array.from({ length: scenario === 'checkpoint' ? 9 : scenario === 'arms' ? 4 : ['stopped', 'worker-stop'].includes(scenario) ? 2 : 1 }, (_, index) => {
         const id = `slot-${String(index + 1).padStart(2, '0')}`, boundaryId = `case${Math.floor(index / 4) + 1}`;
         const arm = scenario === 'treatment' || (['stopped', 'worker-stop'].includes(scenario) && index === 1) || (scenario === 'arms' && (index === 1 || index === 2)) ? 'treatment' : 'control';
         const blinded = ['single', 'positive', 'treatment', 'stopped', 'worker-stop', 'arms'].includes(scenario);
-        const packetTemplates = packetIds.map((packetId: string) => ({ packetId, templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.16'])) }));
+        const packetTemplates = packetIds.map((packetId: string) => ({ packetId, templates: Object.fromEntries(['initial', 'tool-continuation', 'repair', 'finalize'].map((kind) => [kind, 'p7.20'])) }));
         return { id, caseId: boundaryId, boundaryId, provider: 'openrouter', expectedPacketIds: packetIds, ...(blinded ? { blind: { arm, draw: scenario === 'arms' && index >= 2 ? 2 : 1 } } : {}), workerConfig: { ...base, boundaryId, ...(blinded ? { packetTemplates } : {}) } };
       });
       const schedule = Buffer.from(JSON.stringify({ ...(scenario === 'checkpoint' ? { pauseAfterSlot: 'slot-08' } : {}), slots }));
@@ -561,7 +561,7 @@ describe('campaign driver', () => {
         const manifest = JSON.parse(readFileSync(path.join(exportArgs.outputDirectory, 'manifest.json'), 'utf8'));
         if (scenario === 'positive') expect(manifest.sheets[0].causes).toEqual([{ id: 'required-cause', optional: false }]);
         expect(manifest).toMatchObject({ campaignState: ['stopped', 'worker-stop'].includes(scenario) ? 'stopped' : 'completed', selectedCount: 1 });
-        expect(JSON.parse(readFileSync(path.join(selectedReceipt.runDir, 'packet-calls.json'), 'utf8'))).toMatchObject([{ templateVersion: 'p7.16' }]);
+        expect(JSON.parse(readFileSync(path.join(selectedReceipt.runDir, 'packet-calls.json'), 'utf8'))).toMatchObject([{ templateVersion: 'p7.20' }]);
         if (scenario === 'treatment') {
           const lock = (name: string, value: unknown) => { const bytes = Buffer.from(JSON.stringify(value)), dest = path.join(dir, name); writeFileSync(dest, bytes); return { path: dest, sha256: sha(bytes) }; };
           const sheetId = manifest.sheets[0].id;
