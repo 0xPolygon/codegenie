@@ -8,6 +8,7 @@ import {
   reasoningLevelSchema,
   reviewMaxTimeMinutesSchema,
   reviewToolSurfaceSchema,
+  traceDependentsSchema,
   stageSelectionsSchema,
   severitySchema
 } from "../config/schema.js";
@@ -143,6 +144,7 @@ const caseSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         changeChecks: z.boolean().optional(),
+        traceDependents: traceDependentsSchema.optional(),
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
@@ -901,6 +903,7 @@ function applyCaseReviewConfig(
     config.review.toolSurface = review.toolSurface;
   }
   if (review?.changeChecks !== undefined) config.review.changeChecks = review.changeChecks;
+  if (review?.traceDependents !== undefined) config.review.traceDependents = review.traceDependents;
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
   }

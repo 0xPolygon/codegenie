@@ -254,8 +254,8 @@ function skip(file: DiffFile, reason: string, provenance: FactProvenance): FileF
   };
 }
 
-function effectiveConfiguredSkip(
-  file: DiffFile,
+export function effectiveConfiguredSkip(
+  file: Pick<DiffFile, "path" | "oldPath">,
   rules: ClassificationPathRule[]
 ): FactProvenance | undefined {
   // Last matching rule with a processingMode wins, matching the
@@ -273,7 +273,7 @@ function effectiveConfiguredSkip(
   return last.rule.processingMode === "skip" ? { ...last.provenance, fact: "processingMode" } : undefined;
 }
 
-function matchPathRules(file: DiffFile, rules: ClassificationPathRule[]): MatchedRule[] {
+function matchPathRules(file: Pick<DiffFile, "path" | "oldPath">, rules: ClassificationPathRule[]): MatchedRule[] {
   const paths = file.oldPath ? [file.path, file.oldPath] : [file.path];
   return rules.flatMap((rule) => {
     const matcher = picomatch(rule.pattern, { dot: true });

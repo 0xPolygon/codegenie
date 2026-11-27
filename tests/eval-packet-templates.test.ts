@@ -22,6 +22,16 @@ it('retains changeChecks template bindings on the surviving instructions', () =>
   expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'], { changeChecks: false })).toThrow('binding mismatch');
 });
 
+it('derives the exact dependent trace template bindings for both packet shapes', () => {
+  const packets = [packet('ordinary', false), packet('shortened', true)];
+  const bindings = derivePacketTemplatesForConfig(packets, { review: { traceDependents: 'leads', changeChecks: true } });
+  expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.16-cc.1-dep.1');
+  expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.17-cc.1-dep.1');
+  const ids = ['ordinary', 'shortened'];
+  expect(() => validatePacketTemplates(bindings, ids, { traceDependents: 'leads', changeChecks: true })).not.toThrow();
+  expect(() => validatePacketTemplates(bindings, ids, { traceDependents: 'off' })).toThrow('binding mismatch');
+});
+
 it('derives packet and kind bindings from the actual prompt builder', () => {
   const bindings = derivePacketTemplates([packet('ordinary', false), packet('shortened', true)]);
   validatePacketTemplates(bindings, ['ordinary', 'shortened']);
