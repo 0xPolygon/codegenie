@@ -52,7 +52,10 @@ export function packDefinitionPage(page: DefinitionPage, allowance: number): Too
     const text = withSixToolMeta(lines.join("\n"), meta);
     const single = page.hits.length === 1 && page.offset === 0 && page.meta.lookupStatus === "found"
       && count === 1 && bodyCount === 1 && !truncated && !isTextFallbackHit(hits[0]!) ? hits[0] : undefined;
-    return { text, meta, definitions: hits.slice(0, bodyCount), ...(single?.text !== undefined && single.deliveredLineRange
+    const deliveredRanges = hits.slice(0, bodyCount).flatMap(hit =>
+      hit.text !== undefined && hit.deliveredLineRange && hit.totalLines !== undefined
+        ? [{ path: hit.symbol.path, side: page.sourceUsed, lineRange: hit.deliveredLineRange }] : []);
+    return { text, meta, deliveredRanges, definitions: hits.slice(0, bodyCount), ...(single?.text !== undefined && single.deliveredLineRange
       ? { rawSource: single.text, sourceLineRange: single.deliveredLineRange } : {}) };
   };
   if (allowance === Number.MAX_SAFE_INTEGER) {

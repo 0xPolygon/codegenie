@@ -157,6 +157,8 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
+const SUBMIT_PACKET_REVIEW_DESCRIPTION = "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields.";
+
 function buildSubmitPacketReviewSchema(description: string) {
   return Type.Object(
     {
@@ -177,7 +179,7 @@ function buildSubmitPacketReviewSchema(description: string) {
     },
     {
       additionalProperties: false,
-      description: "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields."
+      description: SUBMIT_PACKET_REVIEW_DESCRIPTION
     }
   );
 }
@@ -194,9 +196,46 @@ const SubmitPacketReviewSchemaV2Six = buildSubmitPacketReviewSchema(
   "Use findings when you submit a candidate, no_findings after assessing all assigned changed lines with no candidate left, and incomplete only when a tool or budget limit prevented assessment of one or more assigned changed lines."
 );
 
-export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined, toolSurface: ReviewToolSurface) {
-  if (instructionSet !== "v2") return SubmitPacketReviewSchema;
-  return toolSurface === "six" ? SubmitPacketReviewSchemaV2Six : SubmitPacketReviewSchemaV2;
+// #504: closed rows plus a packet-specific enum. Cross-field and coverage
+// checks belong to the submit-validation seam, shared by initial and repair.
+export const CHANGE_CHECK_KINDS = [
+  "acceptance", "state_or_contract", "accounting", "lifetime", "completion",
+  "failure", "conversion", "other", "no_behavior_change"
+] as const;
+export const CHANGE_CHECK_RESULTS = ["finding", "question", "ruled_out", "no_behavior_change"] as const;
+
+function changeCheckRowSchema(hunkIds: readonly string[]) {
+  return Type.Object({
+    hunkId: StringEnum(hunkIds),
+    changeKind: StringEnum(CHANGE_CHECK_KINDS),
+    before: Type.String({ minLength: 1, maxLength: 120 }),
+    after: Type.String({ minLength: 1, maxLength: 120 }),
+    breakAttempt: Type.String({ maxLength: 160 }),
+    result: StringEnum(CHANGE_CHECK_RESULTS),
+    ref: Type.Optional(Type.Integer({ minimum: 0,
+      description: "Zero-based index into submitted findings (finding) or followUpHints (question)." })),
+    checkedAt: Type.Optional(Type.Object({
+      path: Type.String({ minLength: 1 }),
+      side: StringEnum(["base", "head"] as const),
+      lineRange: LineRangeSchema
+    }, { additionalProperties: false }))
+  }, { additionalProperties: false });
+}
+
+export type SubmittedChangeCheck = Static<ReturnType<typeof changeCheckRowSchema>>;
+
+export function submitPacketReviewSchema(instructionSet: Stage7Instructions | undefined, toolSurface: ReviewToolSurface,
+  changeCheckHunkIds?: readonly string[]) {
+  const base = instructionSet !== "v2" ? SubmitPacketReviewSchema
+    : toolSurface === "six" ? SubmitPacketReviewSchemaV2Six : SubmitPacketReviewSchemaV2;
+  if (!changeCheckHunkIds) return base;
+  return Type.Object({
+    ...base.properties,
+    changeChecks: Type.Array(changeCheckRowSchema(changeCheckHunkIds), {
+      maxItems: 2 * changeCheckHunkIds.length,
+      description: "One row per assigned hunk after a completed review; at most two distinct rows per hunk."
+    })
+  }, { additionalProperties: false, description: SUBMIT_PACKET_REVIEW_DESCRIPTION });
 }
 
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;
@@ -299,7 +338,7 @@ export const SubmitCompositionSchema = Type.Object(
 );
 
 export type SubmitPlan = Static<typeof SubmitPlanSchema>;
-export type SubmitPacketReview = Static<typeof SubmitPacketReviewSchema>;
+export type SubmitPacketReview = Static<typeof SubmitPacketReviewSchema> & { changeChecks?: SubmittedChangeCheck[] };
 export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictSchema>;
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 

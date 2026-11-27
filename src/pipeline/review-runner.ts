@@ -278,8 +278,15 @@ export async function runReview(
       diff
     });
     throwIfHardAborted(run);
+    if (config.review.changeChecks === true) {
+      await run.telemetry.writeArtifact("change-checks.json", packetResults.map(result => ({
+        packetId: result.packetId, changeChecks: result.changeChecks ?? []
+      })));
+    }
+    const promotionInputs = config.review.changeChecks === true
+      ? packetResults.map(({ changeChecks: _privateRows, ...result }) => result) : packetResults;
     const promoted = await promoteUncertaintiesForVerification(
-      { packetResults, packets, budgetBoost: config.review.budgetBoost },
+      { packetResults: promotionInputs, packets, budgetBoost: config.review.budgetBoost },
       run.telemetry
     );
     const packetResultsForVerification = promoted.packetResults;
@@ -823,7 +830,8 @@ async function createPipelineServices(
   const promptBuilder = createPromptBuilder(lensRegistry, {
     telemetry: run.telemetry,
     toolSurface: config.review.toolSurface ?? "current",
-    stage7Instructions: config.review.stage7Instructions ?? "v1"
+    stage7Instructions: config.review.stage7Instructions ?? "v1",
+    changeChecks: config.review.changeChecks === true
   });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
@@ -898,7 +906,10 @@ export function reviewCacheFingerprint(
   // the base-branch setting and skill paths. The model-call key also hashes
   // the actual prompts and tools, including changes caused by runtime limits.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
-  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, toolSurface, stage7Instructions, ...review } = config.review;
+  // #504 changes the Stage 7 prompt and schema, which are already in that call's
+  // cache key. Keep other stages shareable when their actual input is identical.
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout,
+    toolSurface, stage7Instructions, changeChecks: _changeChecks, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,

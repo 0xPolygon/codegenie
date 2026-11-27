@@ -45,6 +45,7 @@ export const rawConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         stage7Instructions: stage7InstructionsSchema.optional(),
+        changeChecks: z.boolean().optional(),
         verify: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
@@ -134,6 +135,7 @@ export const codegenieConfigSchema = z
       .object({
         toolSurface: reviewToolSurfaceSchema.optional(),
         stage7Instructions: stage7InstructionsSchema.optional(),
+        changeChecks: z.boolean().optional(),
         verify: z.boolean(),
         compositionReasoningStepDown: z.boolean(),
         skipSvgReview: z.boolean(),
@@ -207,6 +209,7 @@ export const defaultConfig: CodegenieConfig = {
   },
   review: {
     stage7Instructions: "v1",
+    changeChecks: false,
     verify: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,

@@ -1,3 +1,4 @@
+import { diffRowRanges } from "../util/delivered-source.js";
 import type { DiffRecordGroups, ToolResultRecords } from "../llm/llm-runner.js";
 import type { DiffFile, DiffHunk, PacketLine, ToolResultMeta, UnifiedDiff } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
@@ -166,7 +167,7 @@ export class ReadChangeService {
 
   private async readSourcePage(targets: SourceTarget[], binding: string, input: ReadChangeInput): Promise<ReadChangeResult> {
     const start = input.cursor === undefined ? { block: 0, row: 0 } : readPosition(decodeToolCursor(input.cursor, binding), targets.length);
-    const packable: ToolResultRecords = { open: "", records: [], labels: [], cursors: [], keepWithNext: [], separator: "\n", close: "" };
+    const packable: ToolResultRecords = { open: "", records: [], labels: [], cursors: [], keepWithNext: [], recordRanges: [], separator: "\n", close: "" };
     const groups: DiffRecordGroups = { rendered: [], lineEnds: [], omittedLabels: [],
       ...(targets.some(target => target.hunks.length > 1) ? { groupedHunks: true } : {}) };
     packable.diffGroups = groups;
@@ -201,6 +202,7 @@ export class ReadChangeService {
       groups.rendered.push({ firstRecord, label: hunkName, baseStart, headStart });
       appendRecord(packable, header, firstLocation, encodeToolCursor(binding, { block, row: rowOffset }), true);
       groups.lineEnds.push([undefined, undefined]);
+      packable.recordRanges!.push([]);
       remaining -= headerCost;
 
       let baseEnd: number | undefined;
@@ -215,6 +217,7 @@ export class ReadChangeService {
           break;
         }
         appendRecord(packable, rendered, locator, encodeToolCursor(binding, position), false);
+        packable.recordRanges!.push(diffRowRanges(file.path, file.oldPath, line.oldLine, line.newLine));
         baseEnd = line.oldLine ?? baseEnd;
         headEnd = line.newLine ?? headEnd;
         groups.lineEnds.push([baseEnd, headEnd]);

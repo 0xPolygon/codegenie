@@ -1,9 +1,10 @@
+import type { TSchema } from "typebox";
 import { submissionIssues } from "./submit-preservation.js";
 import { SubmitPacketReviewSchema } from "./schemas.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
-import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
+import { submitReviewShapeGuidance } from "./submit-review-guidance.js";
 import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
@@ -69,14 +70,6 @@ type Stage7NoFindingsCleanup =
       truncatedNoFindingReason: boolean;
     };
 
-const STAGE7_SUBMIT_ALLOWED_KEYS = new Set([
-  "reviewStatus",
-  "findings",
-  "followUpHints",
-  "uncertainties",
-  "noFindingReason"
-]);
-
 const STAGE7_FINDING_ALLOWED_KEYS = new Set([
   "title",
   "severity",
@@ -130,14 +123,15 @@ export function normalizeStage7Submit(value: unknown) {
 export function stage7SubmitRepairDecisionFromParts(
   submitCall: PiToolCall,
   errorText: string,
-  candidateDraftedBeforeSubmit: boolean
+  candidateDraftedBeforeSubmit: boolean,
+  schema: TSchema = SubmitPacketReviewSchema
 ): Stage7SubmitRepairDecision | undefined {
   if (submitCall.name !== "submit_review") {
     return undefined;
   }
-  const classification = classifyStage7SchemaInvalid(errorText, [submitCall]);
+  const classification = classifyStage7SchemaInvalid(errorText, [submitCall], schema);
   if (!candidateDraftedBeforeSubmit) {
-    const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments);
+    const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments, schema);
     if (noFindingsCleanup.status === "recovered") {
       return {
         classification,
@@ -151,7 +145,7 @@ export function stage7SubmitRepairDecisionFromParts(
     }
   }
   if (stage7PayloadLooksCandidateLike(submitCall.arguments)) {
-    const cleanup = cleanupStage7CandidateSubmit(submitCall.arguments);
+    const cleanup = cleanupStage7CandidateSubmit(submitCall.arguments, schema);
     if (cleanup.status === "recovered") {
       return {
         classification,
@@ -180,14 +174,14 @@ export function stage7SubmitRepairDecisionFromParts(
   return { classification, compactRepair: true };
 }
 
-export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[]): Stage7SchemaInvalidKind {
+export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[], schema: TSchema = SubmitPacketReviewSchema): Stage7SchemaInvalidKind {
   const text = error.split("Received arguments:")[0]!.toLowerCase();
-  const issues = submitCalls.flatMap(call => submissionIssues(SubmitPacketReviewSchema, call.arguments));
+  const issues = submitCalls.flatMap(call => submissionIssues(schema, call.arguments));
   if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
     return "xml_parameter_bleed";
   }
   if (submitCalls.some((call) => stage7PayloadLooksCandidateLike(call.arguments))) {
-    if (submitCalls.some((call) => extraStage7TopLevelKeys(call.arguments).length > 0)) {
+    if (submitCalls.some((call) => extraStage7TopLevelKeys(call.arguments, schema).length > 0)) {
       return "extra_top_level_properties";
     }
     if (issues.some(issue => issue.kind === "unknown" && issue.path.startsWith("findings."))) {
@@ -220,8 +214,13 @@ export function stage7CompactSchemaRepairPrompt(
   submitToolName: string,
   error: string,
   classification: Stage7SchemaInvalidKind,
-  repairInput: LlmSchemaRepairInput
+  repairInput: LlmSchemaRepairInput,
+  schema: TSchema
 ): string {
+  const properties = (schema as {
+    properties?: { changeChecks?: { items?: { properties?: { hunkId?: { enum?: readonly string[] } } } } }
+  }).properties;
+  const exampleHunkId = properties?.changeChecks?.items?.properties?.hunkId?.enum?.[0];
   const invalidSubmitArgs = repairInput.submitCalls.map((call) => ({
     id: call.id,
     arguments: call.arguments
@@ -246,7 +245,7 @@ export function stage7CompactSchemaRepairPrompt(
     "- Do not write `<parameter>` tags.",
     "- Do not describe the schema.",
     "- Do not answer in plain text.",
-    SUBMIT_REVIEW_SHAPE_GUIDANCE
+    submitReviewShapeGuidance(exampleHunkId)
   ].join("\n");
 }
 
@@ -260,7 +259,7 @@ export function stage7SubmitPayloadKind(submitCalls: PiToolCall[]): "candidate" 
   return "unknown";
 }
 
-function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7CandidateCleanup {
+function cleanupStage7CandidateSubmit(args: Record<string, unknown>, schema: TSchema): Stage7CandidateCleanup {
   const findings = args.findings;
   if (!Array.isArray(findings) || findings.length === 0) {
     return { status: "not_applicable" };
@@ -269,7 +268,7 @@ function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7Cand
   const unsafeKeys: string[] = [];
   const cleaned = cloneRecord(args);
 
-  for (const key of extraStage7TopLevelKeys(cleaned)) {
+  for (const key of extraStage7TopLevelKeys(cleaned, schema)) {
     const value = cleaned[key];
     if (!isSafeUnknownStage7SubmitField(value)) {
       unsafeKeys.push(key);
@@ -307,13 +306,13 @@ function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7Cand
   return { status: "recovered", arguments: cleaned, strippedKeys };
 }
 
-function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoFindingsCleanup {
+function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>, schema: TSchema): Stage7NoFindingsCleanup {
   if (!isSafeStage7NoFindingsSalvage(args)) {
     return { status: "not_applicable" };
   }
   const cleaned = cloneRecord(args);
   const strippedKeys: string[] = [];
-  for (const key of extraStage7TopLevelKeys(cleaned)) {
+  for (const key of extraStage7TopLevelKeys(cleaned, schema)) {
     const value = cleaned[key];
     if (!isSafeUnknownStage7SubmitField(value)) {
       return { status: "not_applicable" };
@@ -341,7 +340,8 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     findings: [],
     followUpHints: Array.isArray(cleaned.followUpHints) ? cleaned.followUpHints : [],
     uncertainties: Array.isArray(cleaned.uncertainties) ? cleaned.uncertainties : [],
-    noFindingReason: reason.value
+    noFindingReason: reason.value,
+    ...(Object.hasOwn(cleaned, "changeChecks") ? { changeChecks: cleaned.changeChecks } : {})
   };
   const shapeChanged =
     strippedKeys.length > 0 ||
@@ -385,8 +385,8 @@ function cloneRecord(input: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(safeStringify(input) || "{}") as Record<string, unknown>;
 }
 
-function extraStage7TopLevelKeys(args: Record<string, unknown>): string[] {
-  return Object.keys(args).filter((key) => !STAGE7_SUBMIT_ALLOWED_KEYS.has(key)).sort();
+function extraStage7TopLevelKeys(args: Record<string, unknown>, schema: TSchema): string[] {
+  return Object.keys(args).filter((key) => !Object.hasOwn((schema as { properties: Record<string, unknown> }).properties, key)).sort();
 }
 
 function extraStage7FindingKeys(args: Record<string, unknown>): string[] {
@@ -521,7 +521,8 @@ function safeStringify(input: unknown): string {
 export function stage7RecoverInvalidSubmit(
   input: LlmSchemaInvalidSubmitRecoveryInput,
   telemetry: TelemetryRecorder,
-  context: { workerId?: string; packetId?: string }
+  context: { workerId?: string; packetId?: string },
+  schema: TSchema = SubmitPacketReviewSchema
 ): LlmInvalidSubmitRecovery | undefined {
   const submit = input.submitCalls[0];
   if (input.stage !== 7 || input.submitTool !== "submit_review" || submit === undefined) {
@@ -531,7 +532,8 @@ export function stage7RecoverInvalidSubmit(
   const decision = stage7SubmitRepairDecisionFromParts(
     submitCall,
     input.fullError ?? input.error,
-    input.candidateDrafted === true
+    input.candidateDrafted === true,
+    schema
   );
   if (decision === undefined) {
     return undefined;

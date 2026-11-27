@@ -40,6 +40,7 @@ export type CodegenieConfig = {
   review: {
     toolSurface?: ReviewToolSurface;
     stage7Instructions?: Stage7Instructions;
+    changeChecks?: boolean;
     verify: boolean;
     compositionReasoningStepDown: boolean;
     skipSvgReview: boolean;
@@ -635,6 +636,8 @@ export type ReviewPacket = {
   symbolFacts: HunkSymbolFacts[];
   context: PacketContext;
   contextText: string;
+  /** Private complete source lines in the final contextText. */
+  contextDeliveredRanges?: DeliveredSourceRange[];
   contextQuality?: PacketContextQuality;
   contextDegradationReasons?: string[];
   testCoverageDelta?: TestCoverageDelta;
@@ -983,7 +986,21 @@ export type RepositoryEvidence = {
   text: string;
 };
 
+export type DeliveredSourceRange = {
+  path: string;
+  side: "base" | "head";
+  lineRange: [number, number];
+};
+
+export type ChangeCheckReference = { refDisposition: "kept" | "dropped"; refId?: string };
+export type ChangeCheckResult = Omit<import("./llm/schemas.js").SubmittedChangeCheck, "ref"> & Partial<ChangeCheckReference> & {
+  refIndex?: number;
+  pointerStatus?: "traceable" | "inside_changed_rows" | "source_not_delivered" | "line_clipped" | "pointer_missing";
+};
+
 export type PacketReviewResult = {
+  /** Private Stage 7 diagnostic; stripped before promotion and verification. */
+  changeChecks?: ChangeCheckResult[];
   repositoryEvidence?: RepositoryEvidence[];
   diagnostics?: ReviewDiagnostic[];
   packetId: string;
@@ -1185,6 +1202,7 @@ export type EvalCase = {
   review?: {
     toolSurface?: ReviewToolSurface;
     stage7Instructions?: Stage7Instructions;
+    changeChecks?: boolean;
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
@@ -1802,6 +1820,7 @@ export type ToolCallRecord = {
   candidateId?: string;
   modelCallId?: string;
   tool: string;
+  deliveredRanges?: DeliveredSourceRange[];
   /** Redacted, bounded argument text from a rejected model invocation; may be a truncated excerpt. */
   rawArguments?: string;
   rawArgumentsTruncated?: boolean;
