@@ -1,4 +1,5 @@
 import { deriveReviewHealth, reviewDiagnostic } from "../util/review-health.js";
+import { DEFAULT_TRACE_DEPENDENTS } from "../config/schema.js";
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRunTelemetry, provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
@@ -823,7 +824,7 @@ async function createPipelineServices(
   const promptBuilder = createPromptBuilder(lensRegistry, {
     telemetry: run.telemetry,
     toolSurface: config.review.toolSurface ?? "current",
-    traceDependents: config.review.traceDependents ?? "off"
+    traceDependents: config.review.traceDependents ?? DEFAULT_TRACE_DEPENDENTS
   });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
@@ -898,7 +899,7 @@ export function reviewCacheFingerprint(
   // the actual prompts and tools, including changes caused by runtime limits.
   const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
   const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout,
-    toolSurface, traceDependents, ...review } = config.review;
+    toolSurface, traceDependents = DEFAULT_TRACE_DEPENDENTS, ...review } = config.review;
   const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
     version: 2,

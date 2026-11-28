@@ -1,4 +1,5 @@
 import { diffRowRanges, mergeDeliveredRanges } from "../util/delivered-source.js";
+import { DEFAULT_TRACE_DEPENDENTS } from "../config/schema.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { credentialSafeCut } from "../telemetry/redaction.js";
 import { supportsValueSetExtraction } from "../repo/dependent-values.js";
@@ -196,7 +197,8 @@ export async function buildReviewPackets(
     }
   }
 
-  const trace = opts.config.review.traceDependents === "leads" ? await repoIndex.traceDependents?.(filtered, opts.signal) : undefined;
+  const traceMode = opts.config.review.traceDependents ?? DEFAULT_TRACE_DEPENDENTS;
+  const trace = traceMode === "leads" ? await repoIndex.traceDependents?.(filtered, opts.signal) : undefined;
   const perPacket = [];
   const relationshipGraph = await buildHunkRelationshipGraph(allPlanned, effectiveByHunk, repoIndex, telemetry);
 
