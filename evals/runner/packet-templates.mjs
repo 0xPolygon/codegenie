@@ -18,15 +18,15 @@ export function derivePacketTemplatesForConfig(packets, config) {
   const toolSurface = config?.review?.toolSurface ?? 'current';
   if (!['current', 'six'].includes(toolSurface)) throw new Error('invalid packet template configuration');
   const traceDependents = config?.review?.traceDependents ?? 'off';
-  if (!['off', 'leads', 'dependencies', 'all'].includes(traceDependents)) throw new Error('invalid packet template configuration');
+  if (!['off', 'leads'].includes(traceDependents)) throw new Error('invalid packet template configuration');
   return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, traceDependents }));
 }
 
 export function validatePacketTemplates(bindings, packetIds, { toolSurface = 'current', traceDependents } = {}) {
   if (!['current', 'six'].includes(toolSurface)) throw new Error('packet template binding mismatch');
   const suffix = toolSurface === 'six' ? '-six.1' : '';
-  if (traceDependents !== undefined && !['off', 'leads', 'dependencies', 'all'].includes(traceDependents)) throw new Error('packet template binding mismatch');
-  const traces = traceDependents === undefined ? ['', '-dep.1'] : [traceDependents === 'leads' || traceDependents === 'all' ? '-dep.1' : ''];
+  if (traceDependents !== undefined && !['off', 'leads'].includes(traceDependents)) throw new Error('packet template binding mismatch');
+  const traces = traceDependents === undefined ? ['', '-dep.1'] : [traceDependents === 'leads' ? '-dep.1' : ''];
   const allowed = ['p7.16', 'p7.17', 'p7.20', 'p7.21'].flatMap((value) => traces.map((trace) => value + suffix + trace));
   if (!Array.isArray(bindings) || !Array.isArray(packetIds) || !packetIds.length || new Set(packetIds).size !== packetIds.length || bindings.length !== packetIds.length) throw new Error('packet template binding mismatch');
   const ids = new Set();

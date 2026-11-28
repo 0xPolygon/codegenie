@@ -77,6 +77,18 @@ describe("eval suite validation", () => {
     await expect(loadEvalSuite(suite)).rejects.toMatchObject({ code: "config_error", context: { errors: [expect.stringContaining("review.changeChecks has been retired")] } });
   });
 
+  it.each(["dependencies", "all"])("rejects retired traceDependents=%s in eval cases", async (mode) => {
+    const suite = mkdtempSync(path.join(tmpdir(), "codegenie-eval-retired-dependency-"));
+    writeFileSync(path.join(suite, "case.yml"), [
+      "name: retired-dependency-tracing", "repo:", "  fixture: repo",
+      "review:", `  traceDependents: "${mode}"`
+    ].join("\n"));
+    await expect(loadEvalSuite(suite)).rejects.toMatchObject({
+      code: "config_error",
+      context: { errors: [expect.stringContaining(`review.traceDependents = "${mode}" has been retired`)] }
+    });
+  });
+
   it("rejects command fields on artifact-backed cases", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-artifact-command-"));
     writeFileSync(path.join(suiteDir, "bad.yml"), [
@@ -1841,6 +1853,22 @@ describe("eval artifacts", () => {
 });
 
 describe("artifact replay", () => {
+  it.each(["dependencies", "all"])("rejects retired traceDependents=%s in a replay snapshot", async (mode) => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-retired-dependency-replay-"));
+    const sourceRun = path.join(suiteDir, "logs", "1");
+    writeArtifactSet(path.join(sourceRun, "telemetry"), [], []);
+    const caseSnapshot = { name: "retired-snapshot", artifacts: { path: "logs/1" }, review: { traceDependents: mode } };
+    writeFileSync(path.join(sourceRun, "info.json"), JSON.stringify({
+      runNumber: 1, caseName: "retired-snapshot", caseHash: "old", caseSnapshot, mode: "replay",
+      cache: { enabled: false, source: "config" }, startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:01.000Z", score: passingScore()
+    }));
+    await expect(replayFromArtifacts(sourceRun, { config: defaultConfig })).rejects.toMatchObject({
+      code: "config_error",
+      message: expect.stringContaining(`review.traceDependents = "${mode}" has been retired`)
+    });
+  });
+
   it.each([false, true])("handles retired changeChecks=%s in an actual replay snapshot", async (enabled) => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-retired-checks-replay-"));
     const sourceRun = path.join(suiteDir, "logs", "1");

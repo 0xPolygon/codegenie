@@ -198,6 +198,13 @@ export function removeRetiredReviewOptions(parsed: unknown): void {
       parsed.review && typeof parsed.review === "object" && "adaptiveThinking" in parsed.review) {
     delete parsed.review.adaptiveThinking;
   }
+  if (parsed && typeof parsed === "object" && "review" in parsed &&
+      parsed.review && typeof parsed.review === "object" && "traceDependents" in parsed.review) {
+    const mode = parsed.review.traceDependents;
+    if (mode === "dependencies" || mode === "all") {
+      throw new CodegenieError("config_error", `review.traceDependents = "${mode}" has been retired. Use "off" or "leads".`);
+    }
+  }
 }
 
 function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodegenieConfig | undefined {
