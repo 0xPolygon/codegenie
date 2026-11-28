@@ -9251,7 +9251,7 @@ describe("Pi tool argument stream limits", () => {
     }));
   });
 
-  it.each([5, 7, 9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
+  it.each([5, 7, 9, 10] as const)("bounds whitespace overflow retries in Stage %s", async stage => {
     const call = { type: "toolCall", id: "submit", name: submitToolNameForStage(stage), arguments: { text: "ok" } } satisfies PiToolCall;
     const response = assistant([call]);
     response.usage = { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } };
@@ -9262,16 +9262,98 @@ describe("Pi tool argument stream limits", () => {
       stage, schema: Type.Object({ text: Type.String() }), prompt: "submit text", templateVersion: "test", timeoutMs: 2_000
     })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "tool_argument_stream_limit", trigger: "whitespace_run" } });
 
-    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(streamSimple).toHaveBeenCalledTimes(stage === 9 ? 3 : 2);
     expect(telemetry.events.filter(event => event.message === "model_tool_argument_stream_limit").map(event => event.data)).toEqual([
       expect.objectContaining({ retryScheduled: true, usageStatus: "unknown" }),
+      ...(stage === 9 ? [expect.objectContaining({ retryScheduled: true, usageStatus: "unknown" })] : []),
       expect.objectContaining({ retryScheduled: false, usageStatus: "unknown" })
     ]);
-    expect(telemetry.modelCalls.map(call => call.status)).toEqual(["aborted", "aborted"]);
+    expect(telemetry.modelCalls.map(call => call.status)).toEqual(Array(stage === 9 ? 3 : 2).fill("aborted"));
+    expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(stage === 9 ? 1 : 0);
+    if (stage === 9) expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 9, message: "stage9_whitespace_extra_attempt_outcome", data: expect.objectContaining({ attempt: 3, outcome: "guard_abort" })
+    }));
     for (const call of telemetry.modelCalls) {
       expect(call).not.toHaveProperty("totalTokens");
       expect(call).not.toHaveProperty("costUSD");
     }
+  });
+
+  it("retries a second verifier whitespace cutoff once with the identical continuation", async () => {
+    const read: PiToolCall = { type: "toolCall", id: "read", name: "read_range", arguments: { path: "src/a.ts" } };
+    const verdict = validSubmitVerdictCall("verdict");
+    const contexts: string[] = [];
+    const streamSimple = vi.fn<PiStreamSimpleForTest>((_model, context) => {
+      contexts.push(JSON.stringify(context.messages));
+      if (contexts.length === 1) return streamForMessage(assistant([read]));
+      if (contexts.length < 4) return streamForMessage(assistant([verdict]), " ".repeat(4_097) + JSON.stringify(verdict.arguments));
+      return streamForMessage(assistant([verdict]));
+    });
+    const execute = vi.fn(async () => ({ text: "source" }));
+    const { runner, telemetry, onUsage } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify",
+      templateVersion: "test", timeoutMs: 2_000, telemetryContext: { candidateId: "candidate" },
+      tools: [{ name: "read_range", description: "Read", parameters: Type.Object({ path: Type.String() }), execute }],
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 100 }
+    })).resolves.toEqual(verdict.arguments);
+    expect(contexts[1]).toBe(contexts[2]);
+    expect(contexts[2]).toBe(contexts[3]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onUsage).toHaveBeenCalledTimes(4);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ stage: 9,
+      message: "stage9_whitespace_extra_attempt_outcome", data: expect.objectContaining({ candidateId: "candidate", attempt: 3, outcome: "ok" }) }));
+  });
+
+  it.each([true, false])("keeps separate real-transport holds and admits the extra attempt only within the cap: %s", async allowExtra => {
+    vi.stubEnv("OPENROUTER_API_KEY", "synthetic-key");
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-whitespace-ledger-"));
+    const ledger = new CampaignLedger(path.join(dir, "db"), { binding: "test", limitMicros: allowExtra ? 2_000_000 : 800_000 });
+    const denied = vi.fn(async () => { throw new Error("unexpected network"); });
+    vi.stubGlobal("fetch", denied);
+    try {
+      const keyFingerprint = ledger.fingerprint("synthetic-key");
+      ledger.bindKeyBaseline({ usageMicros: 0, keyFingerprint, evidenceSHA256: "a".repeat(64) });
+      ledger.recordKeySnapshot({ boundaryId: "boundary", usageMicros: 0, observedMs: 0, keyFingerprint, evidenceSHA256: "b".repeat(64) });
+      let starts = 0;
+      const bodies: string[] = [];
+      const verdict = validSubmitVerdictCall("fixture");
+      const runner = await createPiRunner({ llmConfig: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        fetchForCall: (call) => makePhysicalTransport({ ledger, call, attemptPrefix: "slot/attempt-01",
+          expected: { ...call, api: "openai-completions", destination: "https://openrouter.ai/api/v1/chat/completions", wireEffort: "high" },
+          fetchImpl: async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+            starts += 1; bodies.push(String(init?.body));
+            const args = starts < 3 ? " ".repeat(4_097) : JSON.stringify(verdict.arguments);
+            const event = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "openai/gpt-6-luna",
+              choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "fixture", type: "function", function: { name: "submit_verdict", arguments: args } }] }, finish_reason: starts < 3 ? null : "tool_calls" }] };
+            const payload = `data: ${JSON.stringify(event)}\n\n`;
+            if (starts < 3) return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(payload)); } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+            return new Response(payload + `data: ${JSON.stringify({ id: "fixture", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0.0001, is_byok: false } })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+          }, AdmissionError: TransportAdmissionError }), hooks: { checkpoint: () => "ok", onUsage() {} } });
+      const result = runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 10_000 });
+      if (allowExtra) await expect(result).resolves.toEqual(verdict.arguments);
+      else await expect(result).rejects.toMatchObject({ context: { reason: "campaign_budget" } });
+      expect(bodies).toHaveLength(allowExtra ? 3 : 2);
+      expect(bodies[1]).toBe(bodies[0]);
+      if (allowExtra) expect(bodies[2]).toBe(bodies[1]);
+      expect(ledger.db.prepare("SELECT state,charge,http_status FROM physical ORDER BY rowid").all()).toEqual([
+        { state: "unknown", charge: 400_000, http_status: 200 }, { state: "unknown", charge: 400_000, http_status: 200 },
+        ...(allowExtra ? [{ state: "priced", charge: 100, http_status: 200 }] : [])
+      ]);
+      expect(denied).not.toHaveBeenCalled();
+    } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
+  });
+
+  it("does not dispatch the extra verifier attempt when its budget is exhausted", async () => {
+    const verdict = validSubmitVerdictCall("padded");
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), " ".repeat(4_097)));
+    let reservations = 0;
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple, { hooks: {
+      checkpoint: () => "ok", reserve: () => ++reservations > 2 ? "exhausted" : "ok", onUsage: () => {}
+    } });
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000 })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "budget_exhausted" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
   });
 
   it("honors cancellation between the oversized attempt and its retry", async () => {
@@ -9288,6 +9370,38 @@ describe("Pi tool argument stream limits", () => {
       stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify candidate", templateVersion: "test", timeoutMs: 2_000
     })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "aborted" } });
     expect(streamSimple).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors cancellation before the additional verifier attempt", async () => {
+    const stop = new AbortController();
+    const verdict = validSubmitVerdictCall("padded");
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), " ".repeat(4_097)));
+    let count = 0;
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple, {
+      runSignal: stop.signal, hooks: { checkpoint: () => "ok", onUsage: () => { if (++count === 2) stop.abort(); } }
+    });
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000 })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "aborted" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
+  });
+
+  it("does not extend Stage 9 total-character limit retries", async () => {
+    const verdict = validSubmitVerdictCall("oversized");
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), "x".repeat(64_001)));
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000 })).rejects.toMatchObject({ context: { reason: "tool_argument_stream_limit", trigger: "total_chars" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
+  });
+
+  it("does not extend a whitespace cutoff followed by a total-character cutoff", async () => {
+    const verdict = validSubmitVerdictCall("mixed");
+    let count = 0;
+    const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), ++count === 1 ? " ".repeat(4_097) : "x".repeat(64_001)));
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000 })).rejects.toMatchObject({ context: { reason: "tool_argument_stream_limit", trigger: "total_chars" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
   });
 
   it.each([true, false])("handles a Responses tool start with hidden prefix=%s", async (hiddenPrefix) => {
@@ -9316,7 +9430,7 @@ describe("Pi tool argument stream limits", () => {
       stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000
     })).rejects.toMatchObject({ code: "llm_call_failed" });
     const limits = telemetry.modelCalls.filter(row => row.retryReason === "tool_argument_stream_limit");
-    expect(limits).toHaveLength(2);
+    expect(limits).toHaveLength(3);
     for (const row of limits) expect(row.toolArgumentStreamLimit?.whitespacePositions).toEqual(hiddenPrefix
       ? { insideString: 0, insideStringRawControl: 0, outsideString: 0, indeterminate: 4_097 }
       : { insideString: 4_097, insideStringRawControl: 0, outsideString: 0, indeterminate: 0 });
