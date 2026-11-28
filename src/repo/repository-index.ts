@@ -1,5 +1,4 @@
 import { traceDependents } from "./dependents.js";
-import { buildDependencySources } from "./dependency-source.js";
 import { effectiveConfiguredSkip } from "../git/file-classifier.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isOrderedLineRange } from "../util/line-range.js";
@@ -62,7 +61,6 @@ import { declaredNames } from "./tree-sitter/go-adapter.js";
 
 type BuildRepositoryIndexOptions = {
   git?: InternalGitClient;
-  signal?: AbortSignal;
 };
 
 type DefinitionLookupOptions = {
@@ -155,13 +153,6 @@ export async function buildRepositoryIndex(
     registry,
     telemetry
   });
-  const traceMode = config.review.traceDependents;
-  if (traceMode === "dependencies" || traceMode === "all") {
-    const dependencies = await buildDependencySources({ resolver, registry, files: diff.files,
-      ...(opts.signal ? { signal: opts.signal } : {}) });
-    if (dependencies.read) tools.readDependency = dependencies.read;
-    telemetry.event({ stage: 4, level: "info", message: "dependency_source_status", data: { pairs: dependencies.status } });
-  }
   telemetry.event({
     stage: 4,
     level: "info",
@@ -170,7 +161,7 @@ export async function buildRepositoryIndex(
   });
   return {
     facts, symbolFacts, staticSignals, tools,
-    ...(traceMode === "leads" || traceMode === "all" ? {
+    ...(config.review.traceDependents === "leads" ? {
       traceDependents: (files: DiffFile[], signal?: AbortSignal) => {
         const changed = new Map(diff.files.map(file => [file.path, file]));
         const skipped = new Set(facts.filter(fact => fact.processingMode === "skip").map(fact => fact.path));
@@ -185,7 +176,6 @@ export async function buildRepositoryIndex(
 }
 
 export class RepositoryToolsFacade implements RepositoryToolsHost {
-  declare readDependency?: NonNullable<RepositoryTools["readDependency"]>;
   private readonly diffBlocks: DiffBlockRenderer;
   private readonly changes: ReadChangeService;
   private readonly search: SearchService;

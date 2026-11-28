@@ -220,7 +220,7 @@ export async function runReview(
           .length
       }
     });
-    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry, { ...gitOptions, signal: run.abort.signal });
+    const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry, gitOptions);
     throwIfHardAborted(run);
     const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
     if (services.runner.stageModels) {
@@ -876,9 +876,7 @@ async function createReviewCache(
   lensState: string,
   run: RunContext
 ): Promise<ModelCallCache | undefined> {
-  // The pinned Git tree cannot identify the Node bytes currently installed on disk.
-  if (!config.cache.enabled || shouldUseFakeRunner(config.llm) ||
-    config.review.traceDependents === "dependencies" || config.review.traceDependents === "all") {
+  if (!config.cache.enabled || shouldUseFakeRunner(config.llm)) {
     return undefined;
   }
   return createModelCallCache({
@@ -917,7 +915,7 @@ export function reviewCacheFingerprint(
       review: {
         ...review,
         ...(toolSurface === "six" ? { toolSurface } : {}),
-        ...(traceDependents && traceDependents !== "off" ? { traceDependents } : {})
+        ...(traceDependents === "leads" ? { traceDependents } : {})
       },
       classification: config.classification,
       llm
