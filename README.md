@@ -259,9 +259,9 @@ toolSurface = "six"
 
 Set `toolSurface = "current"` or remove the setting to return to the default. In a small development comparison, the current surface published more required findings and used fewer calls and tokens.
 
-### Experimental dependent tracing
+### Dependent tracing
 
-`review.traceDependents` defaults to `"off"`. Set it to `"leads"` to attach bounded candidate snippets from unchanged code that may depend on a changed declaration. Stage 7 checks the link and looks for a failure introduced or made reachable by the change. The attached snippets are unverified leads.
+`review.traceDependents` defaults to `"leads"`, which attaches bounded snippets from unchanged code that may depend on a changed declaration. Stage 7 checks those leads for failures introduced or made reachable by the change. To disable dependent tracing, set `traceDependents = "off"` in the `[review]` table of your user config at `~/.codegenie/config.toml`.
 
 Value-set extraction covers TypeScript, TSX, JavaScript and Go. For packets in other languages, Stage 6 records `valueSetCoverage: "unsupported_language"` and can still attach other kinds of leads.
 

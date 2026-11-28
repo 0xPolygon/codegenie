@@ -31,6 +31,7 @@ export const pathRuleSchema = z
   .strict();
 
 export const traceDependentsSchema = z.enum(["off", "leads"]);
+export const DEFAULT_TRACE_DEPENDENTS = "leads";
 
 export const rawConfigSchema = z
   .object({
@@ -207,7 +208,7 @@ export const defaultConfig: CodegenieConfig = {
     extraSkillPaths: []
   },
   review: {
-    traceDependents: "off",
+    traceDependents: DEFAULT_TRACE_DEPENDENTS,
     verify: true,
     compositionReasoningStepDown: true,
     skipSvgReview: true,

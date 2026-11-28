@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { defaultConfig } from "../src/config/schema.js";
+import { DEFAULT_TRACE_DEPENDENTS, defaultConfig } from "../src/config/schema.js";
 import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { maybePublishToGitHub } from "../src/github/publisher.js";
@@ -73,7 +73,7 @@ import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 import { textRepository } from "./helpers/text-repository.js";
 
-it("pins Stage 5, lean Stage 7, Stage 9 and submit schema renders", async () => {
+it("pins Stage 5, lean Stage 7 with tracing off, Stage 9 and submit schema renders", async () => {
   const { skills } = await loadSkills({
     repoRoot: "/unused-golden-repo", extraSkillPaths: [], logger: fakeLogger(), telemetry: nullTelemetry()
   });
@@ -112,12 +112,13 @@ it("pins Stage 5, lean Stage 7, Stage 9 and submit schema renders", async () => 
   const target: ResolvedReviewInput = {
     mode: "branch", repoRoot: "/repo", baseRef: "base", headRef: "head", rawDiff: "+change", commits: []
   };
-  templates["cache"] = reviewCacheFingerprint(defaultConfig, target, "registry");
+  const offConfig: CodegenieConfig = { ...defaultConfig, review: { ...defaultConfig.review, traceDependents: "off" } };
+  templates["cache"] = reviewCacheFingerprint(offConfig, target, "registry");
   templates["submit_review"] = sha256Hex(JSON.stringify(SubmitPacketReviewSchema));
   expect(sha256Hex(JSON.stringify(templates))).toMatchInlineSnapshot(`"2b6e94a2487262cba0fe3bd7bebe93d3ca8c1ede388bed66ec1b91eaea86cbff"`);
 });
 
-it("qualifies the default and enabled dependent-lead prompt and cache contracts", () => {
+it("qualifies the default leads and explicit off prompt and cache contracts", () => {
   const packet: ReviewPacket = { ...fakePacket({ path: "app.ts" }), candidateDependents: [{
     path: "guard.ts", lineRange: [3, 5], text: "function guard(value) {\n  return value >= 1 && value <= 3;\n}",
     relation: "value_set", match: "lexical", contract: "ReviewStage", contractPath: "app.ts", hunkId: "h1"
@@ -130,7 +131,7 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
       const baseline = createPromptBuilder(fakeLensRegistry(), { toolSurface }).buildPacketReviewPrompt({ packet: withoutLeads, skills: [] });
       const off = createPromptBuilder(fakeLensRegistry(), { toolSurface, traceDependents: "off" }).buildPacketReviewPrompt({ packet: input, skills: [] });
       expect(off).toEqual(baseline);
-      const options = { toolSurface, traceDependents: "leads" } as const;
+      const options = { toolSurface, traceDependents: DEFAULT_TRACE_DEPENDENTS } as const;
       const lead = createPromptBuilder(fakeLensRegistry(), options).buildPacketReviewPrompt({ packet: input, skills: [] });
       expect(lead.templateVersion).toBe(baseline.templateVersion + "-dep.1");
       expect(lead.prompt).toContain("candidateDependents are unverified harness matches");
@@ -140,11 +141,11 @@ it("qualifies the default and enabled dependent-lead prompt and cache contracts"
     }
   }
   const target: ResolvedReviewInput = { mode: "branch", repoRoot: "/repo", baseRef: "base", headRef: "head", rawDiff: "+change", commits: [] };
-  const { traceDependents: _off, ...review } = defaultConfig.review;
+  const { traceDependents: _default, ...review } = defaultConfig.review;
   expect(reviewCacheFingerprint(defaultConfig, target, "registry")).toBe(
     reviewCacheFingerprint({ ...defaultConfig, review }, target, "registry")
   );
-  expect(reviewCacheFingerprint({ ...defaultConfig, review: { ...review, traceDependents: "leads" } }, target, "registry")).not.toBe(
+  expect(reviewCacheFingerprint({ ...defaultConfig, review: { ...review, traceDependents: "off" } }, target, "registry")).not.toBe(
     reviewCacheFingerprint(defaultConfig, target, "registry")
   );
   expect(sha256Hex(JSON.stringify(enabled))).toMatchInlineSnapshot(`"a57cf8189b3ec0ad71e2fcbcf8cb67f13e2b7332245b142fe7e9b2ec751383dd"`);

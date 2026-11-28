@@ -1,4 +1,5 @@
 import { traceDependents } from "./dependents.js";
+import { DEFAULT_TRACE_DEPENDENTS } from "../config/schema.js";
 import { effectiveConfiguredSkip } from "../git/file-classifier.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isOrderedLineRange } from "../util/line-range.js";
@@ -161,7 +162,7 @@ export async function buildRepositoryIndex(
   });
   return {
     facts, symbolFacts, staticSignals, tools,
-    ...(config.review.traceDependents === "leads" ? {
+    ...((config.review.traceDependents ?? DEFAULT_TRACE_DEPENDENTS) === "leads" ? {
       traceDependents: (files: DiffFile[], signal?: AbortSignal) => {
         const changed = new Map(diff.files.map(file => [file.path, file]));
         const skipped = new Set(facts.filter(fact => fact.processingMode === "skip").map(fact => fact.path));

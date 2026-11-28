@@ -5,8 +5,8 @@ import { derivePacketTemplates, derivePacketTemplatesForConfig, expectedPacketTe
 const packet = (id: string, truncated: boolean) => ({ id, hunks: [{ hunkId: id, lines: [], truncated }], prSummary: '', path: 'a', language: 'javascript', lenses: [], labels: [], contextText: '', relevantTests: [], toolBudget: 3 });
 const kinds = ['initial', 'tool-continuation', 'repair', 'finalize'];
 
-it('derives the full and shortened v1 template families', () => {
-  const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: {} });
+it('derives the full and shortened template families with dependent tracing off', () => {
+  const bindings = derivePacketTemplatesForConfig([packet('ordinary', false), packet('shortened', true)], { review: { traceDependents: 'off' } });
   expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.20');
   expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.21');
   expect(() => validatePacketTemplates(bindings, ['ordinary', 'shortened'])).not.toThrow();
@@ -17,9 +17,10 @@ it('derives the full and shortened v1 template families', () => {
   expect(() => validatePacketTemplates(retired, ['ordinary', 'shortened'])).toThrow('binding mismatch');
 });
 
-it('derives the exact dependent trace template bindings for both packet shapes', () => {
+it('uses dependent trace template bindings by default for both packet shapes', () => {
   const packets = [packet('ordinary', false), packet('shortened', true)];
-  const bindings = derivePacketTemplatesForConfig(packets, { review: { traceDependents: 'leads' } });
+  const bindings = derivePacketTemplatesForConfig(packets, { review: {} });
+  expect(bindings).toEqual(derivePacketTemplatesForConfig(packets, { review: { traceDependents: 'leads' } }));
   expect(expectedPacketTemplate(bindings, 'ordinary', 'initial')).toBe('p7.20-dep.1');
   expect(expectedPacketTemplate(bindings, 'shortened', 'initial')).toBe('p7.21-dep.1');
   const ids = ['ordinary', 'shortened'];
