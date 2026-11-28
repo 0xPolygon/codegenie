@@ -9385,6 +9385,21 @@ describe("Pi tool argument stream limits", () => {
     expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
   });
 
+  it("honors the deadline before the additional verifier attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const verdict = validSubmitVerdictCall("padded");
+      const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), " ".repeat(4_097)));
+      let count = 0;
+      const { runner, telemetry } = scriptedPiStreamRunner(streamSimple, { hooks: { checkpoint: () => "ok", onUsage: () => {
+        if (++count === 2) vi.advanceTimersByTime(30_000);
+      } } });
+      await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 2_000 })).rejects.toMatchObject({ context: { reason: "timeout" } });
+      expect(streamSimple).toHaveBeenCalledTimes(2);
+      expect(telemetry.events.filter(event => event.message === "stage9_whitespace_extra_attempt_outcome")).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("does not extend Stage 9 total-character limit retries", async () => {
     const verdict = validSubmitVerdictCall("oversized");
     const streamSimple = vi.fn<PiStreamSimpleForTest>(() => streamForMessage(assistant([verdict]), "x".repeat(64_001)));
