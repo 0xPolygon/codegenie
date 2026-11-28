@@ -1,7 +1,7 @@
 // Stage 8 (targeted system review) was deleted in #114; ids stay stable.
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 export type ReviewToolSurface = "current" | "six";
-export type TraceDependentsMode = "off" | "leads" | "dependencies" | "all";
+export type TraceDependentsMode = "off" | "leads";
 
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -692,8 +692,6 @@ export type PlannerRecoveryTelemetry = {
 };
 
 export interface RepositoryTools {
-  readDependency?(input: import("./repo/dependency-source.js").DependencyReadArgs, signal?: AbortSignal):
-    Promise<import("./repo/dependency-source.js").DependencyPage>;
   /** Six-tool surface only; absent from legacy adapters until that surface is selected. */
   findUsages?(name: string, options?: import("./repo/usage-search.js").UsageSearchOptions): Promise<{
     page: import("./repo/usage-search.js").UsagePage; meta: ToolResultMeta

@@ -10,7 +10,6 @@ import { hasSearchContext, MAX_QUERY_CHARS, SearchBudgetError, searchContextPosi
 import { buildFindUsagesTool } from "./usage-tool.js";
 import { MAX_SMALL_SOURCE_CHARS } from "../repo/source-file-map.js";
 import { buildReadDefinitionTool } from "./definition-tool.js";
-import { buildReadDependencyTool } from "./dependency-tool.js";
 import type { ReadChangeInput } from "../repo/read-change.js";
 import { LineRangeSchema } from "./line-range-schema.js";
 import { stripCredentialsAtSink } from "../telemetry/redaction.js";
@@ -41,7 +40,6 @@ export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
   toolSurface?: ReviewToolSurface;
   currentHunks?: readonly string[];
-  includeDependency?: boolean;
 };
 
 const SIX_TOOL_NAMES = ["read_change", "read_range", "read_definition", "find_usages", "search_files", "list_files"] as const;
@@ -143,9 +141,8 @@ function literalSearchRetryHint(error: CodegenieError, parameters: ToolDefinitio
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
   assertRepositoryToolSurfaceAvailable(options.toolSurface);
-  const dependencyTools = options.includeDependency && tools.readDependency ? [buildReadDependencyTool(tools.readDependency)] : [];
   if (options.toolSurface === "six") {
-    return [...SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools, options)), ...dependencyTools];
+    return SIX_TOOL_NAMES.map(name => sixToolFactories[name]!(tools, options));
   }
   const searchParameters = Type.Object({
     query: Type.String({ minLength: 1, maxLength: MAX_QUERY_CHARS }),
@@ -454,8 +451,8 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     }
   ];
   return options.includeLikelyTests === false
-    ? [...definitions.filter((tool) => tool.name !== "find_likely_tests"), ...dependencyTools]
-    : [...definitions, ...dependencyTools];
+    ? definitions.filter((tool) => tool.name !== "find_likely_tests")
+    : definitions;
 }
 
 export function buildSixReadChangeTool(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition {

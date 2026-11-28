@@ -196,8 +196,7 @@ export async function buildReviewPackets(
     }
   }
 
-  const mode = opts.config.review.traceDependents;
-  const trace = mode === "leads" || mode === "all" ? await repoIndex.traceDependents?.(filtered, opts.signal) : undefined;
+  const trace = opts.config.review.traceDependents === "leads" ? await repoIndex.traceDependents?.(filtered, opts.signal) : undefined;
   const perPacket = [];
   const relationshipGraph = await buildHunkRelationshipGraph(allPlanned, effectiveByHunk, repoIndex, telemetry);
 
