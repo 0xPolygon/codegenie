@@ -1,4 +1,5 @@
 import { createPromptBuilder } from '../../dist/skills/prompt-builder.js';
+import { DEFAULT_TRACE_DEPENDENTS } from '../../dist/config/schema.js';
 
 const kinds = ['initial', 'tool-continuation', 'repair', 'finalize'];
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -17,7 +18,7 @@ export function derivePacketTemplates(packets, builder = createPromptBuilder({},
 export function derivePacketTemplatesForConfig(packets, config) {
   const toolSurface = config?.review?.toolSurface ?? 'current';
   if (!['current', 'six'].includes(toolSurface)) throw new Error('invalid packet template configuration');
-  const traceDependents = config?.review?.traceDependents ?? 'off';
+  const traceDependents = config?.review?.traceDependents ?? DEFAULT_TRACE_DEPENDENTS;
   if (!['off', 'leads'].includes(traceDependents)) throw new Error('invalid packet template configuration');
   return derivePacketTemplates(packets, createPromptBuilder({}, { toolSurface, traceDependents }));
 }

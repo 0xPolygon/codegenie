@@ -27,7 +27,6 @@ const stageFixture = {
   "skip/runtime.ts": "function hidden(x: number) { return x >= 1 && x <= 3; }\n"
 };
 const head = { "types.ts": "export type ReviewStage = 1 | 3;\n" };
-const tracedConfig: CodegenieConfig = { ...defaultConfig, review: { ...defaultConfig.review, traceDependents: "leads" } };
 
 async function fixture(baseFiles: Record<string, string>, headFiles: Record<string, string | null>) {
   const repo = await textRepository(baseFiles, headFiles);
@@ -126,8 +125,8 @@ describe("Stage 6 dependent leads", () => {
     try {
       const emit = vi.fn();
       const telemetry = { ...nullTelemetry(), event: emit };
-      const index = await buildRepositoryIndex(repo.resolved, repo.files, [], tracedConfig, telemetry);
-      const options = { config: tracedConfig, enabledLenses: ["core/code-review"] };
+      const index = await buildRepositoryIndex(repo.resolved, repo.files, [], defaultConfig, telemetry);
+      const options = { config: defaultConfig, enabledLenses: ["core/code-review"] };
       const [file] = repo.files;
       const plan = { diffUnderstanding: { declaredIntent: "", inferredBehavior: "" },
         coverage: file!.hunks.map(hunk => ({ hunkId: hunk.id, path: file!.path, coverage: "normal" as const,
@@ -257,7 +256,7 @@ describe("Stage 6 dependent leads", () => {
     }
   });
 
-  it("attaches leads to their own packets, reports the count cap and keeps the off packet shape", async () => {
+  it("attaches leads for omitted trace mode, reports the count cap and keeps the off packet shape", async () => {
     const extras = Object.fromEntries(Array.from({ length: 10 }, (_, index) =>
       [`extra/span${index}.ts`, `export function span${index}(value: number) { return value >= 1 && value <= 3; }\n`]));
     const repo = await fixture({
@@ -267,7 +266,9 @@ describe("Stage 6 dependent leads", () => {
     try {
       const emit = vi.fn();
       const telemetry = { ...nullTelemetry(), event: emit };
-      const config = { ...tracedConfig, classification: { pathRules: [{ pattern: "skip/**", processingMode: "skip" as const, reason: "fixture scope" }] } };
+      const { traceDependents: _default, ...review } = defaultConfig.review;
+      const config: CodegenieConfig = { ...defaultConfig, review,
+        classification: { pathRules: [{ pattern: "skip/**", processingMode: "skip", reason: "fixture scope" }] } };
       const index = await buildRepositoryIndex(repo.resolved, repo.files, [], config, telemetry);
       const options = { config, enabledLenses: ["core/code-review"] };
       const plan = { diffUnderstanding: { declaredIntent: "", inferredBehavior: "" },
@@ -285,7 +286,10 @@ describe("Stage 6 dependent leads", () => {
           perPacket: expect.arrayContaining([expect.objectContaining({ packetId: stage.id,
             language: "typescript", valueSetCoverage: "supported" })]) }) }));
       emit.mockClear();
-      const off = await buildReviewPackets(plan, repo.files, [], index, telemetry, { ...options, config: defaultConfig });
+      const offConfig: CodegenieConfig = { ...config, review: { ...review, traceDependents: "off" } };
+      const offIndex = await buildRepositoryIndex(repo.resolved, repo.files, [], offConfig, telemetry);
+      expect(offIndex.traceDependents).toBeUndefined();
+      const off = await buildReviewPackets(plan, repo.files, [], index, telemetry, { ...options, config: offConfig });
       expect(off.every(packet => packet.candidateDependents === undefined)).toBe(true);
       expect(emit.mock.calls.some(([event]) => event.message === "dependents_traced")).toBe(false);
     } finally { repo.dispose(); }

@@ -72,9 +72,9 @@ describe("config loader", () => {
     expect(() => loadConfig({ repoRoot, homeOverride, env: {} })).toThrow("review.changeChecks has been retired");
   });
 
-  it("defaults tracing off and loads the available modes", () => {
+  it("defaults tracing to leads and loads the available modes", () => {
     const opts = { repoRoot: tempDir(), homeOverride: tempDir(), env: {} };
-    expect(loadConfig(opts).config.review.traceDependents).toBe("off");
+    expect(loadConfig(opts).config.review.traceDependents).toBe("leads");
     for (const mode of ["leads", "off"] as const) {
       writeFileSync(path.join(opts.homeOverride, "config.toml"), `[review]\ntraceDependents = "${mode}"\n`);
       const loaded = loadConfig(opts);

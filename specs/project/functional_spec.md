@@ -926,6 +926,7 @@ V1 configuration should support:
 
 - Default base branch for branch review.
 - Independent verification on or off. Verification is enabled by default and may be disabled only through this explicit configuration, per Stage 9.
+- Dependent tracing via user-scoped `review.traceDependents`. The default `"leads"` attaches bounded snippets from unchanged code that may depend on a changed declaration. Set `"off"` to disable tracing.
 - Path-based file handling rules, including processing mode, review priority, labels, and reasons.
 - Enabling and disabling lenses.
 - Extra Markdown skill paths.
@@ -944,6 +945,7 @@ If no config exists, codegenie should run with sensible defaults:
 
 - Core correctness-oriented lenses enabled.
 - Independent verification enabled.
+- Dependent tracing enabled.
 - Style/lint lenses disabled.
 - Low-confidence findings suppressed.
 - GitHub posting disabled.
