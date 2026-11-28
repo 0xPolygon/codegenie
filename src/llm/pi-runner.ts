@@ -1638,6 +1638,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
 
   let lastError: unknown;
   let maxAttempts = kind === "repair" || request.stage === 10 || request.purpose === "location_clarification" ? 1 : MAX_PROVIDER_ATTEMPTS;
+  const allowsWhitespaceExtension = request.stage === 9 && maxAttempts > 1;
+  let consecutiveWhitespaceAborts = 0;
+  let extraWhitespaceAttempt: number | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     let estimatedTokens = 0;
@@ -1669,6 +1672,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     let upstreamFailureObserved = false;
     let responseGeneration = 0;
     let providerStarted = false;
+    let extraWhitespaceOutcome = "error";
     let admission: ReturnType<typeof captureTransportAdmission> | undefined;
     let onTransportUsage: ReturnType<NonNullable<CreateRunnerOptions["fetchForCall"]>>["onUsage"];
     let terminalUsageSent = false;
@@ -2007,6 +2011,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         ...(callErrorCode === undefined ? {} : { errorCode: callErrorCode }),
         ...(schemaValid === false && schemaError !== undefined ? { errorMessage: recordedSchemaError(schemaError) } : {})
       });
+      extraWhitespaceOutcome = callStatus;
       return { source: "provider", message, callId };
     } catch (cause) {
       if (model.provider === "openrouter" && !upstreamFailureObserved) delete responseCapture.upstreamProvider;
@@ -2045,6 +2050,16 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const outageCancellation = providerOutageCancellation(opts.runSignal);
       if (outageCancellation !== undefined && !providerStarted) throw outageCancellation;
       const argumentLimit = cause instanceof ToolArgumentStreamLimitError ? cause : undefined;
+      if (argumentLimit?.limit.trigger === "whitespace_run") consecutiveWhitespaceAborts += 1;
+      else consecutiveWhitespaceAborts = 0;
+      if (argumentLimit !== undefined) extraWhitespaceOutcome = "guard_abort";
+      // Preserve the existing one-replacement rule except for a second consecutive
+      // Stage 9 whitespace cutoff, which gets one more attempt within the original cap.
+      if (allowsWhitespaceExtension && consecutiveWhitespaceAborts === 2 && extraWhitespaceAttempt === undefined &&
+          !taskSignal.aborted && !taskTimedOut() && attempt === maxAttempts && attempt < MAX_PROVIDER_ATTEMPTS) {
+        maxAttempts = attempt + 1;
+        extraWhitespaceAttempt = maxAttempts;
+      }
       const retryLimitLocally = argumentLimit !== undefined && !taskSignal.aborted && attempt < maxAttempts;
       const retryLimitInComposition = argumentLimit !== undefined && !taskSignal.aborted &&
         request.stage === 10 && kind !== "repair" && input.compositionAttempts.used < COMPOSITION_MAX_CALLS;
@@ -2123,6 +2138,10 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       throw finishedProviderFailure(input, model, cause, status, attempt, retry, providerObservation, failureLocation);
     } finally {
       releaseProviderSlot?.();
+      if (attempt === extraWhitespaceAttempt && providerStarted) {
+        opts.telemetry.event({ stage: 9, level: "info", message: "stage9_whitespace_extra_attempt_outcome",
+          data: { ...request.telemetryContext, callId, kind, attempt, outcome: extraWhitespaceOutcome } });
+      }
     }
   }
 

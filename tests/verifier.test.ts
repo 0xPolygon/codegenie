@@ -20,9 +20,27 @@ import type {
   UnifiedDiff
 } from "../src/types.js";
 import { scoreEvalRun } from "../src/evals/eval-scoring.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("stage 9 evidence-aware verification", () => {
+  it("keeps an exhausted stream-guard candidate incomplete without promoting it or retrying its sibling", async () => {
+    const fixture = reviewFixture(["first.ts", "second.ts"]);
+    const first = candidate("guard-failed", fixture.packets[0]!);
+    const second = candidate("sibling", fixture.packets[1]!);
+    const calls: string[] = [];
+    const result = await verifyFindings({ packetResults: [packetResult(first.producedBy.packetId, [first]), packetResult(second.producedBy.packetId, [second])], packets: fixture.packets },
+      fakeTools(), config(), nullTelemetry(), { runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const id = request.telemetryContext?.candidateId ?? ""; calls.push(id);
+        if (id === first.id) throw new CodegenieError("llm_call_failed", "stream cutoff", { recoverable: true, context: { reason: "tool_argument_stream_limit", trigger: "whitespace_run" } });
+        return { verdict: "keep", reason: "confirmed", requiredEvidencePresent: true, falsePositiveRisk: "low",
+          proofAssessment: { status: "established", evidence: "The handler omits the required check.", assumptions: [] } } as T;
+      } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff });
+    expect(result.verified.map(item => item.id)).toEqual([second.id]);
+    expect(result.verdicts.find(item => item.candidateId === first.id)).toMatchObject({ verdict: "incomplete", verificationIncomplete: true });
+    expect(calls.filter(id => id === second.id)).toHaveLength(1);
+    expect(calls.filter(id => id === first.id)).toHaveLength(1);
+  });
   it("hands a relevant source read from another completed packet to the verifier with provenance", async () => {
     const fixture = reviewFixture(["service.ts"]);
     const packet = fixture.packets[0]!;
